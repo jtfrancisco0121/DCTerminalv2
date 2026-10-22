@@ -1,6 +1,6 @@
 # DCTerminalv2: plan
 
-Status: draft for JT's review. No code until this is approved.
+Status: approved 2026-10-22.
 
 ## Why
 
@@ -82,8 +82,10 @@ Not ported: `acp/`, `bridge/`, `run_actor/`, `pipelines/`, `rounds/`, `roles/`, 
 
 Each phase: agents build in worktrees, Claude reviews, fixes MEDIUM+, merges (as with v3).
 
-## Open questions for JT
+## Answered (2026-10-22)
 
-1. Keep the old DCTerminal installed side by side until v2 is proven? (Recommended: yes, different bundle id.)
-2. GitHub repo: new private repo `jtfrancisco0121/DCTerminalv2`?
-3. Should the skill pause after each story, or only at the two stops (D7)? (Recommended: only the two stops.)
+1. Old DCTerminal stays installed side by side until v2 is proven; v2 gets its own bundle id.
+2. GitHub: private repo `jtfrancisco0121/DCTerminalv2`.
+3. The skill stops only at the two stops (D7), not after each story.
+
+Status: approved.
