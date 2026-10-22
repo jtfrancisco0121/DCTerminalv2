@@ -1,0 +1,6 @@
+{"schema": 1, "repos": [
+  {"name": "mathlib", "path": "/abs/ws/mathlib", "check": "npm test"},
+  {"name": "mathcli", "path": "/abs/ws/mathcli", "check": "npm run check"},
+  {"name": "docs", "path": "/abs/ws/docs", "check": null},
+  {"name": "notes", "path": "/abs/ws/notes", "check": null}
+]}

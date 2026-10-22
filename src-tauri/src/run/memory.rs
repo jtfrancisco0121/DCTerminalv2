@@ -28,15 +28,60 @@ pub fn run_script(plugin: &Path, memory: &Path, args: &[&str]) -> Result<String,
         .args(args)
         .env("DCV2_MEMORY_DIR", memory)
         .env_remove("DCV2_TEST_MODE")
-        .stdin(Stdio::null());
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(cmd.output());
-    });
-    let output = rx
-        .recv_timeout(MEMORY_TIMEOUT)
-        .map_err(|_| "memory.sh took too long".to_string())?
-        .map_err(|e| format!("memory.sh: {e}"))?;
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    run_with_timeout(cmd, MEMORY_TIMEOUT)
+}
+
+/// Runs `cmd`, killing it (and its process group) after `timeout`.
+pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<String, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("memory.sh: {e}"))?;
+    let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            let _ = tx.send(buf);
+        });
+        rx
+    };
+    let out = read(child.stdout.take().map(|p| Box::new(p) as _));
+    let err = read(child.stderr.take().map(|p| Box::new(p) as _));
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                #[cfg(unix)]
+                {
+                    let _ = Command::new("kill")
+                        .args(["-9", &format!("-{}", child.id())])
+                        .stderr(Stdio::null())
+                        .status();
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("memory.sh took too long".into());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => return Err(format!("memory.sh: {e}")),
+        }
+    };
+    let stdout = out.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+    let stderr = err.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+    let output = std::process::Output {
+        status,
+        stdout,
+        stderr,
+    };
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
@@ -144,5 +189,14 @@ mod tests {
         let out = compose(&plugin, &memory, dir.path(), &dir.join("p/out.md")).unwrap();
         assert_eq!(std::fs::read_to_string(out).unwrap(), "note\n");
         assert_eq!(run_script(&plugin, &memory, &["nope"]).unwrap_err(), "bad");
+        let mut slow = Command::new("sh");
+        slow.args(["-c", "sleep 30"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let started = std::time::Instant::now();
+        assert!(run_with_timeout(slow, Duration::from_millis(200))
+            .unwrap_err()
+            .contains("too long"));
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 }

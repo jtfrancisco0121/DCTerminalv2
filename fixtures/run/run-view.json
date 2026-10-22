@@ -13,14 +13,19 @@
   "prs": [
     {
       "appCheck": {
+        "clean": null,
         "command": "npm test",
         "cwd": null,
         "detail": null,
         "exitCode": null,
         "finishedAt": null,
+        "head": null,
         "log": "logs/PR1-app-check.txt",
-        "result": "pass"
+        "result": "pass",
+        "skillCommand": null
       },
+      "appCheckStale": false,
+      "appCommand": "npm test",
       "branch": "dcv2/r-20261022-1304-pr1",
       "check": {
         "command": "npm test",
@@ -28,6 +33,8 @@
         "result": "pass",
         "summary": "4 tests passed"
       },
+      "checkKnown": true,
+      "currentHead": null,
       "gate": {
         "gate": "PASS",
         "problem": null,
@@ -35,8 +42,8 @@
         "updated": "2026-10-22T13:39:00Z"
       },
       "gateStatus": {
-        "kind": "proven",
-        "text": "PASS, and the app's check passed"
+        "kind": "claimed",
+        "text": "PASS claimed (all stories met, check passes); the worktree's HEAD is not known"
       },
       "id": "PR1",
       "note": null,
@@ -52,18 +59,24 @@
       "storiesDone": 2,
       "storiesTotal": 2,
       "title": "Add multiply()",
-      "worktree": "/abs/ws/mathlib-worktrees/dcv2-r-20261022-1304-pr1"
+      "worktree": "/abs/ws/mathlib-worktrees/dcv2-r-20261022-1304-pr1",
+      "worktreeClean": null
     },
     {
       "appCheck": {
+        "clean": null,
         "command": "npm test",
         "cwd": null,
         "detail": null,
         "exitCode": 1,
         "finishedAt": null,
+        "head": null,
         "log": "logs/PR2-app-check.txt",
-        "result": "fail"
+        "result": "fail",
+        "skillCommand": null
       },
+      "appCheckStale": false,
+      "appCommand": "npm run check",
       "branch": null,
       "check": {
         "command": "npm test",
@@ -71,6 +84,8 @@
         "result": "pass",
         "summary": null
       },
+      "checkKnown": true,
+      "currentHead": null,
       "gate": {
         "gate": "WAIVED",
         "problem": null,
@@ -95,10 +110,13 @@
       "storiesDone": 1,
       "storiesTotal": 1,
       "title": "Use multiply() in the CLI",
-      "worktree": null
+      "worktree": null,
+      "worktreeClean": null
     },
     {
       "appCheck": null,
+      "appCheckStale": false,
+      "appCommand": null,
       "branch": null,
       "check": {
         "command": null,
@@ -106,6 +124,8 @@
         "result": "none",
         "summary": null
       },
+      "checkKnown": false,
+      "currentHead": null,
       "gate": {
         "gate": null,
         "problem": "no gate: line",
@@ -130,10 +150,13 @@
       "storiesDone": 0,
       "storiesTotal": 1,
       "title": "Docs",
-      "worktree": null
+      "worktree": null,
+      "worktreeClean": null
     },
     {
       "appCheck": null,
+      "appCheckStale": false,
+      "appCommand": "npm test",
       "branch": null,
       "check": {
         "command": null,
@@ -141,6 +164,8 @@
         "result": "pass",
         "summary": null
       },
+      "checkKnown": true,
+      "currentHead": null,
       "gate": null,
       "gateStatus": {
         "kind": "none",
@@ -160,7 +185,48 @@
       "storiesDone": null,
       "storiesTotal": null,
       "title": "Opened one",
-      "worktree": null
+      "worktree": null,
+      "worktreeClean": null
+    },
+    {
+      "appCheck": null,
+      "appCheckStale": false,
+      "appCommand": null,
+      "branch": null,
+      "check": {
+        "command": null,
+        "cwd": null,
+        "result": "none",
+        "summary": null
+      },
+      "checkKnown": false,
+      "currentHead": null,
+      "gate": {
+        "gate": "PASS",
+        "problem": null,
+        "reason": "docs only",
+        "updated": null
+      },
+      "gateStatus": {
+        "kind": "review-only",
+        "text": "PASS — review only (no check exists)"
+      },
+      "id": "PR5",
+      "note": null,
+      "prUrl": null,
+      "repo": "notes",
+      "repoPath": null,
+      "review": {
+        "openFindings": null,
+        "round": 1,
+        "verdict": "APPROVED"
+      },
+      "state": "reviewed",
+      "storiesDone": 1,
+      "storiesTotal": 1,
+      "title": "Notes",
+      "worktree": null,
+      "worktreeClean": null
     }
   ],
   "runDir": "",

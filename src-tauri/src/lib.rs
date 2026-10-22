@@ -9,7 +9,7 @@ mod paths;
 mod process_tree;
 mod provider;
 mod pty;
-mod run;
+pub(crate) mod run;
 mod shell_env;
 pub mod status_line;
 mod store;
@@ -89,6 +89,7 @@ pub fn run() {
             // thread may ask the login shell again (it only rewrites the
             // PATH cache, for the next launch).
             shell_env::spawn_login_path_refresh();
+            run::spawn_prune_launch_prompts(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

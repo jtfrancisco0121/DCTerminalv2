@@ -722,4 +722,46 @@ mod tests {
     fn process_alive(pid: u32) -> bool {
         std::path::Path::new(&format!("/proc/{pid}")).exists()
     }
+
+    /// The app never passes DCV2_TEST_MODE on, even when it inherited one:
+    /// not into a dcv2 Claude tab's terminal, not into its own check runs.
+    /// The only test that sets the variable (process-wide).
+    #[cfg(unix)]
+    #[test]
+    fn an_inherited_test_mode_reaches_neither_a_dcv2_tab_nor_an_app_check() {
+        std::env::set_var("DCV2_TEST_MODE", "auto-approve");
+        let launch = crate::store::TabLaunch {
+            role: "eagle-eye".into(),
+            prompt: "x".into(),
+            env: vec![("DCV2_TEST_MODE".into(), "halt-after=PR1".into())],
+            ..Default::default()
+        };
+        let mut command = crate::provider::ProgramArgs::new("/bin/sh", vec![]);
+        let env_remove = crate::run::launch::apply_launch(&mut command, Some(&launch), true);
+        let session = PtySession::spawn(SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "echo \"TM=[${DCV2_TEST_MODE-unset}]\"".into()],
+            env: command.env.clone(),
+            env_remove,
+            cwd: std::env::temp_dir(),
+            cols: 80,
+            rows: 24,
+        })
+        .unwrap();
+        let seen = wait_for_output(&session, "TM=[unset]");
+        let dir = crate::test_support::TempDir::new("check_env");
+        let log = dir.join("log.txt");
+        let (result, _, _) = crate::run::check::run_one(
+            "echo \"TM=[${DCV2_TEST_MODE-unset}]\"",
+            dir.path(),
+            &log,
+            Duration::from_secs(20),
+        );
+        std::env::remove_var("DCV2_TEST_MODE");
+        assert!(seen, "the PTY saw DCV2_TEST_MODE");
+        assert_eq!(result, "pass");
+        assert!(std::fs::read_to_string(&log)
+            .unwrap()
+            .contains("TM=[unset]"));
+    }
 }

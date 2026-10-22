@@ -53,9 +53,20 @@ pub struct GateFile {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppCheck {
-    /// `pass`, `fail`, `timeout`, `error`, `none` (no command), `running`.
+    /// `pass`, `fail`, `timeout`, `error`, `none` (no check known),
+    /// `running`, `interrupted` (the app stopped while it ran).
     pub result: String,
+    /// The command the app ran: repos.json's, never status.json's.
     pub command: Option<String>,
+    /// status.json's command when it differs from the app's (not run).
+    #[serde(default)]
+    pub skill_command: Option<String>,
+    /// The worktree's HEAD when the check ran.
+    #[serde(default)]
+    pub head: Option<String>,
+    /// The worktree had no uncommitted changes when the check ran.
+    #[serde(default)]
+    pub clean: Option<bool>,
     pub cwd: Option<String>,
     pub exit_code: Option<i32>,
     pub finished_at: Option<String>,
@@ -92,6 +103,16 @@ pub struct PrView {
     pub gate: Option<GateFile>,
     pub app_check: Option<AppCheck>,
     pub gate_status: Option<GateStatus>,
+    /// The check the app would run (repos.json), if any.
+    pub app_command: Option<String>,
+    /// repos.json names a check for this PR's repo.
+    pub check_known: bool,
+    /// The worktree's HEAD now.
+    pub current_head: Option<String>,
+    /// The worktree has no uncommitted changes now.
+    pub worktree_clean: Option<bool>,
+    /// The app's check ran on another HEAD than the worktree's now.
+    pub app_check_stale: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -265,12 +286,16 @@ pub fn parse_gate(text: &str) -> GateFile {
             continue;
         }
         let value = value.trim();
-        let value = value
-            .strip_prefix('"')
-            .and_then(|v| v.strip_suffix('"'))
-            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
-            .unwrap_or(value)
-            .to_string();
+        let value = if value.starts_with('"') {
+            serde_json::from_str::<String>(value)
+                .unwrap_or_else(|_| value.trim_matches('"').to_string())
+        } else {
+            value
+                .strip_prefix('\'')
+                .and_then(|v| v.strip_suffix('\''))
+                .unwrap_or(value)
+                .to_string()
+        };
         let value = (!value.is_empty()).then_some(value);
         match key.trim() {
             "gate" => gate.gate = value.map(|v| v.to_ascii_uppercase()),
@@ -287,57 +312,105 @@ pub fn parse_gate(text: &str) -> GateFile {
     gate
 }
 
-/// A1 + R1: green only when the gate is PASS/WAIVED and the app's own
-/// check re-run passed.
-pub fn gate_status(gate: Option<&GateFile>, app: Option<&AppCheck>) -> GateStatus {
-    let reason = |g: &GateFile| g.reason.clone().unwrap_or_default();
+/// What the green rule needs to know about a PR besides its gate.
+#[derive(Debug, Clone, Default)]
+pub struct Proof<'a> {
+    pub app: Option<&'a AppCheck>,
+    pub state: Option<&'a str>,
+    pub check_known: bool,
+    pub current_head: Option<&'a str>,
+    pub worktree_clean: Option<bool>,
+}
+
+/// PR states in which the work is finished and may show green.
+pub const FINISHED_STATES: &[&str] = &["reviewed", "opened", "pushed", "local-only"];
+
+/// A1 + R1: green only when the gate is PASS/WAIVED, the PR is finished,
+/// and the app's own check (repos.json's command) passed on the worktree's
+/// current HEAD with no uncommitted changes then or now.
+pub fn gate_status(gate: Option<&GateFile>, proof: &Proof) -> GateStatus {
+    let status = |kind: &str, text: String| GateStatus {
+        kind: kind.into(),
+        text,
+    };
     let Some(gate) = gate else {
-        return GateStatus {
-            kind: "none".into(),
-            text: "No gate yet".into(),
-        };
+        return status("none", "No gate yet".into());
     };
     if let Some(problem) = &gate.problem {
-        return GateStatus {
-            kind: "unreadable".into(),
-            text: format!("Gate unreadable: {problem}"),
-        };
+        return status("unreadable", format!("Gate unreadable: {problem}"));
     }
     let word = gate.gate.clone().unwrap_or_default();
+    let reason = gate.reason.clone().unwrap_or_default();
     match word.as_str() {
-        "PASS" | "WAIVED" => match app.map(|a| a.result.as_str()) {
-            Some("pass") => GateStatus {
-                kind: "proven".into(),
-                text: format!("{word}, and the app's check passed"),
-            },
-            other => {
-                let why = match other {
-                    None => "the app has not re-run the check".to_string(),
-                    Some("none") => "no check command to re-run".to_string(),
-                    Some("running") => "the app's check is running".to_string(),
-                    Some(result) => format!("the app's check: {result}"),
-                };
-                let reason = reason(gate);
-                let text = if reason.is_empty() {
-                    format!("{word} claimed; {why}")
-                } else {
-                    format!("{word} claimed ({reason}); {why}")
-                };
-                GateStatus {
-                    kind: "claimed".into(),
-                    text,
-                }
+        "PASS" | "WAIVED" => {
+            if !proof.check_known {
+                return status(
+                    "review-only",
+                    format!("{word} — review only (no check exists)"),
+                );
             }
-        },
-        "CONCERNS" => GateStatus {
-            kind: "concerns".into(),
-            text: format!("CONCERNS: {}", reason(gate)),
-        },
-        _ => GateStatus {
-            kind: "fail".into(),
-            text: format!("FAIL: {}", reason(gate)),
-        },
+            let app = proof.app;
+            let why = match app.map(|a| a.result.as_str()) {
+                None => Some("the app has not re-run the check".to_string()),
+                Some("pass") => None,
+                Some("running") => Some("the app's check is running".to_string()),
+                Some(result) => Some(format!("the app's check: {result}")),
+            }
+            .or_else(
+                || match (app.and_then(|a| a.head.as_deref()), proof.current_head) {
+                    (Some(then), Some(now)) if then == now => None,
+                    (Some(_), Some(_)) => {
+                        Some("the code changed since the app's check".to_string())
+                    }
+                    _ => Some("the worktree's HEAD is not known".to_string()),
+                },
+            )
+            .or_else(|| {
+                (app.and_then(|a| a.clean) != Some(true) || proof.worktree_clean != Some(true))
+                    .then(|| "the worktree has uncommitted changes".to_string())
+            })
+            .or_else(|| {
+                let state = proof.state.unwrap_or("unknown");
+                (!FINISHED_STATES.contains(&state)).then(|| format!("the PR is {state}"))
+            });
+            match why {
+                None => status("proven", format!("{word}, and the app's check passed")),
+                Some(why) if reason.is_empty() => {
+                    status("claimed", format!("{word} claimed; {why}"))
+                }
+                Some(why) => status("claimed", format!("{word} claimed ({reason}); {why}")),
+            }
+        }
+        "CONCERNS" => status("concerns", format!("CONCERNS: {reason}")),
+        _ => status("fail", format!("FAIL: {reason}")),
     }
+}
+
+/// repos.json's check per repo name (the app wrote it; the skill never does).
+pub fn repo_checks(run_dir: &Path) -> std::collections::BTreeMap<String, Option<String>> {
+    read_json_value(&run_dir.join("repos.json"))
+        .and_then(|v| v.get("repos").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|repo| {
+            let name = s(repo, "name")?;
+            let check = s(repo, "check").filter(|c| !c.trim().is_empty());
+            Some((name, check))
+        })
+        .collect()
+}
+
+/// The worktree's HEAD and whether it has uncommitted changes (ignored
+/// files do not count: build output is expected after a check).
+pub fn worktree_state(worktree: Option<&str>) -> (Option<String>, Option<bool>) {
+    let Some(wt) = worktree.map(Path::new).filter(|p| p.is_dir()) else {
+        return (None, None);
+    };
+    let head = super::git::git(wt, &["rev-parse", "HEAD"]).ok();
+    let clean = super::git::git(wt, &["status", "--porcelain", "--untracked-files=normal"])
+        .ok()
+        .map(|out| out.trim().is_empty());
+    (head, clean)
 }
 
 /// `log.md` lines: `<UTC time> <stage> <text>`; other lines kept as text.
@@ -384,8 +457,9 @@ pub fn read_app_checks(run_dir: &Path) -> std::collections::BTreeMap<String, App
         .unwrap_or_default()
 }
 
-/// Everything the panel shows for one run.
-pub fn read_run(run_dir: &Path) -> RunView {
+/// Everything the panel shows for one run. `checks_running`: the app is
+/// re-running this run's checks now (else a `running` result is stale).
+pub fn read_run(run_dir: &Path, checks_running: bool) -> RunView {
     let run_id = run_dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -412,10 +486,37 @@ pub fn read_run(run_dir: &Path) -> RunView {
         view.folder = super::folder::run_folder_of(run_dir);
     }
     let checks = read_app_checks(run_dir);
+    let repo_checks = repo_checks(run_dir);
     for pr in &mut view.prs {
         pr.gate = read_gate(run_dir, &pr.id);
-        pr.app_check = checks.get(&pr.id).cloned();
-        pr.gate_status = Some(gate_status(pr.gate.as_ref(), pr.app_check.as_ref()));
+        pr.app_check = checks.get(&pr.id).cloned().map(|mut check| {
+            if check.result == "running" && !checks_running {
+                check.result = "interrupted".into();
+                check.detail = Some("the app stopped before this check finished".into());
+            }
+            check
+        });
+        pr.app_command = pr
+            .repo
+            .as_ref()
+            .and_then(|repo| repo_checks.get(repo).cloned().flatten());
+        pr.check_known = pr.app_command.is_some();
+        let (head, clean) = worktree_state(pr.worktree.as_deref());
+        pr.current_head = head;
+        pr.worktree_clean = clean;
+        pr.app_check_stale = pr.app_check.as_ref().is_some_and(|check| {
+            check.head.is_some() && pr.current_head.is_some() && check.head != pr.current_head
+        });
+        pr.gate_status = Some(gate_status(
+            pr.gate.as_ref(),
+            &Proof {
+                app: pr.app_check.as_ref(),
+                state: pr.state.as_deref(),
+                check_known: pr.check_known,
+                current_head: pr.current_head.as_deref(),
+                worktree_clean: pr.worktree_clean,
+            },
+        ));
     }
     view.timeline = std::fs::read_to_string(run_dir.join("log.md"))
         .map(|t| parse_log(&t))
@@ -460,59 +561,115 @@ mod tests {
     }
 
     #[test]
-    fn gates_parse_and_are_green_only_with_the_apps_own_pass() {
-        let gate = parse_gate("gate: pass\nreason: \"all good\"\nupdated: 2026-10-22T13:00:00Z\nreview: reviews/PR1-round1.md\n");
+    fn gates_parse_and_are_green_only_with_a_fresh_clean_app_pass_on_a_finished_pr() {
+        let gate = parse_gate(
+            "gate: pass\nreason: \"all \\\"good\\\" \\u00e9\"\nupdated: 2026-10-22T13:00:00Z\n",
+        );
         assert_eq!(gate.gate.as_deref(), Some("PASS"));
-        assert_eq!(gate.reason.as_deref(), Some("all good"));
+        assert_eq!(gate.reason.as_deref(), Some("all \"good\" \u{e9}"));
         assert!(gate.problem.is_none());
         let pass = AppCheck {
             result: "pass".into(),
+            head: Some("abc".into()),
+            clean: Some(true),
             ..AppCheck::default()
         };
+        let ok = Proof {
+            app: Some(&pass),
+            state: Some("reviewed"),
+            check_known: true,
+            current_head: Some("abc"),
+            worktree_clean: Some(true),
+        };
+        assert_eq!(gate_status(Some(&gate), &ok).kind, "proven");
+        let kind = |proof: Proof| gate_status(Some(&gate), &proof);
+        let moved = kind(Proof {
+            current_head: Some("def"),
+            ..ok.clone()
+        });
+        assert_eq!(moved.kind, "claimed");
+        assert!(moved.text.contains("code changed"), "{}", moved.text);
+        assert!(kind(Proof {
+            worktree_clean: Some(false),
+            ..ok.clone()
+        })
+        .text
+        .contains("uncommitted"));
+        assert!(kind(Proof {
+            state: Some("fixing"),
+            ..ok.clone()
+        })
+        .text
+        .contains("the PR is fixing"));
         let fail = AppCheck {
             result: "fail".into(),
-            ..AppCheck::default()
+            ..pass.clone()
         };
-        assert_eq!(gate_status(Some(&gate), Some(&pass)).kind, "proven");
-        let claimed = gate_status(Some(&gate), Some(&fail));
+        let claimed = kind(Proof {
+            app: Some(&fail),
+            ..ok.clone()
+        });
         assert_eq!(claimed.kind, "claimed");
-        assert!(claimed.text.contains("all good"), "{}", claimed.text);
-        assert_eq!(gate_status(Some(&gate), None).kind, "claimed");
-        let waived = parse_gate("gate: WAIVED\nreason: no tests in repo\n");
-        assert_eq!(gate_status(Some(&waived), None).kind, "claimed");
+        assert!(claimed.text.contains("all"), "{}", claimed.text);
         assert_eq!(
-            gate_status(Some(&parse_gate("gate: FAIL\n")), Some(&pass)).kind,
+            kind(Proof {
+                app: None,
+                ..ok.clone()
+            })
+            .kind,
+            "claimed"
+        );
+        let review_only = kind(Proof {
+            check_known: false,
+            app: None,
+            ..ok.clone()
+        });
+        assert_eq!(review_only.kind, "review-only");
+        assert_eq!(review_only.text, "PASS — review only (no check exists)");
+        assert_eq!(
+            gate_status(Some(&parse_gate("gate: FAIL\n")), &ok).kind,
             "fail"
         );
         assert_eq!(
-            gate_status(Some(&parse_gate("gate: CONCERNS\n")), Some(&pass)).kind,
+            gate_status(Some(&parse_gate("gate: CONCERNS\n")), &ok).kind,
             "concerns"
         );
         let broken = parse_gate("{{{ not yaml");
-        assert!(broken.problem.is_some());
-        assert_eq!(gate_status(Some(&broken), Some(&pass)).kind, "unreadable");
+        assert_eq!(gate_status(Some(&broken), &ok).kind, "unreadable");
         assert_eq!(
-            gate_status(Some(&parse_gate("gate: MAYBE")), Some(&pass)).kind,
+            gate_status(Some(&parse_gate("gate: MAYBE")), &ok).kind,
             "unreadable"
         );
-        assert_eq!(gate_status(None, Some(&pass)).kind, "none");
+        assert_eq!(gate_status(None, &ok).kind, "none");
     }
 
     #[test]
     fn a_run_folder_reads_into_one_view_ignoring_temp_files() {
         let dir = TempDir::new("run_read");
+        let wt = dir.join("wt");
+        crate::run::git::testing::repo_at(&wt);
+        let head = crate::run::git::git(&wt, &["rev-parse", "HEAD"]).unwrap();
         let run = dir.join("r-20261022-1304");
         std::fs::create_dir_all(run.join("gates")).unwrap();
         std::fs::write(
             run.join("status.json"),
             json!({"schema": 1, "stage": "ship-approval", "waitingFor": "ship-approval",
-                   "prs": [{"id": "PR1", "state": "reviewed"}, {"id": "PR2", "state": "reviewed"}, {"id": "../x"}]})
+                   "prs": [{"id": "PR1", "repo": "a", "state": "reviewed", "worktree": wt},
+                           {"id": "PR2", "repo": "a", "state": "reviewed"},
+                           {"id": "../x"},
+                           {"id": "PR4", "repo": "b", "state": "reviewed", "worktree": wt}]})
             .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            run.join("repos.json"),
+            json!({"schema": 1, "repos": [{"name": "a", "path": "/a", "check": "npm test"}, {"name": "b", "path": "/b", "check": null}]}).to_string(),
         )
         .unwrap();
         std::fs::write(run.join(".status.json.abc.tmp"), "{half").unwrap();
         std::fs::write(run.join("gates/PR1.yml"), "gate: PASS\nreason: ok\n").unwrap();
         std::fs::write(run.join("gates/PR2.yml"), "garbage").unwrap();
+        std::fs::write(run.join("gates/PR4.yml"), "gate: PASS\n").unwrap();
         std::fs::write(
             run.join("log.md"),
             "2026-10-22T13:04:05Z planning Planner wrote plan.md: 3 stories\nloose line\n",
@@ -520,25 +677,52 @@ mod tests {
         .unwrap();
         crate::store::write_json_atomic(
             &app_checks_path(&run),
-            &json!({"schema": 1, "checks": {"PR1": {"result": "pass"}}}),
+            &json!({"schema": 1, "checks": {
+                "PR1": {"result": "pass", "head": head, "clean": true},
+                "PR2": {"result": "running"}}}),
         )
         .unwrap();
-        let view = read_run(&run);
+        let view = read_run(&run, false);
         assert_eq!(view.run_id, "r-20261022-1304");
         assert_eq!(view.waiting_for.as_deref(), Some("ship-approval"));
-        assert_eq!(view.prs[0].gate_status.as_ref().unwrap().kind, "proven");
-        assert_eq!(view.prs[1].gate_status.as_ref().unwrap().kind, "unreadable");
-        assert_eq!(view.prs[2].gate_status.as_ref().unwrap().kind, "none");
+        let kind = |n: usize| view.prs[n].gate_status.as_ref().unwrap().kind.clone();
+        assert_eq!(kind(0), "proven", "{:?}", view.prs[0].gate_status);
+        assert_eq!(view.prs[0].app_command.as_deref(), Some("npm test"));
+        assert!(!view.prs[0].app_check_stale);
+        assert_eq!(kind(1), "unreadable");
+        assert_eq!(
+            view.prs[1].app_check.as_ref().unwrap().result,
+            "interrupted"
+        );
+        assert_eq!(
+            read_run(&run, true).prs[1]
+                .app_check
+                .as_ref()
+                .unwrap()
+                .result,
+            "running"
+        );
+        assert_eq!(kind(2), "none");
+        assert_eq!(kind(3), "review-only");
+        assert!(!view.prs[3].check_known);
         assert_eq!(view.timeline.len(), 2);
         assert_eq!(view.timeline[0].stage.as_deref(), Some("planning"));
         assert_eq!(view.timeline[1].time, None);
         assert!(!view.has_report);
 
+        // A new commit makes the app's check stale and the gate claimed.
+        std::fs::write(wt.join("more.txt"), "x").unwrap();
+        crate::run::git::testing::run(&wt, &["add", "."]);
+        crate::run::git::testing::run(&wt, &["commit", "-q", "-m", "more"]);
+        let moved = read_run(&run, false);
+        assert!(moved.prs[0].app_check_stale);
+        assert_eq!(moved.prs[0].gate_status.as_ref().unwrap().kind, "claimed");
+
         std::fs::write(run.join("status.json"), "{\"stage\": ").unwrap();
-        let broken = read_run(&run);
+        let broken = read_run(&run, false);
         assert!(broken.status_problem.is_some());
         assert!(!broken.has_status);
-        let empty = read_run(&dir.join("none"));
+        let empty = read_run(&dir.join("none"), false);
         assert!(!empty.has_status && empty.status_problem.is_none());
     }
 }
@@ -552,7 +736,7 @@ mod fixture_tests {
     #[test]
     fn the_fixture_run_reads_into_the_view_the_page_tests_use() {
         let root = crate::run::launch::dev_repo_root().join("fixtures/run");
-        let mut view = read_run(&root.join("r-20261022-1304"));
+        let mut view = read_run(&root.join("r-20261022-1304"), false);
         view.run_dir = String::new();
         let actual = serde_json::to_value(&view).unwrap();
         let expected_path = root.join("run-view.json");
@@ -568,6 +752,9 @@ mod fixture_tests {
             .iter()
             .map(|pr| pr.gate_status.as_ref().unwrap().kind.as_str())
             .collect();
-        assert_eq!(kinds, ["proven", "claimed", "unreadable", "none"]);
+        assert_eq!(
+            kinds,
+            ["claimed", "claimed", "unreadable", "none", "review-only"]
+        );
     }
 }

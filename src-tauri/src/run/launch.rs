@@ -135,7 +135,9 @@ pub fn role_prompt(role: &str, request: &str) -> String {
 }
 
 /// One `--settings` value: the plugin's launch settings (a copy, never the
-/// file itself) with the app's own keys (the usage status line) laid over.
+/// file itself) with the app's own keys laid over. `env` merges name by
+/// name and `hooks` event by event (the app's hook lists are appended), so
+/// neither side's entries are lost.
 pub fn merged_settings(launch_file: Option<&str>, app: Option<Value>) -> Option<Value> {
     let base = launch_file
         .and_then(|f| std::fs::read_to_string(f).ok())
@@ -147,13 +149,53 @@ pub fn merged_settings(launch_file: Option<&str>, app: Option<Value>) -> Option<
         (Some(mut base), Some(Value::Object(app))) => {
             if let Some(map) = base.as_object_mut() {
                 for (key, value) in app {
-                    map.insert(key, value);
+                    let merged = match (key.as_str(), map.remove(&key), value) {
+                        ("env", Some(Value::Object(mut mine)), Value::Object(theirs)) => {
+                            mine.extend(theirs);
+                            Value::Object(mine)
+                        }
+                        ("hooks", Some(Value::Object(mut mine)), Value::Object(theirs)) => {
+                            for (event, list) in theirs {
+                                let next = match (mine.remove(&event), list) {
+                                    (Some(Value::Array(mut a)), Value::Array(b)) => {
+                                        a.extend(b);
+                                        Value::Array(a)
+                                    }
+                                    (_, list) => list,
+                                };
+                                mine.insert(event, next);
+                            }
+                            Value::Object(mine)
+                        }
+                        (_, _, value) => value,
+                    };
+                    map.insert(key, merged);
                 }
             }
             Some(base)
         }
         (Some(base), Some(_)) => Some(base),
     }
+}
+
+/// The launch flags, without an `--append-system-prompt-file` whose file
+/// is gone (pruned or deleted): Claude would refuse to start.
+fn present_args(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--append-system-prompt-file" {
+            if let Some(file) = iter.next() {
+                if Path::new(file).is_file() {
+                    out.push(arg.clone());
+                    out.push(file.clone());
+                }
+            }
+            continue;
+        }
+        out.push(arg.clone());
+    }
+    out
 }
 
 /// The prompt for a fresh session. An Eagle-Eye tab started fresh again
@@ -179,7 +221,7 @@ pub fn apply_launch(
     let Some(launch) = launch else {
         return Vec::new();
     };
-    command.args.extend(launch.args.iter().cloned());
+    command.args.extend(present_args(&launch.args));
     if !resumed && !launch.prompt.trim().is_empty() {
         command.args.push(fresh_prompt(launch));
     }
@@ -259,6 +301,13 @@ mod tests {
         let drop = apply_launch(&mut fresh, Some(&spec), false);
         assert_eq!(drop, ["DCV2_TEST_MODE"]);
         assert_eq!(fresh.args.last().unwrap(), "/dcv2:eagle-eye run=/d/runs/r1");
+        assert!(
+            !fresh
+                .args
+                .iter()
+                .any(|a| a == "--append-system-prompt-file"),
+            "the prompt file does not exist, so the flag is dropped"
+        );
         let mut resumed = ProgramArgs::new("claude", vec![]);
         apply_launch(&mut resumed, Some(&spec), true);
         assert!(!resumed.args.iter().any(|a| a.starts_with("/dcv2")));

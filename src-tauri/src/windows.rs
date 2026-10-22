@@ -445,6 +445,7 @@ pub fn handle_run_event(app: &AppHandle, event: tauri::RunEvent) {
 /// refresh's shell is killed first; it holds nothing worth waiting for.
 fn shutdown_processes(app: &AppHandle) {
     crate::shell_env::stop_login_path_refresh();
+    crate::run::check::kill_all();
     let terminals = app.try_state::<Mutex<crate::pty::PtyRegistry>>();
     let ptys = terminals
         .as_ref()

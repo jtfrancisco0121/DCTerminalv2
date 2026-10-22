@@ -163,6 +163,7 @@ pub fn close_tab(
     }
     // The close may push the oldest closed tab off the list for good.
     crate::usage::remove_gone_status_lines(&app);
+    crate::run::spawn_prune_launch_prompts(&app);
     closed
 }
 

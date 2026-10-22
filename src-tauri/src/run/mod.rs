@@ -48,6 +48,20 @@ fn plugin_dir(app: &AppHandle) -> Option<PathBuf> {
 const NO_PLUGIN: &str =
     "The dcv2 plugin folder was not found (set DCTV2_PLUGIN_DIR, or reinstall the app).";
 
+/// A start folder: no control characters (it goes into request.md's
+/// `folder:` line and argv), an existing folder, canonical.
+pub fn start_folder(raw: &str) -> Result<PathBuf, String> {
+    if raw.chars().any(char::is_control) {
+        return Err("The folder name has control characters.".into());
+    }
+    let folder = validate_working_folder(raw).map_err(|e| e.message())?;
+    let folder = folder.canonicalize().unwrap_or(folder);
+    if folder.to_string_lossy().chars().any(char::is_control) {
+        return Err("The folder name has control characters.".into());
+    }
+    Ok(folder)
+}
+
 /// `run_dir` must be a run folder of this app: a direct child of `<data>/runs`.
 pub fn checked_run_dir(data: &Path, run_dir: &str) -> Result<PathBuf, String> {
     let runs = folder::runs_dir(data)
@@ -86,6 +100,43 @@ pub struct RunOverview {
     pub runs: Vec<folder::RunListItem>,
 }
 
+pub fn launch_prompts_dir(data: &Path) -> PathBuf {
+    data.join("launch")
+}
+
+/// How long a role tile's memory prompt file is kept.
+pub const PROMPT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Deletes `*-memory-prompt.md` in `<data>/launch` older than `max_age`.
+pub fn prune_launch_prompts(data: &Path, max_age: std::time::Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(launch_prompts_dir(data)) else {
+        return 0;
+    };
+    let now = std::time::SystemTime::now();
+    entries
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .ends_with("-memory-prompt.md")
+        })
+        .filter(|e| {
+            e.metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .is_some_and(|age| age > max_age)
+        })
+        .filter(|e| std::fs::remove_file(e.path()).is_ok())
+        .count()
+}
+
+/// At startup and on tab close, off the main thread.
+pub fn spawn_prune_launch_prompts(app: &AppHandle) {
+    let data = data_dir(app);
+    std::thread::spawn(move || prune_launch_prompts(&data, PROMPT_MAX_AGE));
+}
+
 #[tauri::command]
 pub async fn run_overview(app: AppHandle) -> Result<RunOverview, String> {
     blocking(move || {
@@ -109,7 +160,7 @@ pub async fn run_overview(app: AppHandle) -> Result<RunOverview, String> {
 #[tauri::command]
 pub async fn detect_folder_repos(folder: String) -> Result<repos::FolderRepos, String> {
     blocking(move || {
-        let folder = validate_working_folder(&folder).map_err(|e| e.message())?;
+        let folder = start_folder(&folder)?;
         Ok(repos::detect(&folder))
     })
     .await
@@ -120,6 +171,62 @@ pub async fn detect_folder_repos(folder: String) -> Result<repos::FolderRepos, S
 pub struct StartedRun {
     pub tab: TabSummary,
     pub run_dir: Option<String>,
+    /// A tab already running this run was focused instead of a new launch.
+    #[serde(default)]
+    pub focused: bool,
+}
+
+/// Window event: select this tab (it was focused from another window).
+pub const FOCUS_TAB_EVENT: &str = "focus-tab";
+
+/// The open tab (any window) whose launch is `run_dir` and whose terminal
+/// is running, so a second orchestrator is never started on one run.
+pub fn live_run_tab<'a>(
+    tabs: impl IntoIterator<Item = &'a crate::store::TabRecord>,
+    run_dir: &Path,
+    is_live: impl Fn(&str) -> bool,
+) -> Option<&'a crate::store::TabRecord> {
+    let want = git::canonical(run_dir);
+    tabs.into_iter().find(|tab| {
+        tab.launch
+            .as_ref()
+            .and_then(|l| l.run_dir.as_deref())
+            .is_some_and(|dir| git::canonical(Path::new(dir)) == want)
+            && is_live(&tab.id)
+    })
+}
+
+/// Focuses the live tab of `run_dir`, if any. Lock order: StateStore
+/// (copied out), then the registry, then StateStore again.
+fn focus_live_run_tab(app: &AppHandle, run_dir: &Path) -> Result<Option<TabSummary>, String> {
+    let tabs: Vec<crate::store::TabRecord> = {
+        let state = app.state::<Mutex<StateStore>>();
+        let state = state.lock().map_err(|e| e.to_string())?;
+        state.sorted_tabs().into_iter().cloned().collect()
+    };
+    let live: HashSet<String> = {
+        let registry = app.state::<Mutex<crate::pty::PtyRegistry>>();
+        let registry = registry.lock().map_err(|e| e.to_string())?;
+        tabs.iter()
+            .filter(|t| registry.live_count_of(std::slice::from_ref(&t.id)) > 0)
+            .map(|t| t.id.clone())
+            .collect()
+    };
+    let Some(tab) = live_run_tab(&tabs, run_dir, |id| live.contains(id)).cloned() else {
+        return Ok(None);
+    };
+    {
+        let state = app.state::<Mutex<StateStore>>();
+        let mut state = state.lock().map_err(|e| e.to_string())?;
+        state.set_active_tab(&tab.id)?;
+    }
+    let label = crate::store::window_label(&tab.window_id).to_string();
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        let _ = tauri::Emitter::emit_to(app, label.as_str(), FOCUS_TAB_EVENT, tab.id.clone());
+    }
+    Ok(Some(tab_summary(&tab)))
 }
 
 /// What a launch needs from the stores, copied out under their locks.
@@ -182,8 +289,7 @@ pub async fn start_run(
     role: String,
 ) -> Result<StartedRun, String> {
     blocking(move || {
-        let folder = validate_working_folder(&folder).map_err(|e| e.message())?;
-        let folder = folder.canonicalize().unwrap_or(folder);
+        let folder = start_folder(&folder)?;
         let ctx = launch_context(&app, window_id.as_deref())?;
         let plugin = plugin_dir(&app).ok_or(NO_PLUGIN)?;
         let data = data_dir(&app);
@@ -233,12 +339,12 @@ pub async fn start_run(
             return Ok(StartedRun {
                 tab,
                 run_dir: Some(created.run_dir),
+                focused: false,
             });
         }
         let label = launch::role_label(&role).ok_or_else(|| format!("unknown role: {role}"))?;
-        let out = data
-            .join("launch")
-            .join(format!("{}-memory-prompt.md", uuid::Uuid::new_v4()));
+        let out =
+            launch_prompts_dir(&data).join(format!("{}-memory-prompt.md", uuid::Uuid::new_v4()));
         let prompt_file = memory::compose(&plugin, &memory_dir, &folder, &out);
         let spec = launch::launch_spec(&launch::LaunchInput {
             prompt: launch::role_prompt(&role, &request),
@@ -247,7 +353,11 @@ pub async fn start_run(
         });
         let label = format!("{label} · {}", folder_name(&folder));
         let tab = add_launch_tab(&app, window_id.as_deref(), &folder, &label, spec)?;
-        Ok(StartedRun { tab, run_dir: None })
+        Ok(StartedRun {
+            tab,
+            run_dir: None,
+            focused: false,
+        })
     })
     .await
 }
@@ -262,9 +372,16 @@ pub async fn resume_run(
     blocking(move || {
         let data = data_dir(&app);
         let run_dir = checked_run_dir(&data, &run_dir)?;
+        if let Some(tab) = focus_live_run_tab(&app, &run_dir)? {
+            return Ok(StartedRun {
+                tab,
+                run_dir: Some(run_dir.display().to_string()),
+                focused: true,
+            });
+        }
         let folder =
             folder::run_folder_of(&run_dir).ok_or("This run has no folder: line in request.md.")?;
-        let folder = validate_working_folder(&folder).map_err(|e| e.message())?;
+        let folder = start_folder(&folder)?;
         let ctx = launch_context(&app, window_id.as_deref())?;
         let plugin = plugin_dir(&app).ok_or(NO_PLUGIN)?;
         let memory_dir = memory::memory_dir(&data);
@@ -290,6 +407,7 @@ pub async fn resume_run(
         Ok(StartedRun {
             tab,
             run_dir: Some(run_dir.display().to_string()),
+            focused: false,
         })
     })
     .await
@@ -299,7 +417,11 @@ pub async fn resume_run(
 pub async fn read_run(app: AppHandle, run_dir: String) -> Result<status::RunView, String> {
     blocking(move || {
         let dir = checked_run_dir(&data_dir(&app), &run_dir)?;
-        Ok(status::read_run(&dir))
+        let running = CHECKS_RUNNING
+            .lock()
+            .map(|set| set.as_ref().is_some_and(|set| set.contains(&dir)))
+            .unwrap_or(false);
+        Ok(status::read_run(&dir, running))
     })
     .await
 }
@@ -389,7 +511,7 @@ pub async fn read_run_file(
 #[tauri::command]
 pub async fn memory_status(app: AppHandle, folder: String) -> Result<serde_json::Value, String> {
     blocking(move || {
-        let folder = validate_working_folder(&folder).map_err(|e| e.message())?;
+        let folder = start_folder(&folder)?;
         let Some(plugin) = plugin_dir(&app) else {
             return Ok(serde_json::json!({"available": false, "problem": NO_PLUGIN}));
         };
@@ -411,6 +533,50 @@ pub async fn read_memory_file(app: AppHandle, path: String) -> Result<String, St
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
+
+    #[test]
+    fn a_second_resume_finds_the_live_tab_of_that_run_in_any_window() {
+        let dir = TempDir::new("live_run_tab");
+        let run = dir.join("runs/r-1");
+        std::fs::create_dir_all(&run).unwrap();
+        let mut store = StateStore::open_path(dir.join("state.json")).unwrap();
+        let launch = crate::store::TabLaunch {
+            role: "eagle-eye".into(),
+            run_dir: Some(run.display().to_string()),
+            ..Default::default()
+        };
+        let plain = store
+            .create_tab(dir.path().to_str().unwrap(), crate::store::TabKind::Claude)
+            .unwrap();
+        store.bind_window(Some("win-2"));
+        let a = store
+            .create_launch_tab(dir.path().to_str().unwrap(), "Eagle-Eye", launch.clone())
+            .unwrap();
+        let tabs: Vec<_> = store.sorted_tabs().into_iter().cloned().collect();
+        assert_eq!(live_run_tab(&tabs, &run, |_| true).unwrap().id, a);
+        assert!(
+            live_run_tab(&tabs, &run, |id| id == plain).is_none(),
+            "exited tab"
+        );
+        assert!(live_run_tab(&tabs, &dir.join("runs/other"), |_| true).is_none());
+    }
+
+    #[test]
+    fn folders_with_control_characters_are_refused_and_old_prompts_pruned() {
+        let dir = TempDir::new("start_folder");
+        assert!(start_folder(&format!("{}\nrepos: x", dir.path().display())).is_err());
+        assert!(start_folder(dir.path().to_str().unwrap()).is_ok());
+        let launch = launch_prompts_dir(dir.path());
+        std::fs::create_dir_all(&launch).unwrap();
+        std::fs::write(launch.join("a-memory-prompt.md"), "x").unwrap();
+        std::fs::write(launch.join("keep.txt"), "x").unwrap();
+        assert_eq!(prune_launch_prompts(dir.path(), PROMPT_MAX_AGE), 0);
+        assert_eq!(
+            prune_launch_prompts(dir.path(), std::time::Duration::ZERO),
+            1
+        );
+        assert!(launch.join("keep.txt").exists());
+    }
 
     #[test]
     fn only_run_folders_of_this_app_are_accepted() {

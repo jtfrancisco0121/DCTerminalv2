@@ -78,11 +78,89 @@ fn linked_of(worktree: &Path) -> Result<PathBuf, String> {
     let common = PathBuf::from(common);
     common
         .parent()
-        .map(Path::to_path_buf)
+        .map(canonical)
         .ok_or_else(|| "no main checkout found".into())
 }
 
-fn inspect(id: &str, wt: &Path, repo: Option<&str>, branch: Option<&str>) -> WorktreeItem {
+/// The branch the skill must use for `pr_id` (run-folder.md).
+pub fn expected_branch(run_id: &str, pr_id: &str) -> String {
+    format!("dcv2/{run_id}-{}", pr_id.to_ascii_lowercase())
+}
+
+/// The worktree path the skill must use: `<repo parent>/<repo>-worktrees/dcv2-<runId>-<pr>`.
+pub fn expected_worktree(repo: &Path, run_id: &str, pr_id: &str) -> Option<PathBuf> {
+    let repo = canonical(repo);
+    let name = repo.file_name()?.to_string_lossy().to_string();
+    Some(
+        repo.parent()?
+            .join(format!("{name}-worktrees"))
+            .join(format!("dcv2-{run_id}-{}", pr_id.to_ascii_lowercase())),
+    )
+}
+
+/// The status.json / .guard.json paths are written by an LLM-driven skill,
+/// so a worktree is trusted only when it is exactly where the contract puts
+/// it, a linked worktree of that repo, on the run's branch for that PR.
+/// Returns the main checkout.
+pub fn verify_worktree(
+    run_id: &str,
+    pr_id: &str,
+    worktree: &Path,
+    repo: Option<&str>,
+) -> Result<PathBuf, String> {
+    if !super::status::valid_pr_id(pr_id) {
+        return Err("not a PR id".into());
+    }
+    if !worktree.is_dir() {
+        return Err("already gone".into());
+    }
+    let main = linked_of(worktree)?;
+    if let Some(repo) = repo {
+        if canonical(Path::new(repo)) == canonical(worktree) {
+            return Err("this is the repo's main checkout".into());
+        }
+        if canonical(Path::new(repo)) != main {
+            return Err("its repo is not the one status.json names".into());
+        }
+    }
+    let expected = expected_worktree(&main, run_id, pr_id).ok_or("no repo folder name")?;
+    if canonical(worktree) != canonical(&expected) {
+        return Err(format!(
+            "not where this run's worktrees go ({})",
+            expected.display()
+        ));
+    }
+    let branch = expected_branch(run_id, pr_id);
+    match git(worktree, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+        Ok(head) if head == branch => Ok(main),
+        Ok(head) => Err(format!("on branch {head}, not {branch}")),
+        Err(_) => Err("detached HEAD".into()),
+    }
+}
+
+/// Changed (tracked or untracked) and ignored file counts.
+pub fn dirt(worktree: &Path) -> Result<(usize, usize), String> {
+    let out = git(
+        worktree,
+        &[
+            "status",
+            "--porcelain",
+            "--ignored",
+            "--untracked-files=all",
+        ],
+    )?;
+    let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+    let ignored = lines.iter().filter(|l| l.starts_with("!!")).count();
+    Ok((lines.len() - ignored, ignored))
+}
+
+fn inspect(
+    run_id: &str,
+    id: &str,
+    wt: &Path,
+    repo: Option<&str>,
+    branch: Option<&str>,
+) -> WorktreeItem {
     let mut item = WorktreeItem {
         pr_id: id.to_string(),
         worktree: wt.display().to_string(),
@@ -94,52 +172,48 @@ fn inspect(id: &str, wt: &Path, repo: Option<&str>, branch: Option<&str>) -> Wor
         removable: false,
         problem: None,
     };
-    if !item.exists {
-        item.problem = Some("already gone".into());
-        return item;
-    }
-    let main = match linked_of(wt) {
+    let main = match verify_worktree(run_id, id, wt, repo) {
         Ok(main) => main,
         Err(err) => {
             item.problem = Some(err);
             return item;
         }
     };
-    if let Some(repo) = repo {
-        if canonical(Path::new(repo)) == canonical(wt) {
-            item.problem = Some("this is the repo's main checkout".into());
-            return item;
-        }
-        if canonical(Path::new(repo)) != canonical(&main) {
-            item.problem = Some("its repo is not the one status.json names".into());
-            return item;
-        }
-    }
     item.repo_path = Some(main.display().to_string());
-    match git(wt, &["status", "--porcelain", "--untracked-files=normal"]) {
-        Ok(out) => {
-            item.changed_files = out.lines().filter(|l| !l.trim().is_empty()).count();
-            item.clean = item.changed_files == 0;
-            item.removable = item.clean;
+    item.branch = Some(expected_branch(run_id, id));
+    match dirt(wt) {
+        Ok((changed, ignored)) => {
+            item.changed_files = changed;
+            item.clean = changed == 0;
+            if ignored > 0 {
+                item.problem = Some(format!(
+                    "has {ignored} ignored files (e.g. .env, build output), kept"
+                ));
+            }
+            item.removable = changed == 0 && ignored == 0;
         }
         Err(err) => item.problem = Some(err),
     }
     item
 }
 
+fn run_id_of(run_dir: &Path) -> String {
+    run_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
 pub fn list_worktrees(run_dir: &Path) -> Vec<WorktreeItem> {
+    let run_id = run_id_of(run_dir);
     recorded(run_dir)
         .iter()
-        .map(|(id, wt, repo, branch)| inspect(id, wt, repo.as_deref(), branch.as_deref()))
+        .map(|(id, wt, repo, branch)| inspect(&run_id, id, wt, repo.as_deref(), branch.as_deref()))
         .collect()
 }
 
 /// Removes the clean worktrees of `pr_ids` (checked again right now).
 pub fn remove_clean(run_dir: &Path, pr_ids: &[String]) -> Vec<RemoveResult> {
-    let run_id = run_dir
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
     list_worktrees(run_dir)
         .into_iter()
         .filter(|item| pr_ids.contains(&item.pr_id))
@@ -158,15 +232,14 @@ pub fn remove_clean(run_dir: &Path, pr_ids: &[String]) -> Vec<RemoveResult> {
                 return result;
             };
             let repo = Path::new(repo);
-            if let Err(err) = git(repo, &["worktree", "remove", &item.worktree]) {
+            if let Err(err) = git(repo, &["worktree", "remove", "--", &item.worktree]) {
                 result.message = format!("kept: {err}");
                 return result;
             }
             result.removed = true;
             result.message = "worktree removed".into();
-            let ours = format!("dcv2/{run_id}-");
-            if let Some(branch) = item.branch.as_deref().filter(|b| b.starts_with(&ours)) {
-                match git(repo, &["branch", "-d", branch]) {
+            if let Some(branch) = item.branch.as_deref() {
+                match git(repo, &["branch", "-d", "--", branch]) {
                     Ok(_) => {
                         result.branch_deleted = true;
                         result.message = format!("worktree removed, branch {branch} deleted");
@@ -189,79 +262,100 @@ mod tests {
     use crate::test_support::TempDir;
     use serde_json::json;
 
+    const RUN: &str = "r-20261022-1304";
+
+    fn add(repo: &Path, branch: &str, path: &Path) {
+        run(
+            repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                branch,
+                path.to_str().unwrap(),
+            ],
+        );
+    }
+
     #[test]
-    fn only_clean_linked_worktrees_are_removed_and_main_checkouts_never() {
+    fn only_clean_contract_worktrees_are_removed_and_main_checkouts_never() {
         let dir = TempDir::new("janitor");
         let repo = dir.join("ws/mathlib");
         repo_at(&repo);
-        let run_id = "r-20261022-1304";
+        std::fs::write(repo.join(".gitignore"), ".env\n").unwrap();
+        run(&repo, &["add", "."]);
+        run(&repo, &["commit", "-q", "-m", "ignore"]);
         let wts = dir.join("ws/mathlib-worktrees");
-        let clean = wts.join("dcv2-r-20261022-1304-pr1");
-        let dirty = wts.join("dcv2-r-20261022-1304-pr2");
+        let clean = wts.join(format!("dcv2-{RUN}-pr1"));
+        let dirty = wts.join(format!("dcv2-{RUN}-pr2"));
+        let ignored = wts.join(format!("dcv2-{RUN}-pr4"));
+        let elsewhere = dir.join("ws/elsewhere");
+        let wrong_branch = wts.join(format!("dcv2-{RUN}-pr6"));
+        let detached = wts.join(format!("dcv2-{RUN}-pr7"));
+        add(&repo, &format!("dcv2/{RUN}-pr1"), &clean);
+        add(&repo, &format!("dcv2/{RUN}-pr2"), &dirty);
+        add(&repo, &format!("dcv2/{RUN}-pr4"), &ignored);
+        add(&repo, &format!("dcv2/{RUN}-pr5"), &elsewhere);
+        add(&repo, "feature/other", &wrong_branch);
         run(
             &repo,
             &[
                 "worktree",
                 "add",
                 "-q",
-                "-b",
-                "dcv2/r-20261022-1304-pr1",
-                clean.to_str().unwrap(),
-            ],
-        );
-        run(
-            &repo,
-            &[
-                "worktree",
-                "add",
-                "-q",
-                "-b",
-                "dcv2/r-20261022-1304-pr2",
-                dirty.to_str().unwrap(),
+                "--detach",
+                detached.to_str().unwrap(),
             ],
         );
         std::fs::write(dirty.join("new.txt"), "wip").unwrap();
-        let run_dir = dir.join("runs").join(run_id);
+        std::fs::create_dir_all(dir.join("ws/foreign")).unwrap();
+        std::fs::write(ignored.join(".env"), "SECRET=1").unwrap();
+        let run_dir = dir.join("runs").join(RUN);
         std::fs::create_dir_all(&run_dir).unwrap();
+        let pr = |id: &str, wt: &Path| json!({"id": id, "repoPath": repo, "worktree": wt});
         std::fs::write(
             run_dir.join("status.json"),
             json!({"schema": 1, "stage": "done", "prs": [
-                {"id": "PR1", "repoPath": repo, "worktree": clean, "branch": "dcv2/r-20261022-1304-pr1"},
-                {"id": "PR2", "repoPath": repo, "worktree": dirty, "branch": "dcv2/r-20261022-1304-pr2"},
-                {"id": "PR3", "repoPath": repo, "worktree": repo, "branch": "main"}
+                pr("PR1", &clean), pr("PR2", &dirty), pr("PR3", &repo), pr("PR4", &ignored),
+                pr("PR5", &elsewhere), pr("PR6", &wrong_branch), pr("PR7", &detached)
             ]})
             .to_string(),
         )
         .unwrap();
+        // .guard.json-only entries: one where the contract puts it would be
+        // trusted; a foreign path never.
         std::fs::write(
             run_dir.join(".guard.json"),
-            json!({"schema": 1, "worktrees": {"PR1": clean, "PR9": dir.join("gone")}}).to_string(),
+            json!({"schema": 1, "worktrees": {"PR1": clean, "PR8": dir.join("ws/foreign"), "PR9": dir.join("gone")}}).to_string(),
         )
         .unwrap();
         let items = list_worktrees(&run_dir);
-        assert_eq!(items.len(), 4, "{items:?}");
         let by = |id: &str| items.iter().find(|i| i.pr_id == id).unwrap().clone();
-        assert!(by("PR1").clean && by("PR1").removable);
-        assert!(!by("PR2").clean && !by("PR2").removable);
-        assert_eq!(by("PR2").changed_files, 1);
-        assert!(!by("PR3").removable, "main checkout");
+        assert_eq!(items.len(), 9, "{items:?}");
+        assert!(by("PR1").removable, "{:?}", by("PR1"));
+        assert!(!by("PR2").removable && by("PR2").changed_files == 1);
         assert!(by("PR3").problem.unwrap().contains("main checkout"));
+        assert!(by("PR4").problem.unwrap().contains("ignored files"));
+        assert!(!by("PR4").removable);
+        assert!(by("PR5").problem.unwrap().contains("not where"));
+        assert!(by("PR6").problem.unwrap().contains("feature/other"));
+        assert!(by("PR7").problem.is_some() && !by("PR7").removable);
+        assert!(!by("PR8").removable);
         assert!(!by("PR9").exists);
 
-        let all: Vec<String> = ["PR1", "PR2", "PR3", "PR9"].map(String::from).to_vec();
+        let all: Vec<String> = (1..=9).map(|n| format!("PR{n}")).collect();
         let results = remove_clean(&run_dir, &all);
         let r = |id: &str| results.iter().find(|x| x.pr_id == id).unwrap().clone();
         assert!(r("PR1").removed);
         assert!(r("PR1").branch_deleted, "{}", r("PR1").message);
-        assert!(!r("PR2").removed);
-        assert!(!r("PR3").removed);
+        for id in ["PR2", "PR3", "PR4", "PR5", "PR6", "PR7", "PR8"] {
+            assert!(!r(id).removed, "{id}");
+        }
         assert!(!clean.exists());
         assert!(dirty.join("new.txt").exists());
+        assert!(ignored.join(".env").exists());
+        assert!(elsewhere.exists() && wrong_branch.exists() && detached.exists());
         assert!(repo.join("README.md").exists());
-        assert!(git(
-            &repo,
-            &["rev-parse", "--verify", "dcv2/r-20261022-1304-pr2"]
-        )
-        .is_ok());
     }
 }
