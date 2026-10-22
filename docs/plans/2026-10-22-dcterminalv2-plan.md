@@ -20,6 +20,7 @@ DCTerminal grew in layers (chat → terminal roles → pipeline v2 → v3 lanes,
 | D6 | One PR per repo per run. A folder of repos (e.g. `~/Documents/Koneksi`) works without setup. |
 | D7 | Two stops for you: approve the plan, then approve opening PRs + ClickUp posts. Anything else you say in the tab at any time. |
 | D8 | Six roles also work alone, each in its own tab, not only inside the pipeline: Planner, Plan Reviewer, Developer, PR Reviewer, Recommendation, Codebase Audit. Each is a plugin skill (`/dcv2:<role>`); a role shared with the pipeline uses one guidance file for both, so they cannot drift. The start screen shows them as role tiles next to Eagle-Eye (P3). |
+| D9 | Codebase memory: `/dcv2:onboard` writes a capped `codebase.md` per repo, loaded at every launch and kept fresh from git diffs (see "Codebase memory"). |
 
 ## How a run works
 
@@ -59,6 +60,34 @@ The skill never holds the ClickUp token; the app does all ClickUp calls.
 - Resume: `/eagle-eye resume run=<dir>` continues from `status.json` + `plan.md`. Closing the tab never loses the run.
 - Models: Opus for plan/review sub-agents, Sonnet for implementers (configurable).
 
+## Codebase memory (D9)
+
+Goal: a new session in a known repo does not pay to re-explore it.
+
+- `/dcv2:onboard` (a seventh role skill) studies a repo and writes `codebase.md`: purpose, architecture, modules and where things live, build/test/check commands, conventions, gotchas. Hard cap ~6–8k tokens.
+- Stored by the app, outside the repo: `<app data>/memory/<repo id>/codebase.md` with a header recording the repo path and the git commit it describes. A folder of repos gets one file per repo plus `workspace.md` (one paragraph per repo + how they connect). Setting: "commit as CLAUDE.md in the repo instead" (off by default; work repos stay clean).
+- Loaded at every launch in that repo, Eagle-Eye and standalone roles alike, via `--append-system-prompt-file` (stable prefix → prompt cache). Sub-agents get the file path and read it first. In a workspace, only `workspace.md` + the repos in play are loaded.
+- Kept fresh:
+  - re-running onboard rewrites it;
+  - the last step of every Eagle-Eye run and the end of every Developer session runs a small "memory update" sub-agent that reads only `git diff <recorded commit>..HEAD` (+ the run's plan summary) and patches the file, then records the new commit;
+  - on launch, if HEAD moved past the recorded commit, the session is told "memory is N commits stale" and refreshes from the diff (cheap), never a full re-onboard unless asked.
+- The app shows per repo: memory present / stale by N commits / missing, with Onboard and Refresh buttons.
+
+## Reliability (R1–R10)
+
+| # | What | Phase |
+|---|---|---|
+| R1 | App re-runs each PR's check command itself before STOP #2 and shows its own ✓/✗ beside the skill's claim. | P3 |
+| R2 | Watchdog: no `status.json` change for N min while the session is idle → panel says so, offers Nudge ("continue from status.json") or Resume. | P3 |
+| R3 | Claude Code version range pinned; out of range → warning. After a Claude Code update, a 30 s haiku self-test (the Phase 0 spike) runs once. | P3 |
+| R4 | Guardrails as a plugin hook (code, not prompt): block force-push, any push before ship approval (approval recorded in status.json by the app), and writes to repos' main checkouts. | P2b |
+| R5 | Worktree janitor: when a run ends or is abandoned, list its worktrees/branches, offer to remove the clean ones. | P3 |
+| R6 | Concurrency cap: at most 3 Implementers at once by default (setting). | P2b |
+| R7 | Golden-run suite: 2–3 recorded toy workspaces (multi-repo, dependency, failing check) on haiku before every release. | P2b |
+| R8 | Ticket snapshot frozen at Start; ClickUp edits mid-run show "ticket changed", you decide whether to pull it in. | P4 |
+| R9 | Cost/time line per run: tokens + minutes per stage in the panel. | P3 |
+| R10 | Run report at the end (`report.md`): planned vs built, review rounds, retries. | P2b |
+
 ## What to port from DCTerminal
 
 | Area | Source | Notes |
@@ -77,6 +106,7 @@ Not ported: `acp/`, `bridge/`, `run_actor/`, `pipelines/`, `rounds/`, `roles/`, 
 0. **Phase 0 (spikes, half a day):** skill loading per launch; sub-agents in parallel making worktrees in sibling repos; `status.json` updates reliably; resume after kill.
 1. **P1 shell:** new Tauri app, windows + accounts, one Claude terminal tab, settings. `npm run check` gate from day one.
 2. **P2 skill v1:** the full run in a plain terminal against a small test workspace (two toy repos). No app UI yet.
+2b. **P2b skill hardening + memory:** `/dcv2:onboard`, memory load/update/staleness, R4, R6, R7, R10.
 3. **P3 app run:** start screen (folder + request; Eagle-Eye or one of the six role tiles), launch the skill, progress panel from `status.json`, resume button.
 4. **P4 ClickUp:** port intake (Fetch) and write-back ticks; personal workspace only for live tests.
 5. **P5 dogfood:** one real Koneksi Medium ticket end to end on the work account, then fix what hurts.
