@@ -28,8 +28,13 @@ You are the **orchestrator**. You never do the heavy work yourself: sub-agents p
 
 ## Writing state
 
-- **status.json**: the full document (schema below) written with the Write tool to `<run>/status.json.tmp`, then `mv -f <run>/status.json.tmp <run>/status.json` (atomic). Set `updatedAt` from `date -u +%FT%TZ`.
-- **log.md**: `printf '%s %s %s\n' "$(date -u +%FT%TZ)" "<stage>" "<one line>" >> <run>/log.md`. One line per event, no secrets.
+Always use the helper `${CLAUDE_PLUGIN_ROOT}/scripts/state.sh`; never write `status.json`, `writeback.json` or `log.md` any other way (no `cat >`, no Write tool on them).
+
+- **status.json**: the full document every time (never a partial patch), via
+  `bash "${CLAUDE_PLUGIN_ROOT}/scripts/state.sh" put <run>/status.json <<'JSON'` … `JSON`.
+  It validates the JSON and the stage/state values, then writes atomically (`.tmp` + `mv`). If it prints `NOT WRITTEN`, fix the document and run it again before doing anything else. Get `updatedAt` from `bash "${CLAUDE_PLUGIN_ROOT}/scripts/state.sh" now`.
+- **writeback.json**: the same `put` command with `<run>/writeback.json`.
+- **log.md**: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/state.sh" log <run> <stage> "<one line>"`. One event per call, no secrets.
 
 status.json (schema 1):
 ```json
@@ -113,9 +118,9 @@ When nothing is ready or in progress, go to stop #2. PRs still `pending` because
 1. Repo has no remote → `state: local-only`, `note: "no git remote: nothing pushed, no PR opened"`, log it. Do not try to add a remote.
 2. Else `git -C <worktree> push -u origin <branch>` (never with force). Refused → `state: needs-attention`, `note` = the one-line reason; continue with the others.
 3. Write a short PR body to `<run>/pr-bodies/<pr id>.md`: the PR's stories (id + title from `grep '^### S' plan.md`), check command + result, review verdict and round, `Depends on: <url of the dependency PR>` when it has one, and `Plan: Eagle-Eye run <runId>`. Then, in the worktree: `gh pr create --base <base> --head <branch> --title "<PR title>" --body-file <run>/pr-bodies/<pr id>.md`. Success → `prUrl`, `state: opened`; failure → `state: pushed`, `note` = reason.
-4. If `<run>/tickets.json` exists: write `<run>/writeback.json` atomically (`writeback.json.tmp` then `mv`) from the `## Tickets` section of plan.md:
+4. If `<run>/tickets.json` exists, you **must** write `<run>/writeback.json` (with `state.sh put`) before the run can be `done`, whether or not anything was pushed. Build it from the `## Tickets` section of plan.md (`sed -n '/^## Tickets/,/^## /p' <run>/plan.md`), one draft per ticket line:
    `{"schema": 1, "runId": "...", "createdAt": "<UTC>", "drafts": [{"ticket": {"id", "customId", "title", "url"}, "prs": [{"id", "repo", "url"}], "comment": "<markdown: what was done, PR links or 'local branch <branch> (no remote)', check result>", "status": "<suggested status or null>", "statusNote": "<one line or null>"}]}`. Set `writeback` in status.json. Never call ClickUp.
-5. `ship` = `{"remote": "present" | "none" (none when no PR's repo has a remote), "pushed": <any pushed>, "note": <one line or null>}`. Set `stage: done`, write status.json, log `run done: <opened> opened, <local> local-only, <attention> need attention`.
+5. Check before finishing: every `reviewed` PR is now `opened`, `pushed`, `local-only` or `needs-attention`, and `writeback.json` exists when `tickets.json` does. Then `ship` = `{"remote": "present" | "none" (none when no PR's repo has a remote), "pushed": <any pushed>, "note": <one line or null>}`. Set `stage: done`, write status.json, log `run done: <opened> opened, <local> local-only, <attention> need attention`.
 6. Tell the user the result: one line per PR (URL, or "local only: no git remote" with the branch and worktree), the writeback drafts count, and anything that needs attention.
 
 ## Resume (`resume run=<dir>`)

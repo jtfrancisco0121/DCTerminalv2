@@ -16,7 +16,7 @@ The contract between the `dcv2:eagle-eye` skill and the app. The app creates the
   logs/             skill   PR<n>-check.txt etc. (full check output)
 ```
 
-`runId` is the folder's name. Every JSON file the skill writes is written atomically: the whole document to `<name>.tmp` in the same folder, then `mv -f <name>.tmp <name>`. Readers never see a half-written file. All times are UTC ISO-8601 (`2026-10-22T13:04:05Z`).
+`runId` is the folder's name. Every JSON file the skill writes is written atomically: the whole document to `<name>.tmp` in the same folder, then `mv -f <name>.tmp <name>`. Readers never see a half-written file. The skill does this through `plugin/scripts/state.sh put <file>`, which also refuses invalid JSON and unknown `stage` / `state` values (the old file stays in place). All times are UTC ISO-8601 (`2026-10-22T13:04:05Z`).
 
 ## request.md (input)
 
@@ -183,4 +183,4 @@ Append-only, one event per line, never rewritten:
 2026-10-22T13:21:00Z building PR1 worktree /abs/ws/mathlib-worktrees/dcv2-r-...-pr1
 ```
 
-Format: `<UTC time> <stage> <text>`; text is one line, no secrets. Appended with `printf '%s %s %s\n' "$(date -u +%FT%TZ)" <stage> "<text>" >> log.md`.
+Format: `<UTC time> <stage> <text>`; text is one line, no secrets. Appended with `plugin/scripts/state.sh log <run> <stage> <text>`.

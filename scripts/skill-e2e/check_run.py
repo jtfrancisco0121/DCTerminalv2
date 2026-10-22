@@ -142,7 +142,27 @@ def subagent_launches(events):
             if name in ("Task", "Agent")]
 
 
-HEAVY = re.compile(r"(\bcat\b|\bhead\b|\btail\b|\bless\b|git (-C \S+ )?(diff|show)\b|\bnpm\b|\bnode\b|\bgo test\b|\bcargo\b)")
+# A command that reads files, diffs or test output inside a worktree.
+HEAVY = [
+    re.compile(r"\b(cat|head|tail|less|more|grep|sed|awk)\b[^|;&>]*-worktrees/"),
+    re.compile(r"git\s+-C\s+\S*-worktrees/\S*\s+(diff|show)\b"),
+    re.compile(r"cd\s+\S*-worktrees/\S*\s*&&\s*(npm|node|go|cargo|make|pytest)\b"),
+]
+
+
+def strip_heredocs(cmd):
+    """Drop heredoc bodies: what the orchestrator writes is not what it reads."""
+    out, skip = [], None
+    for line in cmd.split("\n"):
+        if skip is not None:
+            if line.strip() == skip:
+                skip = None
+            continue
+        out.append(line)
+        m = re.search(r"<<-?\s*['\"]?(\w+)['\"]?", line)
+        if m:
+            skip = m.group(1)
+    return "\n".join(out)
 
 
 def check_orchestrator_context(events, ws):
@@ -154,10 +174,23 @@ def check_orchestrator_context(events, ws):
             if p.startswith(ws):
                 bad.append(f"Read {p}")
         elif name == "Bash":
-            cmd = inp.get("command", "")
-            if "-worktrees/" in cmd and HEAVY.search(cmd):
-                bad.append(f"Bash {cmd[:160]}")
+            cmd = strip_heredocs(inp.get("command", ""))
+            if any(h.search(cmd) for h in HEAVY):
+                bad.append(f"Bash {cmd[:200]}")
     check(not bad, "orchestrator never reads code/diffs/test output in worktrees: " + "; ".join(bad[:5]))
+
+
+def check_state_helper(events):
+    """status.json is only written through state.sh put (validated + atomic)."""
+    bad = []
+    for name, inp in orchestrator_tool_uses(events):
+        if name in ("Write", "Edit") and str(inp.get("file_path", "")).endswith(("status.json", "writeback.json")):
+            bad.append(f"{name} {inp.get('file_path')}")
+        if name == "Bash":
+            cmd = strip_heredocs(inp.get("command", ""))
+            if re.search(r">\s*\S*(status|writeback)\.json\b", cmd):
+                bad.append(f"Bash {cmd[:160]}")
+    check(not bad, "state files written only via state.sh: " + "; ".join(bad[:3]))
 
 
 def final_result(events):
@@ -173,6 +206,7 @@ def main():
     res = final_result(events)
     check(res and not res.get("is_error"), f"claude run ended without error ({res.get('subtype')}, {str(res.get('result'))[:200]})")
     check_orchestrator_context(events, ws)
+    check_state_helper(events)
     launches = subagent_launches(events)
     kinds = [k for k, _ in launches]
     print(f"    sub-agents launched by the orchestrator: {kinds}")
