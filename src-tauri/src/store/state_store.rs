@@ -321,6 +321,17 @@ impl StateStore {
         Ok(Some(window))
     }
 
+    /// Every tab that is open or can still be reopened (closed tabs,
+    /// closed windows' tabs). Any other tab id is gone for good.
+    pub fn known_tab_ids(&self) -> std::collections::HashSet<String> {
+        self.data
+            .tabs
+            .iter()
+            .chain(self.data.closed_tabs.iter())
+            .map(|tab| tab.id.clone())
+            .collect()
+    }
+
     pub fn tabs_in_window(&self, window_id: &str) -> Vec<&TabRecord> {
         self.sorted_tabs()
             .into_iter()

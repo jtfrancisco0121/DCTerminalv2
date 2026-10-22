@@ -11,6 +11,21 @@ use std::path::{Path, PathBuf};
 
 pub const USAGE_FILE: &str = "usage.json";
 
+/// Delete the status line files of tabs closed for good (no longer open or
+/// reopenable). Copies the tab ids out under a short state lock, then walks
+/// the folder with no lock held.
+pub fn remove_gone_status_lines(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let Some(state) = app.try_state::<std::sync::Mutex<crate::store::StateStore>>() else {
+        return;
+    };
+    let Ok(keep) = state.lock().map(|state| state.known_tab_ids()) else {
+        return;
+    };
+    let data_dir = crate::data_dir::app_data_dir(app).path;
+    crate::status_line::remove_files_of_gone_tabs(&data_dir, &keep);
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RateWindow {
@@ -85,7 +100,8 @@ impl UsageStore {
         self.status_lines.insert(tab_id.to_string(), (key, file));
     }
 
-    /// A closed tab's status line no longer counts.
+    /// A closed tab's status line no longer counts. Its file stays while
+    /// the tab can be reopened ([`remove_gone_status_lines`] drops it after).
     pub fn forget_tab(&mut self, tab_id: &str) {
         self.status_lines.remove(tab_id);
     }

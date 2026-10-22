@@ -597,6 +597,8 @@ fn on_window_destroyed(app: &AppHandle, label: &str) {
     }
     let _ = state.archive_window(label);
     drop(state);
+    // An archive may drop the oldest closed window's tabs for good.
+    crate::usage::remove_gone_status_lines(app);
     refresh_reopen_window_item(app);
 }
 

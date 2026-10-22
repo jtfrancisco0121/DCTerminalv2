@@ -81,6 +81,7 @@ pub fn run() {
             for note in store::take_recovery_notes() {
                 eprintln!("DCTerminalv2: {note}");
             }
+            usage::remove_gone_status_lines(app.handle());
             windows::install_macos_menu(app)?;
             windows::restore_saved_windows(app.handle());
             // The env-changing steps at the start of `run()` are done, so a

@@ -144,6 +144,7 @@ pub fn rename_tab(
 /// Moves the tab to Reopen Closed Tab, then stops its terminal.
 #[tauri::command]
 pub fn close_tab(
+    app: tauri::AppHandle,
     window_id: Option<String>,
     tab_id: String,
     store: State<Mutex<StateStore>>,
@@ -154,6 +155,8 @@ pub fn close_tab(
     if let Ok(mut usage) = usage.lock() {
         usage.forget_tab(&tab_id);
     }
+    // The close may push the oldest closed tab off the list for good.
+    crate::usage::remove_gone_status_lines(&app);
     closed
 }
 

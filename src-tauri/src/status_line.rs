@@ -164,6 +164,24 @@ pub fn file_for(data_dir: &Path, tab_id: &str) -> PathBuf {
     data_dir.join(STATUS_LINE_DIR).join(format!("{name}.json"))
 }
 
+/// Delete the status line files of tabs closed for good: every
+/// `status-line/<tab>.json` whose tab is not in `keep`
+/// (the open tabs and those Reopen Closed Tab / Window can still bring
+/// back). A directory walk: call it with no store lock held.
+pub fn remove_files_of_gone_tabs(data_dir: &Path, keep: &std::collections::HashSet<String>) {
+    let keep: std::collections::HashSet<PathBuf> =
+        keep.iter().map(|id| file_for(data_dir, id)).collect();
+    let Ok(entries) = std::fs::read_dir(data_dir.join(STATUS_LINE_DIR)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if is_status_line_file(&path) && !keep.contains(&path) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 /// `path` is a file `file_for` names: `<…>/status-line/<safe name>.json`.
 fn is_status_line_file(path: &Path) -> bool {
     let in_folder = path
@@ -354,5 +372,27 @@ mod tests {
             value,
             json!({ "statusLine": { "type": "command", "command": cmd } })
         );
+    }
+
+    // Review: a tab's status-line/<tab>.json stayed forever after the tab
+    // was gone for good.
+    #[test]
+    fn the_files_of_tabs_gone_for_good_are_removed() {
+        let dir = TempDir::new("status_line_sweep");
+        let data = dir.path();
+        for id in ["tab_open", "tab_closed", "tab_gone"] {
+            let file = file_for(data, id);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, "{}").unwrap();
+        }
+        std::fs::write(data.join(STATUS_LINE_DIR).join("notes.txt"), "x").unwrap();
+        let keep = ["tab_open", "tab_closed"].map(String::from).into();
+        remove_files_of_gone_tabs(data, &keep);
+        assert_eq!(
+            crate::test_support::names_in(&data.join(STATUS_LINE_DIR)),
+            vec!["notes.txt", "tab_closed.json", "tab_open.json"]
+        );
+        // No folder yet: nothing to do.
+        remove_files_of_gone_tabs(&dir.join("none"), &keep);
     }
 }
