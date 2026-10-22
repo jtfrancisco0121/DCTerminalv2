@@ -136,6 +136,21 @@ impl StateStore {
         self.save()
     }
 
+    /// Forget a window record that never became a window (its build
+    /// failed), so no later launch restores a window nobody opened. A
+    /// window with tabs is kept.
+    pub fn forget_empty_window(&mut self, window_id: &str) -> Result<(), String> {
+        if !self.tabs_in_window(window_id).is_empty() {
+            return Ok(());
+        }
+        let before = self.data.windows.len();
+        self.data.windows.retain(|window| window.id != window_id);
+        if self.data.windows.len() == before {
+            return Ok(());
+        }
+        self.save()
+    }
+
     /// Drop a window that was closed while another stayed open. Its tabs
     /// all move to the closed list (one save, none trimmed), and the window
     /// is kept with its account for Reopen Closed Window.
@@ -732,6 +747,25 @@ mod tests {
             .closed_tabs
             .iter()
             .all(|tab| tab.window_id == "win-2"));
+    }
+
+    #[test]
+    fn a_window_that_was_never_built_is_forgotten_but_one_with_tabs_is_kept() {
+        let dir = TempDir::new("state_forget_window");
+        let mut store = store_in(&dir);
+        store.ensure_window("win-2", "work").unwrap();
+        store.ensure_window("win-3", "work").unwrap();
+        store.bind_window(Some("win-3"));
+        store.create_tab("/w/a", TabKind::Shell).unwrap();
+        store.forget_empty_window("win-2").unwrap();
+        store.forget_empty_window("win-3").unwrap();
+        let again = StateStore::open_path(dir.join("state.json")).unwrap();
+        let ids: Vec<&str> = again.data.windows.iter().map(|w| w.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"win-2"),
+            "no ghost window on the next launch"
+        );
+        assert!(ids.contains(&"win-3"));
     }
 
     #[test]

@@ -671,7 +671,20 @@ pub async fn reopen_closed_window(app: AppHandle) -> Result<Option<String>, Stri
         .map_err(|err| err.to_string())?
 }
 
-/// Recreate saved windows other than the one Tauri already opened, and title them.
+/// A saved window label that can name a window: what `next_window_label`
+/// and `main` look like. A hand-edited `state.json` may hold anything else.
+pub(crate) fn valid_window_label(label: &str) -> bool {
+    !label.is_empty()
+        && label.len() <= 64
+        && label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Recreate saved windows other than the one Tauri already opened, and
+/// title them. Labels that cannot name a window are skipped, and when no
+/// window came up at all (none saved, or none could be built) `main` is
+/// built, so a launch never leaves the app with no window.
 pub fn restore_saved_windows(app: &AppHandle) {
     let labels = {
         let Some(state) = app.try_state::<Mutex<StateStore>>() else {
@@ -687,19 +700,27 @@ pub fn restore_saved_windows(app: &AppHandle) {
             .map(|window| window.id.clone())
             .collect::<Vec<_>>()
     };
-    if labels.is_empty() {
-        if let Err(err) = remember_window(app, MAIN_WINDOW_ID, &first_account(app)) {
-            eprintln!("DCTerminalv2: could not save the main window: {err}");
+    let mut shown = 0;
+    for label in labels {
+        if !valid_window_label(&label) {
+            eprintln!("DCTerminalv2: skipped a saved window with a bad label: {label:?}");
+            continue;
+        }
+        let title = title_for(app, &label);
+        match build_window(app, &label, &title) {
+            Ok(()) => shown += 1,
+            Err(err) => eprintln!("DCTerminalv2: could not restore window {label}: {err}"),
+        }
+    }
+    if shown == 0 {
+        if !window_is_saved(app, MAIN_WINDOW_ID) {
+            if let Err(err) = remember_window(app, MAIN_WINDOW_ID, &first_account(app)) {
+                eprintln!("DCTerminalv2: could not save the main window: {err}");
+            }
         }
         let title = title_for(app, MAIN_WINDOW_ID);
-        let _ = build_window(app, MAIN_WINDOW_ID, &title);
-    }
-    for label in labels {
-        if app.get_webview_window(&label).is_some() {
-            let _ = retitle(app, &label);
-        } else {
-            let title = title_for(app, &label);
-            let _ = build_window(app, &label, &title);
+        if let Err(err) = build_window(app, MAIN_WINDOW_ID, &title) {
+            eprintln!("DCTerminalv2: could not open a window: {err}");
         }
     }
 }
@@ -767,7 +788,6 @@ pub fn restore_a_window(app: &AppHandle) -> Result<(), String> {
     build_window(app, &label, &title)
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn window_is_saved(app: &AppHandle, label: &str) -> bool {
     let Some(state) = app.try_state::<Mutex<StateStore>>() else {
         return false;
@@ -937,11 +957,22 @@ pub async fn open_account_window(app: AppHandle, account_id: String) -> Result<S
     };
     let app_for_build = app.clone();
     let label_for_build = label.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let built = tauri::async_runtime::spawn_blocking(move || {
         build_window(&app_for_build, &label_for_build, &title)
     })
     .await
-    .map_err(|err| err.to_string())??;
+    .map_err(|err| err.to_string())
+    .and_then(|built| built);
+    if let Err(err) = built {
+        // Saved first so the new page finds its account; not kept when no
+        // window came of it, or every launch would restore one.
+        if let Some(state) = app.try_state::<Mutex<StateStore>>() {
+            if let Ok(mut state) = state.lock() {
+                let _ = state.forget_empty_window(&label);
+            }
+        }
+        return Err(err);
+    }
     Ok(label)
 }
 
@@ -1179,6 +1210,16 @@ mod tests {
         assert!(!ctx.account_missing);
         assert_eq!(ctx.account_id, "work");
         assert_eq!(state.account_for_window("win-2"), "work");
+    }
+
+    #[test]
+    fn only_labels_that_can_name_a_window_are_restored() {
+        assert!(valid_window_label("main"));
+        assert!(valid_window_label("win-2"));
+        assert!(!valid_window_label(""));
+        assert!(!valid_window_label("../x"));
+        assert!(!valid_window_label("a b"));
+        assert!(!valid_window_label(&"w".repeat(65)));
     }
 
     #[test]
