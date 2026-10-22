@@ -19,6 +19,7 @@ DCTerminal grew in layers (chat → terminal roles → pipeline v2 → v3 lanes,
 | D5 | Port proven DCTerminal code; never port the chain engine (bridge, run_actor, pipelines, rounds, roles/forms, lanes). |
 | D6 | One PR per repo per run. A folder of repos (e.g. `~/Documents/Koneksi`) works without setup. |
 | D7 | Two stops for you: approve the plan, then approve opening PRs + ClickUp posts. Anything else you say in the tab at any time. |
+| D8 | Six roles also work alone, each in its own tab, not only inside the pipeline: Planner, Plan Reviewer, Developer, PR Reviewer, Recommendation, Codebase Audit. Each is a plugin skill (`/dcv2:<role>`); a role shared with the pipeline uses one guidance file for both, so they cannot drift. The start screen shows them as role tiles next to Eagle-Eye (P3). |
 
 ## How a run works
 
@@ -76,7 +77,7 @@ Not ported: `acp/`, `bridge/`, `run_actor/`, `pipelines/`, `rounds/`, `roles/`, 
 0. **Phase 0 (spikes, half a day):** skill loading per launch; sub-agents in parallel making worktrees in sibling repos; `status.json` updates reliably; resume after kill.
 1. **P1 shell:** new Tauri app, windows + accounts, one Claude terminal tab, settings. `npm run check` gate from day one.
 2. **P2 skill v1:** the full run in a plain terminal against a small test workspace (two toy repos). No app UI yet.
-3. **P3 app run:** start screen (folder + request), launch the skill, progress panel from `status.json`, resume button.
+3. **P3 app run:** start screen (folder + request; Eagle-Eye or one of the six role tiles), launch the skill, progress panel from `status.json`, resume button.
 4. **P4 ClickUp:** port intake (Fetch) and write-back ticks; personal workspace only for live tests.
 5. **P5 dogfood:** one real Koneksi Medium ticket end to end on the work account, then fix what hurts.
 
