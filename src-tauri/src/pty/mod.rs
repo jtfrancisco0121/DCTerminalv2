@@ -43,8 +43,8 @@ pub struct PtyRegistry {
     /// of the same id supersedes it.
     opening: HashMap<String, u64>,
     next_open: u64,
-    /// A replaced program that may still be stopping, so every open of that
-    /// id waits for it, not only the one that replaced it.
+    /// A replaced or closed program that may still be stopping, so every
+    /// open of that id waits for it, not only the one that replaced it.
     stopping: HashMap<String, crate::process_tree::PtyGroup>,
 }
 
@@ -80,12 +80,26 @@ impl PtyRegistry {
         }
     }
 
-    /// Close the terminal `id`. A replaced program it was still stopping
-    /// is forgotten too; its control thread kills it within the grace.
+    /// Close the terminal `id`. Its program keeps stopping for up to
+    /// [`STOP_GRACE`] (its control thread kills it then), so its group is
+    /// kept in `stopping`: an open of the same id right after the close
+    /// waits for it, as a replacing open does, and a resumed Claude never
+    /// writes `<id>.jsonl` beside the one still finishing. Groups that are
+    /// done are dropped here.
     pub fn kill(&mut self, id: &str) {
-        self.sessions.remove(id);
         self.opening.remove(id);
-        self.stopping.remove(id);
+        if let Some(old) = self.sessions.remove(id) {
+            let group = old.group();
+            // Dropping the session asks its control thread to stop the program.
+            drop(old);
+            self.stopping.insert(id.to_string(), group);
+        }
+        self.prune_stopping();
+    }
+
+    /// Forget stopping programs whose group has exited.
+    fn prune_stopping(&mut self) {
+        self.stopping.retain(|_, group| group.running());
     }
 
     pub fn shutdown_all(&mut self) {
@@ -203,6 +217,7 @@ fn open_session(
 ) -> Result<Option<u32>, String> {
     let (token, stopping) = {
         let mut registry = registry.lock().map_err(|err| err.to_string())?;
+        registry.prune_stopping();
         registry.next_open += 1;
         let token = registry.next_open;
         registry.opening.insert(id.to_string(), token);
@@ -693,6 +708,32 @@ mod tests {
         registry.lock().unwrap().shutdown_all();
     }
 
+    // Review: closing a tab forgot its program at once, though it may take
+    // up to STOP_GRACE to exit, so reopening the tab right away (resume)
+    // started `claude --resume <id>` while the old one still wrote the log.
+    #[cfg(unix)]
+    #[test]
+    fn reopening_right_after_a_close_waits_for_the_closed_program() {
+        let dir = crate::test_support::TempDir::new("pty_close_reopen");
+        let registry = Mutex::new(PtyRegistry::new());
+        let old = open_slow_stopper(&registry, dir.path(), "t");
+        registry.lock().unwrap().kill("t");
+        assert!(old.running(), "the closed program is still finishing");
+        assert_eq!(registry.lock().unwrap().running_groups().len(), 1);
+        open_session(
+            &registry,
+            "t",
+            sh_spec(dir.path(), "sleep 5"),
+            Channel::new(|_| Ok(())),
+        )
+        .expect("reopen");
+        assert!(
+            !old.running(),
+            "the closed program exited before the new one started"
+        );
+        registry.lock().unwrap().shutdown_all();
+    }
+
     // The wait above holds no lock, so the tab can be closed during it; the
     // open must then not leave a terminal running for a closed tab.
     #[cfg(unix)]
@@ -782,7 +823,7 @@ mod tests {
             let registry = registry.lock().unwrap();
             registry.opening.is_empty() && registry.stopping.is_empty()
         };
-        open_slow_stopper(&registry, dir.path(), "t");
+        let old = open_slow_stopper(&registry, dir.path(), "t");
         assert!(empty(&registry), "nothing left after an open");
         thread::scope(|scope| {
             let reopen = scope.spawn(|| {
@@ -799,9 +840,19 @@ mod tests {
                 "old program is stopping"
             );
             registry.lock().unwrap().kill("t");
-            assert!(empty(&registry), "nothing left after a kill");
+            assert!(
+                registry.lock().unwrap().opening.is_empty(),
+                "no open left after a kill"
+            );
             assert!(reopen.join().unwrap().is_err());
         });
+        // The closed program is kept only while it is still stopping.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while old.running() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        registry.lock().unwrap().kill("nothing");
+        assert!(empty(&registry), "nothing left once it has stopped");
         open_slow_stopper(&registry, dir.path(), "u");
         open_session(
             &registry,
