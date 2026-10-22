@@ -7,8 +7,8 @@
 # text cannot reach it. The run's allowed worktrees are listed in <run>/.guard.json, which
 # only `state.sh worktree` writes.
 #
-# Pipeline sub-agents (agent_type implementer, planner, plan-reviewer, pr-reviewer, with or
-# without the "dcv2:" prefix):
+# Pipeline sub-agents (agent_type implementer, planner, plan-reviewer, pr-reviewer, memory-updater,
+# with or without the "dcv2:" prefix):
 #   - Edit/Write: the real path (symlinks and .. resolved) must be inside the run folder, or,
 #     for the implementer only, inside one of the run's recorded worktrees.
 #   - Bash: never `git push`, `gh pr`, `gh api` (or gh issue/repo/release writes). Git commands
@@ -18,14 +18,20 @@
 #     an allowed place. Best effort: commands that write through other programs (node, python,
 #     npm scripts, xargs) are not seen.
 #   - No DCV2_RUN_DIR, python3 missing, or a payload that does not parse: blocked (fail closed).
+#     Exception: the memory-updater also runs at the end of a standalone /dcv2:developer session
+#     (no run): then it may not Edit/Write anything (it writes memory only with memory.sh write).
 # The orchestrator (no agent_type) in a bound run: `git push` and `gh pr create` only when
-# status.json has stage shipping and a shipApproval (state.sh ship-pr does both itself); never
-# a force push or a branch delete; never `gh pr merge|close|edit`.
+# status.json has stage shipping and a shipApproval (state.sh ship-pr does both itself); a push
+# names only dcv2/ branches; never a force push, --all/--mirror or a branch delete; never
+# `gh pr merge|close|edit`. It never writes into (or runs changing git in) a repo's main
+# checkout recorded in .guard.json.
 # Everyone: status.json, writeback.json and .guard.json in a run folder are written only by
-# state.sh. Sessions with no DCV2_RUN_DIR and no pipeline agent are not affected otherwise.
+# state.sh. When DCV2_MEMORY_DIR is set (every dcv2 launch), nobody writes into it with
+# Edit/Write or a shell redirect/copy: agents use memory.sh write (the app's editor writes as the
+# user, outside Claude). Sessions with no DCV2_RUN_DIR and no pipeline agent are not affected otherwise.
 # Exit 2 blocks the tool call (stderr is shown to the model).
 input="$(cat)"
-PIPE_RE='"agent_type"[[:space:]]*:[[:space:]]*"(dcv2:)?(implementer|planner|plan-reviewer|pr-reviewer)"'
+PIPE_RE='"agent_type"[[:space:]]*:[[:space:]]*"(dcv2:)?(implementer|planner|plan-reviewer|pr-reviewer|memory-updater)"'
 
 fallback() { # python3 missing or broken, or the payload did not parse: fail closed where it matters
   if grep -Eq "$PIPE_RE" <<<"$input"; then
@@ -51,7 +57,7 @@ try:
 except Exception:
     sys.exit(3)
 
-ROLES = ("implementer", "planner", "plan-reviewer", "pr-reviewer")
+ROLES = ("implementer", "planner", "plan-reviewer", "pr-reviewer", "memory-updater")
 agent = str(data.get("agent_type") or "")
 role = agent[len("dcv2:"):] if agent.startswith("dcv2:") else agent
 pipeline = role in ROLES
@@ -61,6 +67,8 @@ cwd0 = str(data.get("cwd") or "/")
 
 run = os.environ.get("DCV2_RUN_DIR") or ""
 run = os.path.realpath(run) if run else ""
+mem = os.environ.get("DCV2_MEMORY_DIR") or ""
+mem = os.path.realpath(os.path.expanduser(mem)) if mem else ""
 worktrees, repos, status = [], [], {}
 if run:
     try:
@@ -101,9 +109,16 @@ def protected(p):
 
 
 def write_allowed(p):
+    if role == "memory-updater" and not run:
+        return False
     if inside(p, run):
         return True
     return role == "implementer" and any(inside(p, w) for w in worktrees)
+
+
+def main_checkout(p):
+    """Inside a repo's main checkout recorded for this run (worktrees live beside the repo, not in it)."""
+    return any(inside(p, r) for r in repos)
 
 
 def in_checkout(p):
@@ -119,7 +134,7 @@ def in_checkout(p):
         d = nd
 
 
-if pipeline and not run:
+if pipeline and not run and role != "memory-updater":
     block(f"{who} runs only inside an Eagle-Eye run, and none is bound (DCV2_RUN_DIR is not set at launch).")
 
 # ---- Edit / Write ------------------------------------------------------------------------
@@ -132,11 +147,19 @@ if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
     p = real(str(path), cwd0)
     if protected(p):
         block("write run-folder state only with scripts/state.sh (put / approve / writeback / worktree), never with Edit or Write.")
+    if inside(p, mem):
+        block("codebase memory is written only with `bash <plugin>/scripts/memory.sh write <repo id> <file> <<'EOF'` "
+              "(it checks size caps, secrets and pinned lines), never with Edit or Write.")
+    if not pipeline and run and main_checkout(p):
+        block(f"the orchestrator never edits a repo's main checkout ({p}); sub-agents work in the run's worktrees.")
     if not pipeline or write_allowed(p):
         sys.exit(0)
+    if role == "memory-updater" and not run:
+        block("the memory updater writes nothing with Edit/Write outside a run; use memory.sh write for memory.")
     block(f"{who} may only write inside {where}, not {p}. Never edit a repo main checkout; use the exact worktree path you were given.")
 
-if tool != "Bash" or not (pipeline or run):
+bound = pipeline or bool(run)
+if tool != "Bash" or not (bound or mem):
     sys.exit(0)
 
 # ---- Bash --------------------------------------------------------------------------------
@@ -187,12 +210,20 @@ def check_write(t, cwd):
     if t in SAFE_DEV or t.startswith("/dev/fd/"):
         return
     if re.search(r"[$`*?]", t) or (cwd is None and not os.path.isabs(os.path.expanduser(t))):
+        if mem and re.search(r"\$\{?DCV2_MEMORY_DIR\b", t):
+            block("codebase memory is written only with memory.sh write, never with a shell redirect.")
         if pipeline:
             block(f"cannot check the write target {t!r}: write to a literal absolute path")
         return
     p = real(t, cwd)
+    if inside(p, mem):
+        block("codebase memory is written only with memory.sh write, never with a shell redirect, copy or move.")
+    if not bound:
+        return
     if protected(p):
         block("write run-folder state only with scripts/state.sh, never with a shell redirect or copy.")
+    if not pipeline and main_checkout(p):
+        block(f"the orchestrator never writes into a repo's main checkout ({p}).")
     if pipeline and not write_allowed(p) and in_checkout(p):
         block(f"{who} may not write {p} from Bash: it is in a git checkout outside {where}.")
 
@@ -262,6 +293,8 @@ def git_readonly(sub, rest):
 
 
 def check_git(args, cwd):
+    if not bound:
+        return
     target, i = cwd, 0
     while i < len(args):
         a = args[i]
@@ -293,9 +326,21 @@ def check_git(args, cwd):
                or a.startswith("--force-with-lease=") or a.startswith("+") or (":" in a and a.startswith(":"))
                or re.match(r"^-[a-zA-Z]*[fd]", a) for a in rest):
             block("force pushes and remote branch deletes are never allowed.")
+        if run and (target is None or main_checkout(target)):
+            block(f"push only from the PR's worktree, never from a repo's main checkout or an unknown folder ({target or 'unknown'}).")
+        if any(a in ("--all", "--branches", "--tags") for a in rest):
+            block("push one dcv2/ branch at a time (no --all / --tags).")
+        refs = [a for a in rest if not a.startswith("-")][1:]
+        for ref in refs:
+            dst = ref.split(":", 1)[-1]
+            dst = dst[len("refs/heads/"):] if dst.startswith("refs/heads/") else dst
+            if dst != "HEAD" and not dst.startswith("dcv2/") or (dst == "HEAD" and ":" in ref):
+                block(f"the run pushes only its own dcv2/ branches (not {ref!r}); ship with state.sh ship-pr.")
         ship_gate("git push")
         return
     if not pipeline:
+        if run and target and main_checkout(target) and not git_readonly(sub, rest) and sub != "worktree":
+            block(f"the orchestrator never runs `git {sub}` in a repo's main checkout ({target}); worktrees go through state.sh worktree.")
         return
     if role == "implementer" and target and any(inside(target, w) for w in worktrees):
         return
@@ -307,6 +352,8 @@ def check_git(args, cwd):
 
 
 def check_gh(args):
+    if not bound:
+        return
     words = [a for a in args if not a.startswith("-")]
     sub, verb = (words + ["", ""])[:2]
     if pipeline:
@@ -332,7 +379,7 @@ def analyze(cmd, cwd, depth=0):
     except ValueError:
         if pipeline:
             block("could not parse this command (unbalanced quotes?); write it more simply")
-        if re.search(r"\bgit\b.*\bpush\b|\bgh\b.*\bpr\b", text):
+        if bound and re.search(r"\bgit\b.*\bpush\b|\bgh\b.*\bpr\b", text):
             block("could not parse this push / PR command")
         return cwd
     segs, seg = [], []
