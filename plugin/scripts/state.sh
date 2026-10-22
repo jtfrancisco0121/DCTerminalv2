@@ -47,8 +47,39 @@ case "${1:-}" in
       echo "NOT WRITTEN: invalid JSON for $dest: $err" >&2
       exit 1
     fi
+    if [[ "$(basename "$dest")" == status.json ]] && command -v python3 >/dev/null 2>&1; then
+      # test-mode: halt-after=<PR> (tests only; see docs/run-folder.md). Ignored once
+      # the run was resumed. Keeps the halted state exact even if the model forgets.
+      if ! halt="$(python3 - "$tmp" "$(dirname "$dest")" <<'PY'
+import json, os, re, sys
+doc, run = json.load(open(sys.argv[1])), sys.argv[2]
+def read(name):
+    try:
+        return open(os.path.join(run, name)).read()
+    except OSError:
+        return ""
+m = re.search(r"^test-mode:\s*halt-after=(\S+)\s*$", read("request.md"), re.M)
+if not m or "resumed at stage" in read("log.md"):
+    sys.exit(0)
+pr_id = m.group(1)
+prs = {p.get("id"): p for p in doc.get("prs") or []}
+if prs.get(pr_id, {}).get("state") not in ("reviewed",):
+    sys.exit(0)
+others = [i for i, p in prs.items() if i != pr_id and p.get("state") != "pending"]
+if others or doc.get("stage") != "building":
+    print(f"NOT WRITTEN: test-mode halt-after={pr_id}: {pr_id} is reviewed, so the run must stop now with stage 'building' and every other PR 'pending'. Write that, log 'halted after {pr_id} (test-mode)', reply 'HALTED after {pr_id}' and stop.")
+    sys.exit(1)
+print(f"HALT (test-mode): {pr_id} is reviewed. Log 'halted after {pr_id} (test-mode)', reply 'HALTED after {pr_id}' and stop now. Launch nothing else.")
+PY
+)"; then
+        rm -f "$tmp"
+        echo "$halt" >&2
+        exit 1
+      fi
+    fi
     mv -f "$tmp" "$dest"
     echo "wrote $dest"
+    [[ -z "${halt:-}" ]] || echo "$halt"
     ;;
   log)
     run="${2:?usage: state.sh log <run dir> <stage> <text>}"; stage="${3:?stage}"; shift 3

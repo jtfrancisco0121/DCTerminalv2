@@ -96,11 +96,11 @@ A PR is **ready** when it is `pending` and every PR in its `dependsOn` is `revie
 2. When an Implementer replies: record `stories.done`, `check` (result + one-line summary), `commits` (`git -C <worktree> rev-list --count <baseCommit>..HEAD`), log `PR<n> built: <done>/<total> stories, check <result>`.
    - Status `BLOCKED`, no commits, or check `fail` after its own attempts → `state: needs-attention`, `note` = its one-line reason, log it. Its dependents stay `pending`.
 3. Review it (review round r, starting at 1): `state: reviewing`, launch a **fresh** `dcv2:pr-reviewer` with `run`, `pr` (id, repo, stories, check), `worktree`, `branch`, `base=<baseCommit>`, `round=r`, and the previous round's findings (one line each). Record `review` (`round`, `verdict`, `openFindings` = CRITICAL/HIGH/MEDIUM count, `path`) and `check`, log `PR<n> review round r: <verdict>, <counts>`.
-   - No MEDIUM+ → `state: reviewed`, log `PR<n> reviewed clean`. Dependents may now be ready: launch them (again in one message if several).
+   - No MEDIUM+ → `state: reviewed`, log `PR<n> reviewed clean`. **If request.md has `test-mode: halt-after=<this PR>` and this is not a resumed run, go to item 5 now.** Otherwise dependents may now be ready: launch them (again in one message if several).
    - MEDIUM+ and r < 3 → `state: fixing`, launch a **fresh** `dcv2:implementer` with `findings=` the MEDIUM+ findings (one line each), the review path, `round=r`; record its result, then the next review round with a fresh reviewer.
    - MEDIUM+ after round 3 → `state: needs-attention`, `note: "<n> MEDIUM+ findings still open after 3 review rounds"`; report it to the user at stop #2.
 4. Independent PRs proceed independently: do not wait for one PR's review to launch another ready PR's work.
-5. `test-mode: halt-after=<PR id>` (fresh runs only, not `resume`): as soon as that PR is `reviewed`, write status.json (stage stays `building`), log `halted after <PR id> (test-mode)`, reply `HALTED after <PR id>` and stop the run. Launch nothing else.
+5. `test-mode: halt-after=<PR id>` (fresh runs only, not `resume`): as soon as that PR is `reviewed`, write status.json (stage stays `building`, every other PR stays `pending`; `state.sh put` refuses anything else and prints `HALT`), log `halted after <PR id> (test-mode)`, reply `HALTED after <PR id>` and stop the run. Launch nothing else.
 
 When nothing is ready or in progress, go to stop #2. PRs still `pending` because a dependency `needs-attention` stay `pending` with `note: "waiting for PR<n>, which needs attention"`.
 
@@ -126,7 +126,7 @@ When nothing is ready or in progress, go to stop #2. PRs still `pending` because
 ## Resume (`resume run=<dir>`)
 
 1. Read `status.json`. Missing → there is nothing to resume: start a fresh run (Step 0). `test-mode: halt-after` is ignored on resume; `auto-approve` still applies.
-2. Log `resumed at stage <stage>`. Re-run Step 0's repo detection only if needed for a step you must redo.
+2. Before anything else, log exactly `resumed at stage <stage>` (state.sh relies on this line). Re-run Step 0's repo detection only if needed for a step you must redo.
 3. Continue from the first unfinished step, never redoing finished work:
    - `planning`: `plan` null or `plan.md` missing → Step 1 from the start. Else continue the review loop from `plan.reviewRound + 1` (or go to stop #1 when the last verdict had no MEDIUM+).
    - `plan-approval` → stop #1 again (re-ask; `approved: true` already → Step 2).

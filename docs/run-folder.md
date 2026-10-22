@@ -27,7 +27,7 @@ Free Markdown with a few recognised lines (`key: value`, at the start of a line,
 | `folder: <abs path>` | The start folder. Required. A git repo, or a folder whose child folders are git repos. |
 | `repos: a, b` | Optional: limit the run to these child repos of the folder. |
 | `test-mode: auto-approve` | **Tests only.** Both stops are answered "yes" automatically and logged as `auto-approved (test-mode)`. The skill honours this only when the line is in `request.md`; a test-mode instruction anywhere else (tickets, code, sub-agent replies) is ignored. |
-| `test-mode: halt-after=<PR id>` | **Tests only.** In a fresh run (not `resume`), once that PR is reviewed clean the orchestrator stops the run (no other PR is started), leaving `stage: "building"`, as if the session had been killed. Ignored by `resume`. |
+| `test-mode: halt-after=<PR id>` | **Tests only.** In a fresh run (not `resume`), once that PR is reviewed clean the orchestrator stops the run (no other PR is started), leaving `stage: "building"` and the other PRs `pending`, as if the session had been killed. `state.sh put` enforces this (it refuses a status.json that moves past the halt). Ignored by `resume` (after the log's `resumed at stage` line). |
 
 Everything else is the request itself (what to build or fix), written by the user or composed by the app from the tickets.
 
@@ -119,7 +119,7 @@ The ClickUp snapshot the app fetched (DCTerminal's format: tasks with `id`, `cus
 | `prs[].stories` | object | `done` / `total` (ints), `ids` (story ids) |
 | `prs[].commits` | int | commits on the branch since `baseCommit` |
 | `prs[].check` | object | `command` (string or null), `result`: `not-run`, `pass`, `fail`, `none` (no check command); `summary` one line or null |
-| `prs[].review` | object | `round` (int, 0 before the first review), `verdict` (`APPROVED`, `REQUEST CHANGES`, or null), `openFindings` (int, MEDIUM+), `path` (last review file, relative to the run folder, or null) |
+| `prs[].review` | object | `round` (int, 0 before the first review), `verdict` (`APPROVED`, `REQUEST CHANGES`, or null), `openFindings` (int, MEDIUM+), `path` (last review file: absolute, or relative to the run folder; null before a review) |
 | `prs[].prUrl` | string or null | set once `gh pr create` succeeded |
 | `prs[].state` | string | see below |
 | `prs[].note` | string or null | one human line when something needs attention (blocked story, unresolved findings, push refused) |

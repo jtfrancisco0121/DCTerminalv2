@@ -182,7 +182,7 @@ def check_orchestrator_context(events, ws):
     check(not bad, "orchestrator never reads code/diffs/test output in worktrees: " + "; ".join(bad[:5]))
 
 
-def check_state_helper(events):
+def check_state_helper(events, run):
     """status.json is only written through state.sh put (validated + atomic)."""
     bad = []
     for name, inp in orchestrator_tool_uses(events):
@@ -190,7 +190,7 @@ def check_state_helper(events):
             bad.append(f"{name} {inp.get('file_path')}")
         if name == "Bash":
             cmd = strip_heredocs(inp.get("command", ""))
-            if re.search(r">\s*\S*(status|writeback)\.json\b", cmd):
+            if re.search(r">\s*['\"]?" + re.escape(run) + r"/(status|writeback)\.json\b", cmd):
                 bad.append(f"Bash {cmd[:160]}")
     check(not bad, "state files written only via state.sh: " + "; ".join(bad[:3]))
 
@@ -208,7 +208,7 @@ def main():
     res = final_result(events)
     check(res and not res.get("is_error"), f"claude run ended without error ({res.get('subtype')}, {str(res.get('result'))[:200]})")
     check_orchestrator_context(events, ws)
-    check_state_helper(events)
+    check_state_helper(events, os.path.realpath(run))
     launches = subagent_launches(events)
     kinds = [k for k, _ in launches]
     print(f"    sub-agents launched by the orchestrator: {kinds}")
