@@ -6,6 +6,12 @@
 #                                          exit 1, the file is left as it was.
 #   state.sh log <run dir> <stage> <text>  append "<UTC time> <stage> <text>" to log.md
 #   state.sh now                           print the UTC time (ISO-8601)
+#   state.sh worktree <repo path> <run id> <pr id> [<base commit>]
+#                                          make (or reuse / re-make) the PR's worktree beside
+#                                          the repo and print "branch=<b> worktree=<path>".
+#                                          Never touches the repo's main checkout.
+#
+# For status.json, `put` also sets "updatedAt" to the current UTC time.
 set -euo pipefail
 
 validate() { # <file>: JSON parses (python3, else node, else macOS JavaScript)
@@ -42,6 +48,16 @@ case "${1:-}" in
     dest="${2:?usage: state.sh put <file.json>}"
     tmp="$dest.tmp"
     cat > "$tmp"
+    if [[ "$(basename "$dest")" == status.json ]] && command -v python3 >/dev/null 2>&1; then
+      python3 - "$tmp" "$(date -u +%FT%TZ)" <<'PY' 2>/dev/null || true
+import json, sys
+path, now = sys.argv[1], sys.argv[2]
+doc = json.load(open(path))
+if isinstance(doc, dict):
+    doc["updatedAt"] = now
+    open(path, "w").write(json.dumps(doc, indent=2) + "\n")
+PY
+    fi
     if ! err="$(validate "$tmp" 2>&1)"; then
       rm -f "$tmp"
       echo "NOT WRITTEN: invalid JSON for $dest: $err" >&2
@@ -89,8 +105,28 @@ PY
   now)
     date -u +%FT%TZ
     ;;
+  worktree)
+    repo="${2:?usage: state.sh worktree <repo path> <run id> <pr id> [<base commit>]}"
+    run_id="${3:?run id}"; pr="${4:?pr id}"; base="${5:-}"
+    repo="$(cd "$repo" && pwd -P)"
+    pr_lc="$(printf '%s' "$pr" | tr '[:upper:]' '[:lower:]')"
+    branch="dcv2/$run_id-$pr_lc"
+    wt="$(dirname "$repo")/$(basename "$repo")-worktrees/dcv2-$run_id-$pr_lc"
+    if git -C "$repo" worktree list --porcelain | grep -qxF "worktree $wt" && [[ -d "$wt" ]]; then
+      : # already there: reuse
+    else
+      git -C "$repo" worktree prune
+      mkdir -p "$(dirname "$wt")"
+      if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+        git -C "$repo" worktree add -q "$wt" "$branch" >&2
+      else
+        git -C "$repo" worktree add -q -b "$branch" "$wt" ${base:+"$base"} >&2
+      fi
+    fi
+    echo "branch=$branch worktree=$wt"
+    ;;
   *)
-    echo "usage: state.sh put <file.json> | log <run> <stage> <text> | now" >&2
+    echo "usage: state.sh put <file.json> | log <run> <stage> <text> | now | worktree <repo> <run id> <pr id> [<base>]" >&2
     exit 2
     ;;
 esac

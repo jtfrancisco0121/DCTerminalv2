@@ -32,7 +32,7 @@ Always use the helper `${CLAUDE_PLUGIN_ROOT}/scripts/state.sh`; never write `sta
 
 - **status.json**: the full document every time (never a partial patch), via
   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/state.sh" put <run>/status.json <<'JSON'` … `JSON`.
-  It validates the JSON and the stage/state values, then writes atomically (`.tmp` + `mv`). If it prints `NOT WRITTEN`, fix the document and run it again before doing anything else. Get `updatedAt` from `bash "${CLAUDE_PLUGIN_ROOT}/scripts/state.sh" now`.
+  It validates the JSON and the stage/state values, then writes atomically (`.tmp` + `mv`). If it prints `NOT WRITTEN`, fix the document and run it again before doing anything else. It sets `updatedAt` itself.
 - **writeback.json**: the same `put` command with `<run>/writeback.json`.
 - **log.md**: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/state.sh" log <run> <stage> "<one line>"`. One event per call, no secrets.
 
@@ -82,9 +82,8 @@ status.json (schema 1):
 
 Make the worktrees of **all** PRs now, before building anything (dependent ones too). For each PR of the plan (ids, repo, stories, depends on, check from the `## Pull requests` section):
 1. `repoPath` = the repo's path. `base` = `git -C <repoPath> rev-parse --abbrev-ref HEAD` (the checked-out branch; if `HEAD`, use the commit). `baseCommit` = `git -C <repoPath> rev-parse HEAD`.
-2. `branch` = `dcv2/<runId>-<pr id lowercased>`; `worktree` = `$(dirname <repoPath>)/<repo>-worktrees/dcv2-<runId>-<pr id lowercased>`, i.e. **beside** the repo, in the same folder the repo sits in. Example: repo `/ws/mathlib`, run `r1`, PR1 → `/ws/mathlib-worktrees/dcv2-r1-pr1`.
-3. `git -C <repoPath> worktree add <worktree> -b <branch> <baseCommit>`. If the branch already exists (a resumed run), use `git -C <repoPath> worktree add <worktree> <branch>` instead. If the path already exists and `git -C <repoPath> worktree list --porcelain` lists it, reuse it.
-4. Fill the PR's entry in status.json (`state: pending`, `stories.total`, `check.command`), log `PR1 worktree <path> on <branch>`.
+2. Make the worktree with the helper (never by hand): `bash "${CLAUDE_PLUGIN_ROOT}/scripts/state.sh" worktree <repoPath> <runId> <PR id> <baseCommit>`. It prints `branch=<branch> worktree=<path>`: use exactly those values. (It puts the worktree beside the repo in `<repo>-worktrees/dcv2-<runId>-<pr id lowercased>` on branch `dcv2/<runId>-<pr id lowercased>`, reuses it if it exists, and re-makes it from the existing branch if the folder was deleted.)
+3. Fill the PR's entry in status.json (`state: pending`, `stories.total`, `check.command`), log `PR1 worktree <path> on <branch>`.
 
 Set `stage: building` and write status.json once all worktrees exist.
 
@@ -130,7 +129,7 @@ When nothing is ready or in progress, go to stop #2. PRs still `pending` because
 3. Continue from the first unfinished step, never redoing finished work:
    - `planning`: `plan` null or `plan.md` missing → Step 1 from the start. Else continue the review loop from `plan.reviewRound + 1` (or go to stop #1 when the last verdict had no MEDIUM+).
    - `plan-approval` → stop #1 again (re-ask; `approved: true` already → Step 2).
-   - `building`: first re-check worktrees: for each PR not yet `reviewed`/`needs-attention`, if its `worktree` is missing from `git -C <repoPath> worktree list --porcelain`, run `git -C <repoPath> worktree prune` and recreate it from its existing `branch` (Step 2.3; never `-b` on an existing branch). Then: `reviewed`, `needs-attention`, `opened`, `pushed`, `local-only` PRs are finished: never relaunch them. `building` or `fixing` → relaunch a fresh Implementer with `resume: true`. `reviewing` → a fresh review of the same round. `pending` → as in Step 3. Then continue Step 3.
+   - `building`: first re-check worktrees: for each PR not yet `reviewed`/`needs-attention`, run the Step 2 helper again (`state.sh worktree <repoPath> <runId> <PR id>`): it reuses a worktree that exists and re-makes a missing one from its existing branch. Log `<PR id> worktree re-made` when the folder had been missing. Then: `reviewed`, `needs-attention`, `opened`, `pushed`, `local-only` PRs are finished: never relaunch them. `building` or `fixing` → relaunch a fresh Implementer with `resume: true`. `reviewing` → a fresh review of the same round. `pending` → as in Step 3. Then continue Step 3.
    - `ship-approval` → stop #2 again.
    - `shipping` → Step 4 for PRs not yet `opened`/`pushed`/`local-only`.
    - `done` → tell the user the run is done and summarise from status.json.
