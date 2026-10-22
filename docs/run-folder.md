@@ -221,3 +221,16 @@ Append-only, one event per line, never rewritten:
 ```
 
 Format: `<UTC time> <stage> <text>`; text is one line, no secrets. Appended with `plugin/scripts/state.sh log <run> [<stage>]` (stage defaults to status.json's), the text on stdin (a quoted heredoc, so nothing in it is ever run by the shell); `state.sh approve` appends its own line.
+
+## Files the app adds (P3a)
+
+The app creates the folder and writes, besides the inputs above:
+
+| File | Use |
+|---|---|
+| `meta.json` | `{"schema":1,"runId","createdAt","folder","pluginVersion","claudeVersion","account":{"id","name","configDir"},"app"}`: what the run was started with (launch.md). |
+| `memory-prompt.md` | The `--append-system-prompt-file` of the launch, from `memory.sh compose` (absent when the plugin has no `memory.sh`). Rewritten on every resume. |
+| `app-checks.json` | R1: the app's own re-run of each PR's check, `{"schema":1,"checks":{"PR1":{"result":"pass|fail|timeout|error|none|running","command","cwd","exitCode","finishedAt","log","detail"}}}`. The skill never reads it. |
+| `logs/<PR>-app-check.txt` | The full output of that re-run. |
+
+The skill never writes these. The progress panel reads `status.json`, `gates/*.yml`, `log.md`, `report.md` and `app-checks.json`; a PR's gate is green only when it is `PASS` or `WAIVED` and `app-checks.json` says `pass` for it.
