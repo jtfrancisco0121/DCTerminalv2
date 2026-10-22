@@ -21,6 +21,7 @@ DCTerminal grew in layers (chat → terminal roles → pipeline v2 → v3 lanes,
 | D7 | Two stops for you: approve the plan, then approve opening PRs + ClickUp posts. Anything else you say in the tab at any time. |
 | D8 | Six roles also work alone, each in its own tab, not only inside the pipeline: Planner, Plan Reviewer, Developer, PR Reviewer, Recommendation, Codebase Audit. Each is a plugin skill (`/dcv2:<role>`); a role shared with the pipeline uses one guidance file for both, so they cannot drift. The start screen shows them as role tiles next to Eagle-Eye (P3). |
 | D9 | Codebase memory: a small always-loaded index + on-demand topic files per repo (+ a workspace file), shared across accounts, refreshed per topic from git diffs, hint-not-truth (see "Codebase memory"). |
+| D10 | Ideas from ADE: proof-based done (gates + app re-run), truth from Claude's session logs and hooks, guardrail Stop hooks, per-launch token savers, pinned roles + recorded fixtures (see "Ideas taken from ADE"). |
 
 ## How a run works
 
@@ -104,6 +105,21 @@ Goal: a new session in a known repo does not pay to re-explore it, and memory ne
 | R9 | Cost/time line per run: tokens + minutes per stage in the panel. | P3 |
 | R10 | Run report at the end (`report.md`): planned vs built, review rounds, retries. | P2b |
 
+## Ideas taken from ADE (D10)
+
+Reviewed `~/Documents/Projects/better-agentic-ide` (ADE) on 2026-10-22, read-only. Taken, adapted to keep work repos clean:
+
+| # | Idea | Our version | Phase | ADE reference |
+|---|---|---|---|---|
+| A1 | Done needs proof | Each PR Reviewer writes `<run>/gates/<pr>.yml` (`gate`: PASS / CONCERNS / FAIL / WAIVED, reason, updated). A PR shows green only when its gate is PASS or WAIVED **and** the app's own check re-run (R1) passes; otherwise "claimed" with the reason. Unreadable gates are shown, never dropped. | P2b (gate files), P3 (panel) | `src/lib/bmadGates.ts`, `src/lib/storyState.ts` |
+| A2 | Truth from Claude's own logs | The app tails the session JSONL (and `subagents/agent-<id>.jsonl`) from saved byte offsets: sub-agent spawn / launched / complete / resumed, and `message.usage` (deduped by message id; cache 5m/1h writes + reads) → exact cost and time per stage (R9) and the watchdog signal (R2: no transcript writes for N min). Hook events (SubagentStart/Stop, Stop, PermissionRequest) via a tiny forwarder binary posting to 127.0.0.1 with a per-launch token and a per-tab id from env → working / waiting / needs-you per tab. `status.json` stays the skill's plan of record; logs cross-check it. | P3 | `src-tauri/src/subagent.rs`, `usage.rs`, `agent_status.rs`, `hook_forward.rs` |
+| A3 | Guardrail Stop hooks | Plugin Stop/SubagentStop hook runs the repo's lint/check on the worktree diff (30 s timeout); findings → `exit 2` so Claude fixes them; `stop_hook_active` guard so it fires once; env kill switch. The same mechanism carries R4 (no force-push, no push before ship approval, no writes to main checkouts) as PreToolUse blocks. | P2b | `claude-plugin/plugins/ade/hooks/hooks.json`, `scripts/slop-check.sh` |
+| A4 | Token savers, per launch | Passed with `claude --settings <json>` at launch, never written into repos: `BASH_MAX_OUTPUT_LENGTH`, sub-agent default model, autocompact threshold, `permissions.deny` for `node_modules/**`, lockfiles, build output. Check output trimmed before it reaches an agent (strip ANSI/progress redraws, keep head + tail + error lines). Context meter warns at 60% (never auto-sends keys). | P2b (settings), P3 (meter, trimming) | `usage.rs` PRESETS / `add_deny_rules`, `src/lib/compactText.ts`, `useContextGuard.ts` |
+| A5 | Pinned roles + recorded fixtures | Each role is one markdown body with a `VERSION` (commit sha); standalone skill and pipeline agent are composed from it (D8). Real hook payloads and JSONL samples recorded as test fixtures for a named Claude Code version; contract tests fail on a format change instead of the user's run (makes R3 concrete). | P2b (roles), P3 (fixtures) | `vendor/ade-setup/VERSION`, `src/lib/agentComposition.ts`, `src-tauri/src/fixtures/agent-events/` |
+| A6 | Binding vs descriptive memory | Codebase memory splits **contracts** (binding: `workspace.md` + a `contracts` topic every agent must follow) from **notes** (descriptive topic files). | P2b | `.ade/context/` vs `.ade/knowledge/` |
+
+Not taken: writing BMAD, `.claude/agents` or settings into each project (conflicts with clean work repos).
+
 ## What to port from DCTerminal
 
 | Area | Source | Notes |
@@ -122,8 +138,8 @@ Not ported: `acp/`, `bridge/`, `run_actor/`, `pipelines/`, `rounds/`, `roles/`, 
 0. **Phase 0 (spikes, half a day):** skill loading per launch; sub-agents in parallel making worktrees in sibling repos; `status.json` updates reliably; resume after kill.
 1. **P1 shell:** new Tauri app, windows + accounts, one Claude terminal tab, settings. `npm run check` gate from day one.
 2. **P2 skill v1:** the full run in a plain terminal against a small test workspace (two toy repos). No app UI yet.
-2b. **P2b skill hardening + memory:** `/dcv2:onboard`, memory load/update/staleness, R4, R6, R7, R10.
-3. **P3 app run:** start screen (folder + request; Eagle-Eye or one of the six role tiles), launch the skill, progress panel from `status.json`, resume button.
+2b. **P2b skill hardening + memory:** `/dcv2:onboard`, memory load/update/staleness, R4, R6, R7, R10, A1 gate files, A3 hooks, A4 settings, A5 roles, A6.
+3. **P3 app run:** (adds A1 panel, A2 log tailer + hook forwarder, A4 meter + trimming, A5 fixtures) start screen (folder + request; Eagle-Eye or one of the six role tiles), launch the skill, progress panel from `status.json`, resume button.
 4. **P4 ClickUp:** port intake (Fetch) and write-back ticks; personal workspace only for live tests.
 5. **P5 dogfood:** one real Koneksi Medium ticket end to end on the work account, then fix what hurts.
 
