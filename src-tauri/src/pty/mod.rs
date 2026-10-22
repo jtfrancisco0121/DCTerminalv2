@@ -200,28 +200,82 @@ pub fn pty_set_scheme(light: bool) {
     LIGHT_SCHEME.store(light, Ordering::Relaxed);
 }
 
-/// Start the terminal `id`, replacing the one running under that id.
-///
-/// Blocking: runs on a `spawn_blocking` thread, never the UI thread or a
-/// Tokio worker. A replaced program is stopped first, and the new one
-/// starts only once its group has exited (at most [`STOP_GRACE`] plus a
-/// margin), so a Claude resumed with the same session id never writes
-/// `<id>.jsonl` alongside the old one. The registry lock is not held during
-/// that wait. Closing the terminal meanwhile cancels the open (an error); a
-/// newer open of the same id supersedes it (`Ok(None)`, nothing started).
+/// Register an open of the terminal `id` and return its token. From here
+/// on a `kill` of `id` cancels the open, so it is called before anything
+/// else of the open is read or checked.
+fn begin_open(registry: &Mutex<PtyRegistry>, id: &str) -> Result<u64, String> {
+    let mut registry = registry.lock().map_err(|err| err.to_string())?;
+    registry.next_open += 1;
+    let token = registry.next_open;
+    registry.opening.insert(id.to_string(), token);
+    Ok(token)
+}
+
+/// An open that stops before [`open_session_as`] (a bad folder, say)
+/// takes its token back, unless a newer open or a kill already did.
+fn end_open(registry: &Mutex<PtyRegistry>, id: &str, token: u64) {
+    if let Ok(mut registry) = registry.lock() {
+        if registry.opening.get(id) == Some(&token) {
+            registry.opening.remove(id);
+        }
+    }
+}
+
+/// Whether the open `token` of `id` is still the one wanted: `Ok(true)`
+/// to go on, `Ok(false)` when a newer open took over, an error when the
+/// terminal was closed meanwhile.
+fn open_is_current(registry: &PtyRegistry, id: &str, token: u64) -> Result<bool, String> {
+    match registry.opening.get(id) {
+        Some(latest) if *latest == token => Ok(true),
+        // A newer open of this id took over (it may have finished already).
+        Some(_) => Ok(false),
+        None if registry.sessions.contains_key(id) => Ok(false),
+        None => Err("The terminal was closed while it was starting.".to_string()),
+    }
+}
+
+/// Start the terminal `id`, replacing the one running under that id
+/// ([`begin_open`] then [`open_session_as`], wanted until spawned).
+#[cfg(test)]
 fn open_session(
     registry: &Mutex<PtyRegistry>,
     id: &str,
     spec: SpawnSpec,
     on_output: Channel<PtyPacket>,
 ) -> Result<Option<u32>, String> {
-    let (token, stopping) = {
+    let token = begin_open(registry, id)?;
+    open_session_as(registry, id, token, spec, on_output, || true)
+}
+
+/// Start the terminal `id` for the open `token` ([`begin_open`]),
+/// replacing the one running under that id.
+///
+/// Blocking: runs on a `spawn_blocking` thread, never the UI thread or a
+/// Tokio worker. A replaced (or just closed) program is stopped first, and
+/// the new one starts only once its group has exited (at most
+/// [`STOP_GRACE`] plus a margin), so a Claude resumed with the same session
+/// id never writes `<id>.jsonl` alongside the old one. The registry lock is
+/// not held during that wait. Closing the terminal meanwhile cancels the
+/// open (an error); a newer open of the same id supersedes it (`Ok(None)`,
+/// nothing started). `still_wanted` is asked under the registry lock right
+/// before the spawn (the tab and its window still exist); false cancels
+/// the open. It may take the `StateStore` lock (lock order: `PtyRegistry`
+/// before `StateStore`), so nobody takes the registry while holding that.
+fn open_session_as(
+    registry: &Mutex<PtyRegistry>,
+    id: &str,
+    token: u64,
+    spec: SpawnSpec,
+    on_output: Channel<PtyPacket>,
+    still_wanted: impl FnOnce() -> bool,
+) -> Result<Option<u32>, String> {
+    let stopping = {
         let mut registry = registry.lock().map_err(|err| err.to_string())?;
+        if !open_is_current(&registry, id, token)? {
+            return Ok(None);
+        }
         registry.prune_stopping();
-        registry.next_open += 1;
-        let token = registry.next_open;
-        registry.opening.insert(id.to_string(), token);
-        let stopping = match registry.sessions.remove(id) {
+        match registry.sessions.remove(id) {
             Some(old) => {
                 let group = old.group();
                 // Dropping the session asks its control thread to stop the program.
@@ -230,21 +284,19 @@ fn open_session(
                 Some(group)
             }
             None => registry.stopping.get(id).cloned(),
-        };
-        (token, stopping)
+        }
     };
     if let Some(group) = stopping {
         wait_until_stopped(&group);
     }
     let mut registry = registry.lock().map_err(|err| err.to_string())?;
-    match registry.opening.get(id) {
-        Some(latest) if *latest == token => {}
-        // A newer open of this id took over (it may have finished already).
-        Some(_) => return Ok(None),
-        None if registry.sessions.contains_key(id) => return Ok(None),
-        None => return Err("The terminal was closed while it was starting.".to_string()),
+    if !open_is_current(&registry, id, token)? {
+        return Ok(None);
     }
     registry.opening.remove(id);
+    if !still_wanted() {
+        return Err("The tab was closed while its terminal was starting.".to_string());
+    }
     registry.stopping.remove(id);
     let mut session = PtySession::spawn(spec).map_err(|err| err.to_string())?;
     let pid = session.pid();
@@ -351,7 +403,36 @@ fn pty_open_blocking(
     store: State<Mutex<StateStore>>,
     registry: State<Mutex<PtyRegistry>>,
 ) -> Result<u32, String> {
-    // Copied out under short locks (StateStore before SettingsStore).
+    // First, so a close of the tab (or its window) from here on cancels it.
+    let token = begin_open(&registry, &input.id)?;
+    let (tab, spec) = match spawn_spec(app, &input, &settings, &store) {
+        Ok(found) => found,
+        Err(err) => {
+            end_open(&registry, &input.id, token);
+            return Err(err);
+        }
+    };
+    let window = crate::store::window_label(&tab.window_id).to_string();
+    let still_wanted = || {
+        let tab_open = store
+            .lock()
+            .map(|state| state.tab_by_id(&tab.id).is_some())
+            .unwrap_or(false);
+        tab_open && app.get_webview_window(&window).is_some()
+    };
+    let pid = open_session_as(&registry, &tab.id, token, spec, on_output, still_wanted)?;
+    // The frontend does not use the pid; 0 means a newer open replaced this one.
+    Ok(pid.unwrap_or(0))
+}
+
+/// The tab `input.id` and what its terminal runs. Takes the store locks
+/// one at a time, briefly (StateStore before SettingsStore).
+fn spawn_spec(
+    app: &AppHandle,
+    input: &PtyOpenInput,
+    settings: &Mutex<SettingsStore>,
+    store: &Mutex<StateStore>,
+) -> Result<(crate::store::TabRecord, SpawnSpec), String> {
     let (tab, account) = {
         let state = store.lock().map_err(|err| err.to_string())?;
         let tab = state
@@ -401,21 +482,15 @@ fn pty_open_blocking(
             (command.program, command.args, command.env)
         }
     };
-    let pid = open_session(
-        &registry,
-        &tab.id,
-        SpawnSpec {
-            program,
-            args,
-            env,
-            cwd,
-            cols: input.cols,
-            rows: input.rows,
-        },
-        on_output,
-    )?;
-    // The frontend does not use the pid; 0 means a newer open replaced this one.
-    Ok(pid.unwrap_or(0))
+    let spec = SpawnSpec {
+        program,
+        args,
+        env,
+        cwd,
+        cols: input.cols,
+        rows: input.rows,
+    };
+    Ok((tab, spec))
 }
 
 /// The session the Claude tab `tab_id` could resume now, if any: its saved
@@ -760,6 +835,101 @@ mod tests {
             assert!(reopen.join().unwrap().is_err(), "the open was cancelled");
         });
         assert!(!registry.lock().unwrap().sessions.contains_key("t"));
+        thread::sleep(Duration::from_millis(200));
+        assert!(!started.exists(), "the new program never started");
+    }
+
+    // Review: an open registered itself only once it reached the spawn
+    // step, so a tab closed while the open read the tab and its account was
+    // not cancelled, and the terminal started for a closed tab.
+    #[cfg(unix)]
+    #[test]
+    fn a_close_before_the_open_reaches_the_spawn_cancels_it() {
+        let dir = crate::test_support::TempDir::new("pty_close_early");
+        let registry = Mutex::new(PtyRegistry::new());
+        let started = dir.join("started");
+        let token = begin_open(&registry, "t").unwrap();
+        registry.lock().unwrap().kill("t");
+        let opened = open_session_as(
+            &registry,
+            "t",
+            token,
+            sh_spec(dir.path(), &format!("touch '{}'", started.display())),
+            Channel::new(|_| Ok(())),
+            || true,
+        );
+        assert!(opened.is_err(), "the open was cancelled: {opened:?}");
+        assert!(registry.lock().unwrap().sessions.is_empty());
+        thread::sleep(Duration::from_millis(200));
+        assert!(!started.exists(), "nothing started");
+        // An open that gives up before the spawn step takes its token back.
+        let token = begin_open(&registry, "u").unwrap();
+        end_open(&registry, "u", token);
+        assert!(registry.lock().unwrap().opening.is_empty());
+    }
+
+    // The tab (or its window) is checked under the registry lock right
+    // before the spawn; gone means nothing starts.
+    #[cfg(unix)]
+    #[test]
+    fn an_open_whose_tab_is_gone_by_the_spawn_starts_nothing() {
+        let dir = crate::test_support::TempDir::new("pty_tab_gone");
+        let registry = Mutex::new(PtyRegistry::new());
+        let started = dir.join("started");
+        let token = begin_open(&registry, "t").unwrap();
+        let opened = open_session_as(
+            &registry,
+            "t",
+            token,
+            sh_spec(dir.path(), &format!("touch '{}'", started.display())),
+            Channel::new(|_| Ok(())),
+            || false,
+        );
+        assert!(opened.unwrap_err().contains("closed"));
+        let registry = registry.lock().unwrap();
+        assert!(registry.sessions.is_empty() && registry.opening.is_empty());
+        thread::sleep(Duration::from_millis(200));
+        assert!(!started.exists(), "nothing started");
+    }
+
+    // Review: close_tab killed the terminal first and edited the store
+    // second, so an open between the two saw the tab still there and
+    // spawned a terminal nobody would close.
+    #[cfg(unix)]
+    #[test]
+    fn closing_a_tab_while_its_terminal_starts_leaves_nothing_running() {
+        use crate::store::{StateStore, TabKind};
+        let dir = crate::test_support::TempDir::new("pty_close_tab_race");
+        let mut state = StateStore::open_path(dir.join("state.json")).unwrap();
+        let tab = state
+            .create_tab(&dir.path().display().to_string(), TabKind::Shell)
+            .unwrap();
+        let store = Mutex::new(state);
+        let registry = Mutex::new(PtyRegistry::new());
+        // An old program that takes a while to stop holds the open in its wait.
+        open_slow_stopper(&registry, dir.path(), &tab);
+        let started = dir.join("started");
+        thread::scope(|scope| {
+            let open = scope.spawn(|| {
+                let token = begin_open(&registry, &tab).unwrap();
+                open_session_as(
+                    &registry,
+                    &tab,
+                    token,
+                    sh_spec(
+                        dir.path(),
+                        &format!("touch '{}'; sleep 5", started.display()),
+                    ),
+                    Channel::new(|_| Ok(())),
+                    || store.lock().unwrap().tab_by_id(&tab).is_some(),
+                )
+            });
+            thread::sleep(Duration::from_millis(100));
+            crate::commands::close_tab_then_kill(&store, &registry, None, &tab).unwrap();
+            assert!(open.join().unwrap().is_err(), "the open was cancelled");
+        });
+        assert!(store.lock().unwrap().tab_by_id(&tab).is_none());
+        assert!(registry.lock().unwrap().sessions.is_empty());
         thread::sleep(Duration::from_millis(200));
         assert!(!started.exists(), "the new program never started");
     }

@@ -2,6 +2,9 @@
 //!
 //! Lock order: when one code path holds more than one store lock, take
 //! `StateStore` before `SettingsStore`, or drop one before taking the other.
+//! The terminal registry (`pty::PtyRegistry`) comes before both: an open
+//! checks the store under the registry lock right before it spawns, so no
+//! code takes the registry while holding a store lock.
 //!
 //! Review rule: no store lock is held across a process spawn or a directory
 //! walk. Copy what is needed out of the store, drop the guard, then do the
@@ -16,5 +19,6 @@ pub use json_io::{read_json_or_recover, take_recovery_notes, write_json_atomic};
 pub use settings_store::{ClaudeSettings, SettingsStore, TerminalSettings, UiSettings};
 pub use state_store::StateStore;
 pub use state_types::{
-    window_matches, TabKind, TabRecord, WindowRecord, DEFAULT_ACCOUNT_ID, MAIN_WINDOW_ID,
+    window_label, window_matches, TabKind, TabRecord, WindowRecord, DEFAULT_ACCOUNT_ID,
+    MAIN_WINDOW_ID,
 };

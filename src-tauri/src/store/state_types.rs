@@ -9,6 +9,15 @@ pub fn default_window_id() -> String {
     MAIN_WINDOW_ID.to_string()
 }
 
+/// The window label a tab's `window_id` names. Blank is the original window.
+pub fn window_label(window_id: &str) -> &str {
+    if window_id.trim().is_empty() {
+        MAIN_WINDOW_ID
+    } else {
+        window_id
+    }
+}
+
 /// A tab belongs to `window_id`. Blank ids are the original window.
 pub fn window_matches(tab_window: &str, window_id: &str) -> bool {
     let tab_window = if tab_window.trim().is_empty() {

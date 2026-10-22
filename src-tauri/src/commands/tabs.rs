@@ -141,7 +141,7 @@ pub fn rename_tab(
         .ok_or_else(|| format!("unknown tab: {tab_id}"))
 }
 
-/// Stops the tab's terminal, then moves the tab to Reopen Closed Tab.
+/// Moves the tab to Reopen Closed Tab, then stops its terminal.
 #[tauri::command]
 pub fn close_tab(
     window_id: Option<String>,
@@ -150,14 +150,31 @@ pub fn close_tab(
     registry: State<Mutex<PtyRegistry>>,
     usage: State<Mutex<crate::usage::UsageStore>>,
 ) -> Result<AppStateSnapshot, String> {
-    crate::pty::kill_tab_pty(&registry, &tab_id);
+    let closed = close_tab_then_kill(&store, &registry, window_id.as_deref(), &tab_id);
     if let Ok(mut usage) = usage.lock() {
         usage.forget_tab(&tab_id);
     }
-    let mut store = store.lock().map_err(|e| e.to_string())?;
-    store.bind_window(window_id.as_deref());
-    store.close_tab(&tab_id)?;
-    Ok(snapshot(&store))
+    closed
+}
+
+/// The store first, the terminal second: an open of the tab in progress
+/// checks the store (under the registry lock) right before it spawns, so
+/// it either sees the tab gone or has spawned already and is killed here.
+/// The store lock is dropped before the registry is taken (lock order:
+/// `PtyRegistry` before `StateStore`).
+pub(crate) fn close_tab_then_kill(
+    store: &Mutex<StateStore>,
+    registry: &Mutex<PtyRegistry>,
+    window_id: Option<&str>,
+    tab_id: &str,
+) -> Result<AppStateSnapshot, String> {
+    let closed = {
+        let mut store = store.lock().map_err(|e| e.to_string())?;
+        store.bind_window(window_id);
+        store.close_tab(tab_id).map(|()| snapshot(&store))
+    };
+    crate::pty::kill_tab_pty(registry, tab_id);
+    closed
 }
 
 /// `tab_id`, or the window's most recently closed tab. Its terminal starts

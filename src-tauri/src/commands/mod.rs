@@ -9,5 +9,7 @@ pub use settings::{
     claude_account_logins, claude_status, get_settings, set_claude_settings, set_terminal_settings,
     set_ui_settings,
 };
+#[cfg(test)]
+pub(crate) use tabs::close_tab_then_kill;
 pub use tabs::{close_tab, get_app_state, new_tab, rename_tab, reopen_closed_tab, select_tab};
 pub use usage::get_claude_usage;
