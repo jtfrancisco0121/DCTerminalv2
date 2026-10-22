@@ -38,7 +38,7 @@ def load_status(run):
 
 STAGES = {"planning", "plan-approval", "building", "ship-approval", "shipping", "done", "failed"}
 PR_STATES = {"pending", "building", "reviewing", "fixing", "reviewed", "needs-attention", "opened", "pushed", "local-only"}
-CHECK_RESULTS = {"not-run", "pass", "fail", "none"}
+CHECK_RESULTS = {"not-run", "pass", "fail", "none", "error"}
 
 
 def check_schema(st):
@@ -46,13 +46,16 @@ def check_schema(st):
     check(st.get("stage") in STAGES, f"status.stage valid ({st.get('stage')})")
     check(st.get("waitingFor") in (None, "plan-approval", "ship-approval"), "status.waitingFor valid")
     check(bool(re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", str(st.get("updatedAt")))), f"updatedAt is UTC ISO ({st.get('updatedAt')})")
-    for key in ("runId", "folder", "plan", "prs", "ship", "writeback", "error"):
+    for key in ("runId", "folder", "plan", "prs", "ship", "writeback", "error", "paused", "shipApproval"):
         check(key in st, f"status has '{key}'")
     for pr in st.get("prs", []):
         pid = pr.get("id")
         for key in ("id", "title", "repo", "repoPath", "branch", "base", "baseCommit", "worktree", "dependsOn",
-                    "stories", "commits", "check", "review", "prUrl", "state", "note"):
+                    "stories", "commits", "check", "review", "prUrl", "state", "note", "startedAt", "updatedAt", "agent"):
             check(key in pr, f"{pid} has '{key}'")
+        check(bool((pr.get("stories") or {}).get("ids")), f"{pid}.stories.ids set")
+        for key in ("cwd", "log"):
+            check(key in (pr.get("check") or {}), f"{pid}.check has '{key}'")
         check(pr.get("state") in PR_STATES, f"{pid}.state valid ({pr.get('state')})")
         check(isinstance(pr.get("dependsOn"), list), f"{pid}.dependsOn is a list")
         check((pr.get("check") or {}).get("result") in CHECK_RESULTS, f"{pid}.check.result valid")
@@ -186,13 +189,28 @@ def check_state_helper(events, run):
     """status.json is only written through state.sh put (validated + atomic)."""
     bad = []
     for name, inp in orchestrator_tool_uses(events):
-        if name in ("Write", "Edit") and str(inp.get("file_path", "")).endswith(("status.json", "writeback.json")):
+        if name in ("Write", "Edit") and str(inp.get("file_path", "")).endswith(("status.json", "writeback.json", ".guard.json")):
             bad.append(f"{name} {inp.get('file_path')}")
         if name == "Bash":
             cmd = strip_heredocs(inp.get("command", ""))
-            if re.search(r">\s*['\"]?" + re.escape(run) + r"/(status|writeback)\.json\b", cmd):
+            if re.search(r">\s*['\"]?" + re.escape(run) + r"/(status|writeback|\.guard)\.json\b", cmd):
                 bad.append(f"Bash {cmd[:160]}")
     check(not bad, "state files written only via state.sh: " + "; ".join(bad[:3]))
+
+
+def check_orchestrator_inputs(events, run):
+    """The orchestrator reads neither request.md nor tickets.json, and ships only via state.sh."""
+    bad = []
+    for name, inp in orchestrator_tool_uses(events):
+        if name == "Read" and os.path.basename(str(inp.get("file_path", ""))) in ("request.md", "tickets.json"):
+            bad.append(f"Read {inp.get('file_path')}")
+        if name == "Bash":
+            cmd = strip_heredocs(inp.get("command", ""))
+            if re.search(r"\b(cat|head|tail|less|grep|sed|awk)\b[^|;&]*(request\.md|tickets\.json)", cmd):
+                bad.append(f"Bash {cmd[:160]}")
+            if re.search(r"\bgit\b[^|;&]*\bpush\b|\bgh\s+pr\s+create\b", cmd):
+                bad.append(f"Bash {cmd[:160]}")
+    check(not bad, "orchestrator never reads request.md / tickets.json and ships only via state.sh: " + "; ".join(bad[:3]))
 
 
 def final_result(events):
@@ -209,6 +227,7 @@ def main():
     check(res and not res.get("is_error"), f"claude run ended without error ({res.get('subtype')}, {str(res.get('result'))[:200]})")
     check_orchestrator_context(events, ws)
     check_state_helper(events, os.path.realpath(run))
+    check_orchestrator_inputs(events, run)
     launches = subagent_launches(events)
     kinds = [k for k, _ in launches]
     print(f"    sub-agents launched by the orchestrator: {kinds}")
@@ -226,6 +245,8 @@ def main():
         check(st.get("stage") == "done", f"stage done (got {st.get('stage')})")
         check(st.get("waitingFor") is None, "waitingFor null")
         check((st.get("plan") or {}).get("approved") is True, "plan approved")
+        check(((st.get("plan") or {}).get("approval") or {}).get("by") == "test", f"plan.approval by test ({(st.get('plan') or {}).get('approval')})")
+        check((st.get("shipApproval") or {}).get("by") == "test", f"shipApproval by test ({st.get('shipApproval')})")
         check((st.get("ship") or {}).get("remote") == "none", f"ship.remote none ({st.get('ship')})")
         check((st.get("ship") or {}).get("pushed") is False, "nothing pushed")
         for pr in (mathlib, cli):

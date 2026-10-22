@@ -92,14 +92,13 @@ EOF
   (cd "$ws/calc-cli" && ! npm test -s >/dev/null 2>&1) || fail "calc-cli check should fail before the run"
 }
 
-# write_request <run dir> <ws> <extra test-mode lines...>
+# write_request <run dir> <ws>. Test mode is not in request.md: it comes only from the
+# DCV2_TEST_MODE env given to run_claude.
 write_request() {
-  local run="$1" ws="$2"; shift 2
+  local run="$1" ws="$2"
   mkdir -p "$run"
   {
     echo "folder: $ws"
-    local line
-    for line in "$@"; do echo "$line"; done
     cat <<'EOF'
 
 # Request
@@ -124,12 +123,13 @@ EOF
 EOF
 }
 
-# run_claude <cwd> <plugin> <out.jsonl> <prompt>: headless, stream-json, killed after $CLAUDE_TIMEOUT s.
+# run_claude <cwd> <plugin> <out.jsonl> <prompt> [VAR=value...]: headless, stream-json, killed
+# after $CLAUDE_TIMEOUT s. The VAR=value pairs (e.g. DCV2_RUN_DIR, DCV2_TEST_MODE) are the launch env.
 run_claude() {
-  local cwd="$1" plugin="$2" out="$3" prompt="$4"
-  note "claude -p \"$prompt\" (model $MODEL) in $cwd"
+  local cwd="$1" plugin="$2" out="$3" prompt="$4"; shift 4
+  note "$* claude -p \"$prompt\" (model $MODEL) in $cwd"
   local start=$SECONDS
-  (cd "$cwd" && perl -e 'alarm shift; exec @ARGV' "$CLAUDE_TIMEOUT" \
+  (cd "$cwd" && env -u DCV2_RUN_DIR -u DCV2_TEST_MODE "$@" perl -e 'alarm shift; exec @ARGV' "$CLAUDE_TIMEOUT" \
      claude -p "$prompt" --plugin-dir "$plugin" --model "$MODEL" \
        --permission-mode bypassPermissions --output-format stream-json --verbose \
        > "$out" 2> "${out%.jsonl}.err") || note "claude exited with $? (see ${out%.jsonl}.err)"
