@@ -8,6 +8,8 @@
 //! window from the restore list and keeps it, with all its tabs and its
 //! account, for File > Reopen Closed Window. Quit (a programmatic exit,
 //! including the macOS Quit item) does not drop windows that are still open.
+//! A window with terminals still running in it asks before it closes
+//! (`close_window_now`), as Quit and a tab's close do.
 //!
 //! The macOS menu's tab items (New Tab, Close Tab, Reopen Closed Tab,
 //! Settings) go to the focused window as a [`MENU_EVENT`] with the item's
@@ -59,6 +61,15 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 static QUIT_ASKING: AtomicBool = AtomicBool::new(false);
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const QUIT_ITEM: &str = "quit";
+/// File > Close Window: closes the focused window, asking first like the
+/// window's own close button when terminals are running in it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const CLOSE_WINDOW_ITEM: &str = "close-window";
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const CLOSE_WINDOW_ACCELERATOR: &str = "CmdOrCtrl+Shift+W";
+/// Windows whose close question is on screen, so a second close of the same
+/// window does not stack another.
+static CLOSE_ASKING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// How many terminals a quit would stop, across every window. Each count
 /// is taken under its own short lock, dropped before anyone is asked
@@ -114,7 +125,7 @@ pub(crate) fn exit_step(code: Option<i32>, os: &str, confirmed: bool) -> ExitSte
     }
 }
 
-/// The quit question, in the window-close confirm's words.
+/// The quit and window-close question, in the tab-close confirm's words.
 pub(crate) fn quit_message(terminals: usize) -> String {
     let s = if terminals == 1 { "" } else { "s" };
     format!("{terminals} running terminal{s} will be stopped.")
@@ -269,9 +280,17 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
                 .iter()
                 .map(|item| item as &dyn tauri::menu::IsMenuItem<tauri::Wry>),
         );
+        let close_window = MenuItem::with_id(
+            app,
+            CLOSE_WINDOW_ITEM,
+            "Close Window",
+            true,
+            Some(CLOSE_WINDOW_ACCELERATOR),
+        )?;
         file_items.push(&separator);
         file_items.push(&new_window);
         file_items.push(&reopen_window);
+        file_items.push(&close_window);
         let file = Submenu::with_items(app, "File", true, &file_items)?;
         app.manage(ReopenWindowItem(reopen_window));
         let settings =
@@ -313,6 +332,12 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
         app.set_menu(menu)?;
         app.on_menu_event(|app, event| match event.id().as_ref() {
             "new-window" => request_new_window(app),
+            CLOSE_WINDOW_ITEM => {
+                if let Some(window) = focused_label(app).and_then(|l| app.get_webview_window(&l)) {
+                    // A close request like the title bar's: it asks first.
+                    let _ = window.close();
+                }
+            }
             id if id == SETTINGS_ITEM || PAGE_ITEMS.iter().any(|(item, _, _)| *item == id) => {
                 send_to_focused(app, id);
             }
@@ -390,6 +415,15 @@ pub fn handle_run_event(app: &AppHandle, event: tauri::RunEvent) {
         }
         tauri::RunEvent::WindowEvent {
             label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } => {
+            if !close_window_now(app, &label) {
+                api.prevent_close();
+            }
+        }
+        tauri::RunEvent::WindowEvent {
+            label,
             event: tauri::WindowEvent::Destroyed,
             ..
         } => on_window_destroyed(app, &label),
@@ -435,22 +469,103 @@ fn shutdown_processes(app: &AppHandle) {
     }
 }
 
-fn on_window_destroyed(app: &AppHandle, label: &str) {
-    let tab_ids = {
-        let Some(state) = app.try_state::<Mutex<StateStore>>() else {
-            return;
-        };
-        let Ok(state) = state.lock() else {
-            return;
-        };
-        state
-            .data
-            .tabs
-            .iter()
-            .filter(|tab| crate::store::window_matches(&tab.window_id, label))
-            .map(|tab| tab.id.clone())
-            .collect::<Vec<_>>()
+/// Terminals still running in window `label`, each lock taken and dropped
+/// in turn (StateStore, then the registry).
+fn live_work_in(app: &AppHandle, label: &str) -> usize {
+    let tab_ids = window_tab_ids(app, label);
+    app.try_state::<Mutex<crate::pty::PtyRegistry>>()
+        .map_or(0, |registry| match registry.lock() {
+            Ok(guard) => guard.live_count_of(&tab_ids),
+            Err(poisoned) => poisoned.into_inner().live_count_of(&tab_ids),
+        })
+}
+
+/// The ids of the open tabs in window `label`.
+fn window_tab_ids(app: &AppHandle, label: &str) -> Vec<String> {
+    let Some(state) = app.try_state::<Mutex<StateStore>>() else {
+        return Vec::new();
     };
+    let Ok(state) = state.lock() else {
+        return Vec::new();
+    };
+    state
+        .data
+        .tabs
+        .iter()
+        .filter(|tab| crate::store::window_matches(&tab.window_id, label))
+        .map(|tab| tab.id.clone())
+        .collect()
+}
+
+/// `CloseRequested` (the title bar, Cmd+W on the window, File > Close
+/// Window): true lets the window close now. With terminals running in it
+/// the close is held and the question goes on screen once; Close then
+/// destroys the window (no second question), which stops its terminals.
+/// During a confirmed quit every window closes without asking.
+fn close_window_now(app: &AppHandle, label: &str) -> bool {
+    let quitting = QUITTING.load(Ordering::SeqCst);
+    let live = if quitting {
+        0
+    } else {
+        live_work_in(app, label)
+    };
+    window_close_request(live, quitting, &CLOSE_ASKING, label, |live| {
+        ask_to_close_window(app, label, live)
+    })
+}
+
+/// [`close_window_now`] over its question list and its question, so it
+/// runs in tests without an app.
+fn window_close_request(
+    live: usize,
+    quitting: bool,
+    asking: &Mutex<Vec<String>>,
+    label: &str,
+    ask: impl FnOnce(usize),
+) -> bool {
+    let mut asking = asking
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match quit_decision(live, quitting, asking.iter().any(|open| open == label)) {
+        QuitDecision::Quit => true,
+        QuitDecision::Ignore => false,
+        QuitDecision::Ask => {
+            asking.push(label.to_string());
+            drop(asking);
+            ask(live);
+            false
+        }
+    }
+}
+
+fn ask_to_close_window(app: &AppHandle, label: &str, live: usize) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let app_for_answer = app.clone();
+    let label = label.to_string();
+    app.dialog()
+        .message(quit_message(live))
+        .title("Close window?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Close window".to_string(),
+            "Cancel".to_string(),
+        ))
+        .show(move |close| {
+            if let Ok(mut asking) = CLOSE_ASKING.lock() {
+                asking.retain(|open| open != &label);
+            }
+            if close {
+                if let Some(window) = app_for_answer.get_webview_window(&label) {
+                    let _ = window.destroy();
+                }
+            }
+        });
+}
+
+fn on_window_destroyed(app: &AppHandle, label: &str) {
+    // An open still starting in this window sees the window gone (it is
+    // checked right before the spawn) or is killed here.
+    let tab_ids = window_tab_ids(app, label);
     if let Some(terminals) = app.try_state::<Mutex<crate::pty::PtyRegistry>>() {
         for id in &tab_ids {
             crate::pty::kill_tab_pty(&terminals, id);
@@ -932,7 +1047,8 @@ mod tests {
     fn closing_the_last_window_on_macos_still_keeps_the_process_up() {
         assert_eq!(exit_step(None, "macos", false), ExitStep::StayUp);
         assert_eq!(exit_step(None, "macos", true), ExitStep::StayUp);
-        // Elsewhere the last window quits, as before (it already asked on close).
+        // Elsewhere the last window quits, as before (its close asked first
+        // when terminals were running in it: `close_window_now`).
         assert_eq!(exit_step(None, "windows", false), ExitStep::Proceed);
         assert_eq!(exit_step(None, "linux", false), ExitStep::Proceed);
     }
@@ -961,6 +1077,44 @@ mod tests {
         );
         // A registry not set up yet counts nothing.
         assert_eq!(live_terminals(None), 0);
+    }
+
+    // Review: a window closed from its title bar stopped every terminal in
+    // it without asking (Quit and tab close both ask).
+    #[test]
+    fn closing_a_window_with_running_terminals_asks_once_first() {
+        let asking = Mutex::new(Vec::new());
+        let mut asked = None;
+        assert!(!window_close_request(2, false, &asking, "win-2", |live| {
+            asked = Some(live)
+        }));
+        assert_eq!(asked, Some(2), "the question names what stops");
+        assert!(
+            !window_close_request(2, false, &asking, "win-2", |_| panic!("one question")),
+            "a second close while it is asked is held too"
+        );
+        let mut other = false;
+        assert!(!window_close_request(1, false, &asking, "main", |_| {
+            other = true
+        }));
+        assert!(other, "another window asks for itself");
+    }
+
+    #[test]
+    fn a_window_with_nothing_running_or_during_a_quit_closes_at_once() {
+        let asking = Mutex::new(Vec::new());
+        assert!(window_close_request(
+            0,
+            false,
+            &asking,
+            "win-2",
+            |_| panic!("idle")
+        ));
+        assert!(window_close_request(3, true, &asking, "win-2", |_| panic!(
+            "quitting"
+        )));
+        assert!(asking.lock().unwrap().is_empty());
+        assert_eq!(CLOSE_WINDOW_ACCELERATOR, "CmdOrCtrl+Shift+W");
     }
 
     #[test]

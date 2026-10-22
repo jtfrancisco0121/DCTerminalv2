@@ -130,9 +130,21 @@ impl PtyRegistry {
     pub fn live_count(&self) -> usize {
         self.sessions
             .values()
-            .filter(|session| cfg!(not(unix)) || session.group().running())
+            .filter(|session| live(session))
             .count()
     }
+
+    /// [`Self::live_count`] over the terminals `ids` only (one window's tabs).
+    pub fn live_count_of(&self, ids: &[String]) -> usize {
+        ids.iter()
+            .filter_map(|id| self.sessions.get(id))
+            .filter(|session| live(session))
+            .count()
+    }
+}
+
+fn live(session: &PtySession) -> bool {
+    cfg!(not(unix)) || session.group().running()
 }
 
 impl Drop for PtyRegistry {
@@ -1124,12 +1136,21 @@ mod tests {
         open_slow_stopper(&registry, dir.path(), "a");
         open_slow_stopper(&registry, dir.path(), "b");
         assert_eq!(registry.lock().unwrap().live_count(), 2);
+        assert_eq!(
+            registry
+                .lock()
+                .unwrap()
+                .live_count_of(&["a".into(), "gone".into()]),
+            1,
+            "one window's terminals only"
+        );
         registry.lock().unwrap().kill("a");
         assert_eq!(
             registry.lock().unwrap().live_count(),
             1,
             "a closed terminal is not live"
         );
+        assert_eq!(registry.lock().unwrap().live_count_of(&["a".into()]), 0);
         open_session(
             &registry,
             "c",
