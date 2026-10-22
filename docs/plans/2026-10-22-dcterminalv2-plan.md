@@ -89,3 +89,11 @@ Each phase: agents build in worktrees, Claude reviews, fixes MEDIUM+, merges (as
 3. The skill stops only at the two stops (D7), not after each story.
 
 Status: approved.
+
+## Phase 0 results (2026-10-22, Claude Code 2.1.287)
+
+- **Skill per launch: works.** `claude --plugin-dir <dir>` loads a plugin for that session only; its skill runs as `/<plugin>:<skill>` and its `agents/*.md` are usable as sub-agent types (`<plugin>:<agent>`, with `model:` and `tools:` in frontmatter). So the app ships one plugin folder: the orchestrator skill + planner / plan-reviewer / implementer / pr-reviewer agents. Nothing is installed into `~/.claude*`.
+- **Parallel sub-agents across sibling repos: works.** In a folder of two git repos (not itself a repo), the orchestrator ran `git worktree add` in each repo, launched two sub-agents in one message (both ran at once), each fixed, tested and committed in its own worktree; the repos' main branches were untouched.
+- **status.json: works.** The orchestrator wrote it before building and updated each PR as its sub-agent returned.
+- **Resume after kill:** moved to P2 (it is skill logic over `status.json` + `plan.md`; `claude --resume` is the fallback).
+- Headless result JSON reports sub-agent counts (spawned / completed / failed), useful for tests.
