@@ -28,7 +28,7 @@ You are the **orchestrator**. You never do the heavy work yourself: sub-agents p
 
 ## Writing state
 
-Always use the helper `${CLAUDE_PLUGIN_ROOT}/scripts/state.sh`; never write `status.json`, `writeback.json` or `log.md` any other way (no `cat >`, no Write tool on them).
+Always use the helper `${CLAUDE_PLUGIN_ROOT}/scripts/state.sh`; never write `status.json`, `writeback.json` or `log.md` any other way (no `cat >`, no `echo >`, no Write or Edit tool on them, not even for a one-field change).
 
 - **status.json**: the full document every time (never a partial patch), via
   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/state.sh" put <run>/status.json <<'JSON'` … `JSON`.
@@ -80,9 +80,9 @@ status.json (schema 1):
 
 ## Step 2: worktrees
 
-For each PR of the plan (ids, repo, stories, depends on, check from the `## Pull requests` section):
+Make the worktrees of **all** PRs now, before building anything (dependent ones too). For each PR of the plan (ids, repo, stories, depends on, check from the `## Pull requests` section):
 1. `repoPath` = the repo's path. `base` = `git -C <repoPath> rev-parse --abbrev-ref HEAD` (the checked-out branch; if `HEAD`, use the commit). `baseCommit` = `git -C <repoPath> rev-parse HEAD`.
-2. `branch` = `dcv2/<runId>-<pr id lowercased>`; `worktree` = `<parent of repoPath>/<repo>-worktrees/dcv2-<runId>-<pr id lowercased>`.
+2. `branch` = `dcv2/<runId>-<pr id lowercased>`; `worktree` = `$(dirname <repoPath>)/<repo>-worktrees/dcv2-<runId>-<pr id lowercased>`, i.e. **beside** the repo, in the same folder the repo sits in. Example: repo `/ws/mathlib`, run `r1`, PR1 → `/ws/mathlib-worktrees/dcv2-r1-pr1`.
 3. `git -C <repoPath> worktree add <worktree> -b <branch> <baseCommit>`. If the branch already exists (a resumed run), use `git -C <repoPath> worktree add <worktree> <branch>` instead. If the path already exists and `git -C <repoPath> worktree list --porcelain` lists it, reuse it.
 4. Fill the PR's entry in status.json (`state: pending`, `stories.total`, `check.command`), log `PR1 worktree <path> on <branch>`.
 

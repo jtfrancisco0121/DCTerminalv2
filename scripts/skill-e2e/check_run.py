@@ -58,7 +58,9 @@ def check_schema(st):
         check((pr.get("check") or {}).get("result") in CHECK_RESULTS, f"{pid}.check.result valid")
         check(str(pr.get("branch", "")).startswith("dcv2/"), f"{pid}.branch starts with dcv2/ ({pr.get('branch')})")
         wt = pr.get("worktree") or ""
-        check("-worktrees/" in wt, f"{pid}.worktree is under <repo>-worktrees/ ({wt})")
+        repo_path = pr.get("repoPath") or ""
+        expected_parent = os.path.join(os.path.dirname(repo_path), os.path.basename(repo_path) + "-worktrees")
+        check(os.path.dirname(wt) == expected_parent, f"{pid}.worktree is beside its repo in {expected_parent} ({wt})")
 
 
 def pr_by_repo(st, repo):
