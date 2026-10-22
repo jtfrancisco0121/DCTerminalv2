@@ -628,28 +628,27 @@ mod tests {
         let (cols, rows) = session.size().expect("size");
         assert_eq!((cols, rows), (40, 12));
         session.kill();
+        // kill() waits up to STOP_GRACE for SIGTERM before SIGKILL, so a
+        // loaded machine needs a deadline well past it (not 30 x 50 ms).
+        let deadline = std::time::Instant::now() + STOP_GRACE + Duration::from_secs(10);
         let mut saw_exit = false;
-        for _ in 0..30 {
-            if matches!(
-                session.recv_timeout(Duration::from_millis(50)),
+        while !saw_exit && std::time::Instant::now() < deadline {
+            saw_exit = matches!(
+                session.recv_timeout(Duration::from_millis(100)),
                 Ok(Some(PtyOutput::Exit { .. }))
-            ) {
-                saw_exit = true;
-                break;
-            }
+            );
         }
         assert!(saw_exit, "kill did not report an exit");
         #[cfg(unix)]
         {
-            let mut gone = false;
-            for _ in 0..20 {
-                if !process_alive(pid) {
-                    gone = true;
-                    break;
-                }
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while process_alive(pid) && std::time::Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(50));
             }
-            assert!(gone, "shell {pid} was still alive after kill");
+            assert!(
+                !process_alive(pid),
+                "shell {pid} was still alive after kill"
+            );
         }
     }
 
