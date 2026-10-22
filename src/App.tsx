@@ -10,6 +10,7 @@ import {
   renameTab,
   reopenClosedTab,
   selectTab,
+  setWindowAccount,
   windowContext,
   type AppStateSnapshot,
   type RateWindow,
@@ -18,6 +19,7 @@ import {
 } from "./bridge";
 import { AccountPicker } from "./components/AccountPicker";
 import { Dialog } from "./components/Dialog";
+import { InlineNotice } from "./components/InlineNotice";
 import { NewTabForm } from "./components/NewTabForm";
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
@@ -25,6 +27,7 @@ import { TabBar } from "./components/TabBar";
 import { destroyTerminal, TerminalView } from "./components/TerminalView";
 import { newTabDefaults, type NewTabDraft } from "./newTab";
 import { detectPlatform } from "./terminal/keys";
+import { ACCOUNT_REMOVED, accountProblem } from "./terminal/openPlan";
 import { dropLivePty, ptyExitCode, ptyRunning, subscribeLivePty, subscribePtyExit } from "./terminal/live";
 import { requestTerminalSearch, setCopyOnSelect, setOptionAsMeta, setTerminalTheme } from "./terminal/park";
 import { applyTheme, watchSystemTheme } from "./theme";
@@ -61,7 +64,7 @@ function App() {
   const [state, setState] = useState<AppStateSnapshot | null>(null);
   const [usage, setUsage] = useState<RateWindow[] | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<"new-tab" | "new-window" | "settings" | null>(null);
+  const [dialog, setDialog] = useState<"new-tab" | "new-window" | "pick-account" | "settings" | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
   const [lastFolder, setLastFolder] = useState("");
   // Re-render when a terminal starts or exits (the tab bar dims exited tabs).
@@ -238,6 +241,10 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [dialog]);
 
+  const accountMissing = ctx?.accountMissing ?? false;
+  // A Claude tab of a removed account shows the notice, never a terminal.
+  const blocked = active ? accountProblem(active, accountMissing) : null;
+
   const exited = new Set((state?.tabs ?? []).filter((tab) => ptyExitCode(tab.id) != null).map((tab) => tab.id));
   const fontSize = settings?.terminal.fontSize ?? 14;
 
@@ -255,6 +262,18 @@ function App() {
         />
       )}
       <section className="workspace-body">
+        {accountMissing && !blocked && (
+          <InlineNotice
+            tone="warning"
+            action={
+              <button type="button" className="secondary-button" onClick={() => setDialog("pick-account")}>
+                Pick an account
+              </button>
+            }
+          >
+            {ACCOUNT_REMOVED}
+          </InlineNotice>
+        )}
         {state && state.tabs.length === 0 && (
           <div className="start-screen">
             <h1>New tab</h1>
@@ -269,7 +288,17 @@ function App() {
             )}
           </div>
         )}
-        {active && <TerminalView key={active.id} tab={active} fontSize={fontSize} autoFocus={!dialog} />}
+        {active && blocked && (
+          <div className="terminal-view terminal-problem">
+            <p className="error">{blocked}</p>
+            <button type="button" className="primary-button" onClick={() => setDialog("pick-account")}>
+              Pick an account
+            </button>
+          </div>
+        )}
+        {active && !blocked && (
+          <TerminalView key={active.id} tab={active} fontSize={fontSize} autoFocus={!dialog} />
+        )}
       </section>
       <StatusBar
         account={ctx ? { name: ctx.accountName, config: ctx.config } : null}
@@ -293,6 +322,17 @@ function App() {
           accounts={settings.accounts}
           current={ctx?.accountId ?? ""}
           onOpen={(accountId) => openAccountWindow(accountId).then(() => undefined)}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === "pick-account" && settings && (
+        <AccountPicker
+          accounts={settings.accounts}
+          current=""
+          title="Pick an account"
+          submitLabel="Use account"
+          hint="This window's account was removed from Settings. Its Claude tabs start under the account you pick."
+          onOpen={(accountId) => setWindowAccount(accountId).then(setCtx)}
           onClose={() => setDialog(null)}
         />
       )}

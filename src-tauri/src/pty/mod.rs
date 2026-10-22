@@ -2,7 +2,9 @@
 //! channel.
 //!
 //! A tab is a folder plus what runs in it: `claude` under its window's
-//! account (`CLAUDE_CONFIG_DIR`), or the login shell. The tab record says
+//! account (`CLAUDE_CONFIG_DIR`), or the login shell (with that same
+//! `CLAUDE_CONFIG_DIR`, for a `claude` typed there). A window whose account
+//! was removed starts no Claude tab. The tab record says
 //! which; `pty_open` reads it, so the view only names the tab. A Claude tab
 //! is pinned to a session id (`--session-id`) saved on the tab, so after an
 //! exit or a restart it can be resumed (`--resume`) while that session's log
@@ -17,6 +19,7 @@ use crate::provider::claude_config::ConfigDirSource;
 use crate::provider::{new_claude_session_id, ClaudeProvider, TerminalKind, TerminalLaunch};
 use crate::pty::session::{PtyOutput, PtySession, SpawnSpec};
 use crate::pty::shell::resolve_shell_for_host;
+use crate::store::settings_store::{known_account_config, ACCOUNT_REMOVED};
 use crate::store::{SettingsStore, StateStore, TabKind};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -373,6 +376,26 @@ pub(crate) fn check_account_folder(
     ))
 }
 
+/// What a shell tab adds to its environment: `CLAUDE_CONFIG_DIR` set to
+/// the window's account folder, so a `claude` typed there uses the
+/// window's account and not one inherited from where the app started. With
+/// the account removed, an inherited value is dropped instead (`claude`
+/// then uses `~/.claude`, as in any plain terminal).
+pub(crate) fn shell_account_env(
+    config: Option<&crate::provider::claude_config::ConfigDirInfo>,
+) -> (Vec<(String, String)>, Vec<String>) {
+    match config {
+        Some(config) => (
+            crate::provider::claude_config::claude_env(config),
+            Vec::new(),
+        ),
+        None => (
+            Vec::new(),
+            vec![crate::provider::claude_config::CLAUDE_CONFIG_DIR.to_string()],
+        ),
+    }
+}
+
 /// Async with the work on a blocking thread: replacing a running terminal
 /// waits for its program to exit (see `open_session`).
 #[tauri::command]
@@ -447,12 +470,20 @@ fn spawn_spec(
         (settings.terminal().shell.clone(), settings.claude().clone())
     };
     let cwd = validate_working_folder(&tab.cwd).map_err(|err| err.message())?;
-    let (program, args, env) = match tab.kind {
+    // `None` once the window's account was removed from Settings.
+    let account_config = known_account_config(&claude, &account);
+    let (program, args, env, env_remove) = match tab.kind {
         TabKind::Shell => {
             let resolved = resolve_shell_for_host(&shell);
-            (resolved.program, resolved.args, Vec::new())
+            let (env, env_remove) = shell_account_env(account_config.as_ref());
+            (resolved.program, resolved.args, env, env_remove)
         }
         TabKind::Claude => {
+            // Never another account in its place: that would also save the
+            // other account's session over the tab's own.
+            if account_config.is_none() {
+                return Err(ACCOUNT_REMOVED.to_string());
+            }
             let provider = ClaudeProvider::for_account(&claude, &account);
             check_account_folder(&provider.config)?;
             let current = provider.config.path.clone();
@@ -479,13 +510,14 @@ fn spawn_spec(
             if state.tab_by_id(&tab.id).is_some() {
                 state.remember_claude_session(&tab.id, &start.session_id, &current)?;
             }
-            (command.program, command.args, command.env)
+            (command.program, command.args, command.env, Vec::new())
         }
     };
     let spec = SpawnSpec {
         program,
         args,
         env,
+        env_remove,
         cwd,
         cols: input.cols,
         rows: input.rows,
@@ -515,7 +547,11 @@ pub fn terminal_resume_id(
     }
     let current = {
         let settings = settings.lock().map_err(|err| err.to_string())?;
-        crate::store::settings_store::resolved_account_config(settings.claude(), &account).path
+        // A removed account resumes nothing (and its tabs do not start).
+        match known_account_config(settings.claude(), &account) {
+            Some(config) => config.path,
+            None => return Ok(None),
+        }
     };
     Ok(crate::claude_session_log::resumable_session(
         tab.claude_session_id.as_deref(),
@@ -625,6 +661,48 @@ mod tests {
         );
     }
 
+    // Review: shell tabs got no account at all and kept an inherited
+    // CLAUDE_CONFIG_DIR, so `claude` typed there ran on another account.
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_tab_runs_claude_under_its_windows_account() {
+        use crate::provider::claude_config::resolve_with;
+        let dir = crate::test_support::TempDir::new("pty_shell_account");
+        let account = resolve_with(None, Some("/w/.claude-account2"), None);
+        let printed = |config: Option<&crate::provider::claude_config::ConfigDirInfo>| {
+            let (env, env_remove) = shell_account_env(config);
+            let mut spec = sh_spec(dir.path(), "printf '<%s>' \"${CLAUDE_CONFIG_DIR-unset}\"");
+            if config.is_some() {
+                // Set earlier, as an inherited value is: the account wins.
+                spec.env
+                    .push(("CLAUDE_CONFIG_DIR".into(), "/inherited".into()));
+            }
+            // Without an account, whatever this test process inherited goes.
+            spec.env.extend(env);
+            spec.env_remove = env_remove;
+            let session = PtySession::spawn(spec).expect("spawn sh");
+            let mut text = String::new();
+            for _ in 0..100 {
+                match session.recv_timeout(Duration::from_millis(50)) {
+                    Ok(Some(session::PtyOutput::Data(bytes))) => {
+                        text.push_str(&String::from_utf8_lossy(&bytes))
+                    }
+                    Ok(Some(session::PtyOutput::Exit { .. })) => break,
+                    _ => {}
+                }
+            }
+            text
+        };
+        assert!(
+            printed(Some(&account)).contains("</w/.claude-account2>"),
+            "the window's account wins over an inherited one"
+        );
+        assert!(
+            printed(None).contains("<unset>"),
+            "a removed account leaves no inherited folder behind"
+        );
+    }
+
     // Review: Quit SIGTERMed (and then waited on and SIGKILLed) the pid of a
     // terminal whose program had already exited and been reaped. That pid
     // may since lead an unrelated process group.
@@ -667,6 +745,7 @@ mod tests {
             program: "/bin/sh".into(),
             args: vec!["-c".into(), script.into()],
             env: Vec::new(),
+            env_remove: Vec::new(),
             cwd: dir.to_path_buf(),
             cols: 80,
             rows: 24,

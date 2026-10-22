@@ -25,6 +25,8 @@ pub struct SpawnSpec {
     pub args: Vec<String>,
     /// Set on top of the inherited environment (e.g. `CLAUDE_CONFIG_DIR`).
     pub env: Vec<(String, String)>,
+    /// Dropped from the inherited environment before `env` is set.
+    pub env_remove: Vec<String>,
     pub cwd: std::path::PathBuf,
     pub cols: u16,
     pub rows: u16,
@@ -103,6 +105,9 @@ impl PtySession {
         command.cwd(spec.cwd);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
+        for key in &spec.env_remove {
+            command.env_remove(key);
+        }
         for (key, value) in &spec.env {
             command.env(key, value);
         }
@@ -564,6 +569,7 @@ mod tests {
             program: "node".into(),
             args: vec![script.display().to_string()],
             env: Vec::new(),
+            env_remove: Vec::new(),
             cwd: dir.clone(),
             cols: 80,
             rows: 24,
@@ -592,6 +598,7 @@ mod tests {
             program,
             args,
             env: Vec::new(),
+            env_remove: Vec::new(),
             cwd,
             cols: 80,
             rows: 24,
@@ -661,6 +668,7 @@ mod tests {
             program: "/bin/sh".into(),
             args: vec!["-c".into(), script],
             env: Vec::new(),
+            env_remove: Vec::new(),
             cwd: dir.path().to_path_buf(),
             cols: 80,
             rows: 24,
@@ -699,6 +707,7 @@ mod tests {
             program: "/bin/sh".into(),
             args: vec!["-c".into(), script],
             env: Vec::new(),
+            env_remove: Vec::new(),
             cwd: dir.path().to_path_buf(),
             cols: 80,
             rows: 24,

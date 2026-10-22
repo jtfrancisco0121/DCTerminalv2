@@ -16,7 +16,7 @@
 
 use crate::process_tree::STOP_GRACE;
 use crate::provider::claude_config::ConfigDirInfo;
-use crate::store::settings_store::{account_display_name, resolved_account_config};
+use crate::store::settings_store::{account_display_name, account_exists, resolved_account_config};
 use crate::store::{SettingsStore, StateStore, MAIN_WINDOW_ID};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -705,6 +705,30 @@ pub struct WindowContext {
     pub account_name: String,
     pub title: String,
     pub config: ConfigDirInfo,
+    /// The window's account is no longer in Settings: its Claude tabs do
+    /// not start until another account is picked (`set_window_account`).
+    pub account_missing: bool,
+}
+
+/// `label`'s account as the page shows it. Takes both store locks
+/// (StateStore first).
+pub(crate) fn context_for(
+    state: &StateStore,
+    settings: &SettingsStore,
+    label: &str,
+) -> WindowContext {
+    let account_id = state.account_for_window(label);
+    let account_name = account_display_name(settings.claude(), &account_id);
+    let config = resolved_account_config(settings.claude(), &account_id);
+    let title = window_title(&account_name);
+    WindowContext {
+        id: label.to_string(),
+        account_missing: !account_exists(settings.claude(), &account_id),
+        account_id,
+        account_name,
+        title,
+        config,
+    }
 }
 
 #[tauri::command]
@@ -713,24 +737,45 @@ pub fn window_context(
     state: State<'_, Mutex<StateStore>>,
     settings: State<'_, Mutex<SettingsStore>>,
 ) -> Result<WindowContext, String> {
-    let label = window.label().to_string();
     let ctx = {
         let state = state.lock().map_err(|err| err.to_string())?;
         let settings = settings.lock().map_err(|err| err.to_string())?;
-        let account_id = state.account_for_window(&label);
-        let account_name = account_display_name(settings.claude(), &account_id);
-        let config = resolved_account_config(settings.claude(), &account_id);
-        let title = window_title(&account_name);
-        WindowContext {
-            id: label,
-            account_id,
-            account_name,
-            title,
-            config,
-        }
+        context_for(&state, &settings, window.label())
     };
     let _ = window.set_title(&ctx.title);
     Ok(ctx)
+}
+
+/// Move this window to `account_id` (after its own account was removed).
+/// Its tabs keep their saved sessions; one saved under another account
+/// starts fresh when it is next shown.
+#[tauri::command]
+pub fn set_window_account(
+    window: tauri::WebviewWindow,
+    account_id: String,
+    state: State<'_, Mutex<StateStore>>,
+    settings: State<'_, Mutex<SettingsStore>>,
+) -> Result<WindowContext, String> {
+    let ctx = {
+        let mut state = state.lock().map_err(|err| err.to_string())?;
+        let settings = settings.lock().map_err(|err| err.to_string())?;
+        move_window_to_account(&mut state, &settings, window.label(), account_id.trim())?
+    };
+    let _ = window.set_title(&ctx.title);
+    Ok(ctx)
+}
+
+pub(crate) fn move_window_to_account(
+    state: &mut StateStore,
+    settings: &SettingsStore,
+    label: &str,
+    account_id: &str,
+) -> Result<WindowContext, String> {
+    if !account_exists(settings.claude(), account_id) {
+        return Err("That Claude account is not in Settings.".into());
+    }
+    state.ensure_window(label, account_id)?;
+    Ok(context_for(state, settings, label))
 }
 
 /// Retitle every open window after an account rename.
@@ -954,6 +999,32 @@ mod tests {
         .unwrap();
         assert_eq!(reopened.as_deref(), Some("win-2"));
         assert_eq!(state.lock().unwrap().tabs_in_window("win-2").len(), 1);
+    }
+
+    #[test]
+    fn a_window_whose_account_was_removed_says_so_until_another_is_picked() {
+        let dir = crate::test_support::TempDir::new("windows_account_removed");
+        let mut state = StateStore::open_path(dir.join("state.json")).unwrap();
+        state.ensure_window("win-2", "gone").unwrap();
+        let mut settings = SettingsStore::open(dir.path()).unwrap();
+        settings
+            .set_claude(crate::store::ClaudeSettings {
+                claude_path: None,
+                accounts: vec![crate::store::settings_store::ClaudeAccount {
+                    id: "work".into(),
+                    name: "Work".into(),
+                    config_dir: None,
+                }],
+            })
+            .unwrap();
+        let ctx = context_for(&state, &settings, "win-2");
+        assert!(ctx.account_missing);
+        assert_eq!(ctx.title, "DCTerminalv2 — Account removed");
+        assert!(move_window_to_account(&mut state, &settings, "win-2", "nope").is_err());
+        let ctx = move_window_to_account(&mut state, &settings, "win-2", "work").unwrap();
+        assert!(!ctx.account_missing);
+        assert_eq!(ctx.account_id, "work");
+        assert_eq!(state.account_for_window("win-2"), "work");
     }
 
     #[test]

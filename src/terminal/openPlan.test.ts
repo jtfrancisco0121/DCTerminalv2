@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { firstOpenResumes, folderProblem } from "./openPlan";
+import { ACCOUNT_REMOVED, accountProblem, firstOpenResumes, folderProblem } from "./openPlan";
 
 const tab = (over: Partial<{ id: string; kind: "claude" | "shell"; hasSession: boolean }> = {}) => ({
   id: "tab_1",
@@ -32,5 +32,17 @@ describe("the first open of a tab", () => {
     expect(folderProblem({ cwd: "/w/app", folderStatus: "missing" })).toContain("/w/app");
     expect(folderProblem({ cwd: "/w/a.txt", folderStatus: "not-a-directory" })).toContain("file");
     expect(folderProblem({ cwd: "", folderStatus: "empty" })).toBe("This tab has no folder.");
+  });
+});
+
+describe("a window whose account was removed", () => {
+  it("starts no Claude tab and says to pick an account", () => {
+    expect(accountProblem({ kind: "claude" }, true)).toBe(ACCOUNT_REMOVED);
+    expect(ACCOUNT_REMOVED).toBe("This window's account was removed. Pick an account.");
+  });
+
+  it("still starts shells, and Claude tabs once the account is there", () => {
+    expect(accountProblem({ kind: "shell" }, true)).toBeNull();
+    expect(accountProblem({ kind: "claude" }, false)).toBeNull();
   });
 });

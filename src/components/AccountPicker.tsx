@@ -9,10 +9,22 @@ type Props = {
   current: string;
   onOpen: (accountId: string) => Promise<void>;
   onClose: () => void;
+  /** Defaults: a new window. */
+  title?: string;
+  submitLabel?: string;
+  hint?: string;
 };
 
-/** New window: which Claude account it uses. */
-export function AccountPicker({ accounts, current, onOpen, onClose }: Props) {
+/** New window (or this window, once its account was removed): which Claude account it uses. */
+export function AccountPicker({
+  accounts,
+  current,
+  onOpen,
+  onClose,
+  title = "New window",
+  submitLabel = "Open window",
+  hint = "Each window uses one Claude account. Two windows may use the same one.",
+}: Props) {
   const [choice, setChoice] = useState(
     accounts.some((account) => account.id === current) ? current : (accounts[0]?.id ?? ""),
   );
@@ -29,7 +41,7 @@ export function AccountPicker({ accounts, current, onOpen, onClose }: Props) {
 
   return (
     <Dialog
-      title="New window"
+      title={title}
       onClose={onClose}
       footer={
         <>
@@ -37,12 +49,12 @@ export function AccountPicker({ accounts, current, onOpen, onClose }: Props) {
             Cancel
           </button>
           <button type="button" className="primary-button" disabled={!choice} onClick={() => void submit()}>
-            Open window
+            {submitLabel}
           </button>
         </>
       }
     >
-      <p className="hint">Each window uses one Claude account. Two windows may use the same one.</p>
+      <p className="hint">{hint}</p>
       <div role="radiogroup" aria-label="Claude account" className="account-choices">
         {accounts.map((account) => (
           <label key={account.id} className="account-choice">

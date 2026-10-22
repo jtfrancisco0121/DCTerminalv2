@@ -50,6 +50,8 @@ export type WindowContext = {
   accountName: string;
   title: string;
   config: ConfigDirInfo;
+  /** The window's account was removed from Settings: its Claude tabs do not start. */
+  accountMissing: boolean;
 };
 
 export type TerminalSettings = {
@@ -133,6 +135,11 @@ export type PtyPacket = {
 
 export function windowContext(): Promise<WindowContext> {
   return invoke<WindowContext>("window_context");
+}
+
+/** Move this window to `accountId` (after its own account was removed). */
+export function setWindowAccount(accountId: string): Promise<WindowContext> {
+  return invoke<WindowContext>("set_window_account", { accountId });
 }
 
 /** Another window on `accountId`. Returns its label. */

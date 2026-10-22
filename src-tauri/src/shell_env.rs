@@ -293,6 +293,8 @@ const SESSION_MARKERS: [&str; 4] = [
 ];
 
 /// `CLAUDE*` settings that belong to the user, not to the parent session.
+/// Every terminal sets or drops `CLAUDE_CONFIG_DIR` itself (its window's
+/// account), so a kept inherited value never picks a tab's account.
 const KEEP_CLAUDE_VARS: [&str; 2] = ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_GIT_BASH_PATH"];
 
 /// Whether the parent Claude Code session set this variable for its own

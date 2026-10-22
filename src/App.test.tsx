@@ -22,19 +22,34 @@ const closeTab = vi.fn(async () => {
   return state;
 });
 
+const personal = {
+  id: "main",
+  accountId: "default",
+  accountName: "Personal",
+  title: "DCTerminalv2 — Personal",
+  config: { path: "/h/.claude", display: "~/.claude", source: "default", exists: true },
+  accountMissing: false,
+};
+let context = personal;
+const setWindowAccount = vi.fn(async (accountId: string) => {
+  context = { ...personal, accountId };
+  return context;
+});
+
 vi.mock("./bridge", () => ({
-  windowContext: vi.fn(async () => ({
-    id: "main",
-    accountId: "default",
-    accountName: "Personal",
-    title: "DCTerminalv2 — Personal",
-    config: { path: "/h/.claude", display: "~/.claude", source: "default", exists: true },
-  })),
+  windowContext: vi.fn(async () => context),
+  setWindowAccount: (accountId: string) => setWindowAccount(accountId),
   getSettings: vi.fn(async () => ({
     terminal: { shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false },
     ui: { theme: "github-dark" },
     claude: { accounts: [{ id: "default", name: "Personal" }] },
-    accounts: [],
+    accounts: [
+      {
+        id: "default",
+        name: "Personal",
+        config: { path: "/h/.claude", display: "~/.claude", source: "default", exists: true },
+      },
+    ],
     configDirEnv: null,
   })),
   getAppState: vi.fn(async () => state),
@@ -82,5 +97,23 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Close Claude · app" }));
     await waitFor(() => expect(closeTab).toHaveBeenCalledWith("main", "tab_1"));
     expect(await screen.findByRole("heading", { name: "New tab" })).toBeTruthy();
+  });
+
+  // Review: a window whose account was removed ran its Claude tabs on the
+  // first account instead, and saved that account's session over the tab's.
+  it("a Claude tab of a removed account shows the notice, not a terminal, until an account is picked", async () => {
+    context = { ...personal, accountId: "gone", accountName: "Account removed", accountMissing: true };
+    state = { windowId: "main", activeTabId: tab.id, tabs: [tab], closedTabs: [] };
+    render(<App />);
+    expect(await screen.findByText("This window's account was removed. Pick an account.")).toBeTruthy();
+    expect(screen.queryByTestId("terminal")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Pick an account" }));
+    fireEvent.click(await screen.findByRole("radio"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Use account" }));
+    });
+    expect(setWindowAccount).toHaveBeenCalledWith("default");
+    expect((await screen.findByTestId("terminal")).textContent).toBe("Claude · app");
+    context = personal;
   });
 });

@@ -3,10 +3,22 @@
  * Claude tab that ran before resumes its session when that session can
  * still be resumed (after a restart, or a reopened tab), else it starts
  * fresh. A shell always starts fresh. A tab whose folder is gone does not
- * start at all.
+ * start at all, nor does a Claude tab whose window's account was removed.
  */
 
 import type { TabSummary } from "../bridge";
+
+/** Same words as the backend's refusal (`settings_store::ACCOUNT_REMOVED`). */
+export const ACCOUNT_REMOVED = "This window's account was removed. Pick an account.";
+
+/**
+ * Why a Claude tab cannot start in this window: its account is no longer in
+ * Settings. It never starts under another account in its place (that would
+ * also save the other account's session over the tab's own).
+ */
+export function accountProblem(tab: Pick<TabSummary, "kind">, accountMissing: boolean): string | null {
+  return tab.kind === "claude" && accountMissing ? ACCOUNT_REMOVED : null;
+}
 
 /** Why the tab's terminal cannot start, or null when its folder is fine. */
 export function folderProblem(tab: Pick<TabSummary, "cwd" | "folderStatus">): string | null {

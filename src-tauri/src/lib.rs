@@ -83,6 +83,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             windows::window_context,
+            windows::set_window_account,
             windows::open_account_window,
             windows::reopen_closed_window,
             get_app_state,

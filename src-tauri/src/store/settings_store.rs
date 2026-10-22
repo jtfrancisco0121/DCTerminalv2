@@ -130,7 +130,27 @@ pub fn normalize_claude_accounts(claude: &mut ClaudeSettings) -> Result<(), Stri
     Ok(())
 }
 
-/// Which folder an account uses. An unknown id is the first account.
+/// Shown instead of a terminal when a window's account is no longer in
+/// Settings: nothing starts under another account in its place.
+pub const ACCOUNT_REMOVED: &str = "This window's account was removed. Pick an account.";
+
+/// Whether `account_id` is one of the accounts in Settings.
+pub fn account_exists(claude: &ClaudeSettings, account_id: &str) -> bool {
+    claude
+        .accounts
+        .iter()
+        .any(|account| account.id == account_id)
+}
+
+/// The folder of an account that is in Settings (`None` once it was
+/// removed). Anything that starts `claude` or saves a session goes through
+/// this, never through the first-account fallback of [`account_config`].
+pub fn known_account_config(claude: &ClaudeSettings, account_id: &str) -> Option<ConfigDirInfo> {
+    account_exists(claude, account_id).then(|| resolved_account_config(claude, account_id))
+}
+
+/// Which folder an account uses. An unknown id is the first account (for
+/// display only; launches use [`known_account_config`]).
 /// `env_override` applies only to the first account.
 pub fn account_config(
     claude: &ClaudeSettings,
@@ -164,17 +184,17 @@ pub fn resolved_account_config(claude: &ClaudeSettings, account_id: &str) -> Con
 }
 
 /// The account's name. An unknown id (a window whose account was removed)
-/// is the first account, as in [`account_config`], so the title names the
-/// folder the window really uses.
+/// says so: that window starts no Claude tab until an account is picked.
 pub fn account_display_name(claude: &ClaudeSettings, account_id: &str) -> String {
-    claude
+    match claude
         .accounts
         .iter()
         .find(|account| account.id == account_id)
-        .or_else(|| claude.accounts.first())
-        .map(|account| account.name.clone())
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| "Claude".to_string())
+    {
+        Some(account) if !account.name.trim().is_empty() => account.name.clone(),
+        Some(_) => "Claude".to_string(),
+        None => "Account removed".to_string(),
+    }
 }
 
 const MAX_SETTING_PATH_CHARS: usize = 1024;
@@ -379,12 +399,12 @@ mod tests {
         );
         assert_eq!(
             account_display_name(claude, "gone"),
-            "Personal",
-            "the first account"
+            "Account removed",
+            "never another account's name"
         );
         assert_eq!(
             account_display_name(&ClaudeSettings::default(), "gone"),
-            "Claude"
+            "Account removed"
         );
 
         let bad = |accounts: Vec<ClaudeAccount>| {
@@ -465,6 +485,23 @@ mod tests {
             "/Users/jt/.claude-account2",
             "the env override is the first account's only"
         );
+    }
+
+    // Review: a window whose account was removed silently ran Claude on
+    // the first account and saved that account's session over its own.
+    #[test]
+    fn a_removed_account_has_no_folder_to_launch_under() {
+        let claude = ClaudeSettings {
+            claude_path: None,
+            accounts: vec![account("work", "Work", Some("/w/.claude-account2"))],
+        };
+        assert!(account_exists(&claude, "work"));
+        assert!(!account_exists(&claude, "gone"));
+        assert_eq!(
+            known_account_config(&claude, "work").map(|info| info.path),
+            Some("/w/.claude-account2".to_string())
+        );
+        assert_eq!(known_account_config(&claude, "gone"), None);
     }
 
     #[test]
