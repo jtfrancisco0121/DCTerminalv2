@@ -8,6 +8,11 @@
 # not building/fixing, no check command, a missing worktree, a check slower than the timeout
 # (remembered per PR in <run>/logs/.stop-check.json, then skipped), or any error of its own.
 # Full output of a failing check: <run>/logs/<PR>-stop-check.txt.
+# What runs is never taken from status.json (the orchestrator writes it): the command is the
+# check of the PR's repo in <run>/repos.json (the app's input, matched by real path; no repos.json,
+# no entry or no check → skip), and it runs in the PR's canonical worktree
+# (<repo parent>/<repo>-worktrees/dcv2-<runId>-<pr>), which must also be the one .guard.json
+# records (state.sh worktree). Anything that does not match → skip.
 # DCV2_STOP_CHECK_TIMEOUT (seconds, default 30) is for tests.
 input="$(cat)"
 [[ "${DCV2_STOP_HOOKS:-on}" == "off" ]] && exit 0
@@ -41,8 +46,8 @@ def from_text(text):
         if pid in by_id:
             return pid
     for p in prs:
-        wt = p.get("worktree")
-        if wt and wt in (text or ""):
+        wt = str(p.get("worktree") or "").rstrip("/")
+        if wt and re.search(re.escape(wt) + r"(?=$|[/\s\"'`,;)\]])", text or ""):
             return p.get("id")
     return None
 
@@ -63,10 +68,29 @@ if not pid:
 pr = by_id.get(pid)
 if not pr or pr.get("state") not in ("building", "fixing"):
     sys.exit(0)
-chk = pr.get("check") or {}
-cmd, wt = chk.get("command"), pr.get("worktree")
-cwd = chk.get("cwd") or wt
-if not cmd or not wt or not os.path.isdir(wt) or not cwd or not os.path.isdir(cwd):
+try:
+    repo = os.path.realpath(str(pr.get("repoPath") or ""))
+    if not pr.get("repoPath") or not os.path.isabs(pr["repoPath"]):
+        sys.exit(0)
+    entries = json.load(open(os.path.join(run, "repos.json"))).get("repos") or []
+    entry = next((e for e in entries if isinstance(e, dict) and isinstance(e.get("path"), str)
+                  and os.path.isabs(e["path"]) and os.path.realpath(e["path"]) == repo), None)
+    cmd = entry.get("check") if entry else None
+    if not isinstance(cmd, str) or not cmd.strip():
+        sys.exit(0)
+    wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-worktrees",
+                      f"dcv2-{os.path.basename(run)}-{str(pid).lower()}")
+    guard = json.load(open(os.path.join(run, ".guard.json")))
+    if os.path.realpath(str(guard.get("runDir") or "")) != run or \
+            os.path.realpath(str((guard.get("worktrees") or {}).get(pid) or "")) != wt or \
+            os.path.realpath(str(pr.get("worktree") or "")) != wt or not os.path.isdir(wt):
+        sys.exit(0)
+    cwd = os.path.realpath(wt)
+    if not (cwd == wt or cwd.startswith(wt + os.sep)):
+        sys.exit(0)
+except SystemExit:
+    raise
+except Exception:
     sys.exit(0)
 
 logs = os.path.join(run, "logs")
