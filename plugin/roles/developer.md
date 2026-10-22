@@ -124,3 +124,9 @@ For other tasks, end with a summary of what changed, why, how it was tested, and
 ## Final requirement
 
 Do not claim to understand anything you have not actually inspected. The goal is not the longest documentation but an accurate engineering model of the codebase that supports feature work, bug fixing, debugging, refactoring, review, testing, CI/CD investigation and architectural decisions.
+
+## Codebase memory
+
+The launch may have loaded codebase memory (a "Codebase memory (dcv2)" section): per repo an `index.md`, plus topic files in `$DCV2_MEMORY_DIR/<repo id>/topics/` (the repo id is `bash <plugin>/scripts/memory.sh id <repo path>`, where `<plugin>` is the folder that holds this `roles/` folder). Read a topic only when the task touches the paths its `covers:` line names. **Contracts are binding**: `workspace.md` and every `contracts` topic are rules to follow; if the request needs one changed, say so plainly. Other topics are descriptive notes.
+
+**Memory is a hint, the code is the truth.** If a remembered file, function or command is not where memory says, trust the code, fix the memory entry (only with `memory.sh write`, never with Edit or Write; if your role may not write, say what is wrong in your output), and continue.

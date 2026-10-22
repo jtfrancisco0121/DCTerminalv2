@@ -4,7 +4,8 @@
 #
 #   state.sh preflight <run> [resume]         check python3, git, DCV2_RUN_DIR and request.md;
 #                                             with resume, also log "resumed at stage <stage>";
-#                                             print folder= / repos= / tickets= / reposJson= / testmode=
+#                                             print folder= / repos= / tickets= / reposJson= / testmode= /
+#                                             maxImplementers= / memory=
 #   state.sh testmode                         print the test mode, from the env DCV2_TEST_MODE only
 #   state.sh put <run>/status.json  < json    validate the whole document, then write it
 #   state.sh log <run> [<stage>]    < text    append "<UTC time> <stage> <text>" to log.md (text on stdin;
@@ -432,6 +433,9 @@ def cmd_preflight(run, resume=False):
     print(f"tickets={'yes' if os.path.isfile(os.path.join(run, 'tickets.json')) else 'no'}")
     print(f"reposJson={'yes' if os.path.isfile(os.path.join(run, 'repos.json')) else 'no'}")
     print(f"testmode=auto-approve:{'yes' if tm['auto'] else 'no'},halt-after:{tm['halt'] or 'none'}")
+    print(f"maxImplementers={max_implementers()}")
+    mem = os.environ.get("DCV2_MEMORY_DIR", "")
+    print(f"memory={os.path.realpath(mem) if mem else 'none'}")
     if resume:
         st = load_json(os.path.join(run, "status.json"))
         if isinstance(st, dict) and st.get("stage") in STAGES:
@@ -734,9 +738,10 @@ def cmd_gate(run, pid, gate, reason, review=None):
     old = read_gate(run, pid)
     if gate in ("PASS", "CONCERNS"):
         text = read(review if review and os.path.isabs(review) else os.path.join(run, review or "-"))
-        m = re.search(r"^##\s*Verdict\s*\n+\s*(?:\*\*)?([A-Z ]+?)(?:\*\*)?\s*$", text, re.M) if text else None
-        verdict = m.group(1).strip() if m else None
-        if verdict != "APPROVED":
+        m = re.search(r"^#+\s*Verdict\b[:\s]*([^\n]*)\n*([^\n]*)", text or "", re.M | re.I)
+        line = ((m.group(1).strip() or m.group(2)) if m else "")
+        verdict = re.sub(r"[*`_#>]", "", line).strip().upper() or None
+        if not (verdict or "").startswith("APPROVED"):
             die(f"NOT WRITTEN: {gate} needs the review file {review} to exist with verdict APPROVED (found {verdict or 'no review'}); "
                 "a review asking for changes is FAIL")
     if gate == "WAIVED":
