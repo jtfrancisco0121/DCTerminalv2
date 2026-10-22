@@ -163,11 +163,15 @@ pub fn resolved_account_config(claude: &ClaudeSettings, account_id: &str) -> Con
     )
 }
 
+/// The account's name. An unknown id (a window whose account was removed)
+/// is the first account, as in [`account_config`], so the title names the
+/// folder the window really uses.
 pub fn account_display_name(claude: &ClaudeSettings, account_id: &str) -> String {
     claude
         .accounts
         .iter()
         .find(|account| account.id == account_id)
+        .or_else(|| claude.accounts.first())
         .map(|account| account.name.clone())
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| "Claude".to_string())
@@ -373,7 +377,15 @@ mod tests {
             account_display_name(claude, "work").chars().count(),
             MAX_ACCOUNT_NAME_CHARS
         );
-        assert_eq!(account_display_name(claude, "gone"), "Claude");
+        assert_eq!(
+            account_display_name(claude, "gone"),
+            "Personal",
+            "the first account"
+        );
+        assert_eq!(
+            account_display_name(&ClaudeSettings::default(), "gone"),
+            "Claude"
+        );
 
         let bad = |accounts: Vec<ClaudeAccount>| {
             let mut store = SettingsStore::open(dir.path()).unwrap();
