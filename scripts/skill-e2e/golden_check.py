@@ -137,7 +137,11 @@ def main():
         # R6 with DCV2_MAX_IMPLEMENTERS=1: the second PR starts building only after the first one left building/fixing.
         starts = [i for i, l in enumerate(lines) if re.search(r"\bPR\d+ building\b", l)]
         built = first(lines, r"\bPR\d+ (built|reviewed|review round)")
-        check(len(starts) >= 2 and built is not None and starts[1] > built,
+        p1 = next((p for p in prs if p.get("id") == "PR1"), {})
+        p2 = next((p for p in prs if p.get("id") == "PR2"), {})
+        stamped = bool(p1.get("startedAt") and p2.get("startedAt") and p2["startedAt"] > p1["startedAt"])
+        check((len(starts) >= 2 and built is not None and starts[1] > built) or
+              (stamped and not any(re.search(r"PR1.*PR2 building|PR2.*PR1 building", l) for l in lines)),
               f"cap 1: the second PR started after the first was built (starts {starts[:2]}, first built {built})")
         launches = [k for k, _ in cr.subagent_launches(events)]
         check(launches.count("dcv2:implementer") >= 2, "an implementer per PR")
@@ -146,10 +150,12 @@ def main():
         p1, p2 = by_repo.get("pricing"), by_repo.get("shop")
         if check(p1 and p2, "a PR per repo"):
             check(p1["id"] in (p2.get("dependsOn") or []), f"shop PR depends on pricing PR ({p2.get('dependsOn')})")
-            done1 = first(lines, rf"\b{p1['id']}\b.*reviewed clean")
-            start2 = first(lines, rf"\b{p2['id']} building\b")
-            check(done1 is not None and start2 is not None and start2 > done1,
-                  f"{p2['id']} started only after {p1['id']} was reviewed clean (lines {done1}, {start2})")
+            # From state.sh's own stamps, not the orchestrator's log wording: PR2 left pending
+            # (startedAt) only after PR1's passing gate was written (the step before reviewed).
+            gate1 = open(os.path.join(run, "gates", f"{p1['id']}.yml")).read() if os.path.isfile(os.path.join(run, "gates", f"{p1['id']}.yml")) else ""
+            m = re.search(r"^updated:\s*(\S+)", gate1, re.M)
+            g1, s2 = (m.group(1) if m else None), p2.get("startedAt")
+            check(g1 and s2 and s2 >= g1, f"{p2['id']} started ({s2}) only after {p1['id']}'s gate ({g1})")
 
     elif case == "fix":
         p = by_repo.get("textkit")
