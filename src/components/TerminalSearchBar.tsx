@@ -152,8 +152,7 @@ export function TerminalSearchBar({ search, onClose }: Props) {
     <div
       className="terminal-search"
       role="search"
-      // While open, Escape closes the bar, not a running turn (this terminal
-      // is also the shell pane under a chat tab).
+      // While open, Escape closes the bar instead of reaching the terminal.
       data-own-escape=""
       onKeyDown={onRootKeyDown}
     >

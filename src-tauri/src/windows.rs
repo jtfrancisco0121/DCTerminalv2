@@ -347,7 +347,7 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
                 }
             }
             REOPEN_WINDOW_ITEM => {
-                // Off the main thread: transcripts load from disk, and the
+                // Off the main thread: the state is saved to disk, and the
                 // window build hands itself to the main thread and waits.
                 let app = app.clone();
                 std::thread::spawn(move || {

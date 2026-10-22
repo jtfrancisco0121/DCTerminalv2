@@ -49,7 +49,7 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Strin
 }
 
 /// Load JSON, or move a damaged file aside and fall back to `.bak` then `Default`.
-/// A corrupt transcript or scratch file must not stop the app from opening.
+/// A corrupt data file must not stop the app from opening.
 pub fn read_json_or_recover<T>(path: &Path) -> Result<T, String>
 where
     T: serde::de::DeserializeOwned + Serialize + Default,
@@ -183,7 +183,7 @@ fn schema_version_of(path: &Path) -> Option<u32> {
     schema_version_in(&read_json::<serde_json::Value>(path).ok()?)
 }
 
-/// `schemaVersion` (or `schema_version`, as roles.json spells it) in `value`.
+/// `schemaVersion` (or `schema_version`) in `value`.
 fn schema_version_in(value: &serde_json::Value) -> Option<u32> {
     let version = value
         .get("schemaVersion")

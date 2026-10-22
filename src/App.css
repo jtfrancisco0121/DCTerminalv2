@@ -481,15 +481,6 @@ body,
   max-width: 14rem;
 }
 
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-}
-
 /* ---- Window layout: tab bar, terminal, status bar ---- */
 .workspace {
   display: flex;
@@ -790,10 +781,6 @@ body,
   flex: none;
 }
 
-.dialog-header-hidden {
-  display: none;
-}
-
 .dialog-title {
   flex: 1;
   min-width: 0;
@@ -822,12 +809,6 @@ body,
   padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--border);
   flex: none;
-}
-
-.dialog-footer-note {
-  margin-right: auto;
-  font-size: var(--text-sm);
-  color: var(--fg-muted);
 }
 
 .inline-notice {
@@ -1026,8 +1007,7 @@ body,
 }
 
 .status-bar-item:last-of-type {
-.status-bar-label {
-  color: var(--fg-subtle);
+  border-right: none;
 }
 
 .status-bar-folder {
@@ -1063,7 +1043,6 @@ body,
   border-bottom: 1px solid var(--border);
 }
 
-/* V5: a pipeline stage being watched; read-only until it needs you or you take it over. */
 .terminal-exit-strip-text {
   min-width: 0;
   flex: 1 1 14rem;
@@ -1126,3 +1105,6 @@ body,
 .search-status {
   min-width: 5.5rem;
   font-size: var(--text-sm);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}

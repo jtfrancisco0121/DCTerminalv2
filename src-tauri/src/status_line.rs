@@ -1,5 +1,4 @@
-//! Claude usage from terminal tabs, through Claude Code's statusLine (plan
-//! D32 as amended by V0 T9, `docs/claude-hooks-observed.md`).
+//! Claude usage from terminal tabs, through Claude Code's statusLine.
 //!
 //! Claude Code runs a `statusLine` command on each render with a JSON
 //! description of the session on stdin. Since 2.1.287 that JSON carries
@@ -228,7 +227,7 @@ mod tests {
     use super::*;
     use crate::test_support::TempDir;
 
-    /// The statusLine input captured in V0 (T9), trimmed to what matters.
+    /// A statusLine input as Claude Code sends it, trimmed to what matters.
     fn input(rate_limits: Option<Value>) -> String {
         let mut value = json!({
             "session_id": "685dd464-eabf-4e4c-9f6f-ac02c63aad27",
