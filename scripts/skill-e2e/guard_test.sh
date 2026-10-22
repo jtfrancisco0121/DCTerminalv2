@@ -19,5 +19,7 @@ t 0 dcv2:pr-reviewer "$d/run/reviews/PR1-round1.md"
 t 2 dcv2:planner "$d/ws/r/plan.md"
 t 0 dcv2:planner "$d/run/plan.md"
 t 0 "" "$d/ws/r/a.js"
+t 2 "" "$d/run/status.json"
+t 2 dcv2:implementer "$d/run/writeback.json"
 rm -rf "$d"
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

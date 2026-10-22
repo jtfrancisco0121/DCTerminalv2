@@ -12,7 +12,7 @@
 #                                          Never touches the repo's main checkout.
 #
 #   state.sh writeback <run dir>           write writeback.json (atomic) from plan.md's
-#                                          "## Tickets" section and status.json; only when
+#                                          story "Tickets:" lines, tickets.json and status.json; only when
 #                                          tickets.json exists. Needs python3.
 #
 # For status.json, `put` also sets "updatedAt" to the current UTC time.
@@ -105,6 +105,9 @@ req = open(os.path.join(run, "request.md")).read() if os.path.isfile(os.path.joi
 if doc.get("stage") == "done" and os.path.isfile(os.path.join(run, "tickets.json")) and not os.path.isfile(os.path.join(run, "writeback.json")):
     print("NOT WRITTEN: tickets.json exists but writeback.json does not. Run `state.sh writeback <run>` first, then write stage done.")
     sys.exit(1)
+if doc.get("stage") == "done" and not doc.get("ship"):
+    print("NOT WRITTEN: stage done needs \"ship\" set ({remote, pushed, note}). Do Step 4 first.")
+    sys.exit(1)
 if doc.get("waitingFor") and re.search(r"^test-mode:\s*auto-approve\s*$", req, re.M):
     print(f"AUTO-APPROVE (test-mode): do not wait for the user. Log the auto-approval and continue past {doc['waitingFor']} now.")
 PY
@@ -134,49 +137,44 @@ run, now = sys.argv[1], sys.argv[2]
 plan = open(os.path.join(run, "plan.md")).read()
 st = json.load(open(os.path.join(run, "status.json")))
 titles = dict(re.findall(r"^###\s+(S\d+)\s*[:\-\u2014]+\s*(.+?)\s*$", plan, re.M))
-section = re.search(r"^## Tickets\s*$(.*?)(?=^## |\Z)", plan, re.M | re.S)
-if not section:
-    sys.exit("plan.md has no '## Tickets' section")
+# Story -> ticket refs, from each story's "- Tickets:" line in plan.md.
+story_refs = {}
+for m in re.finditer(r"^###\s+(S\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan, re.M | re.S):
+    tl = re.search(r"^\s*-\s*Tickets:\s*(.+)$", m.group(2), re.M)
+    if tl:
+        story_refs[m.group(1)] = {x.strip().lower() for x in re.split(r"[,\s]+", tl.group(1)) if x.strip()}
+snap = json.load(open(os.path.join(run, "tickets.json")))
+tasks = snap.get("tasks", snap) if isinstance(snap, dict) else snap
 story_pr = {}
 for pr in st.get("prs") or []:
     for sid in (pr.get("stories") or {}).get("ids") or []:
         story_pr[sid] = pr
 drafts = []
-for line in section.group(1).splitlines():
-    line = line.strip()
-    if not line.startswith("- ") or "|" not in line:
-        continue
-    cells = [c.strip() for c in line[2:].split("|")]
-    if len(cells) < 4:
-        continue
-    tid, cid, title, url = cells[:4]
-    stories = []
-    status = None
-    for c in cells[4:]:
-        if c.lower().startswith("stories:"):
-            stories = [s.strip() for s in c.split(":", 1)[1].split(",") if s.strip()]
-        elif c.lower().startswith("ship status:"):
-            v = c.split(":", 1)[1].strip()
-            status = None if v in ("", "-") else v
-    prs, lines = [], []
+for task in tasks if isinstance(tasks, list) else []:
+    tid, cid = str(task.get("id", "")), task.get("custom_id")
+    keys = {tid.lower()} | ({str(cid).lower()} if cid else set())
+    stories = sorted(s for s, refs in story_refs.items() if refs & keys)
+    prs = []
     for sid in stories:
         pr = story_pr.get(sid)
         if pr and not any(p["id"] == pr["id"] for p in prs):
             prs.append({"id": pr["id"], "repo": pr.get("repo"), "url": pr.get("prUrl")})
+    lines = []
     for p in prs:
         pr = next(x for x in st["prs"] if x["id"] == p["id"])
         where = pr.get("prUrl") or f"local branch `{pr.get('branch')}` (not pushed: {pr.get('note') or 'no PR opened'})"
-        chk = pr.get("check") or {}
-        rev = pr.get("review") or {}
+        chk, rev = pr.get("check") or {}, pr.get("review") or {}
         lines.append(f"- {pr['id']} ({pr.get('repo')}): {where}. Check `{chk.get('command')}`: {chk.get('result')}. Review: {rev.get('verdict')} (round {rev.get('round')}).")
     done = [f"- {s}: {titles.get(s, '')}".rstrip(": ") for s in stories]
-    comment = "Eagle-Eye run " + st.get("runId", "") + "\n\nDone:\n" + "\n".join(done or ["- (no stories mapped)"]) + "\n\nPull requests:\n" + "\n".join(lines or ["- none"])
-    opened = prs and all(p["url"] for p in prs)
+    comment = "Eagle-Eye run " + str(st.get("runId", "")) + "\n\nDone:\n" + "\n".join(done or ["- (no story covers this ticket)"]) + "\n\nPull requests:\n" + "\n".join(lines or ["- none"])
+    opened = bool(prs) and all(p["url"] for p in prs)
+    statuses = [s if isinstance(s, str) else (s or {}).get("status", "") for s in ((task.get("list") or {}).get("statuses") or [])]
+    review = next((s for s in statuses if s.lower() in ("in review", "review", "code review")), None)
     drafts.append({
-        "ticket": {"id": tid, "customId": None if cid in ("", "-") else cid, "title": title, "url": url},
+        "ticket": {"id": tid, "customId": cid, "title": task.get("name"), "url": task.get("url")},
         "prs": prs,
         "comment": comment,
-        "status": status if opened else None,
+        "status": review if opened else None,
         "statusNote": None if opened else ("Status left unchanged: not every PR was opened." if prs else "No PR covers this ticket."),
     })
 print(json.dumps({"schema": 1, "runId": st.get("runId"), "createdAt": now, "drafts": drafts}, indent=2))

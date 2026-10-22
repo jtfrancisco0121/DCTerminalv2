@@ -143,7 +143,7 @@ PR `state`:
 
 ## writeback.json (skill output)
 
-Written at shipping time (after stop #2 approval), only when `tickets.json` exists, by `plugin/scripts/state.sh writeback <run>` from plan.md's `## Tickets` section (one line per ticket: `- <id> | <custom id or -> | <title> | <url> | stories: S1, S2 | ship status: <status or ->`, written by the Planner) and status.json. The suggested `status` is set only when every PR of the ticket was opened; otherwise it is null with a `statusNote`. `state.sh put` refuses `stage: done` while `tickets.json` exists without `writeback.json`. The skill never calls ClickUp and never needs a token: the app shows each draft with a tick box and posts only what the user ticks.
+Written at shipping time (after stop #2 approval), only when `tickets.json` exists, by `plugin/scripts/state.sh writeback <run>`: one draft per ticket in `tickets.json`, matched to stories by their `Tickets:` lines in plan.md (ticket `id` or `custom_id`), with PRs and results from status.json. The suggested `status` (the list's "in review" status when it has one) is set only when every PR of the ticket was opened; otherwise it is null with a `statusNote`. `state.sh put` refuses `stage: done` while `tickets.json` exists without `writeback.json`, or while `ship` is null. The guard hook blocks Edit/Write on `status.json` and `writeback.json` for every agent. The skill never calls ClickUp and never needs a token: the app shows each draft with a tick box and posts only what the user ticks.
 
 ```json
 {
