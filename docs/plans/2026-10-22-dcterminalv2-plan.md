@@ -20,7 +20,7 @@ DCTerminal grew in layers (chat → terminal roles → pipeline v2 → v3 lanes,
 | D6 | One PR per repo per run. A folder of repos (e.g. `~/Documents/Koneksi`) works without setup. |
 | D7 | Two stops for you: approve the plan, then approve opening PRs + ClickUp posts. Anything else you say in the tab at any time. |
 | D8 | Six roles also work alone, each in its own tab, not only inside the pipeline: Planner, Plan Reviewer, Developer, PR Reviewer, Recommendation, Codebase Audit. Each is a plugin skill (`/dcv2:<role>`); a role shared with the pipeline uses one guidance file for both, so they cannot drift. The start screen shows them as role tiles next to Eagle-Eye (P3). |
-| D9 | Codebase memory: `/dcv2:onboard` writes a capped `codebase.md` per repo, loaded at every launch and kept fresh from git diffs (see "Codebase memory"). |
+| D9 | Codebase memory: a small always-loaded index + on-demand topic files per repo (+ a workspace file), shared across accounts, refreshed per topic from git diffs, hint-not-truth (see "Codebase memory"). |
 
 ## How a run works
 
@@ -62,16 +62,32 @@ The skill never holds the ClickUp token; the app does all ClickUp calls.
 
 ## Codebase memory (D9)
 
-Goal: a new session in a known repo does not pay to re-explore it.
+Goal: a new session in a known repo does not pay to re-explore it, and memory never quietly misleads it.
 
-- `/dcv2:onboard` (a seventh role skill) studies a repo and writes `codebase.md`: purpose, architecture, modules and where things live, build/test/check commands, conventions, gotchas. Hard cap ~6–8k tokens.
-- Stored by the app, outside the repo: `<app data>/memory/<repo id>/codebase.md` with a header recording the repo path and the git commit it describes. A folder of repos gets one file per repo plus `workspace.md` (one paragraph per repo + how they connect). Setting: "commit as CLAUDE.md in the repo instead" (off by default; work repos stay clean).
-- Loaded at every launch in that repo, Eagle-Eye and standalone roles alike, via `--append-system-prompt-file` (stable prefix → prompt cache). Sub-agents get the file path and read it first. In a workspace, only `workspace.md` + the repos in play are loaded.
-- Kept fresh:
-  - re-running onboard rewrites it;
-  - the last step of every Eagle-Eye run and the end of every Developer session runs a small "memory update" sub-agent that reads only `git diff <recorded commit>..HEAD` (+ the run's plan summary) and patches the file, then records the new commit;
-  - on launch, if HEAD moved past the recorded commit, the session is told "memory is N commits stale" and refreshes from the diff (cheap), never a full re-onboard unless asked.
-- The app shows per repo: memory present / stale by N commits / missing, with Onboard and Refresh buttons.
+**Layout** (stored by the app, outside the repo, shared by every account: `<app data>/memory/<repo id>/`)
+- `index.md`: always loaded, ~1.5–2k tokens max: what the repo is, top-level map, build/test/check commands, top gotchas, and a list of topic files with one line each.
+- `topics/<topic>.md`: loaded on demand only when a task touches that area (e.g. `auth.md`, `sync-engine.md`). Each has a header: the paths it covers and the commit it was last checked at.
+- A folder of repos also gets `workspace.md`: how the repos connect (which API the desktop calls on the backend, where the engine sits, shared models and contracts). Sessions load `workspace.md` + the index of each repo in play.
+- Setting (off by default): commit `index.md` into the repo as `CLAUDE.md` instead, for team sharing.
+
+**What goes in.** Only what is expensive to rediscover: commands, conventions, non-obvious gotchas, the *why* behind decisions, where things live, cross-repo contracts. Not file listings, code summaries or anything a quick grep finds. Every fact is anchored to a path (e.g. "retry logic: `server/app/sync/retry.go`").
+
+**Loading.** `index.md` (+ `workspace.md`) via `--append-system-prompt-file` at every launch, Eagle-Eye and standalone roles alike (stable prefix → prompt cache). Sub-agents get the memory folder path and open topic files as needed.
+
+**Freshness, per topic.**
+- `/dcv2:onboard` creates or rebuilds the memory (seventh role skill).
+- The last step of every Eagle-Eye run and the end of every Developer session runs a small "memory update" sub-agent: it reads only `git diff <commit>..HEAD`, finds the topics whose covered paths changed, patches just those, and records the new commit. No diary entries: it changes facts that changed and nothing else (git and run reports keep history).
+- On launch, topics whose paths changed since their recorded commit are flagged stale; the session refreshes only those, from the diff. Never a full re-onboard unless asked.
+
+**Trust rule** (in every agent): memory is a hint, the code is the truth. If a remembered file or function isn't where memory says, trust the code, fix the memory entry, continue.
+
+**Separation.** Claude Code's own auto-memory (per account) stays for personal preferences and feedback; codebase facts live only here.
+
+**App-enforced limits.**
+- Size caps per file; an over-cap update is rejected and the agent asked to condense.
+- Secret scan before every write (tokens, keys, `.env` values) → rejected.
+- Pinned facts: lines you mark as pinned (e.g. "never edit migration files by hand") cannot be removed or rewritten by automatic updates.
+- The app shows per repo: memory present / N topics stale / missing, with Onboard and Refresh, and lets you read and edit the files.
 
 ## Reliability (R1–R10)
 
