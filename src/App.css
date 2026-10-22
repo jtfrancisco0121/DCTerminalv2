@@ -1,0 +1,1128 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+/* One focus ring for every control. */
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Containers focused only so keyboard shortcuts reach them (no visible ring). */
+:where([tabindex="-1"]):focus-visible {
+  box-shadow: none;
+}
+
+/* Theme variables. GitHub Dark is the default (:root); GitHub Light and
+   the dark presets override them under [data-theme="…"]. */
+:root {
+  color-scheme: dark;
+  --bg: #0d1117;
+  --bg-elev: #161b22;
+  --bg-inset: #010409;
+  --bg-muted: #21262d;
+  --bg-hover: #1c2128;
+  --border: #30363d;
+  --fg: #e6edf3;
+  --fg-soft: #c9d1d9;
+  --fg-muted: #8b949e;
+  --fg-subtle: #6e7681;
+  --accent: #388bfd;
+  --accent-fg: #58a6ff;
+  --accent-bright: #79c0ff;
+  --accent-emphasis: #1f6feb;
+  --accent-subtle: #15253a;
+  --success: #3fb950;
+  --success-emphasis: #238636;
+  --success-subtle: #152719;
+  --warning: #d29922;
+  --warning-bright: #e3b341;
+  --warning-subtle: #2a2419;
+  --attention: #f0c14b;
+  --attention-emphasis: #bb8009;
+  --danger: #f85149;
+  --danger-bright: #ff7b72;
+  --danger-soft: #ffa198;
+  --danger-subtle: #2d1b1b;
+  --done: #a371f7;
+  --done-bright: #d2a8ff;
+  --orange: #f0883e;
+  --orange-bright: #ffa657;
+  --syn-keyword: #ff7b72;
+  --syn-string: #a5d6ff;
+  --syn-number: #79c0ff;
+  --syn-title: #d2a8ff;
+  --syn-attr: #7ee787;
+  --syn-builtin: #ffa657;
+  --syn-deletion: #ffa198;
+  --shadow: rgba(1, 4, 9, 0.8);
+  --backdrop: rgba(0, 0, 0, 0.55);
+  /* Text on filled emphasis colours (primary buttons). */
+  --fg-on-emphasis: #ffffff;
+  /* R1 design tokens (theme-independent). */
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.875rem;
+  --text-lg: 1rem;
+  --text-xl: 1.25rem;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-pill: 999px;
+  --elev-1: 0 1px 3px var(--shadow);
+  --elev-2: 0 6px 18px var(--shadow);
+  --elev-3: 0 12px 32px var(--shadow);
+  --z-sticky: 2;
+  --z-dropdown: 20;
+  --z-overlay: 30;
+  --z-drawer: 35;
+  --z-toast: 40;
+  --z-tip: 45;
+  --z-menu: 50;
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+  --term-pad: 6px;
+  /* Terminal search highlights (read by TerminalSearchBar; hex only). */
+  --search-match: #d2992266;
+  --search-match-border: #d29922;
+  --search-active: #f0883e;
+  --search-active-border: #ffa657;
+  /* Bundled fonts (src/main.tsx), with the system stacks as fallbacks. */
+  --font-ui: "Inter Variable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-ui);
+  line-height: 1.5;
+  color: var(--fg);
+  background-color: var(--bg);
+}
+
+:root[data-theme="github-light"] {
+  color-scheme: light;
+  --search-match: #bf870066;
+  --search-match-border: #9a6700;
+  --search-active: #fb8f44;
+  --search-active-border: #bc4c00;
+  --bg: #ffffff;
+  --bg-elev: #f6f8fa;
+  --bg-inset: #f6f8fa;
+  --bg-muted: #eaeef2;
+  --bg-hover: #f3f4f6;
+  --border: #d0d7de;
+  --fg: #1f2328;
+  --fg-soft: #32383f;
+  --fg-muted: #656d76;
+  --fg-subtle: #6e7781;
+  --accent: #0969da;
+  --accent-fg: #0969da;
+  --accent-bright: #0550ae;
+  --accent-emphasis: #0969da;
+  --accent-subtle: #ddf4ff;
+  --success: #1a7f37;
+  --success-emphasis: #1f883d;
+  --success-subtle: #dafbe1;
+  --warning: #9a6700;
+  --warning-bright: #9a6700;
+  --warning-subtle: #fff8c5;
+  /* attention is used as text too: #bf8700 is under 3:1 on white. */
+  --attention: #9a6700;
+  --attention-emphasis: #bf8700;
+  --danger: #cf222e;
+  --danger-bright: #a40e26;
+  --danger-soft: #cf222e;
+  --danger-subtle: #ffebe9;
+  --done: #8250df;
+  --done-bright: #8250df;
+  --orange: #bc4c00;
+  --orange-bright: #bc4c00;
+  --syn-keyword: #cf222e;
+  --syn-string: #0a3069;
+  --syn-number: #0550ae;
+  --syn-title: #8250df;
+  --syn-attr: #116329;
+  --syn-builtin: #953800;
+  --syn-deletion: #82071e;
+  --shadow: rgba(140, 149, 159, 0.3);
+  --backdrop: rgba(27, 31, 36, 0.4);
+  --fg-on-emphasis: #ffffff;
+}
+
+/* Dark presets. Each block sets every colour token :root sets (designTokens
+   test). Status colours stay apart: Working = accent, Needs you = attention,
+   Done = done, Exited = danger. Neutrals not in a palette are derived from it. */
+/* Dracula: https://draculatheme.com/contribute */
+:root[data-theme="dracula"] {
+  color-scheme: dark;
+  --bg: #282a36;
+  --bg-elev: #21222c;
+  --bg-inset: #191a21;
+  --bg-muted: #343746;
+  --bg-hover: #2f3241;
+  --border: #44475a;
+  --fg: #f8f8f2;
+  --fg-soft: #e2e2dc;
+  --fg-muted: #a6accd;
+  --fg-subtle: #6272a4;
+  --accent: #bd93f9;
+  --accent-fg: #bd93f9;
+  --accent-bright: #d6acff;
+  --accent-emphasis: #bd93f9;
+  --accent-subtle: #3a3354;
+  --success: #50fa7b;
+  --success-emphasis: #50fa7b;
+  --success-subtle: #243a2e;
+  --warning: #f1fa8c;
+  --warning-bright: #ffffa5;
+  --warning-subtle: #3a3b2c;
+  --attention: #f1fa8c;
+  --attention-emphasis: #d8e06a;
+  --danger: #ff5555;
+  --danger-bright: #ff6e6e;
+  --danger-soft: #ff9580;
+  --danger-subtle: #3d2229;
+  --done: #8be9fd;
+  --done-bright: #a4ffff;
+  --orange: #ffb86c;
+  --orange-bright: #ffca8f;
+  --syn-keyword: #ff79c6;
+  --syn-string: #f1fa8c;
+  --syn-number: #bd93f9;
+  --syn-title: #50fa7b;
+  --syn-attr: #50fa7b;
+  --syn-builtin: #8be9fd;
+  --syn-deletion: #ff5555;
+  --shadow: rgba(0, 0, 0, 0.6);
+  --backdrop: rgba(0, 0, 0, 0.55);
+  --fg-on-emphasis: #282a36;
+  --search-match: #f1fa8c55;
+  --search-match-border: #f1fa8c;
+  --search-active: #ffb86c;
+  --search-active-border: #ffca8f;
+}
+
+/* Nord: https://www.nordtheme.com/docs/colors-and-palettes */
+:root[data-theme="nord"] {
+  color-scheme: dark;
+  --bg: #2e3440;
+  --bg-elev: #3b4252;
+  --bg-inset: #272c36;
+  --bg-muted: #434c5e;
+  --bg-hover: #383e4c;
+  --border: #4c566a;
+  --fg: #eceff4;
+  --fg-soft: #e5e9f0;
+  --fg-muted: #a8b1c2;
+  --fg-subtle: #7b88a1;
+  --accent: #88c0d0;
+  --accent-fg: #88c0d0;
+  --accent-bright: #8fbcbb;
+  --accent-emphasis: #5e81ac;
+  --accent-subtle: #34404e;
+  --success: #a3be8c;
+  --success-emphasis: #a3be8c;
+  --success-subtle: #3a4239;
+  --warning: #ebcb8b;
+  --warning-bright: #ebcb8b;
+  --warning-subtle: #433f37;
+  --attention: #ebcb8b;
+  --attention-emphasis: #c9a86a;
+  --danger: #d08b91;
+  --danger-bright: #dc9fa4;
+  --danger-soft: #d4878f;
+  --danger-subtle: #43363c;
+  --done: #b793b0;
+  --done-bright: #c8a8c4;
+  --orange: #d08770;
+  --orange-bright: #dfa08a;
+  --syn-keyword: #81a1c1;
+  --syn-string: #a3be8c;
+  --syn-number: #b48ead;
+  --syn-title: #88c0d0;
+  --syn-attr: #8fbcbb;
+  --syn-builtin: #d08770;
+  --syn-deletion: #bf616a;
+  --shadow: rgba(0, 0, 0, 0.45);
+  --backdrop: rgba(0, 0, 0, 0.5);
+  --fg-on-emphasis: #2e3440;
+  --search-match: #ebcb8b55;
+  --search-match-border: #ebcb8b;
+  --search-active: #d08770;
+  --search-active-border: #dfa08a;
+}
+
+/* Tokyo Night ("night" style): https://github.com/folke/tokyonight.nvim */
+:root[data-theme="tokyo-night"] {
+  color-scheme: dark;
+  --bg: #1a1b26;
+  --bg-elev: #1f2335;
+  --bg-inset: #16161e;
+  --bg-muted: #292e42;
+  --bg-hover: #24283b;
+  --border: #3b4261;
+  --fg: #c0caf5;
+  --fg-soft: #a9b1d6;
+  --fg-muted: #9aa5ce;
+  --fg-subtle: #737aa2;
+  --accent: #7aa2f7;
+  --accent-fg: #7aa2f7;
+  --accent-bright: #7dcfff;
+  --accent-emphasis: #3d59a1;
+  --accent-subtle: #24304f;
+  --success: #9ece6a;
+  --success-emphasis: #9ece6a;
+  --success-subtle: #26332a;
+  --warning: #e0af68;
+  --warning-bright: #e0af68;
+  --warning-subtle: #33302a;
+  --attention: #e0af68;
+  --attention-emphasis: #c8954c;
+  --danger: #f7768e;
+  --danger-bright: #ff8fa3;
+  --danger-soft: #ffa3b4;
+  --danger-subtle: #3a2430;
+  --done: #bb9af7;
+  --done-bright: #c9aefa;
+  --orange: #ff9e64;
+  --orange-bright: #ffb38a;
+  --syn-keyword: #bb9af7;
+  --syn-string: #9ece6a;
+  --syn-number: #ff9e64;
+  --syn-title: #7aa2f7;
+  --syn-attr: #73daca;
+  --syn-builtin: #2ac3de;
+  --syn-deletion: #f7768e;
+  --shadow: rgba(0, 0, 0, 0.6);
+  --backdrop: rgba(0, 0, 0, 0.55);
+  --fg-on-emphasis: #1a1b26;
+  --search-match: #e0af6855;
+  --search-match-border: #e0af68;
+  --search-active: #ff9e64;
+  --search-active-border: #ffb38a;
+}
+
+/* Catppuccin Mocha: https://catppuccin.com/palette */
+:root[data-theme="catppuccin-mocha"] {
+  color-scheme: dark;
+  --bg: #1e1e2e;
+  --bg-elev: #181825;
+  --bg-inset: #11111b;
+  --bg-muted: #313244;
+  --bg-hover: #292a3c;
+  --border: #45475a;
+  --fg: #cdd6f4;
+  --fg-soft: #bac2de;
+  --fg-muted: #a6adc8;
+  --fg-subtle: #7f849c;
+  --accent: #89b4fa;
+  --accent-fg: #89b4fa;
+  --accent-bright: #b4befe;
+  --accent-emphasis: #74c7ec;
+  --accent-subtle: #263046;
+  --success: #a6e3a1;
+  --success-emphasis: #a6e3a1;
+  --success-subtle: #253429;
+  --warning: #f9e2af;
+  --warning-bright: #f9e2af;
+  --warning-subtle: #36332e;
+  --attention: #f9e2af;
+  --attention-emphasis: #fab387;
+  --danger: #f38ba8;
+  --danger-bright: #f38ba8;
+  --danger-soft: #eba0ac;
+  --danger-subtle: #3b2635;
+  --done: #cba6f7;
+  --done-bright: #cba6f7;
+  --orange: #fab387;
+  --orange-bright: #fab387;
+  --syn-keyword: #cba6f7;
+  --syn-string: #a6e3a1;
+  --syn-number: #fab387;
+  --syn-title: #89b4fa;
+  --syn-attr: #f9e2af;
+  --syn-builtin: #94e2d5;
+  --syn-deletion: #f38ba8;
+  --shadow: rgba(17, 17, 27, 0.7);
+  --backdrop: rgba(17, 17, 27, 0.6);
+  --fg-on-emphasis: #11111b;
+  --search-match: #f9e2af55;
+  --search-match-border: #f9e2af;
+  --search-active: #fab387;
+  --search-active-border: #f5e0dc;
+}
+
+.primary-button {
+  padding: 0.25rem 0.75rem;
+  font-size: var(--text-sm);
+  border: 1px solid var(--success-emphasis);
+  border-radius: var(--radius-md);
+  background: var(--success-emphasis);
+  color: var(--fg-on-emphasis);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.primary-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.secondary-button {
+  padding: 0.25rem 0.65rem;
+  font-size: var(--text-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-muted);
+  color: var(--fg);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.secondary-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Button set: primary, secondary, danger, ghost, icon, link. */
+.danger-button {
+  padding: 0.25rem 0.65rem;
+  font-size: var(--text-sm);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  background: var(--bg-muted);
+  color: var(--danger-bright);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.danger-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ghost-button {
+  padding: 0 0.4rem;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ghost-button:hover {
+  color: var(--fg);
+}
+
+.error {
+  color: var(--danger);
+}
+
+.hint {
+  margin: 0 0 0.75rem;
+  font-size: var(--text-md);
+  color: var(--fg-muted);
+}
+
+.hint.warn {
+  color: var(--warning-bright);
+}
+
+.field-label {
+  display: block;
+  margin: 0.5rem 0;
+  font-size: var(--text-md);
+}
+
+.field-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.25rem;
+}
+
+.field-row .text-input {
+  margin-top: 0;
+  flex: 1;
+}
+
+.check-label {
+  display: block;
+  margin: 0.4rem 0;
+  font-size: var(--text-md);
+}
+
+.text-input {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.text-input-narrow {
+  max-width: 14rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ---- Window layout: tab bar, terminal, status bar ---- */
+.workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.workspace-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0.25rem 0.4rem 0;
+}
+
+.tab-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 0.15rem;
+  padding: 0.25rem 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  overflow-x: auto;
+  flex: none;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  max-width: 16rem;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  color: var(--fg-muted);
+}
+
+.tab-active {
+  background: var(--bg);
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.tab-exited .tab-label {
+  opacity: 0.6;
+}
+
+.tab-label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.3rem 0.5rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.tab-kind-claude {
+  color: var(--orange);
+}
+
+.tab-kind-shell {
+  color: var(--success);
+  font-family: var(--font-mono);
+}
+
+.tab-rename {
+  width: 10rem;
+  margin: 0.2rem;
+  padding: 0.1rem 0.3rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.tab-close,
+.tab-new {
+  border: 0;
+  background: transparent;
+  color: var(--fg-subtle);
+  font: inherit;
+  cursor: pointer;
+  padding: 0 0.4rem;
+}
+
+.tab-close:hover,
+.tab-new:hover {
+  color: var(--fg);
+}
+
+.tab-new {
+  font-size: var(--text-lg);
+}
+
+.start-screen {
+  max-width: 36rem;
+  margin: 3rem auto;
+  padding: 0 1rem;
+}
+
+.start-screen h1 {
+  font-size: var(--text-xl);
+  margin: 0 0 0.5rem;
+}
+
+.new-tab-form {
+  margin-bottom: 1rem;
+}
+
+.kind-choice {
+  display: flex;
+  gap: 1rem;
+  margin: 0.75rem 0;
+  padding: 0;
+  border: 0;
+  font-size: var(--text-md);
+}
+
+.kind-choice legend {
+  float: left;
+  margin-right: 0.5rem;
+  color: var(--fg-muted);
+}
+
+/* ---- Dialogs ---- */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  background: var(--backdrop);
+}
+
+.dialog {
+  width: min(32rem, 92vw);
+  max-height: 76vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--elev-3);
+}
+
+.dialog:focus {
+  outline: none;
+}
+
+.account-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.account-choice {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: var(--text-md);
+}
+
+.account-choice .hint {
+  margin: 0;
+}
+
+/* ---- Settings ---- */
+.settings-page {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  overflow: auto;
+  padding: 1rem max(1rem, calc(50vw - 24rem));
+  background: var(--bg);
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-header h1 {
+  font-size: var(--text-xl);
+  margin: 0;
+}
+
+.settings-section {
+  margin: 1rem 0;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elev);
+}
+
+.settings-section h2 {
+  margin: 0 0 0.5rem;
+  font-size: var(--text-lg);
+}
+
+.account-list {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+}
+
+.account-row,
+.account-add {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.account-row .hint,
+.account-add .hint {
+  margin: 0;
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+/* ---- Terminal ---- */
+.terminal-problem {
+  padding: 1rem;
+}
+
+.status-bar-spacer {
+  flex: 1;
+}
+
+.status-bar-button {
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+  padding: 0 0.4rem;
+}
+
+.status-bar-button:hover {
+  color: var(--fg);
+}
+
+.status-bar-message {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+  padding: 0 0.45rem;
+  overflow: hidden;
+}
+
+.status-bar-message-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-bar-message-error {
+  color: var(--danger);
+}
+
+.status-bar-dismiss {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.search-status {
+  min-width: 5.5rem;
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.dialog-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.dialog-header-hidden {
+  display: none;
+}
+
+.dialog-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+
+.dialog-close {
+  font-size: var(--text-xl);
+}
+
+.dialog-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-4);
+}
+
+.dialog-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border);
+  flex: none;
+}
+
+.dialog-footer-note {
+  margin-right: auto;
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+}
+
+.inline-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+  font-size: var(--text-md);
+  overflow-wrap: anywhere;
+}
+
+.inline-notice-info {
+  border-left-color: var(--accent);
+}
+
+.inline-notice-warning {
+  border-left-color: var(--attention);
+  background: var(--warning-subtle);
+}
+
+.inline-notice-error {
+  border-left-color: var(--danger);
+  background: var(--danger-subtle);
+}
+
+.inline-notice-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.inline-notice-action {
+  flex: none;
+}
+
+.terminal-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+}
+
+.terminal-search {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin-bottom: 0.4rem;
+}
+
+/* The slot flexes to fill .terminal-view. The reparented xterm host is pinned
+   to the slot's box, so FitAddon measures the slot's real height instead of
+   xterm's current row count (which kept the terminal at its first size). */
+.terminal-slot {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.xterm-host {
+  background: var(--bg);
+}
+
+.terminal-slot > .xterm-host {
+  position: absolute;
+  inset: 0;
+}
+
+.terminal-slot .xterm {
+  height: 100%;
+  box-sizing: border-box;
+  /* FitAddon subtracts this padding when it measures the slot. */
+  padding: var(--term-pad);
+}
+
+.terminal-exit {
+  margin: 0.4rem 0;
+}
+
+.terminal-menu {
+  position: fixed;
+  z-index: var(--z-menu);
+  display: flex;
+  flex-direction: column;
+  min-width: 12rem;
+  padding: 0.25rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.terminal-menu button {
+  text-align: left;
+  background: transparent;
+  color: var(--fg);
+  border: 0;
+  padding: 0.35rem 0.5rem;
+  font: inherit;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+
+.terminal-menu button:hover,
+.terminal-menu button:focus-visible {
+  background: var(--accent-subtle);
+}
+
+.terminal-menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.terminal-menu button:disabled:hover {
+  background: transparent;
+}
+
+.terminal-menu-divided {
+  margin-top: 0.25rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+
+.terminal-menu-shortcut {
+  color: var(--muted, var(--fg));
+  opacity: 0.7;
+  font-size: 0.85em;
+}
+
+.terminal-view {
+  position: relative;
+}
+
+.terminal-drop-over {
+  outline: 2px dashed var(--accent-fg);
+  outline-offset: -2px;
+}
+
+.terminal-hint {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  z-index: var(--z-dropdown);
+  padding: 0.35rem 0.6rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 0.85em;
+}
+
+.terminal-menu-dismiss {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-menu) - 1);
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  flex-shrink: 0;
+  min-height: 1.35rem;
+  margin: 0.25rem -0.4rem 0;
+  padding: 0 0.5rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  font-size: var(--text-2xs);
+  line-height: 1.35rem;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.status-bar-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+  flex-shrink: 1;
+  padding: 0 0.45rem;
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-bar-item:last-of-type {
+.status-bar-label {
+  color: var(--fg-subtle);
+}
+
+.status-bar-folder {
+  cursor: default;
+}
+
+.status-bar-warn {
+  color: var(--warning-bright);
+  cursor: help;
+}
+
+.status-usage-warn {
+  color: var(--warning-bright);
+}
+
+.status-usage-hot {
+  color: var(--danger);
+}
+
+.status-usage-muted {
+  opacity: 0.75;
+}
+
+.terminal-exit-strip {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.4rem 0.6rem;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+}
+
+/* V5: a pipeline stage being watched; read-only until it needs you or you take it over. */
+.terminal-exit-strip-text {
+  min-width: 0;
+  flex: 1 1 14rem;
+}
+
+.terminal-exit-strip-text p {
+  margin: 0;
+}
+
+.terminal-exit-strip-last {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  opacity: 0.8;
+}
+
+.terminal-exit-strip-reason,
+.terminal-exit-strip-note {
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+
+.terminal-exit-strip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.terminal-search .text-input {
+  flex: 1 1 12rem;
+  min-width: 8rem;
+}
+
+.search-toggle,
+.search-nav {
+  min-width: 1.9rem;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-muted);
+  color: var(--fg-soft);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.search-toggle-on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--fg);
+}
+
+.search-nav:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.search-status {
+  min-width: 5.5rem;
+  font-size: var(--text-sm);
