@@ -374,8 +374,25 @@ impl StateStore {
             claude_session_id: None,
             claude_config_dir: None,
             closed_at: None,
+            launch: None,
         });
         self.remember_active(&window_id, Some(tab_id.clone()));
+        self.save()?;
+        Ok(tab_id)
+    }
+
+    /// A new Claude tab that starts the dcv2 plugin (`launch`), labelled
+    /// `label`, made active.
+    pub fn create_launch_tab(
+        &mut self,
+        cwd: &str,
+        label: &str,
+        launch: super::state_types::TabLaunch,
+    ) -> Result<String, String> {
+        let tab_id = self.create_tab(cwd, TabKind::Claude)?;
+        let tab = self.tab_mut(&tab_id)?;
+        tab.label = label.chars().take(MAX_LABEL_CHARS).collect();
+        tab.launch = Some(launch);
         self.save()?;
         Ok(tab_id)
     }

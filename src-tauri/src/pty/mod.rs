@@ -512,17 +512,24 @@ fn spawn_spec(
             } else {
                 TerminalKind::Plain
             };
+            let usage = usage_status_line(app, &tab.id, &current, &cwd);
+            let launch = tab.launch.as_ref();
+            let settings = crate::run::launch::merged_settings(
+                launch.and_then(|l| l.settings_file.as_deref()),
+                usage,
+            );
             let mut command = provider.terminal_command(&TerminalLaunch {
                 kind,
                 session_id: Some(start.session_id.clone()),
-                settings: usage_status_line(app, &tab.id, &current, &cwd),
+                settings,
             })?;
             command.env.push(claude_scheme_env());
+            let env_remove = crate::run::launch::apply_launch(&mut command, launch, start.resumed);
             let mut state = store.lock().map_err(|err| err.to_string())?;
             if state.tab_by_id(&tab.id).is_some() {
                 state.remember_claude_session(&tab.id, &start.session_id, &current)?;
             }
-            (command.program, command.args, command.env, Vec::new())
+            (command.program, command.args, command.env, env_remove)
         }
     };
     let spec = SpawnSpec {

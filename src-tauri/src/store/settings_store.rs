@@ -257,6 +257,39 @@ pub struct SettingsFile {
     pub claude: ClaudeSettings,
     #[serde(default)]
     pub ui: UiSettings,
+    #[serde(default)]
+    pub run: RunSettings,
+}
+
+/// Eagle-Eye launch settings (docs/launch.md).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSettings {
+    /// `DCV2_MAX_IMPLEMENTERS` (R6), 1..=8.
+    #[serde(default = "default_max_implementers")]
+    pub max_implementers: u32,
+    /// `DCV2_STOP_HOOKS` (A3 kill switch).
+    #[serde(default = "default_true")]
+    pub stop_hooks: bool,
+}
+
+pub const MAX_IMPLEMENTERS_LIMIT: u32 = 8;
+
+fn default_max_implementers() -> u32 {
+    3
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for RunSettings {
+    fn default() -> Self {
+        Self {
+            max_implementers: default_max_implementers(),
+            stop_hooks: true,
+        }
+    }
 }
 
 impl Default for SettingsFile {
@@ -266,6 +299,7 @@ impl Default for SettingsFile {
             terminal: TerminalSettings::default(),
             claude: ClaudeSettings::default(),
             ui: UiSettings::default(),
+            run: RunSettings::default(),
         }
     }
 }
@@ -325,6 +359,19 @@ impl SettingsStore {
 
     pub fn ui(&self) -> &UiSettings {
         &self.data.ui
+    }
+
+    pub fn run(&self) -> &RunSettings {
+        &self.data.run
+    }
+
+    /// The implementer cap is kept within 1..=8.
+    pub fn set_run(&mut self, next: RunSettings) -> Result<(), String> {
+        self.data.run = RunSettings {
+            max_implementers: next.max_implementers.clamp(1, MAX_IMPLEMENTERS_LIMIT),
+            stop_hooks: next.stop_hooks,
+        };
+        self.save()
     }
 
     /// Unknown themes fall back to GitHub Dark.

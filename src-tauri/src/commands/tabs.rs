@@ -21,6 +21,10 @@ pub struct TabSummary {
     pub folder_status: String,
     /// A Claude tab that has started a session before (it may be resumable).
     pub has_session: bool,
+    /// Eagle-Eye tabs: the run folder the progress panel reads.
+    pub run_dir: Option<String>,
+    /// dcv2 tabs: `eagle-eye`, `eagle-eye-resume`, or the role.
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -42,7 +46,7 @@ pub struct AppStateSnapshot {
     pub closed_tabs: Vec<ClosedTabSummary>,
 }
 
-fn summary(tab: &TabRecord) -> TabSummary {
+pub(crate) fn summary(tab: &TabRecord) -> TabSummary {
     TabSummary {
         id: tab.id.clone(),
         label: tab.label.clone(),
@@ -51,6 +55,8 @@ fn summary(tab: &TabRecord) -> TabSummary {
         kind: tab.kind,
         folder_status: folder_status_code(&tab.cwd),
         has_session: tab.claude_session_id.is_some(),
+        run_dir: tab.launch.as_ref().and_then(|l| l.run_dir.clone()),
+        role: tab.launch.as_ref().map(|l| l.role.clone()),
     }
 }
 

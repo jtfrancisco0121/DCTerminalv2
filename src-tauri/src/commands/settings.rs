@@ -8,7 +8,7 @@ use crate::provider::claude_config::{ConfigDirInfo, CONFIG_DIR_ENV};
 use crate::provider::claude_detect::{claude_login_status, resolve_claude};
 use crate::provider::ClaudeProvider;
 use crate::store::settings_store::resolved_account_config;
-use crate::store::{ClaudeSettings, SettingsStore, TerminalSettings, UiSettings};
+use crate::store::{ClaudeSettings, RunSettings, SettingsStore, TerminalSettings, UiSettings};
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::State;
@@ -19,6 +19,7 @@ pub struct SettingsView {
     pub terminal: TerminalSettings,
     pub ui: UiSettings,
     pub claude: ClaudeSettings,
+    pub run: RunSettings,
     /// Each saved account with its resolved folder. Login is a separate call.
     pub accounts: Vec<ResolvedClaudeAccount>,
     /// Value of `DCTV2_CLAUDE_CONFIG_DIR` when set (the first account only).
@@ -55,6 +56,7 @@ fn view(settings: &SettingsStore) -> SettingsView {
         terminal: settings.terminal().clone(),
         ui: settings.ui().clone(),
         claude: claude.clone(),
+        run: settings.run().clone(),
         accounts,
         config_dir_env: env,
     }
@@ -84,6 +86,16 @@ pub fn set_ui_settings(
     let mut settings = settings.lock().map_err(|err| err.to_string())?;
     settings.set_ui(ui)?;
     Ok(settings.ui().clone())
+}
+
+#[tauri::command]
+pub fn set_run_settings(
+    run: RunSettings,
+    settings: State<Mutex<SettingsStore>>,
+) -> Result<RunSettings, String> {
+    let mut settings = settings.lock().map_err(|err| err.to_string())?;
+    settings.set_run(run)?;
+    Ok(settings.run().clone())
 }
 
 /// Save the Claude path and accounts. Open windows are retitled, since an

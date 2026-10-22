@@ -14,12 +14,17 @@
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'",
       "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420 ws://127.0.0.1:1421; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'",
-      "dangerousDisableAssetCspModification": ["style-src"]
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ]
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "publisher": "JT Francisco",
     "homepage": "https://github.com/jtfrancisco0121/DCTerminalv2",
     "category": "DeveloperTool",
@@ -34,6 +39,9 @@
     ],
     "macOS": {
       "minimumSystemVersion": "10.15"
+    },
+    "resources": {
+      "../plugin/": "plugin/"
     }
   }
 }
