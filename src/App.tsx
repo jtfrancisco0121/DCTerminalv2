@@ -21,6 +21,9 @@ import { AccountPicker } from "./components/AccountPicker";
 import { Dialog } from "./components/Dialog";
 import { InlineNotice } from "./components/InlineNotice";
 import { NewTabForm } from "./components/NewTabForm";
+import { RunPanel } from "./components/RunPanel";
+import { StartScreen } from "./components/StartScreen";
+import type { StartedRun } from "./run/api";
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
 import { TabBar } from "./components/TabBar";
@@ -67,6 +70,8 @@ function App() {
   const [dialog, setDialog] = useState<"new-tab" | "new-window" | "pick-account" | "settings" | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
   const [lastFolder, setLastFolder] = useState("");
+  // The new-tab screen shows the plain tab form instead of New run.
+  const [plainTab, setPlainTab] = useState(false);
   // Re-render when a terminal starts or exits (the tab bar dims exited tabs).
   const [, setLiveVersion] = useState(0);
 
@@ -136,6 +141,13 @@ function App() {
     await reload();
   };
 
+  const started = async (run: StartedRun) => {
+    setLastFolder(run.tab.cwd);
+    setDialog(null);
+    setPlainTab(false);
+    await reload();
+  };
+
   const doClose = (tabId: string) => {
     setConfirmClose(null);
     closeTab(windowId, tabId).then(
@@ -171,6 +183,7 @@ function App() {
   const run = (action: PageAction) => {
     switch (action.kind) {
       case "new-tab":
+        setPlainTab(false);
         setDialog("new-tab");
         break;
       case "close-tab":
@@ -258,7 +271,10 @@ function App() {
           onSelect={select}
           onClose={requestClose}
           onRename={rename}
-          onNew={() => setDialog("new-tab")}
+          onNew={() => {
+            setPlainTab(false);
+            setDialog("new-tab");
+          }}
         />
       )}
       <section className="workspace-body">
@@ -276,11 +292,24 @@ function App() {
         )}
         {state && state.tabs.length === 0 && (
           <div className="start-screen">
-            <h1>New tab</h1>
+            <h1>{plainTab ? "New tab" : "New run"}</h1>
             <p className="hint">
               {ctx ? `Claude tabs in this window use ${ctx.accountName} (${ctx.config.display}).` : ""}
             </p>
-            <NewTabForm initial={newTabDefaults(state, lastFolder)} onCreate={create} />
+            {plainTab ? (
+              <NewTabForm
+                initial={newTabDefaults(state, lastFolder)}
+                onCreate={create}
+                onCancel={() => setPlainTab(false)}
+              />
+            ) : (
+              <StartScreen
+                windowId={windowId}
+                initialFolder={newTabDefaults(state, lastFolder).cwd}
+                onStarted={(run) => void started(run)}
+                onPlainTab={() => setPlainTab(true)}
+              />
+            )}
             {state.closedTabs.length > 0 && (
               <button type="button" className="secondary-button" onClick={reopen}>
                 Reopen {state.closedTabs[0].label}
@@ -296,8 +325,14 @@ function App() {
             </button>
           </div>
         )}
-        {active && !blocked && (
+        {active && !blocked && !active.runDir && (
           <TerminalView key={active.id} tab={active} fontSize={fontSize} autoFocus={!dialog} />
+        )}
+        {active && !blocked && active.runDir && (
+          <div className="run-layout">
+            <TerminalView key={active.id} tab={active} fontSize={fontSize} autoFocus={!dialog} />
+            <RunPanel key={active.runDir} runDir={active.runDir} />
+          </div>
         )}
       </section>
       <StatusBar
@@ -309,12 +344,25 @@ function App() {
         onSettings={() => setDialog("settings")}
       />
       {dialog === "new-tab" && (
-        <Dialog title="New tab" onClose={() => setDialog(null)}>
-          <NewTabForm
-            initial={newTabDefaults(state, lastFolder)}
-            onCreate={create}
-            onCancel={() => setDialog(null)}
-          />
+        <Dialog
+          title={plainTab ? "New tab" : "New run"}
+          onClose={() => setDialog(null)}
+          className={plainTab ? "" : "start-dialog"}
+        >
+          {plainTab ? (
+            <NewTabForm
+              initial={newTabDefaults(state, lastFolder)}
+              onCreate={create}
+              onCancel={() => setPlainTab(false)}
+            />
+          ) : (
+            <StartScreen
+              windowId={windowId}
+              initialFolder={newTabDefaults(state, lastFolder).cwd}
+              onStarted={(run) => void started(run)}
+              onPlainTab={() => setPlainTab(true)}
+            />
+          )}
         </Dialog>
       )}
       {dialog === "new-window" && settings && (

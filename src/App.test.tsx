@@ -74,14 +74,60 @@ vi.mock("./terminal/park", () => ({
   setTerminalTheme: vi.fn(),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn(async () => {}) }));
+
+const runTab: TabSummary = { ...tab, id: "tab_run", label: "Eagle-Eye · ws", cwd: "/w/ws", runDir: "/d/runs/r-1", role: "eagle-eye" };
+const startRun = vi.fn(async () => {
+  state = { ...state, activeTabId: runTab.id, tabs: [runTab] };
+  return { tab: runTab, runDir: runTab.runDir };
+});
+vi.mock("./run/api", () => ({
+  runOverview: vi.fn(async () => ({
+    pluginDir: "/app/plugin",
+    pluginVersion: "abc123",
+    roles: [
+      { id: "planner", label: "Planner" },
+      { id: "onboard", label: "Onboard" },
+    ],
+    runs: [],
+  })),
+  detectFolderRepos: vi.fn(async () => ({ kind: "repo", repos: [{ name: "ws", path: "/w/ws", check: "npm test" }] })),
+  startRun: (...args: unknown[]) => startRun(...(args as [])),
+  resumeRun: vi.fn(),
+  readRun: vi.fn(async () => ({
+    runId: "r-1",
+    runDir: "/d/runs/r-1",
+    folder: "/w/ws",
+    hasStatus: true,
+    statusProblem: null,
+    stage: "planning",
+    waitingFor: null,
+    pausedReason: null,
+    error: null,
+    updatedAt: null,
+    plan: null,
+    prs: [],
+    shipNote: null,
+    timeline: [],
+    hasReport: false,
+  })),
+  rerunChecks: vi.fn(async () => {}),
+  runWorktrees: vi.fn(async () => []),
+  removeRunWorktrees: vi.fn(async () => []),
+  readRunFile: vi.fn(async () => ""),
+  memoryStatus: vi.fn(async () => ({ available: false, problem: "memory.sh is not in this plugin yet" })),
+  readMemoryFile: vi.fn(async () => ""),
+}));
 
 const { default: App } = await import("./App");
 
 describe("App", () => {
-  it("an empty window starts with the new-tab form, and a tab opens its terminal", async () => {
+  it("an empty window starts with New run; a plain tab is one click away and opens its terminal", async () => {
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "New tab" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "New run" })).toBeTruthy();
     expect(await screen.findByTestId("status-account")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Plain terminal tab instead" }));
+    expect(await screen.findByRole("heading", { name: "New tab" })).toBeTruthy();
     fireEvent.change(screen.getByPlaceholderText("/path/to/project"), { target: { value: "/w/app" } });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Open tab" }));
@@ -96,7 +142,26 @@ describe("App", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Close Claude · app" }));
     await waitFor(() => expect(closeTab).toHaveBeenCalledWith("main", "tab_1"));
-    expect(await screen.findByRole("heading", { name: "New tab" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "New run" })).toBeTruthy();
+  });
+
+  it("Start Eagle-Eye launches the run in a tab with its progress panel beside it", async () => {
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+    render(<App />);
+    fireEvent.change(await screen.findByPlaceholderText("/path/to/repo or folder of repos"), {
+      target: { value: "/w/ws" },
+    });
+    expect(await screen.findByText("A git repo.")).toBeTruthy();
+    expect(screen.getByText("Planner")).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Add multiply()" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
+    });
+    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye");
+    expect((await screen.findByTestId("terminal")).textContent).toBe("Eagle-Eye · ws");
+    expect(await screen.findByTestId("run-stage")).toBeTruthy();
+    expect(screen.getByTestId("run-stage").textContent).toBe("Planning");
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
   });
 
   // Review: a window whose account was removed ran its Claude tabs on the

@@ -4,12 +4,14 @@ import {
   claudeAccountLogins,
   claudeStatus,
   setClaudeSettings,
+  setRunSettings,
   setTerminalSettings,
   setUiSettings,
   type ClaudeAccount,
   type ClaudeAccountLogin,
   type ClaudeStatus,
   type LoginStatus,
+  type RunSettings,
   type SettingsView,
   type TerminalSettings,
 } from "../bridge";
@@ -59,6 +61,7 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
   const [newName, setNewName] = useState("");
   const [newDir, setNewDir] = useState("");
   const [terminal, setTerminal] = useState<TerminalSettings>(view.terminal);
+  const [runSettings, setRun] = useState<RunSettings>(view.run ?? { maxImplementers: 3, stopHooks: true });
   const [logins, setLogins] = useState<ClaudeAccountLogin[] | null>(null);
   const [checking, setChecking] = useState(false);
   const [cli, setCli] = useState<ClaudeStatus | null>(null);
@@ -90,6 +93,17 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
       setLogins(null);
       setNotice({ tone: "info", text: "Accounts saved." });
       onSaved(next);
+    } catch (err) {
+      setNotice({ tone: "error", text: errorText(err) });
+    }
+  };
+
+  const saveRun = async () => {
+    try {
+      const saved = await setRunSettings(runSettings);
+      setRun(saved);
+      setNotice({ tone: "info", text: "Run settings saved." });
+      onSaved({ ...view, run: saved });
     } catch (err) {
       setNotice({ tone: "error", text: errorText(err) });
     }
@@ -308,6 +322,34 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
         <div className="button-row">
           <button type="button" className="primary-button" onClick={() => void saveTerminal()}>
             Save terminal settings
+          </button>
+        </div>
+      </section>
+
+      <section className="settings-section" aria-label="Runs">
+        <h2>Runs</h2>
+        <label className="field-label">
+          Implementers at once (Eagle-Eye)
+          <input
+            className="text-input text-input-narrow"
+            type="number"
+            min={1}
+            max={8}
+            value={runSettings.maxImplementers}
+            onChange={(event) => setRun({ ...runSettings, maxImplementers: Number(event.target.value) || 3 })}
+          />
+        </label>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={runSettings.stopHooks}
+            onChange={(event) => setRun({ ...runSettings, stopHooks: event.target.checked })}
+          />{" "}
+          Run the repo's checks when an agent stops (stop hooks)
+        </label>
+        <div className="button-row">
+          <button type="button" className="primary-button" onClick={() => void saveRun()}>
+            Save run settings
           </button>
         </div>
       </section>
