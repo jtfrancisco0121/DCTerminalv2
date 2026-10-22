@@ -1,0 +1,43 @@
+[package]
+name = "dcterminalv2"
+version = "0.1.0"
+description = "Claude terminal tabs, one Claude account per window"
+authors = ["JT Francisco"]
+edition = "2021"
+default-run = "dcterminalv2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "dcterminalv2_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+portable-pty = "0.9.0"
+base64 = "0.23.1"
+uuid = { version = "1", features = ["v4"] }
+tauri-plugin-single-instance = "2"
+
+# Already built through tao; used for `applicationShouldTerminate:` (src/macos_terminate.rs).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
