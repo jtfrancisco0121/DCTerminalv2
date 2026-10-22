@@ -132,13 +132,24 @@ def transcript(path):
     return events
 
 
-def orchestrator_tool_uses(events):
-    """Tool calls made by the orchestrator itself (not inside a sub-agent)."""
+def guard_blocked(events):
+    """ids of tool calls the dcv2 guard hook blocked (they did not run)."""
+    ids = set()
+    for ev in events:
+        for block in (ev.get("message") or {}).get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_result" and "Blocked by the dcv2 guard" in str(block.get("content")):
+                ids.add(block.get("tool_use_id"))
+    return ids
+
+
+def orchestrator_tool_uses(events, ran_only=False):
+    """Tool calls made by the orchestrator itself (not inside a sub-agent); ran_only skips guard-blocked ones."""
+    blocked = guard_blocked(events) if ran_only else set()
     for ev in events:
         if ev.get("type") != "assistant" or ev.get("parent_tool_use_id"):
             continue
         for block in (ev.get("message") or {}).get("content") or []:
-            if isinstance(block, dict) and block.get("type") == "tool_use":
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id") not in blocked:
                 yield block.get("name"), block.get("input") or {}
 
 
@@ -186,9 +197,9 @@ def check_orchestrator_context(events, ws):
 
 
 def check_state_helper(events, run):
-    """status.json is only written through state.sh put (validated + atomic)."""
+    """status.json is only written through state.sh put (validated + atomic); attempts the guard blocked did not write."""
     bad = []
-    for name, inp in orchestrator_tool_uses(events):
+    for name, inp in orchestrator_tool_uses(events, ran_only=True):
         if name in ("Write", "Edit") and str(inp.get("file_path", "")).endswith(("status.json", "writeback.json", ".guard.json")):
             bad.append(f"{name} {inp.get('file_path')}")
         if name == "Bash":
