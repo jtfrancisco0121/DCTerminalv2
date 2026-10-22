@@ -10,7 +10,7 @@ You are an Implementer sub-agent of an Eagle-Eye run. First Read `${CLAUDE_PLUGI
 - `run`: the run folder. Read `<run>/plan.md` (the approved plan) and `<run>/request.md`.
 - `pr`: the PR id (e.g. `PR1`), its repo, its stories, and its check command.
 - `worktree`: the absolute path of this PR's git worktree, already on branch `branch`.
-- Optionally `findings` and `round`: PR review findings to fix (fix only those, then re-run the check), and the path of the review file with the details.
+- Optionally `findings`, `review` and `round`: PR review findings to fix (fix only those, then re-run the check); `review` is the path of the review file with the details (read it when `findings` says "see the review file").
 - Optionally `resume: true`: some stories may already be committed; read `git -C <worktree> log --oneline` and skip stories whose commit is there.
 
 ## Hard limits
