@@ -170,6 +170,12 @@ PR1 "quoted" $(not run) `nor this`
 EOF
 tail -1 "$RUN/log.md" | grep -qF 'building PR1 "quoted" $(not run) `nor this`' && ok "  logged verbatim" || bad "  log line: $(tail -1 "$RUN/log.md")"
 
+expect 0 "log without a stage uses status.json's" bash "$STATE" log "$RUN" <<<'no stage given'
+tail -1 "$RUN/log.md" | grep -q ' building no stage given$' && ok "  stage building" || bad "  log line: $(tail -1 "$RUN/log.md")"
+expect 0 "preflight resume logs the resumed line" bash "$STATE" preflight "$RUN" resume
+tail -1 "$RUN/log.md" | grep -q ' building resumed at stage building$' && ok "  resumed line" || bad "  log line: $(tail -1 "$RUN/log.md")"
+expect 0 "after the resumed line, halt-after no longer applies" env DCV2_TEST_MODE=halt-after=PR1 bash "$STATE" put "$RUN/status.json" < <(status building reviewed building)
+
 echo "# plan sections (16)"
 expect 0 "plan prs" bash "$STATE" plan "$RUN" prs
 has "  has PR2" "### PR2: Prefix"; hasnt "  stops before Manual steps" "Manual steps"

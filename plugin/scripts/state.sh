@@ -2,11 +2,13 @@
 # Run-folder state for the eagle-eye orchestrator. Every write is validated and
 # atomic (a mktemp file in the same folder, then mv). Needs python3 (preflight checks it).
 #
-#   state.sh preflight <run>                  check python3, git, DCV2_RUN_DIR and request.md;
+#   state.sh preflight <run> [resume]         check python3, git, DCV2_RUN_DIR and request.md;
+#                                             with resume, also log "resumed at stage <stage>";
 #                                             print folder= / repos= / tickets= / reposJson= / testmode=
 #   state.sh testmode                         print the test mode, from the env DCV2_TEST_MODE only
 #   state.sh put <run>/status.json  < json    validate the whole document, then write it
-#   state.sh log <run> <stage>      < text    append "<UTC time> <stage> <text>" to log.md (text on stdin)
+#   state.sh log <run> [<stage>]    < text    append "<UTC time> <stage> <text>" to log.md (text on stdin;
+#                                             stage defaults to status.json's)
 #   state.sh now                              print the UTC time (ISO-8601)
 #   state.sh approve <run> plan|ship user|test
 #                                             record the user's yes at stop #1 / #2 (test: only when
@@ -348,7 +350,7 @@ def cmd_testmode():
     print(f"auto-approve={'yes' if tm['auto'] else 'no'} halt-after={tm['halt'] or 'none'}")
 
 
-def cmd_preflight(run):
+def cmd_preflight(run, resume=False):
     problems = []
     if not os.path.isdir(run):
         die(f"PREFLIGHT FAILED: no run folder {run}")
@@ -381,6 +383,13 @@ def cmd_preflight(run):
     print(f"tickets={'yes' if os.path.isfile(os.path.join(run, 'tickets.json')) else 'no'}")
     print(f"reposJson={'yes' if os.path.isfile(os.path.join(run, 'repos.json')) else 'no'}")
     print(f"testmode=auto-approve:{'yes' if tm['auto'] else 'no'},halt-after:{tm['halt'] or 'none'}")
+    if resume:
+        st = load_json(os.path.join(run, "status.json"))
+        if isinstance(st, dict) and st.get("stage") in STAGES:
+            append_log(run, st["stage"], f"resumed at stage {st['stage']}")
+            print(f"resumed: logged 'resumed at stage {st['stage']}' (test-mode halt-after no longer applies)")
+        else:
+            print("resume: no valid status.json: start a fresh run (Step 0)")
 
 
 def cmd_approve(run, what, by):
@@ -663,7 +672,7 @@ def main(argv):
     need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0}
     if cmd not in need or len(args) < need[cmd]:
         die("usage: see the header of state.sh", 2)
-    if cmd == "preflight": cmd_preflight(args[0])
+    if cmd == "preflight": cmd_preflight(args[0], "resume" in args[1:])
     elif cmd == "testmode": cmd_testmode()
     elif cmd == "put": cmd_put(args[0])
     elif cmd == "approve": cmd_approve(args[0], args[1], args[2])
@@ -683,8 +692,13 @@ case "${1:-}" in
     date -u +%FT%TZ
     ;;
   log)
-    [[ $# -eq 3 ]] || { echo "usage: state.sh log <run dir> <stage> <<'EOF' ... EOF (the text on stdin, never as an argument)" >&2; exit 2; }
-    run="$2"; stage="$3"
+    [[ $# -eq 2 || $# -eq 3 ]] || { echo "usage: state.sh log <run dir> [<stage>] <<'EOF' ... EOF (the text on stdin, never as an argument)" >&2; exit 2; }
+    run="$2"; stage="${3:-}"
+    if [[ -z "$stage" ]]; then
+      stage="$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("stage") or "run")
+except Exception: print("run")' "$run/status.json" 2>/dev/null || echo run)"
+    fi
     [[ "$stage" =~ ^[a-z-]+$ ]] || { echo "log: stage must be a stage name" >&2; exit 2; }
     text="$(cat)"; text="${text//$'\r'/ }"; text="${text//$'\n'/ }"
     [[ -n "${text// /}" ]] || { echo "log: empty text on stdin" >&2; exit 2; }

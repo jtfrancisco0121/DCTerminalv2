@@ -35,7 +35,7 @@ Always use `S`; never write `status.json`, `writeback.json`, `.guard.json` or `l
   `S put <run>/status.json <<'JSON'` … `JSON`.
   It validates the document, then writes atomically. If it prints `NOT WRITTEN`, fix what it says and run it again before doing anything else. It sets `updatedAt`, each PR's `startedAt`, `updatedAt` and `agent`, and keeps `plan.approval`, `shipApproval`, shipped PR states and `prUrl` as `S` recorded them (copy them from the file you re-read).
 - **Approvals**: only `S approve <run> plan|ship user` after the user's yes (or `… test` in test mode). Never set `approved`, `approval` or `shipApproval` in a document yourself.
-- **log.md**: `S log <run> <stage> <<'EOF'` / one line / `EOF`. The text goes on stdin in a quoted heredoc, never as an argument. One event per call, no secrets.
+- **log.md**: `S log <run> <stage> <<'EOF'` / one line / `EOF` (the stage may be left out: it defaults to status.json's). The text goes on stdin in a quoted heredoc, never as an argument. One event per call, no secrets.
 
 status.json (schema 1):
 ```json
@@ -136,8 +136,8 @@ Stage is `shipping` (set by `S approve`). For each PR that is `reviewed` or `pus
 
 ## Resume (`resume run=<dir>`)
 
-1. Read `status.json`. Missing → there is nothing to resume: start a fresh run (Step 0). Run `S preflight <run>` either way.
-2. Before anything else, log exactly `resumed at stage <stage>` (state.sh relies on this line: a halt is never applied after it). Re-run Step 0's repo detection only if needed for a step you must redo.
+1. Run `S preflight <run> resume` first: it does the Step 0 checks and logs `resumed at stage <stage>` itself (a test-mode halt never applies after that line). It prints `no valid status.json` when there is nothing to resume: then start a fresh run (Step 0).
+2. Read `status.json`. Re-run Step 0's repo detection only if needed for a step you must redo.
 3. Continue from the first unfinished step, never redoing finished work:
    - `planning`: `plan` null or `plan.md` missing → Step 1 from the start. Else continue the review loop from `plan.reviewRound + 1` (or go to stop #1 when the last verdict had no MEDIUM+).
    - `plan-approval` → stop #1 again (re-ask, or auto-approve in test mode; `plan.approval` already set → Step 2).

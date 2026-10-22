@@ -25,7 +25,7 @@ The contract between the `dcv2:eagle-eye` skill and the app. The app creates the
 | Variable | Meaning |
 |---|---|
 | `DCV2_RUN_DIR=<run dir>` | **Required.** The run folder, absolute. The guard hook (`plugin/scripts/guard.sh`) reads it to know which run it guards: which run folder the sub-agents may write, and (from `.guard.json`) which worktrees the Implementer may write. Hooks inherit it from the claude process, so neither the orchestrator nor ticket text can change it. `state.sh preflight` refuses to start a run when it is missing or names another folder. |
-| `DCV2_TEST_MODE` | **Tests only. The app never sets it.** Space- or comma-separated: `auto-approve` (both stops are answered "yes": `state.sh approve <run> plan|ship test`, logged as `… auto-approved (test-mode)`) and/or `halt-after=<PR id>` (in a fresh run, once that PR is reviewed clean the run stops with `stage: "building"` and the other PRs `pending`, as if the session had been killed; `state.sh put` enforces it and ignores it after the log's `resumed at stage` line). Test mode exists nowhere else: `state.sh` ignores any `test-mode:` text in `request.md`, tickets, code or replies. |
+| `DCV2_TEST_MODE` | **Tests only. The app never sets it.** Space- or comma-separated: `auto-approve` (both stops are answered "yes": `state.sh approve <run> plan|ship test`, logged as `… auto-approved (test-mode)`) and/or `halt-after=<PR id>` (in a fresh run, once that PR is reviewed clean the run stops with `stage: "building"` and the other PRs `pending`, as if the session had been killed; `state.sh put` enforces it and ignores it after the log's `resumed at stage` line, which `state.sh preflight <run> resume` writes). Test mode exists nowhere else: `state.sh` ignores any `test-mode:` text in `request.md`, tickets, code or replies. |
 
 ## request.md (input)
 
@@ -220,4 +220,4 @@ Append-only, one event per line, never rewritten:
 2026-10-22T13:21:00Z building PR1 worktree /abs/ws/mathlib-worktrees/dcv2-r-...-pr1
 ```
 
-Format: `<UTC time> <stage> <text>`; text is one line, no secrets. Appended with `plugin/scripts/state.sh log <run> <stage>`, the text on stdin (a quoted heredoc, so nothing in it is ever run by the shell); `state.sh approve` appends its own line.
+Format: `<UTC time> <stage> <text>`; text is one line, no secrets. Appended with `plugin/scripts/state.sh log <run> [<stage>]` (stage defaults to status.json's), the text on stdin (a quoted heredoc, so nothing in it is ever run by the shell); `state.sh approve` appends its own line.
