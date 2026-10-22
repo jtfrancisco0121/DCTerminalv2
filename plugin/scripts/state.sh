@@ -24,6 +24,16 @@
 #                                             shipping + ship approval only); updates status.json
 #   state.sh writeback <run> [--force]        write writeback.json from tickets.json, plan.md and
 #                                             status.json (refuses to overwrite it without --force)
+#   state.sh gate <run> <pr id> PASS|CONCERNS|FAIL|WAIVED "<reason>" [--review <file>]
+#                                             write gates/<pr id>.yml (A1). PASS/CONCERNS need the review
+#                                             file (default reviews/<pr>-round<review.round>.md) to say
+#                                             APPROVED; WAIVED only over a CONCERNS/FAIL gate, with the
+#                                             user's reason
+#   state.sh report <run>                     write report.md from status.json, plan.md, log.md and the
+#                                             gates (R10); put does it itself at stage done / failed
+#
+# Limits put enforces: at most DCV2_MAX_IMPLEMENTERS (default 3) PRs building/fixing at once (R6);
+# a PR becomes reviewed only with a PASS, CONCERNS or WAIVED gate file (A1).
 #
 # Exit 1 = refused (the message says why; nothing was written). Exit 3 = needs attention.
 set -euo pipefail
@@ -40,6 +50,7 @@ POST_APPROVAL = ("building", "ship-approval", "shipping", "done")
 SHIPPED = ("opened", "pushed", "local-only")
 ISO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 AGENT_FOR_STATE = {"building": "implementer", "fixing": "implementer", "reviewing": "pr-reviewer"}
+GATES = ("PASS", "CONCERNS", "FAIL", "WAIVED")
 
 
 def now():
@@ -229,7 +240,7 @@ def validate_status(doc, run):
     return p
 
 
-def prepare_status(doc, old, trusted):
+def prepare_status(doc, old, trusted, run_dir=None):
     """Stamp times and derived fields; keep what only state.sh may change."""
     notes = []
     t = now()
@@ -263,6 +274,11 @@ def prepare_status(doc, old, trusted):
         if not trusted and o.get("prUrl") and pr.get("prUrl") != o.get("prUrl"):
             bad.append(f"{pr.get('id')}.prUrl is {o['prUrl']} (written by state.sh ship-pr); keep it")
         state = pr.get("state")
+        if state == "reviewed" and o.get("state") != "reviewed" and run_dir:
+            g = read_gate(run_dir, pr.get("id"))
+            if not g or g.get("gate") == "FAIL":
+                bad.append(f"{pr.get('id')}: reviewed needs its gate first: `state.sh gate <run> {pr.get('id')} PASS|CONCERNS \"<reason>\"` "
+                           f"from the PR Reviewer's reply (gate now {(g or {}).get('gate') or 'missing'})")
         pr["agent"] = AGENT_FOR_STATE.get(state)
         pr["startedAt"] = o.get("startedAt") or (t if state not in (None, "pending") else None)
         if isinstance(pr.get("check"), dict):
@@ -273,11 +289,41 @@ def prepare_status(doc, old, trusted):
     return notes, bad
 
 
+def max_implementers():
+    v = os.environ.get("DCV2_MAX_IMPLEMENTERS", "").strip() or "3"
+    if not re.fullmatch(r"[1-9]\d{0,2}", v):
+        die(f"DCV2_MAX_IMPLEMENTERS must be a whole number 1-999 (got {v!r})")
+    return int(v)
+
+
+def read_gate(run, pid):
+    """{gate, reason, updated, review, round} from gates/<pid>.yml, or None."""
+    text = read(os.path.join(run, "gates", f"{pid}.yml"))
+    if not text:
+        return None
+    g = {}
+    for line in text.splitlines():
+        m = re.match(r"^(\w+):\s*(.*?)\s*$", line)
+        if m:
+            v = m.group(2)
+            try:
+                v = json.loads(v)
+            except ValueError:
+                pass
+            g[m.group(1)] = v
+    return g if g.get("gate") in GATES else None
+
+
 def gates(doc, run):
     """Refusals and reminders that depend on the run, not on the document's shape."""
     tm = testmode()
     out = []
     stage = doc.get("stage")
+    cap = max_implementers()
+    busy = [p.get("id") for p in doc.get("prs") or [] if isinstance(p, dict) and p.get("state") in ("building", "fixing")]
+    if len(busy) > cap:
+        return (f"NOT WRITTEN: {len(busy)} PRs building/fixing ({', '.join(busy)}), over the cap of {cap} Implementers at once "
+                f"(DCV2_MAX_IMPLEMENTERS). Keep the others pending and start them when one finishes."), out
     if tm["halt"] and not resumed(run):
         pid = tm["halt"]
         prs = {p.get("id"): p for p in doc.get("prs") or [] if isinstance(p, dict)}
@@ -303,7 +349,7 @@ def gates(doc, run):
 def write_status(run, doc, trusted=False):
     dest = os.path.join(run, "status.json")
     old = load_json(dest)
-    notes, bad = prepare_status(doc, old, trusted)
+    notes, bad = prepare_status(doc, old, trusted, run)
     problems = bad + validate_status(doc, run)
     if problems:
         die(f"NOT WRITTEN: {dest}: " + "; ".join(problems))
@@ -311,6 +357,9 @@ def write_status(run, doc, trusted=False):
     if refusal:
         die(refusal)
     atomic_write(dest, json.dumps(doc, indent=2) + "\n")
+    if doc.get("stage") in ("done", "failed"):
+        write_report(run)
+        out.append(f"wrote {os.path.join(run, 'report.md')}")
     return notes + out
 
 
@@ -667,9 +716,124 @@ def cmd_writeback(run, force):
     print(f"wrote {dest} ({len(drafts)} drafts)")
 
 
+def cmd_gate(run, pid, gate, reason, review=None):
+    if gate not in GATES:
+        die(f"NOT WRITTEN: gate must be one of {', '.join(GATES)} (got {gate!r})")
+    reason = " ".join((reason or "").split())
+    if not reason:
+        die("NOT WRITTEN: a gate needs a one-line reason")
+    if len(reason) > 300:
+        die("NOT WRITTEN: keep the reason to one line (at most 300 characters)")
+    st = load_status(run)
+    pr = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == pid), None)
+    if pr is None:
+        die(f"NOT WRITTEN: no {pid} in status.json")
+    rev = pr.get("review") or {}
+    rnd = rev.get("round") or 0
+    review = review or (f"reviews/{pid}-round{rnd}.md" if rnd else rev.get("path"))
+    old = read_gate(run, pid)
+    if gate in ("PASS", "CONCERNS"):
+        text = read(review if review and os.path.isabs(review) else os.path.join(run, review or "-"))
+        m = re.search(r"^##\s*Verdict\s*\n+\s*(?:\*\*)?([A-Z ]+?)(?:\*\*)?\s*$", text, re.M) if text else None
+        verdict = m.group(1).strip() if m else None
+        if verdict != "APPROVED":
+            die(f"NOT WRITTEN: {gate} needs the review file {review} to exist with verdict APPROVED (found {verdict or 'no review'}); "
+                "a review asking for changes is FAIL")
+    if gate == "WAIVED":
+        if not old or old.get("gate") not in ("CONCERNS", "FAIL"):
+            die(f"NOT WRITTEN: WAIVED only replaces a CONCERNS or FAIL gate (now {(old or {}).get('gate') or 'missing'}), "
+                "and only when the user said so, with their reason")
+    os.makedirs(os.path.join(run, "gates"), exist_ok=True)
+    body = (f"gate: {gate}\nreason: {json.dumps(reason)}\nupdated: {now()}\nreview: {json.dumps(review)}\nround: {rnd}\n"
+            + (f"waived: {json.dumps(old.get('gate'))}\n" if gate == "WAIVED" else ""))
+    atomic_write(os.path.join(run, "gates", f"{pid}.yml"), body)
+    append_log(run, st.get("stage") or "building", f"{pid} gate {gate}" + (" (waived by the user)" if gate == "WAIVED" else "") + f": {reason}")
+    print(f"wrote gates/{pid}.yml: {gate}")
+
+
+def plan_pr_stories(plan):
+    out = {}
+    for m in re.finditer(r"^###\s+(PR\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan, re.M | re.S):
+        sl = re.search(r"^\s*-\s*Stories:\s*(.+)$", m.group(2), re.M)
+        out[m.group(1)] = re.findall(r"S\d+", sl.group(1)) if sl else []
+    return out
+
+
+def write_report(run):
+    st = load_json(os.path.join(run, "status.json")) or {}
+    plan = read(os.path.join(run, "plan.md"))
+    log = read(os.path.join(run, "log.md")).splitlines()
+    planned = plan_pr_stories(plan)
+    started = log[0].split(" ", 1)[0] if log else None
+    pl = st.get("plan") or {}
+    pr_word = re.compile(r"\bPR\d+\b")
+    plan_retries = sum(1 for l in log if "retried" in l and re.search("plan", l, re.I) and not pr_word.search(l))
+    L = [f"# Run report: {st.get('runId')}", "",
+         f"- Stage: **{st.get('stage')}**" + (f": {st.get('error')}" if st.get("error") else ""),
+         f"- Folder: `{st.get('folder')}`",
+         f"- Started: {started or '-'}; last update: {st.get('updatedAt') or '-'}"]
+    ver = read(os.path.join(os.environ.get("DCV2_PLUGIN_ROOT", ""), "VERSION")).strip()
+    if ver:
+        L.append(f"- Roles version: {ver}")
+    appr, ship = pl.get("approval") or {}, st.get("shipApproval") or {}
+    L += [f"- Plan: {pl.get('reviewRound', 0)} review round(s), last verdict {pl.get('verdict') or '-'}, "
+          f"{pl.get('openFindings', 0)} MEDIUM+ open; approved by {appr.get('by') or '-'}" + (f" at {appr['at']}" if appr.get("at") else ""),
+          f"- Ship: approved by {ship.get('by') or '-'}; " + json.dumps(st.get("ship")) if st.get("ship") else f"- Ship: approved by {ship.get('by') or '-'}; not shipped",
+          f"- Plan retries: {plan_retries}",
+          ""]
+    prs = st.get("prs") or []
+    L += ["## Pull requests", ""]
+    if not prs:
+        L += ["No PRs (the plan was not approved or the run stopped before building).", ""]
+    else:
+        L += ["| PR | Repo | Stories planned | Built | Commits | Review rounds | Retries | Gate | Check | State |",
+              "|---|---|---|---|---|---|---|---|---|---|"]
+        for pr in prs:
+            pid = pr.get("id")
+            ids = (pr.get("stories") or {}).get("ids") or []
+            want = planned.get(pid) or ids
+            g = read_gate(run, pid) or {}
+            chk, rev = pr.get("check") or {}, pr.get("review") or {}
+            pid_word = re.compile(r"\b" + re.escape(str(pid)) + r"\b")
+            retries = sum(1 for l in log if "retried" in l and pid_word.search(l))
+            L.append(f"| {pid} | {pr.get('repo')} | {', '.join(want) or '-'} | {(pr.get('stories') or {}).get('done', 0)}/{(pr.get('stories') or {}).get('total', len(ids))} "
+                     f"| {pr.get('commits', 0)} | {rev.get('round', 0)} | {retries} | {g.get('gate') or 'missing'} | {chk.get('result')} | {pr.get('state')} |")
+        L.append("")
+        for pr in prs:
+            pid = pr.get("id")
+            g = read_gate(run, pid) or {}
+            chk, rev = pr.get("check") or {}, pr.get("review") or {}
+            ids = (pr.get("stories") or {}).get("ids") or []
+            miss = [x for x in planned.get(pid, []) if x not in ids]
+            extra = [x for x in ids if planned.get(pid) and x not in planned[pid]]
+            L += [f"### {pid}: {pr.get('title')}", "",
+                  f"- Repo `{pr.get('repo')}`, branch `{pr.get('branch')}`, worktree `{pr.get('worktree')}`",
+                  f"- PR: {pr.get('prUrl') or '-'}" + (f"; note: {pr.get('note')}" if pr.get("note") else ""),
+                  f"- Planned vs built: planned {', '.join(planned.get(pid, [])) or '-'}; recorded {', '.join(ids) or '-'}; "
+                  f"done {(pr.get('stories') or {}).get('done', 0)}/{(pr.get('stories') or {}).get('total', len(ids))}"
+                  + (f"; missing from the record: {', '.join(miss)}" if miss else "") + (f"; not in the plan: {', '.join(extra)}" if extra else ""),
+                  f"- Gate: {g.get('gate') or 'missing'}" + (f": {g.get('reason')}" if g.get("reason") else "") + (f" ({g.get('updated')})" if g.get("updated") else ""),
+                  f"- Check: `{chk.get('command')}`: {chk.get('result')}" + (f": {chk.get('summary')}" if chk.get("summary") else "") + (f" (log `{chk.get('log')}`)" if chk.get("log") else ""),
+                  f"- Review: {rev.get('verdict') or '-'} after {rev.get('round', 0)} round(s), {rev.get('openFindings', 0)} MEDIUM+ open" + (f" (`{rev.get('path')}`)" if rev.get("path") else ""),
+                  ""]
+    mu = read(os.path.join(run, "memory-update.md")).strip()
+    L += ["## Memory update", "", "\n".join(mu.splitlines()[:15]) if mu else "No memory-update.md.", ""]
+    L += ["## Events", "", f"{len(log)} log lines; retries {sum(1 for l in log if 'retried' in l)}; "
+          f"needs-attention {sum(1 for p in prs if p.get('state') == 'needs-attention')}. Full timeline: `log.md`.", ""]
+    atomic_write(os.path.join(run, "report.md"), "\n".join(L))
+
+
+def cmd_report(run):
+    if not isinstance(load_json(os.path.join(run, "status.json")), dict):
+        die(f"no valid status.json in {run}")
+    write_report(run)
+    print(f"wrote {os.path.join(run, 'report.md')}")
+
+
 def main(argv):
     cmd, args = (argv[0] if argv else ""), argv[1:]
-    need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0}
+    need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0,
+            "gate": 4, "report": 1}
     if cmd not in need or len(args) < need[cmd]:
         die("usage: see the header of state.sh", 2)
     if cmd == "preflight": cmd_preflight(args[0], "resume" in args[1:])
@@ -682,6 +846,10 @@ def main(argv):
     elif cmd == "ship-check": cmd_ship_check(args[0])
     elif cmd == "ship-pr": cmd_ship_pr(args[0], args[1])
     elif cmd == "writeback": cmd_writeback(args[0], "--force" in args[1:])
+    elif cmd == "gate":
+        rv = args[args.index("--review") + 1] if "--review" in args[4:-1] else None
+        cmd_gate(args[0], args[1], args[2], args[3], rv)
+    elif cmd == "report": cmd_report(args[0])
 
 
 main(sys.argv[1:])
@@ -713,6 +881,6 @@ except Exception: print("run")' "$run/status.json" 2>/dev/null || echo run)"
     ;;
   *)
     py_works || { echo "NOT WRITTEN: python3 is missing or does not run (state.sh needs it)" >&2; exit 1; }
-    python3 -c "$PY" "$@"
+    DCV2_PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" python3 -c "$PY" "$@"
     ;;
 esac
