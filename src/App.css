@@ -1284,6 +1284,10 @@ body,
   color: var(--success);
 }
 
+.run-gate-review-only {
+  color: var(--fg-muted);
+}
+
 .run-gate-concerns,
 .run-gate-unreadable,
 .run-gate-claimed {

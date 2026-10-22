@@ -133,6 +133,8 @@ function App() {
   };
 
   const reload = () => getAppState(windowId).then(setState);
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
 
   const create = async (draft: NewTabDraft) => {
     await newTab(windowId, draft.cwd, draft.kind);
@@ -224,6 +226,8 @@ function App() {
           (err: unknown) => reportError("Menu", err, { once: true }),
         );
       keep(win.listen("new-window", () => runRef.current({ kind: "new-window" })));
+      // Resume of a run whose tab is live in this window focuses that tab.
+      keep(win.listen<string>("focus-tab", () => void reloadRef.current()));
       keep(
         win.listen<string>("menu", (event) => {
           const action = pageAction(event.payload);

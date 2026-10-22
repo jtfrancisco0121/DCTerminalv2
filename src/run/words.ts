@@ -45,6 +45,8 @@ export function checkMark(result: string | null | undefined): string {
       return "✗";
     case "running":
       return "…";
+    case "interrupted":
+      return "?";
     default:
       return "–";
   }
@@ -55,9 +57,20 @@ export function runFinished(view: RunView): boolean {
   return view.stage === "done" || view.stage === "failed";
 }
 
-/** R1 should run on its own: at stop #2 and no app check result yet. */
+/**
+ * R1 should run on its own: at stop #2, for a PR with a known check
+ * (repos.json) that has no app result yet or whose HEAD moved since.
+ */
 export function wantsAppChecks(view: RunView): boolean {
-  return view.stage === "ship-approval" && view.prs.length > 0 && view.prs.every((pr) => !pr.appCheck);
+  return (
+    view.stage === "ship-approval" &&
+    view.prs.some((pr) => pr.checkKnown && (!pr.appCheck || pr.appCheckStale))
+  );
+}
+
+/** What the auto re-run was last done for: each PR's HEAD. */
+export function checkSignature(view: RunView): string {
+  return view.prs.map((pr) => `${pr.id}@${pr.currentHead ?? "-"}`).join(" ");
 }
 
 export function storiesText(pr: PrView): string | null {

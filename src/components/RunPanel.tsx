@@ -13,6 +13,7 @@ import {
 } from "../run/api";
 import {
   checkMark,
+  checkSignature,
   prStateText,
   reviewText,
   runFinished,
@@ -54,18 +55,27 @@ function PrRow({ pr, onOpenFile, onOpenUrl }: { pr: PrView } & Pick<ViewProps, "
         <span title={pr.check.summary ?? undefined}>
           check (Claude): {checkMark(pr.check.result)} {pr.check.result ?? "not run"}
         </span>
-        <span title={pr.appCheck?.detail ?? undefined}>
-          check (app): {checkMark(pr.appCheck?.result)} {pr.appCheck?.result ?? "not run"}
-          {pr.appCheck?.log && (
-            <button
-              type="button"
-              className="link-button"
-              onClick={() => onOpenFile(pr.appCheck!.log!, `${pr.id} app check`)}
-            >
-              output
-            </button>
-          )}
-        </span>
+        {!pr.checkKnown && <span>check (app): no check known</span>}
+        {pr.checkKnown && (
+          <span title={pr.appCheck?.detail ?? pr.appCommand ?? undefined}>
+            check (app): {checkMark(pr.appCheck?.result)} {pr.appCheck?.result ?? "not run"}
+            {pr.appCheckStale && " (code changed since)"}
+            {pr.appCheck?.log && (
+              <button
+                type="button"
+                className="link-button"
+                onClick={() => onOpenFile(pr.appCheck!.log!, `${pr.id} app check`)}
+              >
+                output
+              </button>
+            )}
+          </span>
+        )}
+        {pr.checkKnown && pr.check.command && pr.check.command !== pr.appCommand && (
+          <span className="run-pr-note" data-testid={`check-differs-${pr.id}`}>
+            Claude ran <code>{pr.check.command}</code>; the app runs <code>{pr.appCommand}</code>
+          </span>
+        )}
         {review && <span>{review}</span>}
       </div>
       {gate && gate.kind !== "none" && (
@@ -241,23 +251,37 @@ export function RunPanel({ runDir }: { runDir: string }) {
   const [janitor, setJanitor] = useState<{ items: WorktreeItem[] | null; results: RemoveResult[] | null } | null>(
     null,
   );
-  const autoChecked = useRef(false);
+  const autoChecked = useRef<string | null>(null);
 
-  const load = useCallback(() => {
-    readRun(runDir).then(
-      (next) => {
-        setProblem(null);
-        // A status.json that could not be read keeps the last good view.
-        setView((last) => (next.statusProblem && last?.hasStatus ? { ...last, statusProblem: next.statusProblem } : next));
-      },
-      (err: unknown) => setProblem(errorText(err)),
-    );
-  }, [runDir]);
+  const load = useCallback(
+    () =>
+      readRun(runDir).then(
+        (next) => {
+          setProblem(null);
+          // A status.json that could not be read keeps the last good view.
+          setView((last) =>
+            next.statusProblem && last?.hasStatus ? { ...last, statusProblem: next.statusProblem } : next,
+          );
+        },
+        (err: unknown) => setProblem(errorText(err)),
+      ),
+    [runDir],
+  );
 
+  // The next read starts only after the last one answered.
   useEffect(() => {
-    load();
-    const timer = window.setInterval(load, POLL_MS);
-    return () => window.clearInterval(timer);
+    let stopped = false;
+    let timer: number | undefined;
+    const tick = () => {
+      void load().finally(() => {
+        if (!stopped) timer = window.setTimeout(tick, POLL_MS);
+      });
+    };
+    tick();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
   }, [load]);
 
   const rerun = useCallback(() => {
@@ -266,17 +290,19 @@ export function RunPanel({ runDir }: { runDir: string }) {
       .catch((err: unknown) => setProblem(errorText(err)))
       .finally(() => {
         setChecking(false);
-        load();
+        void load();
       });
   }, [runDir, load]);
 
-  // R1: at stop #2 the app re-runs the checks once on its own.
+  // R1: at stop #2 the app re-runs the checks on its own, again when a
+  // worktree's HEAD moved since (once per set of HEADs).
   useEffect(() => {
-    if (view && !autoChecked.current && wantsAppChecks(view)) {
-      autoChecked.current = true;
-      rerun();
-    }
-  }, [view, rerun]);
+    if (!view || checking || !wantsAppChecks(view)) return;
+    const signature = checkSignature(view);
+    if (autoChecked.current === signature) return;
+    autoChecked.current = signature;
+    rerun();
+  }, [view, checking, rerun]);
 
   const openFile = (path: string, title: string) => {
     readRunFile(runDir, path).then(

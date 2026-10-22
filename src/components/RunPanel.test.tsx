@@ -3,7 +3,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import fixture from "../../fixtures/run/run-view.json";
 import type { RunView } from "../run/api";
-import { wantsAppChecks } from "../run/words";
+import { checkSignature, wantsAppChecks } from "../run/words";
 import { JanitorDialog, RunPanelView } from "./RunPanel";
 
 // The view Rust reads from fixtures/run/r-20261022-1304 (status.rs fixture test).
@@ -37,14 +37,24 @@ describe("RunPanelView", () => {
     expect(pr1.getByText(/check \(Claude\): ✓ pass/)).toBeTruthy();
     expect(pr1.getByText(/check \(app\): ✓ pass/)).toBeTruthy();
     expect(pr1.getByText("review round 1, APPROVED")).toBeTruthy();
-    const gate1 = screen.getByTestId("gate-PR1");
-    expect(gate1.className).toContain("run-gate-proven");
+    // HEAD of the fixture's worktree is unknown: claimed, never green.
+    expect(screen.getByTestId("gate-PR1").className).toContain("run-gate-claimed");
 
     // WAIVED by the skill, but the app's own check failed: only claimed.
     const gate2 = screen.getByTestId("gate-PR2");
     expect(gate2.className).toContain("run-gate-claimed");
     expect(gate2.textContent).toContain("flaky e2e waived");
     expect(within(screen.getByTestId("pr-PR2")).getByText(/check \(app\): ✗ fail/)).toBeTruthy();
+    // status.json's command differs from repos.json's: both shown.
+    expect(screen.getByTestId("check-differs-PR2").textContent).toBe(
+      "Claude ran npm test; the app runs npm run check",
+    );
+    expect(screen.queryByTestId("check-differs-PR1")).toBeNull();
+
+    // No check in repos.json: review only, neutral.
+    expect(screen.getByTestId("gate-PR5").className).toContain("run-gate-review-only");
+    expect(screen.getByTestId("gate-PR5").textContent).toBe("PASS — review only (no check exists)");
+    expect(within(screen.getByTestId("pr-PR5")).getByText("check (app): no check known")).toBeTruthy();
 
     // An unreadable gate is shown, not dropped.
     expect(screen.getByTestId("gate-PR3").className).toContain("run-gate-unreadable");
@@ -100,11 +110,32 @@ describe("RunPanelView", () => {
     expect(screen.getByText(/schema 2/)).toBeTruthy();
   });
 
-  it("re-runs checks on its own only at stop #2 before any app result", () => {
-    expect(wantsAppChecks(view)).toBe(false);
-    const fresh = { ...view, prs: view.prs.map((pr) => ({ ...pr, appCheck: null })) };
-    expect(wantsAppChecks(fresh)).toBe(true);
-    expect(wantsAppChecks({ ...fresh, stage: "building" })).toBe(false);
+  it("shows green only for a proven gate", () => {
+    const prs = view.prs.map((pr) =>
+      pr.id === "PR1" ? { ...pr, gateStatus: { kind: "proven", text: "PASS, and the app's check passed" } } : pr,
+    );
+    renderPanel({ prs });
+    expect(screen.getByTestId("gate-PR1").className).toContain("run-gate-proven");
+    expect(screen.getByTestId("gate-PR1").textContent).toBe("✓ PASS, and the app's check passed");
+  });
+
+  it("re-runs checks on its own at stop #2 for known checks with no result or a moved HEAD", () => {
+    const ran = { ...view, prs: view.prs.map((pr) => ({ ...pr, appCheck: pr.appCheck ?? ({ result: "pass" } as never) })) };
+    expect(wantsAppChecks(ran)).toBe(false);
+    // PR4 has a known check and no app result.
+    expect(wantsAppChecks(view)).toBe(true);
+    const moved = { ...ran, prs: ran.prs.map((pr) => (pr.id === "PR1" ? { ...pr, appCheckStale: true } : pr)) };
+    expect(wantsAppChecks(moved)).toBe(true);
+    expect(wantsAppChecks({ ...moved, stage: "building" })).toBe(false);
+    const unknownOnly = { ...ran, prs: ran.prs.filter((pr) => !pr.checkKnown).map((pr) => ({ ...pr, appCheck: null })) };
+    expect(wantsAppChecks(unknownOnly)).toBe(false);
+    expect(checkSignature(view)).toContain("PR1@-");
+  });
+
+  it("marks a check that went stale", () => {
+    const prs = view.prs.map((pr) => (pr.id === "PR1" ? { ...pr, appCheckStale: true } : pr));
+    renderPanel({ prs });
+    expect(within(screen.getByTestId("pr-PR1")).getByText(/code changed since/)).toBeTruthy();
   });
 });
 

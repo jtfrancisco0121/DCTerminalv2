@@ -42,9 +42,15 @@ export type GateFile = {
 };
 
 export type AppCheck = {
-  /** `pass`, `fail`, `timeout`, `error`, `none`, `running`. */
+  /** `pass`, `fail`, `timeout`, `error`, `none`, `running`, `interrupted`. */
   result: string;
+  /** The command the app ran (repos.json's). */
   command: string | null;
+  /** status.json's command when it differs (never run by the app). */
+  skillCommand?: string | null;
+  /** The worktree's HEAD and clean flag when the check ran. */
+  head?: string | null;
+  clean?: boolean | null;
   cwd: string | null;
   exitCode: number | null;
   finishedAt: string | null;
@@ -53,7 +59,7 @@ export type AppCheck = {
 };
 
 export type GateStatus = {
-  /** `proven`, `claimed`, `concerns`, `fail`, `unreadable`, `none`. */
+  /** `proven`, `claimed`, `review-only`, `concerns`, `fail`, `unreadable`, `none`. */
   kind: string;
   text: string;
 };
@@ -75,6 +81,13 @@ export type PrView = {
   gate: GateFile | null;
   appCheck: AppCheck | null;
   gateStatus: GateStatus | null;
+  /** repos.json's check for the PR's repo: the only command the app runs. */
+  appCommand: string | null;
+  checkKnown: boolean;
+  currentHead: string | null;
+  worktreeClean: boolean | null;
+  /** The app's check ran on another HEAD than the worktree's now. */
+  appCheckStale: boolean;
 };
 
 export type LogLine = { time: string | null; stage: string | null; text: string };
@@ -127,7 +140,12 @@ export type MemoryStatus = {
   repos?: MemoryRepo[];
 };
 
-export type StartedRun = { tab: TabSummary; runDir: string | null };
+export type StartedRun = {
+  tab: TabSummary;
+  runDir: string | null;
+  /** A tab already running this run was focused (no second launch). */
+  focused?: boolean;
+};
 
 export const runOverview = () => invoke<RunOverview>("run_overview");
 export const detectFolderRepos = (folder: string) => invoke<FolderRepos>("detect_folder_repos", { folder });
