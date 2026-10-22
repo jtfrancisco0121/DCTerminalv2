@@ -9,6 +9,8 @@ plugin/
   agents/<role>.md             pipeline sub-agents: model + tools + input/output contract; they read roles/<role>.md
   skills/eagle-eye/SKILL.md    the orchestrator
   skills/<role>/SKILL.md       standalone role sessions; they read roles/<role>.md
+  scripts/state.sh             run-folder writes: validated atomic JSON, log lines, worktrees, writeback drafts
+  scripts/guard.sh + hooks/    blocks pipeline sub-agents from writing outside worktrees / the run folder
 ```
 
 A role's skill and its sub-agent both start by reading `${CLAUDE_PLUGIN_ROOT}/roles/<role>.md`, so they cannot drift: change the role's behaviour in that one file. The skill or agent file only adds how it is used (standalone: talk to the user in the tab; pipeline: run folder in, short JSON reply out).
@@ -38,7 +40,7 @@ The flow: Planner → Plan Reviewer loop (fresh reviewer each round, max 3) → 
 
 The orchestrator keeps its own context small: it never reads code, diffs, test output or ticket bodies; sub-agents reply in at most 15 lines plus a JSON block and write long output to `reviews/`, `reports/`, `logs/` in the run folder; state lives in `status.json` + `plan.md` and is re-read before every step.
 
-Safety: never touches the repos' main checkouts, never pushes before stop #2, never force-pushes, never prints secrets, never calls ClickUp. A repo with no git remote is left `local-only` (nothing pushed, no PR) and the run says so.
+Safety: a plugin hook (`hooks/hooks.json` → `scripts/guard.sh`) blocks any Edit/Write by a pipeline sub-agent outside its allowed places: the Implementer may write only in an Eagle-Eye worktree (`<repo>-worktrees/dcv2-*`) or the run folder; the Planner and reviewers only in the run folder. Standalone skills and the user's own session are not affected. Bash-level edits are not covered by the hook; the agents' rules forbid them. The skill also never touches the repos' main checkouts, never pushes before stop #2, never force-pushes, never prints secrets, never calls ClickUp. A repo with no git remote is left `local-only` (nothing pushed, no PR) and the run says so.
 
 ## Standalone roles
 
@@ -62,6 +64,7 @@ In P3 the app's start screen shows these six as role tiles next to Eagle-Eye; a 
 ## Tests
 
 - `scripts/skill-e2e/run.sh`: the Eagle-Eye run end to end, headless, on two toy repos (full run; then halt after PR1 + resume). Cheap models via a test-only plugin copy (`DCV2_E2E_MODEL`, default haiku).
+- `scripts/skill-e2e/guard_test.sh`: unit test of the guard hook (no Claude call).
 - `scripts/skill-e2e/standalone.sh [roles...]`: each standalone skill loads, reads its role file and replies; read-only roles leave the repo untouched.
 
 Both use the current Claude account and never touch a real repo.
