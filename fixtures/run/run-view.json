@@ -1,0 +1,190 @@
+{
+  "error": null,
+  "folder": "/abs/ws",
+  "hasReport": true,
+  "hasStatus": true,
+  "pausedReason": null,
+  "plan": {
+    "approved": true,
+    "openFindings": 0,
+    "reviewRound": 2,
+    "verdict": "APPROVED"
+  },
+  "prs": [
+    {
+      "appCheck": {
+        "command": "npm test",
+        "cwd": null,
+        "detail": null,
+        "exitCode": null,
+        "finishedAt": null,
+        "log": "logs/PR1-app-check.txt",
+        "result": "pass"
+      },
+      "branch": "dcv2/r-20261022-1304-pr1",
+      "check": {
+        "command": "npm test",
+        "cwd": null,
+        "result": "pass",
+        "summary": "4 tests passed"
+      },
+      "gate": {
+        "gate": "PASS",
+        "problem": null,
+        "reason": "all stories met, check passes",
+        "updated": "2026-10-22T13:39:00Z"
+      },
+      "gateStatus": {
+        "kind": "proven",
+        "text": "PASS, and the app's check passed"
+      },
+      "id": "PR1",
+      "note": null,
+      "prUrl": null,
+      "repo": "mathlib",
+      "repoPath": "/abs/ws/mathlib",
+      "review": {
+        "openFindings": 0,
+        "round": 1,
+        "verdict": "APPROVED"
+      },
+      "state": "reviewed",
+      "storiesDone": 2,
+      "storiesTotal": 2,
+      "title": "Add multiply()",
+      "worktree": "/abs/ws/mathlib-worktrees/dcv2-r-20261022-1304-pr1"
+    },
+    {
+      "appCheck": {
+        "command": "npm test",
+        "cwd": null,
+        "detail": null,
+        "exitCode": 1,
+        "finishedAt": null,
+        "log": "logs/PR2-app-check.txt",
+        "result": "fail"
+      },
+      "branch": null,
+      "check": {
+        "command": "npm test",
+        "cwd": null,
+        "result": "pass",
+        "summary": null
+      },
+      "gate": {
+        "gate": "WAIVED",
+        "problem": null,
+        "reason": "flaky e2e waived by reviewer",
+        "updated": null
+      },
+      "gateStatus": {
+        "kind": "claimed",
+        "text": "WAIVED claimed (flaky e2e waived by reviewer); the app's check: fail"
+      },
+      "id": "PR2",
+      "note": null,
+      "prUrl": null,
+      "repo": "mathcli",
+      "repoPath": "/abs/ws/mathcli",
+      "review": {
+        "openFindings": 0,
+        "round": 2,
+        "verdict": "APPROVED"
+      },
+      "state": "reviewed",
+      "storiesDone": 1,
+      "storiesTotal": 1,
+      "title": "Use multiply() in the CLI",
+      "worktree": null
+    },
+    {
+      "appCheck": null,
+      "branch": null,
+      "check": {
+        "command": null,
+        "cwd": null,
+        "result": "none",
+        "summary": null
+      },
+      "gate": {
+        "gate": null,
+        "problem": "no gate: line",
+        "reason": null,
+        "updated": null
+      },
+      "gateStatus": {
+        "kind": "unreadable",
+        "text": "Gate unreadable: no gate: line"
+      },
+      "id": "PR3",
+      "note": "2 MEDIUM findings still open after 3 rounds",
+      "prUrl": null,
+      "repo": "docs",
+      "repoPath": null,
+      "review": {
+        "openFindings": 2,
+        "round": 3,
+        "verdict": "REQUEST CHANGES"
+      },
+      "state": "needs-attention",
+      "storiesDone": 0,
+      "storiesTotal": 1,
+      "title": "Docs",
+      "worktree": null
+    },
+    {
+      "appCheck": null,
+      "branch": null,
+      "check": {
+        "command": null,
+        "cwd": null,
+        "result": "pass",
+        "summary": null
+      },
+      "gate": null,
+      "gateStatus": {
+        "kind": "none",
+        "text": "No gate yet"
+      },
+      "id": "PR4",
+      "note": null,
+      "prUrl": "https://github.com/o/mathlib/pull/7",
+      "repo": "mathlib",
+      "repoPath": null,
+      "review": {
+        "openFindings": null,
+        "round": null,
+        "verdict": null
+      },
+      "state": "opened",
+      "storiesDone": null,
+      "storiesTotal": null,
+      "title": "Opened one",
+      "worktree": null
+    }
+  ],
+  "runDir": "",
+  "runId": "r-20261022-1304",
+  "shipNote": null,
+  "stage": "ship-approval",
+  "statusProblem": null,
+  "timeline": [
+    {
+      "stage": "planning",
+      "text": "Planner wrote plan.md: 4 stories, 4 PRs",
+      "time": "2026-10-22T13:04:05Z"
+    },
+    {
+      "stage": "plan-approval",
+      "text": "plan approved by the user",
+      "time": "2026-10-22T13:16:02Z"
+    },
+    {
+      "stage": "ship-approval",
+      "text": "waiting for ship approval",
+      "time": "2026-10-22T13:39:30Z"
+    }
+  ],
+  "updatedAt": "2026-10-22T13:40:00Z",
+  "waitingFor": "ship-approval"
+}

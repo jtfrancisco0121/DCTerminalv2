@@ -1,0 +1,1 @@
+{"schema":1,"checks":{"PR1":{"result":"pass","command":"npm test","log":"logs/PR1-app-check.txt"},"PR2":{"result":"fail","command":"npm test","exitCode":1,"log":"logs/PR2-app-check.txt"}}}

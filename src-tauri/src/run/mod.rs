@@ -19,7 +19,7 @@ pub mod status;
 use crate::commands::{tab_summary, TabSummary};
 use crate::paths::validate_working_folder;
 use crate::provider::ClaudeProvider;
-use crate::store::settings_store::{account_display_name, resolved_account_config};
+use crate::store::settings_store::account_display_name;
 use crate::store::{SettingsStore, StateStore};
 use serde::Serialize;
 use std::collections::HashSet;
@@ -145,10 +145,7 @@ fn launch_context(app: &AppHandle, window_id: Option<&str>) -> Result<LaunchCont
         provider: ClaudeProvider::for_account(claude, &account_id),
         account_name: account_display_name(claude, &account_id),
         run: settings.run().clone(),
-        account_id: {
-            let _ = resolved_account_config(claude, &account_id);
-            account_id
-        },
+        account_id,
     })
 }
 

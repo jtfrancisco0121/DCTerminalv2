@@ -542,3 +542,32 @@ mod tests {
         assert!(!empty.has_status && empty.status_problem.is_none());
     }
 }
+
+#[cfg(test)]
+mod fixture_tests {
+    use super::*;
+
+    /// `fixtures/run/<run>/` read into the view the page's tests render
+    /// (`fixtures/run/run-view.json`). Set `DCTV2_UPDATE_FIXTURES=1` to rewrite it.
+    #[test]
+    fn the_fixture_run_reads_into_the_view_the_page_tests_use() {
+        let root = crate::run::launch::dev_repo_root().join("fixtures/run");
+        let mut view = read_run(&root.join("r-20261022-1304"));
+        view.run_dir = String::new();
+        let actual = serde_json::to_value(&view).unwrap();
+        let expected_path = root.join("run-view.json");
+        if std::env::var_os("DCTV2_UPDATE_FIXTURES").is_some() {
+            let text = serde_json::to_string_pretty(&actual).unwrap() + "\n";
+            std::fs::write(&expected_path, text).unwrap();
+        }
+        let expected: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&expected_path).unwrap()).unwrap();
+        assert_eq!(actual, expected);
+        let kinds: Vec<&str> = view
+            .prs
+            .iter()
+            .map(|pr| pr.gate_status.as_ref().unwrap().kind.as_str())
+            .collect();
+        assert_eq!(kinds, ["proven", "claimed", "unreadable", "none"]);
+    }
+}

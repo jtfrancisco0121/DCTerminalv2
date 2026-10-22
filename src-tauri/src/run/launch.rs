@@ -156,6 +156,19 @@ pub fn merged_settings(launch_file: Option<&str>, app: Option<Value>) -> Option<
     }
 }
 
+/// The prompt for a fresh session. An Eagle-Eye tab started fresh again
+/// (reopened, or "start fresh" after an exit) on a run that already has a
+/// status.json resumes that run instead of starting it twice.
+pub fn fresh_prompt(launch: &TabLaunch) -> String {
+    if let Some(run) = launch.run_dir.as_deref() {
+        let started = Path::new(run).join("status.json").is_file();
+        if started && launch.prompt.starts_with("/dcv2:eagle-eye run=") {
+            return format!("/dcv2:eagle-eye resume run={run}");
+        }
+    }
+    launch.prompt.clone()
+}
+
 /// Adds a launch's flags, env and (on a fresh start) its prompt to the
 /// command. Returns the env names to drop from the inherited environment.
 pub fn apply_launch(
@@ -168,7 +181,7 @@ pub fn apply_launch(
     };
     command.args.extend(launch.args.iter().cloned());
     if !resumed && !launch.prompt.trim().is_empty() {
-        command.args.push(launch.prompt.clone());
+        command.args.push(fresh_prompt(launch));
     }
     command.env.extend(
         launch
@@ -252,6 +265,20 @@ mod tests {
         assert!(resumed.env.iter().any(|(k, _)| k == "DCV2_RUN_DIR"));
         let mut plain = ProgramArgs::new("claude", vec![]);
         assert!(apply_launch(&mut plain, None, false).is_empty());
+
+        let dir = TempDir::new("fresh_prompt");
+        let run = dir.join("r1");
+        std::fs::create_dir_all(&run).unwrap();
+        let spec = launch_spec(&LaunchInput {
+            prompt: format!("/dcv2:eagle-eye run={}", run.display()),
+            ..input(run.to_str())
+        });
+        assert_eq!(fresh_prompt(&spec), spec.prompt);
+        std::fs::write(run.join("status.json"), "{}").unwrap();
+        assert_eq!(
+            fresh_prompt(&spec),
+            format!("/dcv2:eagle-eye resume run={}", run.display())
+        );
         assert!(plain.args.is_empty());
     }
 

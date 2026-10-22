@@ -392,6 +392,7 @@ impl StateStore {
         let tab_id = self.create_tab(cwd, TabKind::Claude)?;
         let tab = self.tab_mut(&tab_id)?;
         tab.label = label.chars().take(MAX_LABEL_CHARS).collect();
+        tab.custom_label = true;
         tab.launch = Some(launch);
         self.save()?;
         Ok(tab_id)
