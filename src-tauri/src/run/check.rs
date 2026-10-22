@@ -200,17 +200,7 @@ pub fn rerun_checks(run_dir: &Path, timeout: Duration) -> Result<(), String> {
     }
     save(run_dir, &checks);
     for pr in prs {
-        let command = pr
-            .repo
-            .as_ref()
-            .and_then(|repo| repo_checks.get(repo).cloned().flatten());
-        let skill = pr.check.command.clone().filter(|c| !c.trim().is_empty());
-        let mut result = AppCheck {
-            command: command.clone(),
-            skill_command: skill.filter(|s| Some(s) != command.as_ref()),
-            ..AppCheck::default()
-        };
-        let worktree = pr
+        let verified = pr
             .worktree
             .as_deref()
             .ok_or_else(|| "the PR has no worktree yet".to_string())
@@ -221,8 +211,20 @@ pub fn rerun_checks(run_dir: &Path, timeout: Duration) -> Result<(), String> {
                     Path::new(wt),
                     pr.repo_path.as_deref(),
                 )
-                .map(|_| PathBuf::from(wt))
+                .map(|main| (PathBuf::from(wt), main))
             });
+        let command = super::status::check_for(
+            &repo_checks,
+            verified.as_ref().ok().map(|(_, main)| main.as_path()),
+            pr.repo_path.as_deref(),
+        );
+        let skill = pr.check.command.clone().filter(|c| !c.trim().is_empty());
+        let mut result = AppCheck {
+            command: command.clone(),
+            skill_command: skill.filter(|s| Some(s) != command.as_ref()),
+            ..AppCheck::default()
+        };
+        let worktree = verified.map(|(wt, _)| wt);
         match (
             command,
             worktree.and_then(|wt| check_folder(pr.check.cwd.as_deref(), &wt).map(|cwd| (wt, cwd))),
@@ -236,7 +238,7 @@ pub fn rerun_checks(run_dir: &Path, timeout: Duration) -> Result<(), String> {
                 result.detail = Some(problem);
             }
             (Some(command), Ok((wt, cwd))) => {
-                let (head, clean) = super::status::worktree_state(wt.to_str());
+                let (head, clean) = super::status::worktree_state(&wt);
                 result.head = head;
                 result.clean = clean;
                 let rel = format!("logs/{}-app-check.txt", pr.id);
@@ -275,7 +277,7 @@ mod tests {
         run(&repo, &["commit", "-q", "-m", "server"]);
         let wts = dir.join("ws/mathlib-worktrees");
         let wt = |n: u32| wts.join(format!("dcv2-{RUN}-pr{n}"));
-        for n in [1, 2, 3, 4] {
+        for n in [1, 2, 4] {
             run(
                 &repo,
                 &[
@@ -288,6 +290,20 @@ mod tests {
                 ],
             );
         }
+        let docs = dir.join("ws/docs");
+        repo_at(&docs);
+        let docs_wt = dir.join(format!("ws/docs-worktrees/dcv2-{RUN}-pr3"));
+        run(
+            &docs,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                &format!("dcv2/{RUN}-pr3"),
+                docs_wt.to_str().unwrap(),
+            ],
+        );
         let stray = dir.join("stray");
         std::fs::create_dir_all(&stray).unwrap();
         let run_dir = dir.join("runs").join(RUN);
@@ -296,7 +312,7 @@ mod tests {
             run_dir.join("repos.json"),
             json!({"schema": 1, "repos": [
                 {"name": "mathlib", "path": repo, "check": "test -f ok.txt && echo fine"},
-                {"name": "docs", "path": "/x", "check": null}]})
+                {"name": "docs", "path": docs, "check": null}]})
             .to_string(),
         )
         .unwrap();
@@ -306,7 +322,8 @@ mod tests {
             {"id": "PR1", "repo": "mathlib", "repoPath": repo, "worktree": wt(1),
              "check": {"command": format!("touch {}", marker.display()), "cwd": "server"}},
             {"id": "PR2", "repo": "mathlib", "repoPath": repo, "worktree": wt(2), "check": {"cwd": wt(2)}},
-            {"id": "PR3", "repo": "docs", "repoPath": repo, "worktree": wt(3)},
+            // The check is found by the verified repo path, not the name.
+            {"id": "PR3", "repo": "mathlib", "repoPath": docs, "worktree": docs_wt},
             {"id": "PR4", "repo": "mathlib", "repoPath": repo, "worktree": wt(4), "check": {"cwd": stray}},
             {"id": "PR5", "repo": "mathlib", "repoPath": repo, "worktree": stray},
             {"id": "PR6", "repo": "mathlib", "check": {"command": "true"}}
@@ -336,7 +353,8 @@ mod tests {
         assert_eq!(checks["PR3"].detail.as_deref(), Some("no check known"));
         assert_eq!(checks["PR4"].result, "error", "{:?}", checks["PR4"].detail);
         assert_eq!(checks["PR5"].result, "error");
-        assert_eq!(checks["PR6"].result, "error");
+        // No repoPath and no worktree: no repos.json check can be matched.
+        assert_eq!(checks["PR6"].result, "none");
         let log = std::fs::read_to_string(run_dir.join("logs/PR1-app-check.txt")).unwrap();
         assert!(log.contains("fine"));
     }

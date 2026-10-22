@@ -23,6 +23,8 @@ pub struct WorktreeItem {
     pub changed_files: usize,
     /// Clean, a linked worktree of its repo, and not a main checkout.
     pub removable: bool,
+    /// Removable, with ignored build/dependency folders that go with it.
+    pub disposable_only: bool,
     pub problem: Option<String>,
 }
 
@@ -138,20 +140,67 @@ pub fn verify_worktree(
     }
 }
 
-/// Changed (tracked or untracked) and ignored file counts.
-pub fn dirt(worktree: &Path) -> Result<(usize, usize), String> {
+/// Ignored build and dependency folders a worktree may be removed with.
+pub const DISPOSABLE: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    "coverage",
+    ".turbo",
+    "__pycache__",
+    ".venv",
+    ".pytest_cache",
+    ".gradle",
+];
+
+/// An ignored path (`git status --ignored` form) inside a disposable folder.
+pub fn disposable(path: &str) -> bool {
+    let components: Vec<&str> = path.trim_end_matches('/').split('/').collect();
+    // `build/` itself, or anything under it; a file named `target` is not.
+    let dirs = if path.ends_with('/') {
+        &components[..]
+    } else {
+        &components[..components.len().saturating_sub(1)]
+    };
+    dirs.iter().any(|c| DISPOSABLE.contains(c))
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Dirt {
+    /// Tracked changes and untracked (not ignored) files.
+    pub changed: usize,
+    /// Ignored folders that are only build output or dependencies.
+    pub disposable: usize,
+    /// Other ignored files (`.env`, …): the worktree is kept.
+    pub kept_ignored: Vec<String>,
+}
+
+pub fn dirt(worktree: &Path) -> Result<Dirt, String> {
     let out = git(
         worktree,
         &[
             "status",
             "--porcelain",
             "--ignored",
-            "--untracked-files=all",
+            "--untracked-files=normal",
         ],
     )?;
-    let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
-    let ignored = lines.iter().filter(|l| l.starts_with("!!")).count();
-    Ok((lines.len() - ignored, ignored))
+    let mut dirt = Dirt::default();
+    for line in out.lines().filter(|l| l.len() > 3) {
+        let path = line[3..].trim_matches('"');
+        if line.starts_with("!!") {
+            if disposable(path) {
+                dirt.disposable += 1;
+            } else {
+                dirt.kept_ignored.push(path.to_string());
+            }
+        } else {
+            dirt.changed += 1;
+        }
+    }
+    Ok(dirt)
 }
 
 fn inspect(
@@ -170,6 +219,7 @@ fn inspect(
         clean: false,
         changed_files: 0,
         removable: false,
+        disposable_only: false,
         problem: None,
     };
     let main = match verify_worktree(run_id, id, wt, repo) {
@@ -182,15 +232,29 @@ fn inspect(
     item.repo_path = Some(main.display().to_string());
     item.branch = Some(expected_branch(run_id, id));
     match dirt(wt) {
-        Ok((changed, ignored)) => {
-            item.changed_files = changed;
-            item.clean = changed == 0;
-            if ignored > 0 {
+        Ok(dirt) => {
+            item.changed_files = dirt.changed;
+            item.clean = dirt.changed == 0;
+            if !dirt.kept_ignored.is_empty() {
+                let names: Vec<&str> = dirt
+                    .kept_ignored
+                    .iter()
+                    .take(3)
+                    .map(String::as_str)
+                    .collect();
+                let more = dirt.kept_ignored.len().saturating_sub(3);
+                let more = if more > 0 {
+                    format!(" and {more} more")
+                } else {
+                    String::new()
+                };
                 item.problem = Some(format!(
-                    "has {ignored} ignored files (e.g. .env, build output), kept"
+                    "has ignored files ({}{more}), kept",
+                    names.join(", ")
                 ));
             }
-            item.removable = changed == 0 && ignored == 0;
+            item.removable = dirt.changed == 0 && dirt.kept_ignored.is_empty();
+            item.disposable_only = item.removable && dirt.disposable > 0;
         }
         Err(err) => item.problem = Some(err),
     }
@@ -258,6 +322,30 @@ pub fn remove_clean(run_dir: &Path, pr_ids: &[String]) -> Vec<RemoveResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_build_and_dependency_folders_are_disposable() {
+        for path in [
+            "node_modules/",
+            "server/node_modules/",
+            "target/",
+            "web/.next/",
+            "a/__pycache__/x.pyc",
+            "build/out.js",
+        ] {
+            assert!(disposable(path), "{path}");
+        }
+        for path in [
+            ".env",
+            "server/.env.local",
+            "target",
+            "secrets/",
+            "notes.txt",
+        ] {
+            assert!(!disposable(path), "{path}");
+        }
+    }
+
     use crate::run::git::testing::{repo_at, run};
     use crate::test_support::TempDir;
     use serde_json::json;
@@ -283,7 +371,7 @@ mod tests {
         let dir = TempDir::new("janitor");
         let repo = dir.join("ws/mathlib");
         repo_at(&repo);
-        std::fs::write(repo.join(".gitignore"), ".env\n").unwrap();
+        std::fs::write(repo.join(".gitignore"), ".env\nnode_modules/\ntarget/\n").unwrap();
         run(&repo, &["add", "."]);
         run(&repo, &["commit", "-q", "-m", "ignore"]);
         let wts = dir.join("ws/mathlib-worktrees");
@@ -311,6 +399,13 @@ mod tests {
         std::fs::write(dirty.join("new.txt"), "wip").unwrap();
         std::fs::create_dir_all(dir.join("ws/foreign")).unwrap();
         std::fs::write(ignored.join(".env"), "SECRET=1").unwrap();
+        std::fs::create_dir_all(ignored.join("node_modules/x")).unwrap();
+        std::fs::write(ignored.join("node_modules/x/a.js"), "1").unwrap();
+        // Build output and dependencies alone do not keep a worktree.
+        std::fs::create_dir_all(clean.join("node_modules/x")).unwrap();
+        std::fs::write(clean.join("node_modules/x/a.js"), "1").unwrap();
+        std::fs::create_dir_all(clean.join("target/debug")).unwrap();
+        std::fs::write(clean.join("target/debug/bin"), "1").unwrap();
         let run_dir = dir.join("runs").join(RUN);
         std::fs::create_dir_all(&run_dir).unwrap();
         let pr = |id: &str, wt: &Path| json!({"id": id, "repoPath": repo, "worktree": wt});
@@ -334,9 +429,10 @@ mod tests {
         let by = |id: &str| items.iter().find(|i| i.pr_id == id).unwrap().clone();
         assert_eq!(items.len(), 9, "{items:?}");
         assert!(by("PR1").removable, "{:?}", by("PR1"));
+        assert!(by("PR1").disposable_only);
         assert!(!by("PR2").removable && by("PR2").changed_files == 1);
         assert!(by("PR3").problem.unwrap().contains("main checkout"));
-        assert!(by("PR4").problem.unwrap().contains("ignored files"));
+        assert_eq!(by("PR4").problem.unwrap(), "has ignored files (.env), kept");
         assert!(!by("PR4").removable);
         assert!(by("PR5").problem.unwrap().contains("not where"));
         assert!(by("PR6").problem.unwrap().contains("feature/other"));

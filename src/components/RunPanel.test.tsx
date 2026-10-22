@@ -122,8 +122,9 @@ describe("RunPanelView", () => {
   it("re-runs checks on its own at stop #2 for known checks with no result or a moved HEAD", () => {
     const ran = { ...view, prs: view.prs.map((pr) => ({ ...pr, appCheck: pr.appCheck ?? ({ result: "pass" } as never) })) };
     expect(wantsAppChecks(ran)).toBe(false);
-    // PR4 has a known check and no app result.
-    expect(wantsAppChecks(view)).toBe(true);
+    // PR1 has a known check (by its repo path) and no app result.
+    const noResult = { ...ran, prs: ran.prs.map((pr) => (pr.id === "PR1" ? { ...pr, appCheck: null } : pr)) };
+    expect(wantsAppChecks(noResult)).toBe(true);
     const moved = { ...ran, prs: ran.prs.map((pr) => (pr.id === "PR1" ? { ...pr, appCheckStale: true } : pr)) };
     expect(wantsAppChecks(moved)).toBe(true);
     expect(wantsAppChecks({ ...moved, stage: "building" })).toBe(false);

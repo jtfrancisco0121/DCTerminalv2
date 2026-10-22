@@ -119,6 +119,8 @@ export type WorktreeItem = {
   clean: boolean;
   changedFiles: number;
   removable: boolean;
+  /** Removable; its ignored build/dependency folders go with it. */
+  disposableOnly?: boolean;
   problem: string | null;
 };
 

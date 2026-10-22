@@ -190,7 +190,9 @@ export function JanitorDialog({ items, results, finished, onRemove, onClose }: J
               {item.problem
                 ? `— ${item.problem}`
                 : item.clean
-                  ? "— clean"
+                  ? item.disposableOnly
+                    ? "— clean (build output and dependencies go with it)"
+                    : "— clean"
                   : `— ${item.changedFiles} changed files, kept`}
             </li>
           ))}

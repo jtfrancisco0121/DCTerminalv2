@@ -386,30 +386,44 @@ pub fn gate_status(gate: Option<&GateFile>, proof: &Proof) -> GateStatus {
     }
 }
 
-/// repos.json's check per repo name (the app wrote it; the skill never does).
-pub fn repo_checks(run_dir: &Path) -> std::collections::BTreeMap<String, Option<String>> {
+/// repos.json's check per repo, keyed by the repo's canonical path (the
+/// app wrote it; the skill never does).
+pub fn repo_checks(run_dir: &Path) -> std::collections::BTreeMap<PathBuf, Option<String>> {
     read_json_value(&run_dir.join("repos.json"))
         .and_then(|v| v.get("repos").and_then(Value::as_array).cloned())
         .unwrap_or_default()
         .iter()
         .filter_map(|repo| {
-            let name = s(repo, "name")?;
+            let path = s(repo, "path")?;
             let check = s(repo, "check").filter(|c| !c.trim().is_empty());
-            Some((name, check))
+            Some((super::git::canonical(Path::new(&path)), check))
         })
         .collect()
 }
 
-/// The worktree's HEAD and whether it has uncommitted changes (ignored
-/// files do not count: build output is expected after a check).
-pub fn worktree_state(worktree: Option<&str>) -> (Option<String>, Option<bool>) {
-    let Some(wt) = worktree.map(Path::new).filter(|p| p.is_dir()) else {
-        return (None, None);
-    };
-    let head = super::git::git(wt, &["rev-parse", "HEAD"]).ok();
-    let clean = super::git::git(wt, &["status", "--porcelain", "--untracked-files=normal"])
-        .ok()
-        .map(|out| out.trim().is_empty());
+/// The repos.json check for a PR: by its verified main checkout, else by
+/// status.json's `repoPath` (display only; nothing runs unverified).
+pub fn check_for(
+    checks: &std::collections::BTreeMap<PathBuf, Option<String>>,
+    main: Option<&Path>,
+    repo_path: Option<&str>,
+) -> Option<String> {
+    let key = main
+        .map(super::git::canonical)
+        .or_else(|| repo_path.map(|p| super::git::canonical(Path::new(p))))?;
+    checks.get(&key).cloned().flatten()
+}
+
+/// A verified worktree's HEAD and whether it has uncommitted changes
+/// (ignored files do not count: build output is expected after a check).
+pub fn worktree_state(worktree: &Path) -> (Option<String>, Option<bool>) {
+    let head = super::git::git(worktree, &["rev-parse", "HEAD"]).ok();
+    let clean = super::git::git(
+        worktree,
+        &["status", "--porcelain", "--untracked-files=normal"],
+    )
+    .ok()
+    .map(|out| out.trim().is_empty());
     (head, clean)
 }
 
@@ -496,12 +510,27 @@ pub fn read_run(run_dir: &Path, checks_running: bool) -> RunView {
             }
             check
         });
-        pr.app_command = pr
-            .repo
-            .as_ref()
-            .and_then(|repo| repo_checks.get(repo).cloned().flatten());
+        // No git runs in a status.json path that is not this PR's worktree.
+        let verified = pr.worktree.as_deref().and_then(|wt| {
+            super::janitor::verify_worktree(
+                &view.run_id,
+                &pr.id,
+                Path::new(wt),
+                pr.repo_path.as_deref(),
+            )
+            .ok()
+            .map(|main| (PathBuf::from(wt), main))
+        });
+        pr.app_command = check_for(
+            &repo_checks,
+            verified.as_ref().map(|(_, main)| main.as_path()),
+            pr.repo_path.as_deref(),
+        );
         pr.check_known = pr.app_command.is_some();
-        let (head, clean) = worktree_state(pr.worktree.as_deref());
+        let (head, clean) = verified
+            .as_ref()
+            .map(|(wt, _)| worktree_state(wt))
+            .unwrap_or((None, None));
         pr.current_head = head;
         pr.worktree_clean = clean;
         pr.app_check_stale = pr.app_check.as_ref().is_some_and(|check| {
@@ -646,24 +675,53 @@ mod tests {
     #[test]
     fn a_run_folder_reads_into_one_view_ignoring_temp_files() {
         let dir = TempDir::new("run_read");
-        let wt = dir.join("wt");
-        crate::run::git::testing::repo_at(&wt);
+        let repo = dir.join("ws/a");
+        crate::run::git::testing::repo_at(&repo);
+        let wt = dir.join("ws/a-worktrees/dcv2-r-20261022-1304-pr1");
+        crate::run::git::testing::run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "dcv2/r-20261022-1304-pr1",
+                wt.to_str().unwrap(),
+            ],
+        );
+        let b = dir.join("ws/b");
+        crate::run::git::testing::repo_at(&b);
+        let wt_b = dir.join("ws/b-worktrees/dcv2-r-20261022-1304-pr4");
+        crate::run::git::testing::run(
+            &b,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "dcv2/r-20261022-1304-pr4",
+                wt_b.to_str().unwrap(),
+            ],
+        );
         let head = crate::run::git::git(&wt, &["rev-parse", "HEAD"]).unwrap();
         let run = dir.join("r-20261022-1304");
         std::fs::create_dir_all(run.join("gates")).unwrap();
         std::fs::write(
             run.join("status.json"),
             json!({"schema": 1, "stage": "ship-approval", "waitingFor": "ship-approval",
-                   "prs": [{"id": "PR1", "repo": "a", "state": "reviewed", "worktree": wt},
-                           {"id": "PR2", "repo": "a", "state": "reviewed"},
+                   "prs": [{"id": "PR1", "repo": "a", "repoPath": repo, "state": "reviewed", "worktree": wt},
+                           {"id": "PR2", "repo": "a", "repoPath": repo, "state": "reviewed"},
                            {"id": "../x"},
-                           {"id": "PR4", "repo": "b", "state": "reviewed", "worktree": wt}]})
+                           // Named "a" but in repo b: b's (null) check applies.
+                           {"id": "PR4", "repo": "a", "repoPath": b, "state": "reviewed", "worktree": wt_b},
+                           // A path that is not this PR's worktree: no git runs there.
+                           {"id": "PR5", "repo": "a", "repoPath": repo, "state": "reviewed", "worktree": repo}]})
             .to_string(),
         )
         .unwrap();
         std::fs::write(
             run.join("repos.json"),
-            json!({"schema": 1, "repos": [{"name": "a", "path": "/a", "check": "npm test"}, {"name": "b", "path": "/b", "check": null}]}).to_string(),
+            json!({"schema": 1, "repos": [{"name": "a", "path": repo, "check": "npm test"}, {"name": "b", "path": b, "check": null}]}).to_string(),
         )
         .unwrap();
         std::fs::write(run.join(".status.json.abc.tmp"), "{half").unwrap();
@@ -705,6 +763,8 @@ mod tests {
         assert_eq!(kind(2), "none");
         assert_eq!(kind(3), "review-only");
         assert!(!view.prs[3].check_known);
+        assert_eq!(view.prs[4].current_head, None, "unverified worktree");
+        assert_eq!(view.prs[4].app_command.as_deref(), Some("npm test"));
         assert_eq!(view.timeline.len(), 2);
         assert_eq!(view.timeline[0].stage.as_deref(), Some("planning"));
         assert_eq!(view.timeline[1].time, None);

@@ -156,7 +156,7 @@
     {
       "appCheck": null,
       "appCheckStale": false,
-      "appCommand": "npm test",
+      "appCommand": null,
       "branch": null,
       "check": {
         "command": null,
@@ -164,7 +164,7 @@
         "result": "pass",
         "summary": null
       },
-      "checkKnown": true,
+      "checkKnown": false,
       "currentHead": null,
       "gate": null,
       "gateStatus": {
