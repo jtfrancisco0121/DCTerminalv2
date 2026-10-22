@@ -11,6 +11,10 @@
 #                                          the repo and print "branch=<b> worktree=<path>".
 #                                          Never touches the repo's main checkout.
 #
+#   state.sh writeback <run dir>           write writeback.json (atomic) from plan.md's
+#                                          "## Tickets" section and status.json; only when
+#                                          tickets.json exists. Needs python3.
+#
 # For status.json, `put` also sets "updatedAt" to the current UTC time.
 set -euo pipefail
 
@@ -93,8 +97,24 @@ PY
         exit 1
       fi
     fi
+    if [[ "$(basename "$dest")" == status.json ]] && command -v python3 >/dev/null 2>&1; then
+      if ! gate="$(python3 - "$tmp" "$(dirname "$dest")" <<'PY'
+import json, os, re, sys
+doc, run = json.load(open(sys.argv[1])), sys.argv[2]
+req = open(os.path.join(run, "request.md")).read() if os.path.isfile(os.path.join(run, "request.md")) else ""
+if doc.get("stage") == "done" and os.path.isfile(os.path.join(run, "tickets.json")) and not os.path.isfile(os.path.join(run, "writeback.json")):
+    print("NOT WRITTEN: tickets.json exists but writeback.json does not. Run `state.sh writeback <run>` first, then write stage done.")
+    sys.exit(1)
+if doc.get("waitingFor") and re.search(r"^test-mode:\s*auto-approve\s*$", req, re.M):
+    print(f"AUTO-APPROVE (test-mode): do not wait for the user. Log the auto-approval and continue past {doc['waitingFor']} now.")
+PY
+)"; then
+        rm -f "$tmp"; echo "$gate" >&2; exit 1
+      fi
+    fi
     mv -f "$tmp" "$dest"
     echo "wrote $dest"
+    [[ -z "${gate:-}" ]] || echo "$gate"
     [[ -z "${halt:-}" ]] || echo "$halt"
     ;;
   log)
@@ -104,6 +124,68 @@ PY
     ;;
   now)
     date -u +%FT%TZ
+    ;;
+  writeback)
+    run="${2:?usage: state.sh writeback <run dir>}"
+    [[ -f "$run/tickets.json" ]] || { echo "no tickets.json: no writeback needed"; exit 0; }
+    if ! python3 - "$run" "$(date -u +%FT%TZ)" > "$run/writeback.json.tmp" <<'PY'
+import json, os, re, sys
+run, now = sys.argv[1], sys.argv[2]
+plan = open(os.path.join(run, "plan.md")).read()
+st = json.load(open(os.path.join(run, "status.json")))
+titles = dict(re.findall(r"^###\s+(S\d+)\s*[:\-\u2014]+\s*(.+?)\s*$", plan, re.M))
+section = re.search(r"^## Tickets\s*$(.*?)(?=^## |\Z)", plan, re.M | re.S)
+if not section:
+    sys.exit("plan.md has no '## Tickets' section")
+story_pr = {}
+for pr in st.get("prs") or []:
+    for sid in (pr.get("stories") or {}).get("ids") or []:
+        story_pr[sid] = pr
+drafts = []
+for line in section.group(1).splitlines():
+    line = line.strip()
+    if not line.startswith("- ") or "|" not in line:
+        continue
+    cells = [c.strip() for c in line[2:].split("|")]
+    if len(cells) < 4:
+        continue
+    tid, cid, title, url = cells[:4]
+    stories = []
+    status = None
+    for c in cells[4:]:
+        if c.lower().startswith("stories:"):
+            stories = [s.strip() for s in c.split(":", 1)[1].split(",") if s.strip()]
+        elif c.lower().startswith("ship status:"):
+            v = c.split(":", 1)[1].strip()
+            status = None if v in ("", "-") else v
+    prs, lines = [], []
+    for sid in stories:
+        pr = story_pr.get(sid)
+        if pr and not any(p["id"] == pr["id"] for p in prs):
+            prs.append({"id": pr["id"], "repo": pr.get("repo"), "url": pr.get("prUrl")})
+    for p in prs:
+        pr = next(x for x in st["prs"] if x["id"] == p["id"])
+        where = pr.get("prUrl") or f"local branch `{pr.get('branch')}` (not pushed: {pr.get('note') or 'no PR opened'})"
+        chk = pr.get("check") or {}
+        rev = pr.get("review") or {}
+        lines.append(f"- {pr['id']} ({pr.get('repo')}): {where}. Check `{chk.get('command')}`: {chk.get('result')}. Review: {rev.get('verdict')} (round {rev.get('round')}).")
+    done = [f"- {s}: {titles.get(s, '')}".rstrip(": ") for s in stories]
+    comment = "Eagle-Eye run " + st.get("runId", "") + "\n\nDone:\n" + "\n".join(done or ["- (no stories mapped)"]) + "\n\nPull requests:\n" + "\n".join(lines or ["- none"])
+    opened = prs and all(p["url"] for p in prs)
+    drafts.append({
+        "ticket": {"id": tid, "customId": None if cid in ("", "-") else cid, "title": title, "url": url},
+        "prs": prs,
+        "comment": comment,
+        "status": status if opened else None,
+        "statusNote": None if opened else ("Status left unchanged: not every PR was opened." if prs else "No PR covers this ticket."),
+    })
+print(json.dumps({"schema": 1, "runId": st.get("runId"), "createdAt": now, "drafts": drafts}, indent=2))
+PY
+    then
+      rm -f "$run/writeback.json.tmp"; echo "NOT WRITTEN: writeback.json" >&2; exit 1
+    fi
+    mv -f "$run/writeback.json.tmp" "$run/writeback.json"
+    echo "wrote $run/writeback.json"
     ;;
   worktree)
     repo="${2:?usage: state.sh worktree <repo path> <run id> <pr id> [<base commit>]}"

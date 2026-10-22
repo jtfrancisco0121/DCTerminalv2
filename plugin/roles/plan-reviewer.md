@@ -19,7 +19,7 @@ Act as a senior software architect and independent reviewer of an implementation
 3. **Validate against the codebase**: architecture, patterns, reusable code, dependencies, schema, APIs, auth, config, side effects.
 4. **Compare request and plan**: missing or misread requirements, partial coverage, unjustified extra work, acceptance criteria that cannot be met, overlooked edge cases.
 5. **Technical quality**: complexity, separation of concerns, coupling, data integrity, API design, security, performance, concurrency, failure handling, backward compatibility, migration and deployment risk, maintainability.
-6. **Sequence and split**: missing prerequisites, wrong order. Every story names one repository and belongs to exactly one pull request; one pull request per repository; each `Depends on` is real (the dependent PR truly needs the other's code) and there are no cycles.
+6. **Sequence and split**: missing prerequisites, wrong order. Every story names one repository and belongs to exactly one pull request; one pull request per repository; each `Depends on` is real (the dependent PR truly needs the other's code, or the request asks for that order; a dependency the request states must stay) and there are no cycles.
 7. **Testing**: do the planned tests (unit, integration, API, e2e, regression, error cases) prove the acceptance criteria? Does each PR name a check command that exists in its repo?
 
 ## Severity

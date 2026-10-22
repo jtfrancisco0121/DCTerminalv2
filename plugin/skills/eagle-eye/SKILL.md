@@ -33,7 +33,7 @@ Always use the helper `${CLAUDE_PLUGIN_ROOT}/scripts/state.sh`; never write `sta
 - **status.json**: the full document every time (never a partial patch), via
   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/state.sh" put <run>/status.json <<'JSON'` … `JSON`.
   It validates the JSON and the stage/state values, then writes atomically (`.tmp` + `mv`). If it prints `NOT WRITTEN`, fix the document and run it again before doing anything else. It sets `updatedAt` itself.
-- **writeback.json**: the same `put` command with `<run>/writeback.json`.
+- **writeback.json**: only via `state.sh writeback <run>` (Step 4).
 - **log.md**: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/state.sh" log <run> <stage> "<one line>"`. One event per call, no secrets.
 
 status.json (schema 1):
@@ -91,7 +91,7 @@ Set `stage: building` and write status.json once all worktrees exist.
 
 A PR is **ready** when it is `pending` and every PR in its `dependsOn` is `reviewed`. Repeat until no PR is ready or in progress:
 
-1. Launch an **Implementer** for every ready PR **in one message** (parallel sub-agents). For each: set `state: building`, log `PR<n> building`. Prompt for `dcv2:implementer`: `run=<run>`, `pr=<id>` with its repo, story ids and check command, `worktree=<path>`, `branch=<branch>`, `round=1`. (On resume of a PR that was `building`, add `resume: true`.)
+1. Before launching, make sure each ready PR's worktree exists (`test -d <worktree>`); if not, run the Step 2 helper for it first. Never launch an Implementer on a missing worktree. Then launch an **Implementer** for every ready PR **in one message** (parallel sub-agents). For each: set `state: building`, log `PR<n> building`. Prompt for `dcv2:implementer`: `run=<run>`, `pr=<id>` with its repo, story ids and check command, `worktree=<path>`, `branch=<branch>`, `round=1`. (On resume of a PR that was `building`, add `resume: true`.)
 2. When an Implementer replies: record `stories.done`, `check` (result + one-line summary), `commits` (`git -C <worktree> rev-list --count <baseCommit>..HEAD`), log `PR<n> built: <done>/<total> stories, check <result>`.
    - Status `BLOCKED`, no commits, or check `fail` after its own attempts → `state: needs-attention`, `note` = its one-line reason, log it. Its dependents stay `pending`.
 3. Review it (review round r, starting at 1): `state: reviewing`, launch a **fresh** `dcv2:pr-reviewer` with `run`, `pr` (id, repo, stories, check), `worktree`, `branch`, `base=<baseCommit>`, `round=r`, and the previous round's findings (one line each). Record `review` (`round`, `verdict`, `openFindings` = CRITICAL/HIGH/MEDIUM count, `path`) and `check`, log `PR<n> review round r: <verdict>, <counts>`.
@@ -117,14 +117,13 @@ When nothing is ready or in progress, go to stop #2. PRs still `pending` because
 1. Repo has no remote → `state: local-only`, `note: "no git remote: nothing pushed, no PR opened"`, log it. Do not try to add a remote.
 2. Else `git -C <worktree> push -u origin <branch>` (never with force). Refused → `state: needs-attention`, `note` = the one-line reason; continue with the others.
 3. Write a short PR body to `<run>/pr-bodies/<pr id>.md`: the PR's stories (id + title from `grep '^### S' plan.md`), check command + result, review verdict and round, `Depends on: <url of the dependency PR>` when it has one, and `Plan: Eagle-Eye run <runId>`. Then, in the worktree: `gh pr create --base <base> --head <branch> --title "<PR title>" --body-file <run>/pr-bodies/<pr id>.md`. Success → `prUrl`, `state: opened`; failure → `state: pushed`, `note` = reason.
-4. If `<run>/tickets.json` exists, you **must** write `<run>/writeback.json` (with `state.sh put`) before the run can be `done`, whether or not anything was pushed. Build it from the `## Tickets` section of plan.md (`sed -n '/^## Tickets/,/^## /p' <run>/plan.md`), one draft per ticket line:
-   `{"schema": 1, "runId": "...", "createdAt": "<UTC>", "drafts": [{"ticket": {"id", "customId", "title", "url"}, "prs": [{"id", "repo", "url"}], "comment": "<markdown: what was done, PR links or 'local branch <branch> (no remote)', check result>", "status": "<suggested status or null>", "statusNote": "<one line or null>"}]}`. Set `writeback` in status.json. Never call ClickUp.
+4. Write the ClickUp drafts: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/state.sh" writeback <run>`. It builds `writeback.json` from plan.md's `## Tickets` section and status.json (one draft per ticket: the stories done, each PR's URL or local branch, check and review; the suggested status only when every PR of the ticket was opened), and does nothing when there is no `tickets.json`. Then set `writeback` in status.json. `state.sh put` refuses `stage: done` while `tickets.json` exists without `writeback.json`. Never call ClickUp.
 5. Check before finishing: every `reviewed` PR is now `opened`, `pushed`, `local-only` or `needs-attention`, and `writeback.json` exists when `tickets.json` does. Then `ship` = `{"remote": "present" | "none" (none when no PR's repo has a remote), "pushed": <any pushed>, "note": <one line or null>}`. Set `stage: done`, write status.json, log `run done: <opened> opened, <local> local-only, <attention> need attention`.
 6. Tell the user the result: one line per PR (URL, or "local only: no git remote" with the branch and worktree), the writeback drafts count, and anything that needs attention.
 
 ## Resume (`resume run=<dir>`)
 
-1. Read `status.json`. Missing → there is nothing to resume: start a fresh run (Step 0). `test-mode: halt-after` is ignored on resume; `auto-approve` still applies.
+1. Read `status.json`. Missing → there is nothing to resume: start a fresh run (Step 0). `test-mode: halt-after` is ignored on resume; `auto-approve` still applies: at stop #1 and stop #2 do not wait, continue (state.sh prints `AUTO-APPROVE` to remind you).
 2. Before anything else, log exactly `resumed at stage <stage>` (state.sh relies on this line). Re-run Step 0's repo detection only if needed for a step you must redo.
 3. Continue from the first unfinished step, never redoing finished work:
    - `planning`: `plan` null or `plan.md` missing → Step 1 from the start. Else continue the review loop from `plan.reviewRound + 1` (or go to stop #1 when the last verdict had no MEDIUM+).

@@ -14,6 +14,8 @@ You are an Implementer sub-agent of an Eagle-Eye run. First Read `${CLAUDE_PLUGI
 - Optionally `resume: true`: some stories may already be committed; read `git -C <worktree> log --oneline` and skip stories whose commit is there.
 
 ## Hard limits
+- First check your worktree: `git -C <worktree> rev-parse --abbrev-ref HEAD` must print `branch`. If the folder is missing or on another branch, change nothing and reply `BLOCKED: worktree missing or on the wrong branch`. Never fall back to the current folder or the repo's main checkout.
+- Use absolute paths inside the worktree for every Read, Edit and Write, and run commands as `cd <worktree> && ...` or `git -C <worktree> ...`.
 - Work only inside `worktree`. Never cd into, edit, commit in, or switch branches of the repo's main checkout or any other path. (Reading the run folder and the plan is fine.)
 - Never push, never force anything (`push --force`, `reset --hard` on others' work, `checkout --` of files you did not change), never open PRs. The orchestrator ships.
 - Never print secrets (tokens, keys, .env values) in output or commits.

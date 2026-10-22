@@ -26,7 +26,7 @@ Act as a senior software engineer. Turn a feature request or bug report into a p
 
 - A **story** is one reviewable slice of the work with its own acceptance criteria. Name it `S1`, `S2`, ... Every story names exactly one repository.
 - A **pull request** groups the stories for one repository. One pull request per repository: never two for the same repo. Name them `PR1`, `PR2`, ...
-- A pull request **depends on** another only when its code really needs the other's change first (a new API it calls, a shared type, a release order). Independent PRs are built at the same time.
+- A pull request **depends on** another only when its code really needs the other's change first (a new API it calls, a shared type, a release order), or when the request asks for that order: keep every dependency or release order the request states. Independent PRs are built at the same time.
 - A step that is not code (a release, a deploy, a config change in a console) is a **manual step**: list it, but it belongs to no PR.
 - When the working folder holds several git repositories, use each repository's folder name as its name.
 
