@@ -1108,3 +1108,218 @@ body,
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* ---- Runs: start screen, progress panel, memory, janitor (P3a) ---- */
+.start-dialog {
+  width: min(44rem, 94vw);
+  max-height: 86vh;
+}
+
+.start-dialog .dialog-body {
+  overflow-y: auto;
+}
+
+.link-button {
+  padding: 0 0.35rem;
+  border: none;
+  background: none;
+  color: var(--accent-fg);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+.link-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.run-request {
+  resize: vertical;
+  font-family: inherit;
+}
+
+.run-repos ul,
+.run-list ul,
+.memory-repos,
+.janitor-list,
+.janitor-results {
+  margin: 0 0 var(--space-2);
+  padding-left: 1.1rem;
+  font-size: var(--text-sm);
+}
+
+.run-tiles-hint {
+  margin-top: var(--space-4);
+  margin-bottom: var(--space-2);
+}
+
+.role-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: var(--space-2);
+}
+
+.role-tile {
+  padding: 0.6rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-muted);
+  color: var(--fg);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.role-tile:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.role-tile:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.memory-panel,
+.run-list {
+  margin-top: var(--space-4);
+}
+
+.memory-panel h3,
+.run-list h3,
+.run-timeline h3 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-md);
+}
+
+.run-version {
+  margin-top: var(--space-4);
+  font-size: var(--text-xs);
+}
+
+.run-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: var(--space-2);
+}
+
+.run-panel {
+  width: 20rem;
+  flex-shrink: 0;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3);
+  border-left: 1px solid var(--border);
+  font-size: var(--text-sm);
+}
+
+.run-stage {
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.run-id {
+  margin: 0;
+  font-size: var(--text-xs);
+}
+
+.run-waiting {
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--accent-subtle);
+  color: var(--accent-bright);
+}
+
+.run-prs {
+  list-style: none;
+  margin: var(--space-2) 0;
+  padding: 0;
+}
+
+.run-pr {
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+}
+
+.run-pr-head {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.run-pr-repo,
+.run-pr-title,
+.run-time {
+  color: var(--fg-muted);
+}
+
+.run-pr-state {
+  margin-left: auto;
+}
+
+.run-pr-state-reviewed,
+.run-pr-state-opened {
+  color: var(--success);
+}
+
+.run-pr-state-needs-attention {
+  color: var(--warning);
+}
+
+.run-pr-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  margin-top: 0.2rem;
+}
+
+.run-gate {
+  margin-top: 0.25rem;
+  color: var(--fg-muted);
+}
+
+.run-gate-proven {
+  color: var(--success);
+}
+
+.run-gate-review-only {
+  color: var(--fg-muted);
+}
+
+.run-gate-concerns,
+.run-gate-unreadable,
+.run-gate-claimed {
+  color: var(--warning);
+}
+
+.run-gate-fail,
+.run-problem {
+  color: var(--danger);
+}
+
+.run-pr-note {
+  margin-top: 0.25rem;
+  color: var(--warning);
+}
+
+.run-timeline ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: var(--text-xs);
+}
+
+.text-dialog {
+  width: min(52rem, 94vw);
+}
+
+.text-viewer {
+  margin: 0;
+  max-height: 64vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs);
+}

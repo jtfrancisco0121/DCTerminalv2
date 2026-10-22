@@ -628,28 +628,27 @@ mod tests {
         let (cols, rows) = session.size().expect("size");
         assert_eq!((cols, rows), (40, 12));
         session.kill();
+        // kill() waits up to STOP_GRACE for SIGTERM before SIGKILL, so a
+        // loaded machine needs a deadline well past it (not 30 x 50 ms).
+        let deadline = std::time::Instant::now() + STOP_GRACE + Duration::from_secs(10);
         let mut saw_exit = false;
-        for _ in 0..30 {
-            if matches!(
-                session.recv_timeout(Duration::from_millis(50)),
+        while !saw_exit && std::time::Instant::now() < deadline {
+            saw_exit = matches!(
+                session.recv_timeout(Duration::from_millis(100)),
                 Ok(Some(PtyOutput::Exit { .. }))
-            ) {
-                saw_exit = true;
-                break;
-            }
+            );
         }
         assert!(saw_exit, "kill did not report an exit");
         #[cfg(unix)]
         {
-            let mut gone = false;
-            for _ in 0..20 {
-                if !process_alive(pid) {
-                    gone = true;
-                    break;
-                }
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while process_alive(pid) && std::time::Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(50));
             }
-            assert!(gone, "shell {pid} was still alive after kill");
+            assert!(
+                !process_alive(pid),
+                "shell {pid} was still alive after kill"
+            );
         }
     }
 
@@ -721,5 +720,47 @@ mod tests {
     #[cfg(unix)]
     fn process_alive(pid: u32) -> bool {
         std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+
+    /// The app never passes DCV2_TEST_MODE on, even when it inherited one:
+    /// not into a dcv2 Claude tab's terminal, not into its own check runs.
+    /// The only test that sets the variable (process-wide).
+    #[cfg(unix)]
+    #[test]
+    fn an_inherited_test_mode_reaches_neither_a_dcv2_tab_nor_an_app_check() {
+        std::env::set_var("DCV2_TEST_MODE", "auto-approve");
+        let launch = crate::store::TabLaunch {
+            role: "eagle-eye".into(),
+            prompt: "x".into(),
+            env: vec![("DCV2_TEST_MODE".into(), "halt-after=PR1".into())],
+            ..Default::default()
+        };
+        let mut command = crate::provider::ProgramArgs::new("/bin/sh", vec![]);
+        let env_remove = crate::run::launch::apply_launch(&mut command, Some(&launch), true);
+        let session = PtySession::spawn(SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "echo \"TM=[${DCV2_TEST_MODE-unset}]\"".into()],
+            env: command.env.clone(),
+            env_remove,
+            cwd: std::env::temp_dir(),
+            cols: 80,
+            rows: 24,
+        })
+        .unwrap();
+        let seen = wait_for_output(&session, "TM=[unset]");
+        let dir = crate::test_support::TempDir::new("check_env");
+        let log = dir.join("log.txt");
+        let (result, _, _) = crate::run::check::run_one(
+            "echo \"TM=[${DCV2_TEST_MODE-unset}]\"",
+            dir.path(),
+            &log,
+            Duration::from_secs(20),
+        );
+        std::env::remove_var("DCV2_TEST_MODE");
+        assert!(seen, "the PTY saw DCV2_TEST_MODE");
+        assert_eq!(result, "pass");
+        assert!(std::fs::read_to_string(&log)
+            .unwrap()
+            .contains("TM=[unset]"));
     }
 }

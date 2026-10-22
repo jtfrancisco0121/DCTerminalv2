@@ -16,9 +16,11 @@ mod state_store;
 mod state_types;
 
 pub use json_io::{read_json_or_recover, take_recovery_notes, write_json_atomic};
-pub use settings_store::{ClaudeSettings, SettingsStore, TerminalSettings, UiSettings};
+pub use settings_store::{
+    ClaudeSettings, RunSettings, SettingsStore, TerminalSettings, UiSettings,
+};
 pub use state_store::StateStore;
 pub use state_types::{
-    window_label, window_matches, TabKind, TabRecord, WindowRecord, DEFAULT_ACCOUNT_ID,
+    window_label, window_matches, TabKind, TabLaunch, TabRecord, WindowRecord, DEFAULT_ACCOUNT_ID,
     MAIN_WINDOW_ID,
 };

@@ -221,3 +221,16 @@ Append-only, one event per line, never rewritten:
 ```
 
 Format: `<UTC time> <stage> <text>`; text is one line, no secrets. Appended with `plugin/scripts/state.sh log <run> [<stage>]` (stage defaults to status.json's), the text on stdin (a quoted heredoc, so nothing in it is ever run by the shell); `state.sh approve` appends its own line.
+
+## Files the app adds (P3a)
+
+The app creates the folder and writes, besides the inputs above:
+
+| File | Use |
+|---|---|
+| `meta.json` | `{"schema":1,"runId","createdAt","folder","pluginVersion","claudeVersion","account":{"id","name","configDir"},"app"}`: what the run was started with (launch.md). |
+| `memory-prompt.md` | The `--append-system-prompt-file` of the launch, from `memory.sh compose` (absent when the plugin has no `memory.sh`). Rewritten on every resume. |
+| `app-checks.json` | R1: the app's own re-run of each PR's check, `{"schema":1,"checks":{"PR1":{"result":"pass|fail|timeout|error|none|running","command","skillCommand","head","clean","cwd","exitCode","finishedAt","log","detail"}}}`. `command` is always repos.json's check for the PR's repo (status.json's `check.command` is never run; `skillCommand` records it when it differs). It runs only in a worktree at `<repo parent>/<repo>-worktrees/dcv2-<runId>-<pr>` on branch `dcv2/<runId>-<pr>`, with `check.cwd` inside it. The skill never reads it. |
+| `logs/<PR>-app-check.txt` | The full output of that re-run. |
+
+The skill never writes these. The progress panel reads `status.json`, `gates/*.yml`, `log.md`, `report.md` and `app-checks.json`; a PR's gate is green only when it is `PASS` or `WAIVED`, the PR is `reviewed`/`opened`/`pushed`/`local-only`, and `app-checks.json` says `pass` for the worktree's current HEAD with the worktree clean then and now. A repo with no check in repos.json shows "PASS — review only (no check exists)", never green. The worktree janitor applies the same worktree rule and also keeps worktrees with gitignored files other than build/dependency folders (`node_modules`, `target`, `dist`, `build`, `.next`, `coverage`, `.turbo`, `__pycache__`, `.venv`, `.pytest_cache`, `.gradle`). A PR's check is matched to repos.json by its verified repo path, not its name. git runs with `core.fsmonitor=false` and only in verified worktrees.

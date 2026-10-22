@@ -52,3 +52,12 @@ The guard blocks Edit/Write into `DCV2_MEMORY_DIR` (agents use `memory.sh write`
 ## What the app reads
 
 `status.json`, `log.md`, `gates/*.yml`, `report.md`, `memory.sh status` output, the session JSONL under `<account dir>/projects/...` (A2, P3), and hook-forwarder events.
+
+## App side as built (P3a)
+
+- `--settings`: the app reads `plugin/launch/settings.json` (when present), lays its own keys over a copy (today the usage `statusLine`; the A2 hook-forwarder `hooks` come with A2) and passes the merged JSON inline as one `--settings` value. Nothing is written into the plugin, repos or `~/.claude*`.
+- `--append-system-prompt-file`: Eagle-Eye uses `<run dir>/memory-prompt.md`, role tiles `<app data>/launch/<uuid>-memory-prompt.md`; omitted when `memory.sh` is missing or fails.
+- `DCV2_TAB_ID` / `DCV2_HOOK_PORT` / `DCV2_HOOK_TOKEN` (A2) are not set yet.
+- A tab resumed with `claude --resume` gets the same env and flags but no prompt; an Eagle-Eye tab started fresh again on a run that has a `status.json` sends `/dcv2:eagle-eye resume run=<dir>` instead of `run=`.
+- The app drops an inherited `DCV2_TEST_MODE` from every dcv2 tab.
+- The plugin folder: `DCTV2_PLUGIN_DIR`, else (debug builds) the repo's `plugin/`, else the bundled resource `<resources>/plugin`.

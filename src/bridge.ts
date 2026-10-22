@@ -19,6 +19,10 @@ export type TabSummary = {
   folderStatus: string;
   /** A Claude tab that started a session before (it may be resumable). */
   hasSession: boolean;
+  /** Eagle-Eye tabs: the run folder the progress panel reads. */
+  runDir?: string | null;
+  /** dcv2 tabs: `eagle-eye`, `eagle-eye-resume`, or the role. */
+  role?: string | null;
 };
 
 export type ClosedTabSummary = {
@@ -82,10 +86,14 @@ export type ResolvedClaudeAccount = {
   envOverride: boolean;
 };
 
+export type RunSettings = { maxImplementers: number; stopHooks: boolean };
+
 export type SettingsView = {
   terminal: TerminalSettings;
   ui: UiSettings;
   claude: ClaudeSettings;
+  /** Eagle-Eye launch settings; absent from older test fixtures. */
+  run?: RunSettings;
   accounts: ResolvedClaudeAccount[];
   configDirEnv: string | null;
 };
@@ -231,6 +239,10 @@ export function setTerminalSettings(terminal: TerminalSettings): Promise<Termina
 
 export function setUiSettings(ui: UiSettings): Promise<UiSettings> {
   return invoke<UiSettings>("set_ui_settings", { ui });
+}
+
+export function setRunSettings(run: RunSettings): Promise<RunSettings> {
+  return invoke<RunSettings>("set_run_settings", { run });
 }
 
 export function setClaudeSettings(claude: ClaudeSettings): Promise<SettingsView> {

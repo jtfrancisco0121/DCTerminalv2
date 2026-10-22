@@ -124,6 +124,34 @@ pub struct TabRecord {
     /// When it was closed (closed tabs only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<String>,
+    /// Claude tabs started from the start screen: the dcv2 plugin launch
+    /// (docs/launch.md). Plain Claude tabs have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<TabLaunch>,
+}
+
+/// What a dcv2 Claude tab adds to `claude` (docs/launch.md): env, flags and
+/// the first prompt. The prompt is sent on a fresh start only; a resumed
+/// session gets the env and flags again but not the prompt.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TabLaunch {
+    /// `eagle-eye`, `eagle-eye-resume`, or a role skill name (`planner`, …).
+    pub role: String,
+    /// `/dcv2:eagle-eye run=<dir>`, `/dcv2:<role> <request>`, …
+    pub prompt: String,
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+    /// `--plugin-dir <p>`, `--append-system-prompt-file <f>`.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// `plugin/launch/settings.json`, merged with the app's own settings
+    /// (the usage status line) and passed as one `--settings`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings_file: Option<String>,
+    /// Eagle-Eye: the run folder the progress panel reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_dir: Option<String>,
 }
 
 impl Default for AppStateFile {
