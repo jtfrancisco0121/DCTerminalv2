@@ -729,8 +729,8 @@ fn retitle(app: &AppHandle, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Show an existing window, or recreate the saved one (main, else the last record).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// Show an existing window, or recreate the saved one (main, else the last
+/// record). Also what a second launch of the app does to this one.
 pub fn restore_a_window(app: &AppHandle) -> Result<(), String> {
     let label = {
         let state = app

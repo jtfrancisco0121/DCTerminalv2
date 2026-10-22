@@ -25,7 +25,11 @@ pub struct ResolvedDataDir {
 }
 
 pub fn app_data_dir(app: &AppHandle) -> ResolvedDataDir {
-    let known = app.path().app_data_dir().map_err(|err| err.to_string());
+    let known = app
+        .path()
+        .app_data_dir()
+        .map(|dir| build_data_dir(dir, DEV_BUILD))
+        .map_err(|err| err.to_string());
     resolve_data_dir(
         std::env::var_os(DATA_DIR_ENV).as_deref(),
         known,
@@ -36,6 +40,35 @@ pub fn app_data_dir(app: &AppHandle) -> ResolvedDataDir {
 /// The explicit data folder override (end-to-end tests). Not DCTerminal's
 /// `DCT_DATA_DIR`, so a shell set up for DCTerminal's tests leaves v2 alone.
 pub const DATA_DIR_ENV: &str = "DCTV2_DATA_DIR";
+
+/// A debug build (`tauri dev`) has the installed app's identifier, so it
+/// keeps its files in a folder of its own (`<identifier>.dev`): the two
+/// never write the same `state.json` or `settings.json`.
+const DEV_BUILD: bool = cfg!(debug_assertions);
+
+/// The platform data folder named after the identifier, with `.dev` added
+/// for a debug build.
+fn build_data_dir(known: PathBuf, dev: bool) -> PathBuf {
+    if !dev {
+        return known;
+    }
+    let mut name = known.file_name().unwrap_or_default().to_os_string();
+    name.push(".dev");
+    known.with_file_name(name)
+}
+
+/// Whether this process lets only one copy of itself run (a second launch
+/// focuses the first). Only the installed app on its own data folder: a
+/// debug build or a `DCTV2_DATA_DIR` run (end-to-end tests) has a folder of
+/// its own and runs beside it.
+pub fn single_instance(dev: bool, override_dir: Option<&OsStr>) -> bool {
+    !dev && override_path(override_dir).is_none()
+}
+
+/// [`single_instance`] for this process.
+pub fn single_instance_here() -> bool {
+    single_instance(DEV_BUILD, std::env::var_os(DATA_DIR_ENV).as_deref())
+}
 
 /// `identifier` in `tauri.conf.json`; Tauri names the app data folder after it.
 const IDENTIFIER: &str = "com.jtfrancisco.dcterminalv2";
@@ -51,7 +84,7 @@ pub fn data_dir_before_tauri() -> Option<PathBuf> {
         std::env::var_os("HOME").as_deref(),
         std::env::var_os("XDG_DATA_HOME").as_deref(),
     )
-    .map(|dir| dir.join(IDENTIFIER))
+    .map(|dir| build_data_dir(dir.join(IDENTIFIER), DEV_BUILD))
     .ok_or_else(|| "no home folder".to_string());
     let resolved = resolve_data_dir(
         std::env::var_os(DATA_DIR_ENV).as_deref(),
@@ -195,6 +228,29 @@ mod tests {
             assert_eq!(relative.unwrap(), PathBuf::from("/home/me/.local/share"));
         }
         assert_eq!(platform_data_dir(None, None), None);
+    }
+
+    // Review: `tauri dev` and the installed app share the identifier, so
+    // both read and wrote the same state.json and settings.json.
+    #[test]
+    fn a_debug_build_keeps_its_files_apart_from_the_installed_app() {
+        let known = PathBuf::from("/s/com.jtfrancisco.dcterminalv2");
+        assert_eq!(build_data_dir(known.clone(), false), known);
+        assert_eq!(
+            build_data_dir(known, true),
+            PathBuf::from("/s/com.jtfrancisco.dcterminalv2.dev")
+        );
+    }
+
+    #[test]
+    fn only_the_installed_app_on_its_own_folder_is_single_instance() {
+        assert!(single_instance(false, None));
+        assert!(single_instance(false, Some(OsStr::new("  "))));
+        assert!(!single_instance(true, None), "a debug build runs beside it");
+        assert!(
+            !single_instance(false, Some(OsStr::new("/tmp/e2e"))),
+            "a test data folder runs beside it"
+        );
     }
 
     #[test]

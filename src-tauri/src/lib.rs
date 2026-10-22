@@ -53,7 +53,15 @@ pub fn run() {
     for (_, step) in STARTUP_ENV_STEPS {
         step();
     }
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    if data_dir::single_instance_here() {
+        // First: a second copy hands over to this one and exits before it
+        // reads or writes state.json or settings.json.
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = windows::restore_a_window(app);
+        }));
+    }
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
