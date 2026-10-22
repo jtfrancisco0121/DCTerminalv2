@@ -15,7 +15,9 @@ pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Str
         .ok_or_else(|| "path has no parent".to_string())?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
 
-    if path.exists() {
+    // Only a file that still parses becomes the backup: a damaged one that
+    // could not be moved aside on load must not replace the good `.bak`.
+    if path.exists() && read_json::<serde_json::Value>(path).is_ok() {
         let backup = path.with_extension("json.bak");
         let _ = fs::copy(path, backup);
     }
@@ -269,5 +271,24 @@ mod tests {
         fs::write(path.join("inside"), b"x").unwrap();
         restore(&source, &path);
         assert_eq!(names_in(dir.path()), vec!["doc.json", "doc.json.bak"]);
+    }
+
+    // Review: when a damaged file could not be moved aside on load, the
+    // next save copied it over the good `.bak`, losing the only good copy.
+    #[test]
+    fn a_damaged_file_never_replaces_the_good_backup() {
+        let dir = TempDir::new("io_damaged_backup");
+        let path = dir.join("doc.json");
+        fs::write(&path, b"{ not json").unwrap();
+        fs::write(path.with_extension("json.bak"), b"{\"good\":true}").unwrap();
+        write_json_atomic(&path, &serde_json::json!({"new": 1})).unwrap();
+        assert_eq!(
+            fs::read_to_string(path.with_extension("json.bak")).unwrap(),
+            "{\"good\":true}"
+        );
+        // A good file still becomes the backup on the next save.
+        write_json_atomic(&path, &serde_json::json!({"new": 2})).unwrap();
+        let bak: serde_json::Value = read_json(&path.with_extension("json.bak")).unwrap();
+        assert_eq!(bak["new"], 1);
     }
 }
