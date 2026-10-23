@@ -50,3 +50,19 @@ Per PR:
 ## Build
 
 One PR (plugin + app panel + tests), the usual loop: build in a worktree → review → fix MEDIUM+ → merge, **when no Eagle-Eye run is active**.
+
+## Added 2026-10-23
+
+### ClickUp comments post automatically (JT: comments only)
+
+- After the yes at stop #2, the **app** posts every comment draft from `writeback.json` to the run's own tickets, with no ticks. Status changes stay as ticks (they move tickets on the team board).
+- The token stays in the app (keychain, per account). Claude never gets it: no token in env, files or prompts. The skill keeps writing drafts only.
+- Trigger: the app sees `shipApproval` in status.json and `writeback.json` written. Because status.json is written by Claude, auto-post is limited to what P4 already trusts: only tickets in the signed run-trust snapshot, the run's own account, one comment per ticket per run (recorded in the signed posted record, never twice), secret scan + size cap on the text, and the comment text itself is shown in the panel after posting with a link.
+- Setting per account: "Post ClickUp comments automatically after ship approval", default on. Off = today's ticks.
+- The panel shows each comment as posted / failed (retry button) / skipped.
+
+### Worktree setup (JT: yes)
+
+- `state.sh worktree` runs a setup step after making a new worktree: install packages from the repo's lockfile (`npm ci` / `pnpm install --frozen-lockfile` / `yarn install --frozen-lockfile` / `go mod download` / none for Cargo), output to `<run>/logs/<PR>-setup.txt`, one status line back. A failed install marks the PR's check `error` with the log path, not a crash.
+- Per-repo setting in the app, off by default: "Copy these local files into run worktrees" (e.g. `.env`, `.env.local`), an explicit list of paths from the main checkout. Copied files are git-ignored ones only (refuse a tracked path), never committed (guard + `git status` check before each commit), and removed by the janitor with the worktree.
+- `repos.json` gains `setup` (command or null) and `copyFiles` ([paths]) per repo, written by the app.
