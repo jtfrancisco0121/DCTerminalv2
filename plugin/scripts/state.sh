@@ -277,9 +277,12 @@ def prepare_status(doc, old, trusted, run_dir=None):
         state = pr.get("state")
         if state == "reviewed" and o.get("state") != "reviewed" and run_dir:
             g = read_gate(run_dir, pr.get("id"))
-            if not g or g.get("gate") == "FAIL":
-                bad.append(f"{pr.get('id')}: reviewed needs its gate first: `state.sh gate <run> {pr.get('id')} PASS|CONCERNS \"<reason>\"` "
-                           f"from the PR Reviewer's reply (gate now {(g or {}).get('gate') or 'missing'})")
+            rnd = (pr.get("review") or {}).get("round") if isinstance(pr.get("review"), dict) else None
+            if not g or g.get("gate") == "FAIL" or g.get("round") != rnd:
+                why = (f"gate now {(g or {}).get('gate') or 'missing'}" if not g or g.get("gate") == "FAIL"
+                       else f"the gate is for review round {g.get('round')}, the PR is at round {rnd}")
+                bad.append(f"{pr.get('id')}: reviewed needs this round's gate first: `state.sh gate <run> {pr.get('id')} PASS|CONCERNS \"<reason>\"` "
+                           f"from the PR Reviewer's reply ({why})")
         pr["agent"] = AGENT_FOR_STATE.get(state)
         pr["startedAt"] = o.get("startedAt") or (t if state not in (None, "pending") else None)
         if isinstance(pr.get("check"), dict):
@@ -315,14 +318,20 @@ def read_gate(run, pid):
     return g if g.get("gate") in GATES else None
 
 
-def gates(doc, run):
+def busy_ids(doc):
+    return [p.get("id") for p in (doc or {}).get("prs") or [] if isinstance(p, dict) and p.get("state") in ("building", "fixing")]
+
+
+def gates(doc, run, old=None):
     """Refusals and reminders that depend on the run, not on the document's shape."""
     tm = testmode()
     out = []
     stage = doc.get("stage")
     cap = max_implementers()
-    busy = [p.get("id") for p in doc.get("prs") or [] if isinstance(p, dict) and p.get("state") in ("building", "fixing")]
-    if len(busy) > cap:
+    busy, was = busy_ids(doc), busy_ids(old if isinstance(old, dict) else {})
+    # Refuse only a write that adds work over the cap, so a run already over it (cap lowered,
+    # resume) can still record PRs finishing.
+    if len(busy) > cap and (len(busy) > len(was) or set(busy) - set(was)):
         return (f"NOT WRITTEN: {len(busy)} PRs building/fixing ({', '.join(busy)}), over the cap of {cap} Implementers at once "
                 f"(DCV2_MAX_IMPLEMENTERS). Keep the others pending and start them when one finishes."), out
     if tm["halt"] and not resumed(run):
@@ -354,13 +363,16 @@ def write_status(run, doc, trusted=False):
     problems = bad + validate_status(doc, run)
     if problems:
         die(f"NOT WRITTEN: {dest}: " + "; ".join(problems))
-    refusal, out = gates(doc, run)
+    refusal, out = gates(doc, run, old)
     if refusal:
         die(refusal)
     atomic_write(dest, json.dumps(doc, indent=2) + "\n")
     if doc.get("stage") in ("done", "failed"):
-        write_report(run)
-        out.append(f"wrote {os.path.join(run, 'report.md')}")
+        try:
+            write_report(run)
+            out.append(f"wrote {os.path.join(run, 'report.md')}")
+        except Exception as e:  # status.json is written; a report problem must not look like a refused write
+            print(f"note: report.md not written ({type(e).__name__}: {e}); run `state.sh report <run>`", file=sys.stderr)
     return notes + out
 
 

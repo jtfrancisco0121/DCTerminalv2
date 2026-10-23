@@ -169,6 +169,8 @@ expect 0 "gate PASS over an APPROVED review" bash "$STATE" gate "$RUN" PR1 PASS 
 expect 1 "WAIVED over PASS refused" bash "$STATE" gate "$RUN" PR1 WAIVED "x"
 printf '## Verdict\nAPPROVED\n' > "$RUN/reviews/PR2-round1.md"
 expect 0 "gate CONCERNS for PR2" bash "$STATE" gate "$RUN" PR2 CONCERNS "1 LOW: naming"
+expect 1 "reviewed refused when the gate is from an earlier round (MEDIUM 5)" put < <(status building reviewed pending 'doc["prs"][0]["review"]["round"]=2')
+has "  says which round" "round 1, the PR is at round 2"
 expect 0 "reviewed with check none accepted" put < <(status building reviewed pending 'doc["prs"][0]["check"]["result"]="none"')
 expect 1 "reviewing with review.round 0 refused (6)" put < <(status building reviewed reviewing 'doc["prs"][1]["review"]["round"]=0')
 expect 1 "check.cwd relative refused (11)" put < <(status building reviewed pending 'doc["prs"][0]["check"]["cwd"]="rel"')
@@ -182,6 +184,11 @@ expect 1 "a bad cap refused" env DCV2_MAX_IMPLEMENTERS=zero bash "$STATE" put "$
 expect 0 "two building with the cap 2" env DCV2_MAX_IMPLEMENTERS=2 bash "$STATE" put "$RUN/status.json" < <(status building building building)
 expect 0 "two building with the default cap (3)" put < <(status building building building)
 expect 0 "one building with the cap 1" env DCV2_MAX_IMPLEMENTERS=1 bash "$STATE" put "$RUN/status.json" < <(status building building pending)
+expect 0 "two building (cap 3)" put < <(status building building building)
+expect 0 "cap lowered to 1 mid-run: an unchanged over-cap write is accepted" env DCV2_MAX_IMPLEMENTERS=1 bash "$STATE" put "$RUN/status.json" < <(status building building building 'doc["prs"][0]["note"]="x"')
+expect 0 "  and a PR leaving building is accepted" env DCV2_MAX_IMPLEMENTERS=1 bash "$STATE" put "$RUN/status.json" < <(status building reviewing building 'doc["prs"][0]["review"]["round"]=1')
+expect 1 "  but a PR entering fixing over the cap is refused" env DCV2_MAX_IMPLEMENTERS=1 bash "$STATE" put "$RUN/status.json" < <(status building fixing building)
+expect 0 "back to one building" put < <(status building building pending)
 
 echo "# put: per-PR stamps (11)"
 expect 0 "PR2 starts building" put < <(status building reviewed building)
@@ -347,5 +354,8 @@ print(json.dumps({"schema": 1, "runId": "r-f", "stage": "failed", "waitingFor": 
 PY2
 expect 0 "failed run" bash "$STATE" put "$RUN2/status.json" < "$d/failed.json"
 grep -q "planner failed twice" "$RUN2/report.md" && ok "  report.md at failed, with the error" || bad "  report: $(cat "$RUN2/report.md" 2>/dev/null)"
+rm -f "$RUN2/report.md"; mkdir "$RUN2/report.md"
+expect 0 "a report that cannot be written does not fail the status write (LOW 9)" bash "$STATE" put "$RUN2/status.json" < "$d/failed.json"
+has "  says so" "report.md not written"
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }
