@@ -5,6 +5,7 @@ mod crash_log;
 mod data_dir;
 #[cfg(target_os = "macos")]
 mod macos_terminate;
+pub(crate) mod observe;
 mod paths;
 mod process_tree;
 mod provider;
@@ -79,6 +80,7 @@ pub fn run() {
             app.manage(Mutex::new(settings_store));
             app.manage(Mutex::new(usage::UsageStore::open(&data_dir)));
             app.manage(Mutex::new(PtyRegistry::new()));
+            app.manage(observe::ObserveState::start());
             for note in store::take_recovery_notes() {
                 eprintln!("DCTerminalv2: {note}");
             }
@@ -128,6 +130,12 @@ pub fn run() {
             run::read_run_file,
             run::memory_status,
             run::read_memory_file,
+            observe::observe_tab,
+            observe::observe_tabs,
+            observe::nudge_tab,
+            observe::claude_version_status,
+            observe::run_claude_selftest,
+            observe::read_check_log,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

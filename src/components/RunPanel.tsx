@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   readRun,
@@ -22,7 +22,9 @@ import {
   storiesText,
   wantsAppChecks,
 } from "../run/words";
+import { checkLogPr, readCheckLog } from "../run/observe";
 import { Dialog } from "./Dialog";
+import { ObserveSection } from "./ObserveSection";
 import { errorText } from "./InlineNotice";
 
 /** How often the panel reads the run folder again. */
@@ -35,6 +37,8 @@ type ViewProps = {
   onOpenFile: (path: string, title: string) => void;
   onOpenUrl: (url: string) => void;
   onCleanUp: () => void;
+  /** P3b: the tab's session (state, watchdog, context, cost). */
+  session?: ReactNode;
 };
 
 function PrRow({ pr, onOpenFile, onOpenUrl }: { pr: PrView } & Pick<ViewProps, "onOpenFile" | "onOpenUrl">) {
@@ -95,7 +99,7 @@ function PrRow({ pr, onOpenFile, onOpenUrl }: { pr: PrView } & Pick<ViewProps, "
 }
 
 /** The progress panel for one run, drawn from a read of its folder. */
-export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp }: ViewProps) {
+export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session }: ViewProps) {
   const timeline = view.timeline.slice(-30).reverse();
   return (
     <aside className="run-panel" aria-label="Run progress">
@@ -106,6 +110,7 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
         <div className="hint run-id">{view.runId}</div>
       </header>
       {view.statusProblem && <p className="hint warn">{view.statusProblem}</p>}
+      {session}
       {!view.hasStatus && !view.statusProblem && <p className="hint">Claude is starting the run in the tab.</p>}
       {view.waitingFor && (
         <p className="run-waiting" role="status">
@@ -245,7 +250,7 @@ export function TextDialog({ title, text, onClose }: { title: string; text: stri
 }
 
 /** The panel beside an Eagle-Eye tab: polls the run folder. */
-export function RunPanel({ runDir }: { runDir: string }) {
+export function RunPanel({ runDir, tabId, onResume }: { runDir: string; tabId?: string; onResume?: () => void }) {
   const [view, setView] = useState<RunView | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
@@ -307,7 +312,9 @@ export function RunPanel({ runDir }: { runDir: string }) {
   }, [view, checking, rerun]);
 
   const openFile = (path: string, title: string) => {
-    readRunFile(runDir, path).then(
+    // A4: the app's check output is shown trimmed (ANSI, redraws, middle).
+    const pr = checkLogPr(path);
+    (pr ? readCheckLog(runDir, pr) : readRunFile(runDir, path)).then(
       (text) => setFile({ title, text }),
       (err: unknown) => setFile({ title, text: errorText(err) }),
     );
@@ -345,6 +352,7 @@ export function RunPanel({ runDir }: { runDir: string }) {
         onOpenFile={openFile}
         onOpenUrl={(url) => void openUrl(url).catch((err: unknown) => setProblem(errorText(err)))}
         onCleanUp={openJanitor}
+        session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} /> : undefined}
       />
       {problem && <p className="error run-problem">{problem}</p>}
       {file && <TextDialog title={file.title} text={file.text} onClose={() => setFile(null)} />}

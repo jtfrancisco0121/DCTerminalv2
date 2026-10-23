@@ -1,0 +1,11 @@
+{
+  "session_id": "de6a6329-de0f-49da-960b-f50fed9236e4",
+  "transcript_path": "/config/projects/-work-toy/de6a6329-de0f-49da-960b-f50fed9236e4.jsonl",
+  "cwd": "/work/toy",
+  "prompt_id": "0e37ed4f-5a58-4171-9a49-c4c8d61bab9e",
+  "permission_mode": "default",
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "Bash",
+  "tool_input": {"command": "touch one.txt", "description": "Create one.txt"},
+  "permission_suggestions": [{"type": "setMode", "mode": "acceptEdits", "destination": "session"}]
+}
