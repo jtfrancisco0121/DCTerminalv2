@@ -5,6 +5,16 @@
         "matcher": "Edit|Write|NotebookEdit|MultiEdit|Bash",
         "hooks": [{"type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/guard.sh\""}]
       }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [{"type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/stop-check.sh\"", "timeout": 60}]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [{"type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/stop-check.sh\"", "timeout": 60}]
+      }
     ]
   }
 }
