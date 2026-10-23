@@ -52,13 +52,43 @@ w 2 dcv2:pr-reviewer "$WT/a.js"
 w 0 dcv2:pr-reviewer "$RUN/reviews/PR1-round1.md"
 w 2 dcv2:planner "$R/plan.md"
 w 0 dcv2:planner "$RUN/plan.md"
-w 0 "" "$R/a.js"
+w 2 "" "$R/a.js"                                                   # the orchestrator never edits a main checkout (R4)
+w 0 "" "$WT/a.js"
+w 0 "" "$d/elsewhere/notes.md"
+expect 0 "user session (no run) may edit a repo" "$(payload "" Write file_path "$R/a.js")" -u DCV2_RUN_DIR
 w 2 "" "$RUN/status.json"
 w 2 "" "$RUN/.guard.json"
 w 2 dcv2:implementer "$RUN/writeback.json"
 w 2 "" "$d/fake/status.json"
 expect 2 "implementer with no DCV2_RUN_DIR" "$(payload dcv2:implementer Write file_path "$WT/a.js")" -u DCV2_RUN_DIR
 expect 0 "user session with no DCV2_RUN_DIR" "$(payload "" Write file_path "$R/a.js")" -u DCV2_RUN_DIR
+
+echo "# codebase memory: only memory.sh write (D9)"
+MEMD="$d/mem"; mkdir -p "$MEMD/x/topics"
+expect 2 "orchestrator Write into memory" "$(payload "" Write file_path "$MEMD/x/index.md")" DCV2_MEMORY_DIR="$MEMD"
+expect 2 "user session Write into memory" "$(payload "" Edit file_path "$MEMD/x/topics/a.md")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
+expect 2 "implementer Write into memory" "$(payload dcv2:implementer Write file_path "$MEMD/x/index.md")" DCV2_MEMORY_DIR="$MEMD"
+expect 2 "user session redirect into memory" "$(payload "" Bash command "echo x > $MEMD/x/index.md")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
+expect 2 "redirect via \$DCV2_MEMORY_DIR" "$(payload "" Bash command 'echo x > $DCV2_MEMORY_DIR/x/index.md')" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
+expect 2 "cp into memory" "$(payload dcv2:memory-updater Bash command "cp /tmp/a $MEMD/x/index.md")" DCV2_MEMORY_DIR="$MEMD"
+expect 0 "memory.sh write with a heredoc" "$(payload dcv2:memory-updater Bash command "bash /p/scripts/memory.sh write x index.md <<'EOF'
+# x
+EOF")" DCV2_MEMORY_DIR="$MEMD"
+expect 2 "cd into memory via the env var, then a relative write (LOW 6)" "$(payload "" Bash command 'cd "$DCV2_MEMORY_DIR/x" && echo x > index.md')" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
+expect 2 "cd into memory by path, then a relative write" "$(payload "" Bash command "cd $MEMD/x && echo x > index.md")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
+expect 2 "cd via another variable, memory mentioned, relative write" "$(payload "" Bash command 'M=$DCV2_MEMORY_DIR; cd $M && echo x > x/index.md')" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
+expect 0 "the bare word memory does not count as mentioning it" "$(payload "" Bash command 'cd "$(dirname "$X")" && echo "memory notes" > notes.txt')" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
+expect 0 "cd into memory to read" "$(payload "" Bash command 'cd "$DCV2_MEMORY_DIR" && cat x/index.md')" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
+expect 0 "user session: unknown cd + relative write, memory not mentioned" "$(payload "" Bash command 'cd "$(git rev-parse --show-toplevel)" && echo x > notes.txt')" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
+expect 0 "user session with memory set: git push still theirs" "$(payload "" Bash command "git push origin main")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
+expect 0 "user session with memory set: unrelated write" "$(payload "" Write file_path "$R/a.js")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
+echo "# memory-updater"
+expect 0 "memory-updater (developer session, no run): read-only git" "$(payload dcv2:memory-updater Bash command "git -C $R diff --name-only HEAD~1 HEAD")" -u DCV2_RUN_DIR
+expect 2 "memory-updater (no run): no Write" "$(payload dcv2:memory-updater Write file_path "$d/x.md")" -u DCV2_RUN_DIR
+expect 2 "memory-updater (no run): no git commit" "$(payload dcv2:memory-updater Bash command "git -C $R commit -m x")" -u DCV2_RUN_DIR
+expect 0 "memory-updater in a run: writes memory-update.md" "$(payload dcv2:memory-updater Write file_path "$RUN/memory-update.md")"
+expect 2 "memory-updater in a run: not into a worktree" "$(payload dcv2:memory-updater Write file_path "$WT/a.js")"
+expect 2 "memory-updater: no push" "$(payload dcv2:memory-updater Bash command "git -C $WT push")"
 
 echo "# unparsable input / no python3"
 expect 2 "unparsable payload from an implementer" '{"agent_type": "dcv2:implementer", "tool_input": {broken'
@@ -121,6 +151,12 @@ b 0 "" "bash $STATE log $RUN building <<'EOF'
 PR1 built; git push later
 EOF"
 b 2 "" "gh pr merge 12"
+b 2 "" "git -C $R commit -am x"                                     # R4: no changing git in a main checkout
+b 2 "" "git -C $R checkout -b x"
+b 2 "" "echo x > $R/a.js"
+b 2 "" "sed -i '' s/a/b/ $R/a.js"
+b 0 "" "git -C $R worktree list && git -C $R log --oneline -n 3"
+b 0 "" "echo x > $RUN/notes.md"
 expect 0 "user session: git push with no run bound" "$(payload "" Bash command "git push --force")" -u DCV2_RUN_DIR
 python3 - "$RUN/status.json" <<'PY'
 import json, sys
@@ -133,6 +169,13 @@ b 2 "" "git -C $WT push -f origin dcv2/r-x-pr1"
 b 2 "" "git -C $WT push --force-with-lease origin dcv2/r-x-pr1"
 b 2 "" "git -C $WT push origin +dcv2/r-x-pr1"
 b 2 "" "git -C $WT push origin --delete dcv2/r-x-pr1"
+b 2 "" "git -C $WT push origin :dcv2/r-x-pr1"
+b 2 "" "git -C $WT push origin HEAD:main"                           # R4: only dcv2/ branches
+b 2 "" "git -C $WT push origin main"
+b 2 "" "git -C $WT push --all origin"
+b 2 "" "git -C $WT push --mirror origin"
+b 2 "" "git -C $R push -u origin dcv2/r-x-pr1"                      # never from a main checkout
+b 0 "" "git -C $WT push -u origin refs/heads/dcv2/r-x-pr1"
 b 2 dcv2:implementer "git -C $WT push -u origin dcv2/r-x-pr1"
 python3 - "$RUN/status.json" <<'PY'
 import json, sys

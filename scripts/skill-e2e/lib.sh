@@ -125,12 +125,16 @@ EOF
 
 # run_claude <cwd> <plugin> <out.jsonl> <prompt> [VAR=value...]: headless, stream-json, killed
 # after $CLAUDE_TIMEOUT s. The VAR=value pairs (e.g. DCV2_RUN_DIR, DCV2_TEST_MODE) are the launch env.
+# Extra claude flags (e.g. --settings, --append-system-prompt-file per docs/launch.md): CLAUDE_ARGS="...".
 run_claude() {
   local cwd="$1" plugin="$2" out="$3" prompt="$4"; shift 4
-  note "$* claude -p \"$prompt\" (model $MODEL) in $cwd"
+  local extra=()
+  [[ -z "${CLAUDE_ARGS:-}" ]] || read -r -a extra <<<"$CLAUDE_ARGS"
+  note "$* claude -p \"$prompt\" (model $MODEL) ${CLAUDE_ARGS:-} in $cwd"
   local start=$SECONDS
-  (cd "$cwd" && env -u DCV2_RUN_DIR -u DCV2_TEST_MODE "$@" perl -e 'alarm shift; exec @ARGV' "$CLAUDE_TIMEOUT" \
-     claude -p "$prompt" --plugin-dir "$plugin" --model "$MODEL" \
+  (cd "$cwd" && env -u DCV2_RUN_DIR -u DCV2_TEST_MODE -u DCV2_MEMORY_DIR -u DCV2_MAX_IMPLEMENTERS -u DCV2_STOP_HOOKS "$@" \
+     perl -e 'alarm shift; exec @ARGV' "$CLAUDE_TIMEOUT" \
+     claude -p "$prompt" --plugin-dir "$plugin" --model "$MODEL" ${extra[@]+"${extra[@]}"} \
        --permission-mode bypassPermissions --output-format stream-json --verbose \
        > "$out" 2> "${out%.jsonl}.err") || note "claude exited with $? (see ${out%.jsonl}.err)"
   note "claude took $((SECONDS - start))s; transcript $out"

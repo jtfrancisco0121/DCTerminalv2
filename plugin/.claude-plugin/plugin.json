@@ -1,5 +1,5 @@
 {
   "name": "dcv2",
-  "version": "0.1.0",
-  "description": "DCTerminalv2: the Eagle-Eye run (plan, build, review, ship) as one Claude session with sub-agents, plus six roles that also run alone."
+  "version": "0.2.0",
+  "description": "DCTerminalv2: the Eagle-Eye run (plan, build, review, ship) as one Claude session with sub-agents, plus seven roles that also run alone (six work roles and Onboard, which writes the codebase memory)."
 }

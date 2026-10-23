@@ -1,0 +1,18 @@
+{
+  "env": {
+    "BASH_MAX_OUTPUT_LENGTH": "20000",
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "80"
+  },
+  "permissions": {
+    "deny": [
+      "Read(**/node_modules/**)",
+      "Read(**/dist/**)",
+      "Read(**/.next/**)",
+      "Read(**/__pycache__/**)",
+      "Read(./target/**)",
+      "Read(./*/target/**)",
+      "Read(./coverage/**)",
+      "Read(./*/coverage/**)"
+    ]
+  }
+}

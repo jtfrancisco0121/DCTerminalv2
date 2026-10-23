@@ -100,6 +100,10 @@ expect 0 "preflight with DCV2_RUN_DIR" bash "$STATE" preflight "$RUN"
 has "  prints the folder" "folder=$WS"
 has "  says request.md test-mode text is ignored" "is ignored"
 has "  test mode off (request.md lines do not count)" "testmode=auto-approve:no,halt-after:none"
+has "  the implementer cap, default 3 (R6)" "maxImplementers=3"
+has "  memory off without DCV2_MEMORY_DIR" "memory=none"
+expect 0 "preflight with a cap and memory" env DCV2_MAX_IMPLEMENTERS=2 DCV2_MEMORY_DIR="$d/mem" bash "$STATE" preflight "$RUN"
+has "  maxImplementers=2" "maxImplementers=2"; has "  memory root" "memory=$d/mem"
 badpy="$d/badpy"; mkdir -p "$badpy"; printf '#!/bin/sh\nexit 1\n' > "$badpy/python3"; chmod +x "$badpy/python3"
 expect 1 "preflight with a broken python3 fails" env PATH="$badpy:$PATH" bash "$STATE" preflight "$RUN"
 has "  says python3 does not run" "python3 is missing or does not run"
@@ -141,10 +145,50 @@ expect 1 "reviewed with a failing check refused (7)" put < <(status building rev
 expect 1 "reviewed with check error refused (7)" put < <(status building reviewed pending 'doc["prs"][0]["check"]["result"]="error"')
 expect 0 "needs-attention with check error accepted (7)" put < <(status building needs-attention pending 'doc["prs"][0]["check"]["result"]="error"; doc["prs"][0]["note"]="check could not run"')
 expect 1 "needs-attention without a note refused" put < <(status building needs-attention pending)
+
+echo "# gate (A1)"
+expect 1 "reviewed refused without a gate" put < <(status building reviewed pending)
+has "  says to write the gate" "state.sh gate"
+expect 1 "gate PASS without a review file" bash "$STATE" gate "$RUN" PR1 PASS "clean"
+mkdir -p "$RUN/reviews"; printf '## Verdict\nREQUEST CHANGES\n\n## Summary\nx\n' > "$RUN/reviews/PR1-round1.md"
+expect 1 "gate PASS over a REQUEST CHANGES review" bash "$STATE" gate "$RUN" PR1 PASS "clean"
+expect 1 "gate with an unknown value" bash "$STATE" gate "$RUN" PR1 GREEN "x"
+expect 1 "gate with an empty reason" bash "$STATE" gate "$RUN" PR1 FAIL "  "
+expect 1 "gate for an unknown PR" bash "$STATE" gate "$RUN" PR9 FAIL "x"
+expect 1 "WAIVED with no gate to waive" bash "$STATE" gate "$RUN" PR1 WAIVED "user: ship it"
+expect 0 "gate FAIL" bash "$STATE" gate "$RUN" PR1 FAIL "1 MEDIUM open: no test for 0"
+grep -q '^gate: FAIL$' "$RUN/gates/PR1.yml" && ok "  gates/PR1.yml gate: FAIL" || bad "  gate file: $(cat "$RUN/gates/PR1.yml")"
+grep -q '^review: "reviews/PR1-round1.md"$' "$RUN/gates/PR1.yml" && ok "  review path recorded" || bad "  gate file: $(cat "$RUN/gates/PR1.yml")"
+grep -q '^updated: 20' "$RUN/gates/PR1.yml" && ok "  updated time" || bad "  no updated"
+tail -1 "$RUN/log.md" | grep -q "PR1 gate FAIL: 1 MEDIUM open" && ok "  logged" || bad "  log: $(tail -1 "$RUN/log.md")"
+expect 1 "reviewed refused with a FAIL gate" put < <(status building reviewed pending)
+expect 0 "WAIVED over FAIL (the user's reason)" bash "$STATE" gate "$RUN" PR1 WAIVED "user: the 0 case is out of scope"
+grep -q '^waived: "FAIL"$' "$RUN/gates/PR1.yml" && ok "  records what was waived" || bad "  gate file: $(cat "$RUN/gates/PR1.yml")"
+printf '## Verdict\n**APPROVED**\n' > "$RUN/reviews/PR1-round1.md"
+expect 0 "gate PASS over an APPROVED review" bash "$STATE" gate "$RUN" PR1 PASS "no findings; check passes"
+expect 1 "WAIVED over PASS refused" bash "$STATE" gate "$RUN" PR1 WAIVED "x"
+printf '## Verdict\nAPPROVED\n' > "$RUN/reviews/PR2-round1.md"
+expect 0 "gate CONCERNS for PR2" bash "$STATE" gate "$RUN" PR2 CONCERNS "1 LOW: naming"
+expect 1 "reviewed refused when the gate is from an earlier round (MEDIUM 5)" put < <(status building reviewed pending 'doc["prs"][0]["review"]["round"]=2')
+has "  says which round" "round 1, the PR is at round 2"
 expect 0 "reviewed with check none accepted" put < <(status building reviewed pending 'doc["prs"][0]["check"]["result"]="none"')
 expect 1 "reviewing with review.round 0 refused (6)" put < <(status building reviewed reviewing 'doc["prs"][1]["review"]["round"]=0')
 expect 1 "check.cwd relative refused (11)" put < <(status building reviewed pending 'doc["prs"][0]["check"]["cwd"]="rel"')
 expect 1 "paused without a reason refused (11)" put < <(status building reviewed pending 'doc["paused"]={}')
+
+echo "# implementer cap (R6)"
+expect 1 "two building with DCV2_MAX_IMPLEMENTERS=1 refused" env DCV2_MAX_IMPLEMENTERS=1 bash "$STATE" put "$RUN/status.json" < <(status building building building)
+has "  names the cap" "DCV2_MAX_IMPLEMENTERS"
+expect 1 "building + fixing with the cap 1 refused" env DCV2_MAX_IMPLEMENTERS=1 bash "$STATE" put "$RUN/status.json" < <(status building building fixing)
+expect 1 "a bad cap refused" env DCV2_MAX_IMPLEMENTERS=zero bash "$STATE" put "$RUN/status.json" < <(status building building pending)
+expect 0 "two building with the cap 2" env DCV2_MAX_IMPLEMENTERS=2 bash "$STATE" put "$RUN/status.json" < <(status building building building)
+expect 0 "two building with the default cap (3)" put < <(status building building building)
+expect 0 "one building with the cap 1" env DCV2_MAX_IMPLEMENTERS=1 bash "$STATE" put "$RUN/status.json" < <(status building building pending)
+expect 0 "two building (cap 3)" put < <(status building building building)
+expect 0 "cap lowered to 1 mid-run: an unchanged over-cap write is accepted" env DCV2_MAX_IMPLEMENTERS=1 bash "$STATE" put "$RUN/status.json" < <(status building building building 'doc["prs"][0]["note"]="x"')
+expect 0 "  and a PR leaving building is accepted" env DCV2_MAX_IMPLEMENTERS=1 bash "$STATE" put "$RUN/status.json" < <(status building reviewing building 'doc["prs"][0]["review"]["round"]=1')
+expect 1 "  but a PR entering fixing over the cap is refused" env DCV2_MAX_IMPLEMENTERS=1 bash "$STATE" put "$RUN/status.json" < <(status building fixing building)
+expect 0 "back to one building" put < <(status building building pending)
 
 echo "# put: per-PR stamps (11)"
 expect 0 "PR2 starts building" put < <(status building reviewed building)
@@ -282,7 +326,36 @@ is "  file kept" "$RUN/writeback.json" app '"edited"'
 expect 0 "writeback --force" bash "$STATE" writeback "$RUN" --force
 expect 1 "put refuses writeback.json" bash "$STATE" put "$RUN/writeback.json" <<<'{}'
 
-echo "# done gate"
+echo "# done gate, report (R10)"
+bash "$STATE" log "$RUN" <<<'PR2 implementer retried: no JSON block' >/dev/null
+echo "Updated topics/sync.md (checked-at abc1234)." > "$RUN/memory-update.md"
 expect 0 "done" put < <(status done local-only opened 'doc["ship"]={"remote":"present","pushed":True,"note":None}; doc["prs"][1]["prUrl"]="https://github.com/o/rr/pull/7"')
+has "  says it wrote the report" "report.md"
+R="$RUN/report.md"
+[[ -f "$R" ]] && ok "  report.md written at done" || bad "  no report.md"
+out="$(cat "$R" 2>/dev/null)"
+has "  stage" "Stage: **done**"
+has "  PR table" "| PR1 | r | S1 | 1/1 |"
+has "  gate per PR" "| PASS |"
+has "  PR2 gate CONCERNS" "Gate: CONCERNS: 1 LOW: naming"
+has "  PR2 retried once" "| 1 | 1 | CONCERNS |"
+has "  PR url" "https://github.com/o/rr/pull/7"
+has "  memory update" "Updated topics/sync.md"
+has "  check results" 'Check: `true`: pass'
+rm -f "$R"
+expect 0 "report on demand" bash "$STATE" report "$RUN"
+[[ -f "$R" ]] && ok "  report.md rewritten" || bad "  no report.md"
+expect 1 "report with no status.json" bash "$STATE" report "$d"
+RUN2="$d/runs/r-f"; mkdir -p "$RUN2"; printf 'folder: %s\n' "$WS" > "$RUN2/request.md"
+python3 - "$RUN2" > "$d/failed.json" <<'PY2'
+import json, sys
+print(json.dumps({"schema": 1, "runId": "r-f", "stage": "failed", "waitingFor": None, "folder": "/x", "plan": None, "prs": [],
+                  "ship": None, "writeback": None, "error": "planner failed twice: usage limit"}))
+PY2
+expect 0 "failed run" bash "$STATE" put "$RUN2/status.json" < "$d/failed.json"
+grep -q "planner failed twice" "$RUN2/report.md" && ok "  report.md at failed, with the error" || bad "  report: $(cat "$RUN2/report.md" 2>/dev/null)"
+rm -f "$RUN2/report.md"; mkdir "$RUN2/report.md"
+expect 0 "a report that cannot be written does not fail the status write (LOW 9)" bash "$STATE" put "$RUN2/status.json" < "$d/failed.json"
+has "  says so" "report.md not written"
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }
