@@ -161,6 +161,7 @@ pub fn close_tab(
     if let Ok(mut usage) = usage.lock() {
         usage.forget_tab(&tab_id);
     }
+    crate::observe::forget_tab(&app, &tab_id);
     // The close may push the oldest closed tab off the list for good.
     crate::usage::remove_gone_status_lines(&app);
     crate::run::spawn_prune_launch_prompts(&app);

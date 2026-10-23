@@ -1,0 +1,15 @@
+{
+  "session_id": "de6a6329-de0f-49da-960b-f50fed9236e4",
+  "transcript_path": "/config/projects/-work-toy/de6a6329-de0f-49da-960b-f50fed9236e4.jsonl",
+  "cwd": "/work/toy",
+  "prompt_id": "0e37ed4f-5a58-4171-9a49-c4c8d61bab9e",
+  "permission_mode": "default",
+  "agent_id": "a2f2a89910f21f43e",
+  "agent_type": "dcv2:plan-reviewer",
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/config/projects/-work-toy/de6a6329-de0f-49da-960b-f50fed9236e4/subagents/agent-a2f2a89910f21f43e.jsonl",
+  "last_assistant_message": "OK",
+  "background_tasks": [],
+  "session_crons": []
+}

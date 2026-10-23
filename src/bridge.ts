@@ -86,7 +86,7 @@ export type ResolvedClaudeAccount = {
   envOverride: boolean;
 };
 
-export type RunSettings = { maxImplementers: number; stopHooks: boolean };
+export type RunSettings = { maxImplementers: number; stopHooks: boolean; watchdogMinutes?: number };
 
 export type SettingsView = {
   terminal: TerminalSettings;

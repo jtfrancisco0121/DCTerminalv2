@@ -1,0 +1,9 @@
+{
+  "agentType": "dcv2:plan-reviewer",
+  "description": "dcv2 self-test",
+  "toolUseId": "toolu_014z93kPSuie6cXVZCWDsh32",
+  "spawnDepth": 1,
+  "requestShape": "foreground",
+  "requestNonInteractive": true,
+  "model": "haiku"
+}

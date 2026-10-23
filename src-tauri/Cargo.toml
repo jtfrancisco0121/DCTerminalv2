@@ -15,6 +15,15 @@ default-run = "dcterminalv2"
 name = "dcterminalv2_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# The A2 hook forwarder Claude Code runs per hook event (docs/launch.md).
+[[bin]]
+name = "dcv2-hook"
+path = "src/bin/dcv2-hook.rs"
+
+[[bin]]
+name = "dcterminalv2"
+path = "src/main.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

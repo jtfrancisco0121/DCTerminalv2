@@ -10,10 +10,12 @@ type Props = {
   onClose: (tabId: string) => void;
   onRename: (tabId: string, label: string) => void;
   onNew: () => void;
+  /** P3b: tab id → what its Claude does (`working`, `waiting`, `needs-you`). */
+  activity?: Readonly<Record<string, string>>;
 };
 
 /** The window's tabs: click to show, double-click to rename, × to close, + for a new one. */
-export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename, onNew }: Props) {
+export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename, onNew, activity }: Props) {
   const [editing, setEditing] = useState<{ id: string; value: string } | null>(null);
 
   const commit = () => {
@@ -59,6 +61,13 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
                   {tab.kind === "claude" ? "✳" : "$"}
                 </span>
                 {tab.label}
+                {activity?.[tab.id] && activity[tab.id] !== "unknown" && (
+                  <span
+                    className={`tab-activity tab-activity-${activity[tab.id]}`}
+                    title={activity[tab.id] === "needs-you" ? "Claude needs you" : `Claude is ${activity[tab.id]}`}
+                    aria-label={`Claude ${activity[tab.id]}`}
+                  />
+                )}
               </button>
             )}
             <button

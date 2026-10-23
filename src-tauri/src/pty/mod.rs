@@ -514,9 +514,12 @@ fn spawn_spec(
             };
             let usage = usage_status_line(app, &tab.id, &current, &cwd);
             let launch = tab.launch.as_ref();
+            // A2: dcv2 tabs also get the hook forwarder (per-launch token).
+            let hooks = launch.and_then(|_| crate::observe::launch_hooks(app, &tab.id));
+            let app_settings = crate::observe::with_hooks(usage, hooks.as_ref().map(|h| &h.0));
             let settings = crate::run::launch::merged_settings(
                 launch.and_then(|l| l.settings_file.as_deref()),
-                usage,
+                app_settings,
             );
             let mut command = provider.terminal_command(&TerminalLaunch {
                 kind,
@@ -525,6 +528,9 @@ fn spawn_spec(
             })?;
             command.env.push(claude_scheme_env());
             let env_remove = crate::run::launch::apply_launch(&mut command, launch, start.resumed);
+            if let Some((_, env)) = hooks {
+                command.env.extend(env);
+            }
             let mut state = store.lock().map_err(|err| err.to_string())?;
             if state.tab_by_id(&tab.id).is_some() {
                 state.remember_claude_session(&tab.id, &start.session_id, &current)?;
@@ -577,6 +583,20 @@ pub fn terminal_resume_id(
         tab.claude_config_dir.as_deref(),
         &current,
     ))
+}
+
+/// Writes `data` to the terminal of `tab_id` (R2 Nudge, on your click).
+pub fn write_to_tab(
+    registry: &Mutex<PtyRegistry>,
+    tab_id: &str,
+    data: &[u8],
+) -> Result<(), String> {
+    let registry = registry.lock().map_err(|err| err.to_string())?;
+    let session = registry
+        .sessions
+        .get(tab_id)
+        .ok_or_else(|| "The tab's terminal is not running.".to_string())?;
+    session.write(data).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
