@@ -29,7 +29,7 @@ The contract between the `dcv2:eagle-eye` skill and the app. The app creates the
 | Variable | Meaning |
 |---|---|
 | `DCV2_RUN_DIR=<run dir>` | **Required.** The run folder, absolute. The guard hook (`plugin/scripts/guard.sh`) reads it to know which run it guards: which run folder the sub-agents may write, and (from `.guard.json`) which worktrees the Implementer may write. Hooks inherit it from the claude process, so neither the orchestrator nor ticket text can change it. `state.sh preflight` refuses to start a run when it is missing or names another folder. |
-| `DCV2_MAX_IMPLEMENTERS=<n>` | Optional (default 3; 1-999). R6: `state.sh put` refuses a status.json with more than n PRs `building` or `fixing`; `state.sh preflight` prints `maxImplementers=<n>`. |
+| `DCV2_MAX_IMPLEMENTERS=<n>` | Optional (default 3; 1-999). R6: `state.sh put` refuses a status.json with more than n PRs `building` or `fixing` when that write adds busy PRs (a run already over a lowered cap can still record PRs finishing); `state.sh preflight` prints `maxImplementers=<n>`. |
 | `DCV2_MEMORY_DIR=<dir>` | Optional (the app always sets it). The codebase memory root (D9); `state.sh preflight` prints `memory=<dir>` or `memory=none`. With `none` the run skips the memory update and says so in `memory-update.md`. |
 | `DCV2_STOP_HOOKS=on\|off` | Optional (default on). Off disables the Implementer Stop hook (A3). |
 | `DCV2_TEST_MODE` | **Tests only. The app never sets it.** Space- or comma-separated: `auto-approve` (both stops are answered "yes": `state.sh approve <run> plan|ship test`, logged as `… auto-approved (test-mode)`) and/or `halt-after=<PR id>` (in a fresh run, once that PR is reviewed clean the run stops with `stage: "building"` and the other PRs `pending`, as if the session had been killed; `state.sh put` enforces it and ignores it after the log's `resumed at stage` line, which `state.sh preflight <run> resume` writes). Test mode exists nowhere else: `state.sh` ignores any `test-mode:` text in `request.md`, tickets, code or replies. |
@@ -60,7 +60,7 @@ Everything else is the request itself (what to build or fix), written by the use
 }
 ```
 
-`check: null` means "none known". When the file is missing the skill detects: the start folder itself if it is a git repo (`git -C <folder> rev-parse --show-toplevel` equals the folder), else each child folder that is a git repo, named after its folder. Check per repo, first match wins (ported from DCTerminal `workspace_repos.rs` + `gates.rs`):
+`check: null` means "none known". The Implementer Stop hook (A3) runs only these commands (never status.json's), so without repos.json it does nothing. When the file is missing the skill detects: the start folder itself if it is a git repo (`git -C <folder> rev-parse --show-toplevel` equals the folder), else each child folder that is a git repo, named after its folder. Check per repo, first match wins (ported from DCTerminal `workspace_repos.rs` + `gates.rs`):
 
 1. `go.mod` → `go test ./...`
 2. `server/go.mod` → `cd server && go test ./...`
@@ -164,7 +164,7 @@ PR `state`:
 | `building` | an Implementer is working its stories |
 | `reviewing` | a PR Reviewer is reviewing round `review.round` |
 | `fixing` | an Implementer is fixing the findings of round `review.round` |
-| `reviewed` | review verdict `APPROVED` (no MEDIUM+ open), the check `pass` or `none`, and `gates/<id>.yml` PASS, CONCERNS or WAIVED (all enforced); ready to ship |
+| `reviewed` | review verdict `APPROVED` (no MEDIUM+ open), the check `pass` or `none`, and `gates/<id>.yml` PASS, CONCERNS or WAIVED for the current `review.round` (all enforced); ready to ship |
 | `needs-attention` | blocked, failing or broken check it could not fix, MEDIUM+ still open after 3 review rounds, a sub-agent that failed twice, a branch that disappeared, or a base missing on the remote; `note` says why. Dependents stay `pending`. |
 | `opened` | branch pushed and the GitHub PR created (`prUrl` set) |
 | `pushed` | branch pushed but `gh pr create` failed (`note` says why); a resumed ship looks the PR up with `gh pr view <branch>` before opening one |

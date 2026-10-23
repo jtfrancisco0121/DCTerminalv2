@@ -212,6 +212,9 @@ def check_write(t, cwd):
     if re.search(r"[$`*?]", t) or (cwd is None and not os.path.isabs(os.path.expanduser(t))):
         if mem and re.search(r"\$\{?DCV2_MEMORY_DIR\b", t):
             block("codebase memory is written only with memory.sh write, never with a shell redirect.")
+        if mem and cwd is None and MEM_MENTIONED:
+            block("cannot tell where this relative write lands (the command changes into an unknown folder and mentions "
+                  "the memory folder); write memory only with memory.sh write.")
         if pipeline:
             block(f"cannot check the write target {t!r}: write to a literal absolute path")
         return
@@ -427,6 +430,9 @@ def analyze(cmd, cwd, depth=0):
         name, args = os.path.basename(words[0]), words[1:]
         if name in ("cd", "pushd"):
             d = next((a for a in args if not a.startswith("-")), "~")
+            if mem and re.search(r"\$\{?DCV2_MEMORY_DIR\b", d):
+                cwd = mem
+                continue
             cwd = None if ("$" in d or cwd is None and not os.path.isabs(os.path.expanduser(d))) else real(d, cwd or "/")
         elif name == "git":
             check_git(args, cwd)
@@ -446,7 +452,9 @@ def analyze(cmd, cwd, depth=0):
     return cwd
 
 
-analyze(str(inp.get("command") or ""), cwd0)
+CMD = str(inp.get("command") or "")
+MEM_MENTIONED = bool(mem) and ("DCV2_MEMORY_DIR" in CMD or mem in CMD or "memory" in CMD)
+analyze(CMD, cwd0)
 sys.exit(0)
 PY
 

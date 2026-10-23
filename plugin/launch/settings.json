@@ -6,19 +6,13 @@
   "permissions": {
     "deny": [
       "Read(**/node_modules/**)",
-      "Read(**/package-lock.json)",
-      "Read(**/yarn.lock)",
-      "Read(**/pnpm-lock.yaml)",
-      "Read(**/Cargo.lock)",
-      "Read(**/go.sum)",
-      "Read(**/poetry.lock)",
-      "Read(**/Gemfile.lock)",
-      "Read(**/composer.lock)",
       "Read(**/dist/**)",
-      "Read(**/target/**)",
       "Read(**/.next/**)",
-      "Read(**/coverage/**)",
-      "Read(**/__pycache__/**)"
+      "Read(**/__pycache__/**)",
+      "Read(./target/**)",
+      "Read(./*/target/**)",
+      "Read(./coverage/**)",
+      "Read(./*/coverage/**)"
     ]
   }
 }

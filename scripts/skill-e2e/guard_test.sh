@@ -74,6 +74,11 @@ expect 2 "cp into memory" "$(payload dcv2:memory-updater Bash command "cp /tmp/a
 expect 0 "memory.sh write with a heredoc" "$(payload dcv2:memory-updater Bash command "bash /p/scripts/memory.sh write x index.md <<'EOF'
 # x
 EOF")" DCV2_MEMORY_DIR="$MEMD"
+expect 2 "cd into memory via the env var, then a relative write (LOW 6)" "$(payload "" Bash command 'cd "$DCV2_MEMORY_DIR/x" && echo x > index.md')" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
+expect 2 "cd into memory by path, then a relative write" "$(payload "" Bash command "cd $MEMD/x && echo x > index.md")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
+expect 2 "cd via another variable, memory mentioned, relative write" "$(payload "" Bash command 'M=$DCV2_MEMORY_DIR; cd $M && echo x > x/index.md')" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
+expect 0 "cd into memory to read" "$(payload "" Bash command 'cd "$DCV2_MEMORY_DIR" && cat x/index.md')" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
+expect 0 "user session: unknown cd + relative write, memory not mentioned" "$(payload "" Bash command 'cd "$(git rev-parse --show-toplevel)" && echo x > notes.txt')" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
 expect 0 "user session with memory set: git push still theirs" "$(payload "" Bash command "git push origin main")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
 expect 0 "user session with memory set: unrelated write" "$(payload "" Write file_path "$R/a.js")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
 echo "# memory-updater"

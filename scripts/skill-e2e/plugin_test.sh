@@ -66,6 +66,9 @@ for r in s["permissions"]["deny"]:
     assert re.fullmatch(r"(Read|Edit)\([^()]+\)", r), r
     assert "/Users/" not in r and "~" not in r, f"no machine paths: {r}"
 assert any("node_modules" in r for r in s["permissions"]["deny"])
+assert not any(x in r for r in s["permissions"]["deny"] for x in (".lock", "lock.json", "lock.yaml", "go.sum")), "lockfiles stay readable"
+assert all(r.startswith(("Read(./", "Read(**/node_modules", "Read(**/dist", "Read(**/.next", "Read(**/__pycache__")) for r in s["permissions"]["deny"]), \
+    "only unambiguous build output is denied at any depth; target/ and coverage/ only at the start folder (and one level down)"
 PY
 
 echo "# scripts parse"
