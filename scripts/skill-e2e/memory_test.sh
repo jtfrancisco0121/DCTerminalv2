@@ -115,7 +115,9 @@ for s in 'token: ghp_abcdefghijklmnopqrstuvwxyz0123' 'CLICKUP=pk_12345678_ABCDEF
          'DATABASE_PASSWORD=Hunt3r2Hunt3r2xyz' 'export STRIPE_API_KEY="abcdef0123456789XYZ"' 'url https://bob:pa55word@db.example.com/x' \
          'slack xoxb-1234567890-abcdefghij' 'jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig' \
          '{"api_key": "Zx9Qw3Er7Ty1Ui5Op2As"}' 'API KEY: Zx9Qw3Er7Ty1Ui5Op2As' 'client_KEY=Zx9Qw3Er7Ty1Ui5Op2As' \
-         'stripeKey: Zx9Qw3Er7Ty1Ui5Op2As' "secret_key: 'Zx9Qw3Er7Ty1Ui5Op2As'" 'sk-proj-Ab3dEf6hIj9kLm2nOp5q'; do
+         'stripeKey: Zx9Qw3Er7Ty1Ui5Op2As' "secret_key: 'Zx9Qw3Er7Ty1Ui5Op2As'" 'sk-proj-Ab3dEf6hIj9kLm2nOp5q' \
+         'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY' 'password=hunter2hunter2' 'DB_PASSWORD=Sup3rS3cret!' \
+         'DB_PASSWORD=correcthorsebatterystaple' 'SIGNING_SECRET=aB3/dE6+gH9/jK2mN5pQ8rS1tU4wX7yZ0'; do
   expect 1 "secret refused: ${s:0:24}..." bash "$MEM" write "$APIID" topics/sync.md <<EOF
 # Sync
 covers: server/sync/
@@ -127,7 +129,8 @@ done
 for s in 'The token lives in the keychain (CLICKUP_TOKEN env).' 'API_KEY=<your key>' 'password: ********' 'SECRET_KEY=${SECRET_KEY}' \
          'tokenizer: src/lexer/tokenizer.rs' 'token_store: keeps refresh tokens in memory only' 'run `npm run sk-lint-and-format-all` first' \
          'SECRET_KEY_BASE=dev_only_not_secret' 'auth_key: config.auth.key_name' 'password: see the vault entry' \
-         'primary_key: users.id' 'key: value'; do
+         'primary_key: users.id' 'key: value' 'token_file: ./secrets/token.txt' 'password_hash: src/auth/hash.go' \
+         'DB_PASSWORD=changeme' 'API_TOKEN=${API_TOKEN}' 'secret: xxxxxxxx'; do
   expect 0 "not a secret: ${s:0:30}" bash "$MEM" write "$APIID" topics/notes.md <<EOF
 # Notes
 covers: docs/

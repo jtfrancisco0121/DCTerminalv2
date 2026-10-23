@@ -453,7 +453,7 @@ def analyze(cmd, cwd, depth=0):
 
 
 CMD = str(inp.get("command") or "")
-MEM_MENTIONED = bool(mem) and ("DCV2_MEMORY_DIR" in CMD or mem in CMD or "memory" in CMD)
+MEM_MENTIONED = bool(mem) and ("DCV2_MEMORY_DIR" in CMD or mem in CMD)
 analyze(CMD, cwd0)
 sys.exit(0)
 PY

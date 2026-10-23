@@ -35,10 +35,28 @@ SCRIPT = os.path.realpath(os.environ.get("DCV2_MEMORY_SH") or "")
 TRUST = ("Trust rule: memory is a hint, the code is the truth. If a remembered file, function or command is not "
          "where memory says, trust the code, fix the memory entry (memory.sh write), and continue.")
 
+PLACEHOLDER = re.compile(
+    r"(?i)^(x{3,}|\*+|\.{3}|<.*>|\$\{?\w*\}?|%\w*%|\{\{.*\}\}|changeme|change[_-]?me|example\w*|placeholder|your[_-]\w*|"
+    r"none|null|nil|true|false|empty|dummy|redacted|todo|tbd|dev[_-]only\w*|not[_-]a[_-]secret\w*|secret|password)$")
+
+
+def pathish(v):
+    """A file path or dotted name rather than a secret (base64 secrets can contain '/')."""
+    if v.startswith(("./", "../", "/", "~/", "src/")):
+        return True
+    if re.fullmatch(r"[\w-]+(\.[\w-]+)+", v):
+        return True
+    if "/" in v:
+        if re.search(r"\.[A-Za-z][A-Za-z0-9]{0,4}$", v):
+            return True
+        return not re.search(r"[A-Za-z0-9+/=_-]{20,}", v)
+    return False
+
+
 def secretish(v):
-    """A value that looks like a real secret: long, mixed character classes, high entropy, not a path."""
+    """A token-shaped value: long, mixed character classes, high entropy, not a path."""
     v = v.strip("\"'`")
-    if len(v) < 16 or "/" in v or "\\" in v or re.fullmatch(r"[\w-]+(\.[\w-]+)+", v):
+    if len(v) < 16 or pathish(v) or PLACEHOLDER.match(v):
         return False
     classes = sum(bool(re.search(rx, v)) for rx in (r"[a-z]", r"[A-Z]", r"[0-9]"))
     if classes < 2:
@@ -48,23 +66,38 @@ def secretish(v):
     return entropy >= 3.0
 
 
+def password_like(v):
+    """For password / secret / token / credential names: any real-looking value of 8+ characters."""
+    v = v.strip("\"'`")
+    return len(v) >= 8 and not PLACEHOLDER.match(v) and not pathish(v)
+
+
 ASSIGN = re.compile(
     r"(?i)(?:^|[\s\"'{,(])(?:export\s+)?[\"']?[A-Za-z0-9_.-]*?"
-    r"(secret|token|passw(?:or)?d|pwd|api[ _-]?key|private[ _-]?key|access[ _-]?key|secret[ _-]?key|client[ _-]?secret|"
-    r"auth[ _-]?key|credentials?|_key|key)[A-Za-z0-9_]*[\"']?\s*[=:]\s*[\"']?([^\s\"'`<>,;]+)")
+    r"(passw(?:or)?d|pwd|client[ _-]?secret|secret|token|credentials?|api[ _-]?key|private[ _-]?key|access[ _-]?key|"
+    r"auth[ _-]?key|_key|key)[A-Za-z0-9_]*[\"']?\s*[=:]\s*[\"']?([^\s\"'`<>,;]+)")
 
-# (kind, regex, value check or None). With a value check, the match's last group must look like a secret.
+
+def assignment(m):
+    name, value = m.group(1).lower(), m.group(2) or ""
+    if re.search(r"passw|pwd|secret|token|credential", name):
+        return password_like(value)
+    return secretish(value)
+
+
+# (kind, regex, check of the match or None). With a check, the match must also pass it.
 SECRETS = [
     ("a private key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"), None),
     ("an AWS access key id", re.compile(r"\b(AKIA|ASIA|AGPA|AIDA|AROA)[0-9A-Z]{16}\b"), None),
+    ("an AWS secret key", re.compile(r"(?i)aws_?secret_?access_?key[\"']?\s*[=:]\s*\S{8,}"), None),
     ("a GitHub token", re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"), None),
-    ("an API key (sk-)", re.compile(r"\b(sk-(?:ant-|proj-|live-)?(?:api\d\d-)?[A-Za-z0-9_-]{20,})"), secretish),
-    ("a token (pk_/sk_/rk_)", re.compile(r"\b((?:pk|sk|rk)_(?:live_|test_)?[A-Za-z0-9_]{12,})"), secretish),
+    ("an API key (sk-)", re.compile(r"\b(sk-(?:ant-|proj-|live-)?(?:api\d\d-)?[A-Za-z0-9_-]{20,})"), lambda m: secretish(m.group(1))),
+    ("a token (pk_/sk_/rk_)", re.compile(r"\b((?:pk|sk|rk)_(?:live_|test_)?[A-Za-z0-9_]{12,})"), lambda m: secretish(m.group(1))),
     ("a Slack token", re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"), None),
     ("a Google API key", re.compile(r"\bAIza[0-9A-Za-z_-]{30,}"), None),
     ("a JWT", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+"), None),
     ("a password in a URL", re.compile(r"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]{3,}@"), None),
-    ("a secret assignment (.env / JSON / YAML style)", ASSIGN, secretish),
+    ("a secret assignment (.env / JSON / YAML style)", ASSIGN, assignment),
 ]
 
 
@@ -109,7 +142,7 @@ def secret_hits(text):
     hits = []
     for n, line in enumerate(text.splitlines(), 1):
         for kind, rx, ok in SECRETS:
-            if any(ok is None or ok(m.groups()[-1] or "") for m in rx.finditer(line)):
+            if any(ok is None or ok(m) for m in rx.finditer(line)):
                 hits.append((n, kind))
                 break
     return hits
