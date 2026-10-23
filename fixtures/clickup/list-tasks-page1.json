@@ -1,0 +1,19 @@
+{
+  "tasks": [
+    {
+      "id": "86b1aa003",
+      "custom_id": "QA-131",
+      "name": "Lock files are listed in the sync queue",
+      "text_content": "Already fixed in 1.2.7.",
+      "status": { "status": "closed", "color": "#6bc950", "orderindex": 4, "type": "closed" },
+      "date_created": "1789900300000",
+      "date_updated": "1789970000000",
+      "tags": [],
+      "parent": "7xk2epic01",
+      "priority": null,
+      "url": "https://app.clickup.com/t/86b1aa003",
+      "list": { "id": "901800112233", "name": "QA 1.2.8", "access": true }
+    }
+  ],
+  "last_page": true
+}

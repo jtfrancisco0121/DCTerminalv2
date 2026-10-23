@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   readRun,
@@ -22,6 +22,7 @@ import {
   storiesText,
   wantsAppChecks,
 } from "../run/words";
+import { ClickUpRunSection } from "../clickup/ClickUpRunSection";
 import { Dialog } from "./Dialog";
 import { errorText } from "./InlineNotice";
 
@@ -35,6 +36,8 @@ type ViewProps = {
   onOpenFile: (path: string, title: string) => void;
   onOpenUrl: (url: string) => void;
   onCleanUp: () => void;
+  /** Drawn before the timeline (the ClickUp section). */
+  extra?: ReactNode;
 };
 
 function PrRow({ pr, onOpenFile, onOpenUrl }: { pr: PrView } & Pick<ViewProps, "onOpenFile" | "onOpenUrl">) {
@@ -95,7 +98,7 @@ function PrRow({ pr, onOpenFile, onOpenUrl }: { pr: PrView } & Pick<ViewProps, "
 }
 
 /** The progress panel for one run, drawn from a read of its folder. */
-export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp }: ViewProps) {
+export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, extra }: ViewProps) {
   const timeline = view.timeline.slice(-30).reverse();
   return (
     <aside className="run-panel" aria-label="Run progress">
@@ -145,6 +148,7 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
           {runFinished(view) ? "Clean up worktrees" : "Stop and clean up…"}
         </button>
       </div>
+      {extra}
       {timeline.length > 0 && (
         <section className="run-timeline" aria-label="Timeline">
           <h3>Timeline</h3>
@@ -345,6 +349,7 @@ export function RunPanel({ runDir }: { runDir: string }) {
         onOpenFile={openFile}
         onOpenUrl={(url) => void openUrl(url).catch((err: unknown) => setProblem(errorText(err)))}
         onCleanUp={openJanitor}
+        extra={<ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} />}
       />
       {problem && <p className="error run-problem">{problem}</p>}
       {file && <TextDialog title={file.title} text={file.text} onClose={() => setFile(null)} />}

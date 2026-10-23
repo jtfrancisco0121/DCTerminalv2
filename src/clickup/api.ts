@@ -1,0 +1,92 @@
+/**
+ * Typed wrappers for the ClickUp commands (src-tauri/src/clickup/commands.rs):
+ * the token per account, Fetch, and the run panel's ticket changes (R8) and
+ * write-back. No reply ever carries the token.
+ */
+
+import { invoke } from "@tauri-apps/api/core";
+import type { IntakeRef } from "./intakeRefs";
+
+export type TokenStatus = { accountId: string; saved: boolean; problem: string | null };
+export type TokenTest = { workspaces: string[] };
+
+export type TicketRow = {
+  id: string;
+  customId: string | null;
+  title: string;
+  status: string;
+  list: string;
+  url: string;
+};
+export type ExcludedTicket = TicketRow & { reason: string };
+export type IntakePreview = {
+  tickets: TicketRow[];
+  excluded: ExcludedTicket[];
+  problems: { line: number; message: string }[];
+};
+
+/** What Start passes to `start_run` for Eagle-Eye. */
+export type ClickUpStart = { refs: IntakeRef[]; ticketIds: string[] };
+
+export type PartResult = {
+  /** `posted`, `failed`, `maybe` (may have been posted), `sending` (stopped mid-call). */
+  result: string;
+  at: string;
+  value: string;
+  error?: string | null;
+};
+
+export type DraftView = {
+  ticket: { id: string; customId: string | null; title: string | null; url: string | null };
+  prs: { id: string | null; repo: string | null; url: string | null }[];
+  comment: string | null;
+  status: string | null;
+  statusNote: string | null;
+  posted: { comment?: PartResult; status?: PartResult };
+  needsConfirm: boolean;
+  inTickets: boolean;
+};
+
+export type RunClickUp = {
+  hasTickets: boolean;
+  ticketCount: number;
+  fetchedAt: string | null;
+  ticketsProblem: string | null;
+  pulled: string[];
+  updateFile: string | null;
+  drafts: DraftView[] | null;
+  writebackProblem: string | null;
+};
+
+export type ChangedTicket = {
+  id: string;
+  customId: string | null;
+  title: string;
+  missing: boolean;
+  dateUpdated: string | null;
+  changes: string[];
+};
+
+export type PostRequest = {
+  ticketId: string;
+  /** The comment as shown (edited or not); null sends no comment. */
+  comment: string | null;
+  status: boolean;
+  confirmResend: boolean;
+};
+export type PostOutcome = { ticketId: string; result: string; message: string };
+export type PostReply = { outcomes: PostOutcome[]; error: string | null };
+
+export const clickupTokenStatus = (accountId: string) => invoke<TokenStatus>("clickup_token_status", { accountId });
+export const clickupSetToken = (accountId: string, token: string) =>
+  invoke<void>("clickup_set_token", { accountId, token });
+export const clickupClearToken = (accountId: string) => invoke<void>("clickup_clear_token", { accountId });
+export const clickupTestToken = (accountId: string) => invoke<TokenTest>("clickup_test_token", { accountId });
+export const clickupFetch = (windowId: string, refs: IntakeRef[]) =>
+  invoke<IntakePreview>("clickup_fetch", { windowId, refs });
+export const clickupRunState = (runDir: string) => invoke<RunClickUp>("clickup_run_state", { runDir });
+export const clickupCheckTickets = (runDir: string) => invoke<ChangedTicket[]>("clickup_check_tickets", { runDir });
+export const clickupPullTickets = (runDir: string, ids: string[]) =>
+  invoke<{ pulled: string[]; updateFile: string }>("clickup_pull_tickets", { runDir, ids });
+export const clickupPostWriteback = (runDir: string, requests: PostRequest[]) =>
+  invoke<PostReply>("clickup_post_writeback", { runDir, requests });

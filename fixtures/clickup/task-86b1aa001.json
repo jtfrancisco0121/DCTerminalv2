@@ -1,0 +1,17 @@
+{
+  "id": "86b1aa001",
+  "custom_id": "QA-129",
+  "name": "Sync stalls on a folder of 7,839 files",
+  "text_content": "Upload of a large folder stops at 61% on Windows.\n\nSteps: 1. Pick a folder of 7,839 files. 2. Start sync.",
+  "description": "Upload of a large folder stops at 61% on Windows.\n\nSteps: 1. Pick a folder of 7,839 files. 2. Start sync.",
+  "markdown_description": "Upload of a large folder stops at **61%** on Windows.\n\n## Steps\n1. Pick a folder of 7,839 files.\n2. Start sync.",
+  "status": { "status": "to do", "color": "#d3d3d3", "orderindex": 0, "type": "open" },
+  "date_created": "1789900100000",
+  "date_updated": "1789950000000",
+  "tags": [ { "name": "desktop", "tag_fg": "#ffffff", "tag_bg": "#2ecd6f" }, { "name": "windows", "tag_fg": "#ffffff", "tag_bg": "#0231e8" } ],
+  "parent": "7xk2epic01",
+  "priority": { "color": "#f8ae00", "id": "2", "orderindex": "2", "priority": "high" },
+  "url": "https://app.clickup.com/t/86b1aa001",
+  "list": { "id": "901800112233", "name": "QA 1.2.8", "access": true },
+  "subtasks": []
+}

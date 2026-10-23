@@ -18,6 +18,7 @@ import {
 import { accountsProblem, addAccount, MAX_ACCOUNTS } from "../settings/accounts";
 import { THEME_CHOICES } from "../theme";
 import { errorText, InlineNotice } from "./InlineNotice";
+import { ClickUpTokens } from "../clickup/ClickUpTokens";
 
 type Props = {
   view: SettingsView;
@@ -281,6 +282,8 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
           </button>
         </div>
       </section>
+
+      <ClickUpTokens accounts={view.claude.accounts} />
 
       <section className="settings-section" aria-label="Terminal">
         <h2>Terminal</h2>

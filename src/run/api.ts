@@ -6,6 +6,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { TabSummary } from "../bridge";
+import type { ClickUpStart } from "../clickup/api";
 
 export type Repo = { name: string; path: string; check: string | null };
 
@@ -152,8 +153,13 @@ export type StartedRun = {
 export const runOverview = () => invoke<RunOverview>("run_overview");
 export const detectFolderRepos = (folder: string) => invoke<FolderRepos>("detect_folder_repos", { folder });
 /** `role`: `eagle-eye` or a role tile id. */
-export const startRun = (windowId: string, folder: string, request: string, role: string) =>
-  invoke<StartedRun>("start_run", { windowId, folder, request, role });
+export const startRun = (
+  windowId: string,
+  folder: string,
+  request: string,
+  role: string,
+  clickup: ClickUpStart | null = null,
+) => invoke<StartedRun>("start_run", { windowId, folder, request, role, clickup });
 export const resumeRun = (windowId: string, runDir: string) => invoke<StartedRun>("resume_run", { windowId, runDir });
 export const readRun = (runDir: string) => invoke<RunView>("read_run", { runDir });
 export const rerunChecks = (runDir: string) => invoke<void>("rerun_checks", { runDir });

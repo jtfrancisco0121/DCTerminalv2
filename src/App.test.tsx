@@ -157,7 +157,7 @@ describe("App", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
     });
-    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye");
+    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null);
     expect((await screen.findByTestId("terminal")).textContent).toBe("Eagle-Eye · ws");
     expect(await screen.findByTestId("run-stage")).toBeTruthy();
     expect(screen.getByTestId("run-stage").textContent).toBe("Planning");

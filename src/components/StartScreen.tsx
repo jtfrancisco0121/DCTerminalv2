@@ -12,6 +12,8 @@ import {
 import { stageText } from "../run/words";
 import { errorText } from "./InlineNotice";
 import { MemoryPanel } from "./MemoryPanel";
+import { ClickUpIntake } from "../clickup/ClickUpIntake";
+import type { ClickUpStart } from "../clickup/api";
 
 type Props = {
   windowId: string;
@@ -46,6 +48,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
   const [overview, setOverview] = useState<RunOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [tickets, setTickets] = useState<ClickUpStart | null>(null);
 
   useEffect(() => {
     runOverview().then(setOverview, (err: unknown) => setError(errorText(err)));
@@ -82,14 +85,16 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
       setError("Choose a folder.");
       return;
     }
-    if (role === "eagle-eye" && !request.trim()) {
+    const eagleTickets = role === "eagle-eye" ? tickets : null;
+    if (role === "eagle-eye" && !request.trim() && !eagleTickets) {
       setError("Say what should be done.");
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      onStarted(await startRun(windowId, folder.trim(), request, role));
+      const said = request.trim() || (eagleTickets ? "Do the ClickUp tickets below." : request);
+      onStarted(await startRun(windowId, folder.trim(), said, role, eagleTickets));
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -153,6 +158,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
           onChange={(event) => setRequest(event.target.value)}
         />
       </label>
+      <ClickUpIntake windowId={windowId} onChange={setTickets} disabled={busy} />
       {error && (
         <p className="error" role="alert">
           {error}
