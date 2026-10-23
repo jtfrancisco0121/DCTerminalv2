@@ -1,0 +1,23 @@
+{
+  "id": "901800112233",
+  "name": "QA 1.2.8",
+  "deleted": false,
+  "orderindex": 0,
+  "content": "",
+  "priority": null,
+  "assignee": null,
+  "due_date": null,
+  "start_date": null,
+  "folder": { "id": "90180044", "name": "Desktop", "hidden": false, "access": true },
+  "space": { "id": "90180011", "name": "Koneksi", "access": true },
+  "archived": false,
+  "override_statuses": true,
+  "statuses": [
+    { "id": "sc901800112233_todo", "status": "to do", "orderindex": 0, "color": "#d3d3d3", "type": "open" },
+    { "id": "sc901800112233_ip", "status": "in progress", "orderindex": 1, "color": "#4194f6", "type": "custom" },
+    { "id": "sc901800112233_qaf", "status": "qa failed", "orderindex": 2, "color": "#e50000", "type": "custom" },
+    { "id": "sc901800112233_cxl", "status": "canceled", "orderindex": 3, "color": "#87909e", "type": "done" },
+    { "id": "sc901800112233_done", "status": "complete", "orderindex": 4, "color": "#6bc950", "type": "closed" }
+  ],
+  "permission_level": "create"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "86b1aa002",
+  "custom_id": null,
+  "name": "Duplicate lines in the engine log",
+  "text_content": "Every sync line is written twice to engine.log.",
+  "description": "Every sync line is written twice to engine.log.",
+  "status": { "status": "qa failed", "color": "#e50000", "orderindex": 2, "type": "custom" },
+  "date_created": "1789900200000",
+  "date_updated": "1789960000000",
+  "tags": [],
+  "parent": "7xk2epic01",
+  "priority": { "color": "#6fddff", "id": "3", "orderindex": "3", "priority": "normal" },
+  "url": "https://app.clickup.com/t/86b1aa002",
+  "list": { "id": "901800112233", "name": "QA 1.2.8", "access": true }
+}

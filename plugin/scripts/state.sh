@@ -49,6 +49,8 @@ STATES = ["pending", "building", "reviewing", "fixing", "reviewed", "needs-atten
 CHECK_RESULTS = ["not-run", "pass", "fail", "none", "error"]
 POST_APPROVAL = ("building", "ship-approval", "shipping", "done")
 SHIPPED = ("opened", "pushed", "local-only")
+# Run files only the app writes (docs/run-folder.md); `put` refuses them.
+APP_FILES = ("tickets.json", "meta.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json")
 ISO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 AGENT_FOR_STATE = {"building": "implementer", "fixing": "implementer", "reviewing": "pr-reviewer"}
 GATES = ("PASS", "CONCERNS", "FAIL", "WAIVED")
@@ -389,6 +391,8 @@ def cmd_put(dest):
     name = os.path.basename(dest)
     if name in ("writeback.json", ".guard.json"):
         die(f"NOT WRITTEN: {name} is written only by its own state.sh command")
+    if name in APP_FILES:
+        die(f"NOT WRITTEN: {name} is written only by the app")
     text = sys.stdin.read()
     try:
         doc = json.loads(text)

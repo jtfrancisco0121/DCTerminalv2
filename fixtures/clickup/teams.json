@@ -1,0 +1,20 @@
+{
+  "teams": [
+    {
+      "id": "9012345678",
+      "name": "Koneksi QA",
+      "color": "#7b68ee",
+      "avatar": null,
+      "members": [
+        { "user": { "id": 81234567, "username": "Dana Reyes", "email": "dana@example.com", "color": "#0388d1", "initials": "DR", "role": 3 } }
+      ]
+    },
+    {
+      "id": "9087654321",
+      "name": "Sandbox",
+      "color": "#e65100",
+      "avatar": null,
+      "members": []
+    }
+  ]
+}

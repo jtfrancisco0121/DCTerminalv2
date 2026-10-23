@@ -60,6 +60,21 @@ w 2 "" "$RUN/status.json"
 w 2 "" "$RUN/.guard.json"
 w 2 dcv2:implementer "$RUN/writeback.json"
 w 2 "" "$d/fake/status.json"
+TRUST="$d/run-trust/r-x"; mkdir -p "$TRUST"                                                   # <app data>/run-trust (RUN is <d>/runs/r-x)
+for who in "" dcv2:implementer dcv2:planner dcv2:pr-reviewer; do
+  w 2 "$who" "$TRUST/trust.json"
+  w 2 "$who" "$TRUST/../r-other/tickets.json"
+  b 2 "$who" "echo {} > $TRUST/posted.json"
+  b 2 "$who" "cp /dev/null $TRUST/tickets.json.mac"
+  b 2 "$who" "rm -rf $d/run-trust"
+done
+b 2 "" 'echo x > "$HOME/x/run-trust/r-x/trust.json"'
+expect 0 "user session (no run) may write run-trust" "$(payload "" Write file_path "$TRUST/trust.json")" -u DCV2_RUN_DIR
+for f in tickets.json meta.json writeback-posted.json tickets-pulls.json tickets-update.md app-checks.json; do
+  w 2 "" "$RUN/$f"
+  w 2 dcv2:planner "$RUN/$f"
+  b 2 dcv2:implementer "echo x > $RUN/$f"
+done
 expect 2 "implementer with no DCV2_RUN_DIR" "$(payload dcv2:implementer Write file_path "$WT/a.js")" -u DCV2_RUN_DIR
 expect 0 "user session with no DCV2_RUN_DIR" "$(payload "" Write file_path "$R/a.js")" -u DCV2_RUN_DIR
 

@@ -1,5 +1,6 @@
 mod claude_session_log;
 mod cli_detect;
+mod clickup;
 mod commands;
 mod crash_log;
 mod data_dir;
@@ -130,6 +131,15 @@ pub fn run() {
             run::read_run_file,
             run::memory_status,
             run::read_memory_file,
+            clickup::commands::clickup_token_status,
+            clickup::commands::clickup_set_token,
+            clickup::commands::clickup_clear_token,
+            clickup::commands::clickup_test_token,
+            clickup::commands::clickup_fetch,
+            clickup::commands::clickup_run_state,
+            clickup::commands::clickup_check_tickets,
+            clickup::commands::clickup_pull_tickets,
+            clickup::commands::clickup_post_writeback,
             observe::observe_tab,
             observe::observe_tabs,
             observe::nudge_tab,

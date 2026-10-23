@@ -1,0 +1,28 @@
+{
+  "comments": [
+    {
+      "id": "90180000000123",
+      "comment": [ { "text": "Reproduced on the Windows staging build with a folder of 7,839 files. It stops at 61%." } ],
+      "comment_text": "Reproduced on the Windows staging build with a folder of 7,839 files. It stops at 61%.",
+      "user": { "id": 81234567, "username": "Dana Reyes", "email": "dana@example.com", "color": "#0388d1", "initials": "DR", "profilePicture": null },
+      "assignee": null,
+      "assigned_by": null,
+      "reactions": [],
+      "resolved": false,
+      "date": "1789950000000",
+      "reply_count": 0
+    },
+    {
+      "id": "90180000000122",
+      "comment": [ { "text": "Seen once on macOS too." } ],
+      "comment_text": "Seen once on macOS too.",
+      "user": { "id": 81234999, "username": "Sam Cruz", "email": "sam@example.com", "color": "#7b68ee", "initials": "SC", "profilePicture": null },
+      "assignee": null,
+      "assigned_by": null,
+      "reactions": [],
+      "resolved": false,
+      "date": "1789940000000",
+      "reply_count": 1
+    }
+  ]
+}

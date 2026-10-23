@@ -1,0 +1,33 @@
+{
+  "tasks": [
+    {
+      "id": "86b1aa001",
+      "custom_id": "QA-129",
+      "name": "Sync stalls on a folder of 7,839 files",
+      "text_content": "Upload of a large folder stops at 61% on Windows.",
+      "status": { "status": "to do", "color": "#d3d3d3", "orderindex": 0, "type": "open" },
+      "date_created": "1789900100000",
+      "date_updated": "1789950000000",
+      "tags": [ { "name": "desktop", "tag_fg": "#ffffff", "tag_bg": "#2ecd6f" } ],
+      "parent": "7xk2epic01",
+      "priority": { "color": "#f8ae00", "id": "2", "orderindex": "2", "priority": "high" },
+      "url": "https://app.clickup.com/t/86b1aa001",
+      "list": { "id": "901800112233", "name": "QA 1.2.8", "access": true }
+    },
+    {
+      "id": "86b1aa002",
+      "custom_id": null,
+      "name": "Duplicate lines in the engine log",
+      "text_content": null,
+      "status": { "status": "qa failed", "color": "#e50000", "orderindex": 2, "type": "custom" },
+      "date_created": "1789900200000",
+      "date_updated": "1789960000000",
+      "tags": [],
+      "parent": "7xk2epic01",
+      "priority": null,
+      "url": "https://app.clickup.com/t/86b1aa002",
+      "list": { "id": "901800112233", "name": "QA 1.2.8", "access": true }
+    }
+  ],
+  "last_page": false
+}

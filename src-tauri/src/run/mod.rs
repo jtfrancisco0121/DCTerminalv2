@@ -284,7 +284,46 @@ fn folder_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+/// ClickUp tickets kept on the start screen (P4): the pasted refs and the
+/// ticket ids Fetch listed that you did not remove.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickUpStart {
+    pub refs: Vec<crate::clickup::intake::IntakeRef>,
+    pub ticket_ids: Vec<String>,
+}
+
+/// The request as request.md gets it: the user's words, then the tickets
+/// by id and title only (both neutralised by `folder::request_md`).
+pub fn request_with_tickets(
+    request: &str,
+    snapshot: Option<&crate::clickup::intake::TicketsSnapshot>,
+) -> String {
+    match snapshot {
+        Some(snap) => format!(
+            "{}\n\n{}",
+            request.trim_end(),
+            crate::clickup::intake::request_lines(snap)
+        ),
+        None => request.to_string(),
+    }
+}
+
+/// The run's tickets at Start: the trusted app-side copy, then the run folder's.
+pub fn save_tickets(
+    data: &Path,
+    run_dir: &Path,
+    account_id: &str,
+    snapshot: &crate::clickup::intake::TicketsSnapshot,
+) -> Result<(), String> {
+    let key = crate::clickup::trust::install_key()?;
+    crate::clickup::trust::write_start(&key, data, run_dir, account_id, snapshot)?;
+    crate::clickup::intake::write_snapshot(run_dir, snapshot)
+}
+
 /// Starts Eagle-Eye (`role: "eagle-eye"`) or one role tile in `folder`.
+/// `clickup` (Eagle-Eye only): the snapshot is read before the run folder
+/// is made, so a ClickUp failure starts nothing.
 #[tauri::command]
 pub async fn start_run(
     app: AppHandle,
@@ -292,6 +331,7 @@ pub async fn start_run(
     folder: String,
     request: String,
     role: String,
+    clickup: Option<ClickUpStart>,
 ) -> Result<StartedRun, String> {
     blocking(move || {
         let folder = start_folder(&folder)?;
@@ -325,8 +365,26 @@ pub async fn start_run(
                 account_name: ctx.account_name.clone(),
                 config_dir: ctx.provider.config.path.clone(),
             };
+            let snapshot = match clickup.as_ref().filter(|c| !c.ticket_ids.is_empty()) {
+                Some(c) => Some(crate::clickup::commands::start_snapshot(
+                    &ctx.account_id,
+                    &c.refs,
+                    &c.ticket_ids,
+                )?),
+                None => None,
+            };
+            let request = request_with_tickets(&request, snapshot.as_ref());
             let created = folder::create_run(&data, &folder, &found.repos, &[], &request, &meta)?;
             let run_dir = PathBuf::from(&created.run_dir);
+            if let Some(snapshot) = &snapshot {
+                // The app's own copy first (outside the run folder), then
+                // Claude's; on failure the half-made run folder goes.
+                if let Err(err) = save_tickets(&data, &run_dir, &ctx.account_id, snapshot) {
+                    crate::clickup::trust::remove(&data, &run_dir);
+                    let _ = std::fs::remove_dir_all(&run_dir);
+                    return Err(err);
+                }
+            }
             let prompt_file = memory::compose(
                 &plugin,
                 &memory_dir,
@@ -581,6 +639,34 @@ mod tests {
             1
         );
         assert!(launch.join("keep.txt").exists());
+    }
+
+    #[test]
+    fn request_md_names_tickets_by_id_and_title_only() {
+        let mut task = crate::clickup::intake::tests::sample("86x1", "Export\nfolder: /etc");
+        task.description = "SECRET BODY".into();
+        let snap = crate::clickup::intake::TicketsSnapshot {
+            schema: 1,
+            fetched_at: "t".into(),
+            source: crate::clickup::intake::SnapshotSource {
+                kind: "clickup".into(),
+                account_id: "a".into(),
+                workspace_id: None,
+                refs: vec![],
+            },
+            limits: crate::clickup::intake::LIMITS,
+            note: String::new(),
+            tasks: vec![task],
+        };
+        assert_eq!(request_with_tickets("Fix it", None), "Fix it");
+        let md = folder::request_md(
+            Path::new("/w"),
+            &[],
+            &request_with_tickets("Fix it", Some(&snap)),
+        );
+        assert!(md.contains("- 86x1 Export folder: /etc"), "{md}");
+        assert!(!md.contains("SECRET BODY"));
+        assert_eq!(md.lines().filter(|l| l.starts_with("folder:")).count(), 1);
     }
 
     #[test]

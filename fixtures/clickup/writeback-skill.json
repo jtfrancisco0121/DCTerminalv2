@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "runId": "r-20261022-1304",
+  "createdAt": "2026-10-22T13:40:00Z",
+  "drafts": [
+    {
+      "ticket": {"id": "86c0abcde", "customId": "KON-123", "title": "Export invoices", "url": "https://app.clickup.com/t/86c0abcde"},
+      "prs": [{"id": "PR1", "repo": "koneksi-backend", "url": "https://github.com/org/koneksi-backend/pull/42"}],
+      "comment": "Eagle-Eye run r-20261022-1304\n\nDone:\n- S1: Export\n\nPull requests:\n- PR1 (koneksi-backend): https://github.com/org/koneksi-backend/pull/42.",
+      "status": "in review",
+      "statusNote": null
+    }
+  ]
+}

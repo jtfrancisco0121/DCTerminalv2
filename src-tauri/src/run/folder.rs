@@ -76,14 +76,21 @@ pub fn request_md(folder: &Path, repos_limit: &[String], request: &str) -> Strin
 
 /// `r-YYYYMMDD-HHMM`, with `-2`, `-3`, … when that folder exists.
 pub fn new_run_id(runs: &Path, now: chrono::DateTime<chrono::Utc>) -> String {
-    let base = format!("r-{}", now.format("%Y%m%d-%H%M"));
-    if !runs.join(&base).exists() {
-        return base;
+    // Seconds and a random suffix: an id is never reused, so no record kept
+    // for an earlier run (the app's run-trust folder) can match a new run.
+    let base = format!("r-{}", now.format("%Y%m%d-%H%M%S"));
+    let trust = runs
+        .parent()
+        .map(|data| data.join(crate::clickup::trust::TRUST_DIR));
+    let taken =
+        |id: &str| runs.join(id).exists() || trust.as_ref().is_some_and(|t| t.join(id).exists());
+    loop {
+        let suffix: String = uuid::Uuid::new_v4().simple().to_string()[..4].to_string();
+        let id = format!("{base}-{suffix}");
+        if !taken(&id) {
+            return id;
+        }
     }
-    (2..)
-        .map(|n| format!("{base}-{n}"))
-        .find(|id| !runs.join(id).exists())
-        .unwrap_or(base)
 }
 
 /// What a new run records about itself.
@@ -190,7 +197,7 @@ pub fn list_runs(data_dir: &Path) -> Vec<RunListItem> {
     let Ok(entries) = std::fs::read_dir(runs_dir(data_dir)) else {
         return Vec::new();
     };
-    let mut runs: Vec<RunListItem> = entries
+    let mut runs: Vec<(RunListItem, Option<std::time::SystemTime>)> = entries
         .flatten()
         .filter(|e| e.path().is_dir())
         .filter_map(|e| {
@@ -207,23 +214,31 @@ pub fn list_runs(data_dir: &Path) -> Vec<RunListItem> {
                     .and_then(Value::as_str)
                     .map(str::to_string)
             };
-            Some(RunListItem {
-                folder: run_folder_of(&dir),
-                created_at: text(&meta, "createdAt"),
-                stage: text(&status, "stage"),
-                updated_at: text(&status, "updatedAt"),
-                title: request_title(&dir),
-                run_id,
-                run_dir: dir.display().to_string(),
-            })
+            // Same-second runs: the request file's time breaks the tie (ids are random).
+            let made = std::fs::metadata(dir.join("request.md"))
+                .and_then(|m| m.modified())
+                .ok();
+            Some((
+                RunListItem {
+                    folder: run_folder_of(&dir),
+                    created_at: text(&meta, "createdAt"),
+                    stage: text(&status, "stage"),
+                    updated_at: text(&status, "updatedAt"),
+                    title: request_title(&dir),
+                    run_id,
+                    run_dir: dir.display().to_string(),
+                },
+                made,
+            ))
         })
         .collect();
-    runs.sort_by(|a, b| {
+    runs.sort_by(|(a, am), (b, bm)| {
         b.created_at
             .cmp(&a.created_at)
+            .then_with(|| bm.cmp(am))
             .then_with(|| b.run_id.cmp(&a.run_id))
     });
-    runs
+    runs.into_iter().map(|(run, _)| run).collect()
 }
 
 fn request_title(run_dir: &Path) -> Option<String> {
@@ -326,8 +341,15 @@ mod tests {
         let now = chrono::DateTime::parse_from_rfc3339("2026-10-22T13:04:05Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
-        assert_eq!(new_run_id(dir.path(), now), "r-20261022-1304");
-        std::fs::create_dir_all(dir.join("r-20261022-1304")).unwrap();
-        assert_eq!(new_run_id(dir.path(), now), "r-20261022-1304-2");
+        let runs = dir.join("runs");
+        let ids: std::collections::HashSet<String> =
+            (0..50).map(|_| new_run_id(&runs, now)).collect();
+        assert!(ids.len() > 45, "random suffix");
+        let id = ids.iter().next().unwrap();
+        assert!(
+            id.starts_with("r-20261022-130405-") && id.len() == "r-20261022-130405-abcd".len(),
+            "{id}"
+        );
+        assert!(!id.contains('/') && !id.starts_with('.'));
     }
 }
