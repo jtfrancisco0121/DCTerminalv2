@@ -7,26 +7,26 @@ const api = {
   state: vi.fn<(runDir: string) => Promise<RunClickUp>>(),
   check: vi.fn<(runDir: string) => Promise<ChangedTicket[]>>(),
   pull: vi.fn<(runDir: string, ids: string[]) => Promise<{ pulled: string[]; updateFile: string }>>(),
-  post: vi.fn<(runDir: string, requests: PostRequest[]) => Promise<PostReply>>(),
+  post: vi.fn<(runDir: string, version: string, requests: PostRequest[]) => Promise<PostReply>>(),
 };
 vi.mock("./api", () => ({
   clickupRunState: (d: string) => api.state(d),
   clickupCheckTickets: (d: string) => api.check(d),
   clickupPullTickets: (d: string, ids: string[]) => api.pull(d, ids),
-  clickupPostWriteback: (d: string, r: PostRequest[]) => api.post(d, r),
+  clickupPostWriteback: (d: string, v: string, r: PostRequest[]) => api.post(d, v, r),
 }));
 
 import { ClickUpRunSection, draftDone, tellClaude } from "./ClickUpRunSection";
 
 const draft = (id: string, over: Partial<DraftView> = {}): DraftView => ({
-  ticket: { id, customId: null, title: `Ticket ${id}`, url: null },
+  ticket: { id, customId: null, title: `Claude's words ${id}`, url: null },
   prs: [],
   comment: `Comment ${id}`,
   status: "in review",
   statusNote: null,
   posted: {},
   needsConfirm: false,
-  inTickets: true,
+  trusted: { customId: `QA-${id}`, name: `Ticket ${id}`, url: `https://app.clickup.com/t/${id}`, list: "Sprint" },
   ...over,
 });
 
@@ -38,6 +38,7 @@ const base: RunClickUp = {
   pulled: [],
   updateFile: null,
   drafts: null,
+  draftsVersion: "v1",
   writebackProblem: null,
 };
 
@@ -75,31 +76,60 @@ describe("ClickUpRunSection", () => {
     expect(api.check).not.toHaveBeenCalled();
   });
 
-  it("lists drafts unticked, posts only ticked ones with the edited comment", async () => {
+  it("lists drafts unticked with snapshot labels, and posts status and comment ticks apart", async () => {
     api.state.mockResolvedValue({
       ...base,
       drafts: [
         draft("86a"),
         draft("86b", { status: null, statusNote: "No PR covers this ticket." }),
-        draft("86c", { posted: { comment: { result: "posted", at: "2026-10-23T11:00:00Z", value: "x" }, status: { result: "posted", at: "t", value: "in review" } } }),
-        draft("86d", { inTickets: false }),
+        draft("86c", {
+          posted: {
+            comment: { result: "posted", at: "2026-10-23T11:00:00Z", value: "x" },
+            status: { result: "posted", at: "t", value: "in review" },
+          },
+        }),
+        draft("86d", { trusted: null }),
       ],
     });
-    api.post.mockResolvedValue({ outcomes: [{ ticketId: "86a", result: "posted", message: "status set to in review, comment posted" }], error: null });
+    api.post.mockResolvedValue({
+      outcomes: [{ ticketId: "86a", result: "posted", message: "comment posted" }],
+      error: null,
+    });
     render(<ClickUpRunSection runDir="/r" stage="done" updatedAt="1" />);
     await waitFor(() => expect(screen.getByTestId("draft-86a")).toBeTruthy());
     const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
     expect(boxes.every((b) => !b.checked)).toBe(true);
-    expect((screen.getByLabelText("Post 86c") as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByLabelText("Post 86d") as HTMLInputElement).disabled).toBe(true);
+    // Labels from the snapshot, never writeback.json's title.
+    expect(screen.getByText("Ticket 86a")).toBeTruthy();
+    expect(screen.queryByText(/Claude's words/)).toBeNull();
+    expect((screen.getByLabelText("Set status of QA-86c") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Post comment on QA-86c") as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByTestId("draft-86d").textContent).toContain("not in this run's ticket snapshot");
+    expect(within(screen.getByTestId("draft-86d")).queryByRole("checkbox")).toBeNull();
     expect(screen.getByText("Status unchanged: No PR covers this ticket.")).toBeTruthy();
     expect(screen.getByText(/Comment posted 2026-10-23 11:00/)).toBeTruthy();
     expect((screen.getByText(/Post ticked/) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText("Comment for 86a"), { target: { value: "Edited" } });
-    fireEvent.click(screen.getByLabelText("Post 86a"));
+    fireEvent.change(screen.getByLabelText("Comment for QA-86a"), { target: { value: "Edited" } });
+    fireEvent.click(screen.getByLabelText("Post comment on QA-86a"));
     fireEvent.click(screen.getByText("Post ticked (1)"));
     await waitFor(() => expect(screen.getByTestId("post-outcomes")).toBeTruthy());
-    expect(api.post).toHaveBeenCalledWith("/r", [{ ticketId: "86a", comment: "Edited", status: true, confirmResend: false }]);
+    expect(api.post).toHaveBeenCalledWith("/r", "v1", [
+      { ticketId: "86a", comment: "Edited", status: null, confirmResend: false },
+    ]);
+  });
+
+  it("sends the shown status when only the status is ticked", async () => {
+    api.state.mockResolvedValue({ ...base, drafts: [draft("86a")] });
+    api.post.mockResolvedValue({ outcomes: [], error: null });
+    render(<ClickUpRunSection runDir="/r" stage="done" updatedAt="1" />);
+    await waitFor(() => expect(screen.getByTestId("draft-86a")).toBeTruthy());
+    expect(screen.getByText(/list Sprint/)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Set status of QA-86a"));
+    fireEvent.click(screen.getByText("Post ticked (1)"));
+    await waitFor(() => expect(api.post).toHaveBeenCalled());
+    expect(api.post.mock.calls[0][2]).toEqual([
+      { ticketId: "86a", comment: null, status: "in review", confirmResend: false },
+    ]);
   });
 
   it("asks for a confirmation before resending a comment that may have posted", async () => {
@@ -111,11 +141,11 @@ describe("ClickUpRunSection", () => {
     render(<ClickUpRunSection runDir="/r" stage="done" updatedAt="1" />);
     await waitFor(() => expect(screen.getByText(/may already have this comment/)).toBeTruthy());
     expect(screen.getByText(/Comment may have been posted/)).toBeTruthy();
-    fireEvent.click(screen.getByLabelText("Post 86a"));
+    fireEvent.click(screen.getByLabelText("Post comment on QA-86a"));
     fireEvent.click(screen.getByText(/I checked the ticket/));
     fireEvent.click(screen.getByText("Post ticked (1)"));
     await waitFor(() => expect(api.post).toHaveBeenCalled());
-    expect(api.post.mock.calls[0][1][0].confirmResend).toBe(true);
+    expect(api.post.mock.calls[0][2][0].confirmResend).toBe(true);
   });
 
   it("shows nothing for a run without tickets or drafts", async () => {

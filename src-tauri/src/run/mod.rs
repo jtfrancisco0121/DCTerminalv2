@@ -304,6 +304,17 @@ pub fn request_with_tickets(
     }
 }
 
+/// The run's tickets at Start: the trusted app-side copy, then the run folder's.
+pub fn save_tickets(
+    data: &Path,
+    run_dir: &Path,
+    account_id: &str,
+    snapshot: &crate::clickup::intake::TicketsSnapshot,
+) -> Result<(), String> {
+    crate::clickup::trust::write_start(data, run_dir, account_id, snapshot)?;
+    crate::clickup::intake::write_snapshot(run_dir, snapshot)
+}
+
 /// Starts Eagle-Eye (`role: "eagle-eye"`) or one role tile in `folder`.
 /// `clickup` (Eagle-Eye only): the snapshot is read before the run folder
 /// is made, so a ClickUp failure starts nothing.
@@ -360,7 +371,12 @@ pub async fn start_run(
             let created = folder::create_run(&data, &folder, &found.repos, &[], &request, &meta)?;
             let run_dir = PathBuf::from(&created.run_dir);
             if let Some(snapshot) = &snapshot {
-                crate::clickup::intake::write_snapshot(&run_dir, snapshot)?;
+                // The app's own copy first (outside the run folder), then
+                // Claude's; on failure the half-made run folder goes.
+                if let Err(err) = save_tickets(&data, &run_dir, &ctx.account_id, snapshot) {
+                    let _ = std::fs::remove_dir_all(&run_dir);
+                    return Err(err);
+                }
             }
             let prompt_file = memory::compose(
                 &plugin,

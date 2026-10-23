@@ -11,20 +11,30 @@
 //! confirmation. A part already `posted` is never sent again.
 //!
 //! Ticks live in the page, not in a file: nothing in the run folder (which
-//! Claude can write) can make the app post. A request names its ticket, the
-//! comment text you saw (edited or not) and whether to set the status; the
-//! status sent is always the draft's own.
+//! Claude can write) can make the app post. Status and comment have their own
+//! ticks. A request names its ticket, the comment text you saw (edited or
+//! not) and the status you saw, which must still be the draft's; the whole
+//! send is refused when writeback.json changed since the panel read it. Only
+//! tickets of the app's own snapshot (`trust.rs`) are posted, and a status
+//! must be one of the ticket's list. The authoritative posted record lives
+//! app-side; `writeback-posted.json` in the run folder is a mirror.
 
 use super::client::{ClickUp, ClickUpError, TaskRef};
+use super::intake::{SnapshotTask, MAX_TICKETS};
 use super::transport::NoReply;
 use super::valid_id;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 pub const DRAFTS_FILE: &str = "writeback.json";
 pub const POSTED_FILE: &str = "writeback-posted.json";
 pub const MAX_COMMENT_CHARS: usize = 10_000;
+/// The largest writeback.json the app reads.
+pub const MAX_DRAFTS_BYTES: usize = 2 * 1024 * 1024;
+pub const DRAFTS_CHANGED: &str =
+    "writeback.json changed since the panel showed it. Look at the drafts again, then tick and post.";
 
 pub const MAYBE_POSTED: &str =
     "ClickUp may have posted the comment anyway: check the ticket in ClickUp before sending it again.";
@@ -114,17 +124,17 @@ pub struct Posted {
     pub drafts: BTreeMap<String, PostedDraft>,
 }
 
-/// One ticked draft, as the page sends it.
+/// One ticked draft, as the page sends it. Status and comment are ticked apart.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostRequest {
     pub ticket_id: String,
-    /// The comment as you saw it (edited in place or not); `None` sends no comment.
+    /// The comment as you saw it (edited in place or not); `None`: not ticked.
     #[serde(default)]
     pub comment: Option<String>,
-    /// Set the draft's suggested status.
+    /// The status you saw (the draft's); `None`: not ticked.
     #[serde(default)]
-    pub status: bool,
+    pub status: Option<String>,
     /// You confirmed sending a comment that may already be posted.
     #[serde(default)]
     pub confirm_resend: bool,
@@ -139,45 +149,51 @@ pub struct PostOutcome {
     pub message: String,
 }
 
-pub fn read_drafts(run_dir: &Path) -> Result<Option<Drafts>, String> {
-    let text = match std::fs::read_to_string(run_dir.join(DRAFTS_FILE)) {
-        Ok(text) => text,
+/// writeback.json and its version (sha-256 of the bytes), checked: schema
+/// 1, at most [`MAX_DRAFTS_BYTES`] and [`MAX_TICKETS`] drafts, one draft per ticket.
+pub fn read_drafts(run_dir: &Path) -> Result<Option<(Drafts, String)>, String> {
+    let bytes = match std::fs::read(run_dir.join(DRAFTS_FILE)) {
+        Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(format!("writeback.json: {err}")),
     };
-    let drafts: Drafts =
-        serde_json::from_str(&text).map_err(|_| "writeback.json could not be read.".to_string())?;
+    if bytes.len() > MAX_DRAFTS_BYTES {
+        return Err("writeback.json is larger than 2 MB; the app does not read it.".into());
+    }
+    let drafts: Drafts = serde_json::from_slice(&bytes)
+        .map_err(|_| "writeback.json could not be read.".to_string())?;
     if drafts.schema != 1 {
         return Err(format!(
             "writeback.json has schema {}, which this app does not know.",
             drafts.schema
         ));
     }
-    Ok(Some(drafts))
-}
-
-pub fn read_posted(run_dir: &Path) -> Result<Posted, String> {
-    match std::fs::read_to_string(run_dir.join(POSTED_FILE)) {
-        Ok(text) => serde_json::from_str(&text).map_err(|_| {
-            "writeback-posted.json could not be read; nothing is posted until it is fixed or removed.".to_string()
-        }),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Posted { schema: 1, ..Posted::default() }),
-        Err(err) => Err(format!("writeback-posted.json: {err}")),
+    if drafts.drafts.len() > MAX_TICKETS {
+        return Err(format!(
+            "writeback.json has more than {MAX_TICKETS} drafts."
+        ));
     }
+    let mut seen = HashSet::new();
+    if let Some(dup) = drafts
+        .drafts
+        .iter()
+        .find(|d| !seen.insert(d.ticket.id.as_str()))
+    {
+        return Err(format!(
+            "writeback.json has two drafts for ticket {}; nothing is posted from it.",
+            dup.ticket.id
+        ));
+    }
+    let version = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    Ok(Some((drafts, version)))
 }
 
-/// Where a send saves `writeback-posted.json`, so tests can count saves
-/// and fail one.
+/// Where a send saves the posted record, so tests can count saves and fail one.
 pub trait PostedStore {
     fn save(&mut self, posted: &Posted) -> Result<(), String>;
-}
-
-pub struct FileStore<'a>(pub &'a Path);
-
-impl PostedStore for FileStore<'_> {
-    fn save(&mut self, posted: &Posted) -> Result<(), String> {
-        crate::store::write_json_atomic(&self.0.join(POSTED_FILE), posted)
-    }
 }
 
 /// An error after which ClickUp may still have acted on the call.
@@ -207,13 +223,47 @@ fn check_comment(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `status` is one of the ticket's list's statuses (read once per
+/// list). `Err` is the reason it is not sent.
+fn check_status(
+    client: &ClickUp,
+    lists: &mut HashMap<String, Result<Vec<String>, String>>,
+    ticket: &SnapshotTask,
+    status: &str,
+) -> Result<(), String> {
+    let Some(list) = ticket.list.as_ref().filter(|l| valid_id(&l.id)) else {
+        return Err("The ticket's list is not known, so its statuses cannot be checked.".into());
+    };
+    let statuses = lists.entry(list.id.clone()).or_insert_with(|| {
+        client
+            .list(&list.id)
+            .map(|l| l.statuses.into_iter().map(|s| s.status).collect())
+            .map_err(|e| format!("Could not read the statuses of {}: {e}", list.name))
+    });
+    let statuses = statuses.as_ref().map_err(String::clone)?;
+    if statuses
+        .iter()
+        .any(|s| s.trim().eq_ignore_ascii_case(status.trim()))
+    {
+        Ok(())
+    } else {
+        let name = if list.name.is_empty() {
+            &list.id
+        } else {
+            &list.name
+        };
+        Err(format!("\"{status}\" is not a status in {name}."))
+    }
+}
+
 /// Sends each request the files allow, one at a time, saving each step.
-/// `tickets`: the ids in the run's `tickets.json` (a draft for any other
-/// ticket is never sent). Stops at a save failure.
+/// `tickets`: the app's own snapshot (a draft for any other ticket is never
+/// sent). The status and the comment are independent: a refused status
+/// does not stop the comment. Stops at a save failure.
 pub fn post(
     client: &ClickUp,
     drafts: &Drafts,
-    tickets: &HashSet<String>,
+    tickets: &HashMap<String, SnapshotTask>,
     posted: &mut Posted,
     store: &mut dyn PostedStore,
     requests: &[PostRequest],
@@ -221,6 +271,7 @@ pub fn post(
 ) -> Result<Vec<PostOutcome>, (Vec<PostOutcome>, String)> {
     let mut out: Vec<PostOutcome> = Vec::new();
     let mut seen = HashSet::new();
+    let mut lists = HashMap::new();
     posted.schema = 1;
     macro_rules! save {
         () => {
@@ -234,141 +285,133 @@ pub fn post(
         if !seen.insert(id.clone()) {
             continue;
         }
-        let not_sent = |message: &str| PostOutcome {
+        let outcome = |result: &str, message: String| PostOutcome {
             ticket_id: id.clone(),
-            result: "not-sent".into(),
-            message: message.into(),
+            result: result.into(),
+            message,
         };
         let Some(draft) = drafts.drafts.iter().find(|d| d.ticket.id == id) else {
-            out.push(not_sent("No draft for this ticket in writeback.json."));
-            continue;
-        };
-        if !tickets.contains(&id) || !valid_id(&id) {
-            out.push(not_sent(
-                "This ticket is not in the run's tickets.json, so nothing was sent.",
+            out.push(outcome(
+                "not-sent",
+                "No draft for this ticket in writeback.json.".into(),
             ));
             continue;
-        }
-        let record = posted.drafts.get(&id).cloned().unwrap_or_default();
-        let want_status = request
-            .status
-            .then_some(draft.status.as_deref())
-            .flatten()
-            .filter(|s| !s.trim().is_empty())
-            .filter(|s| {
-                !record
-                    .status
-                    .as_ref()
-                    .is_some_and(|p| p.is("posted") && p.value == *s)
-            });
-        let want_comment = request
-            .comment
-            .as_deref()
-            .filter(|_| !record.comment.as_ref().is_some_and(|p| p.is("posted")));
-        if let Some(text) = want_comment {
-            if let Err(why) = check_comment(text) {
-                out.push(not_sent(&why));
-                continue;
-            }
-            if needs_confirm(record.comment.as_ref()) && !request.confirm_resend {
-                out.push(not_sent(RESEND_NEEDS_CONFIRM));
-                continue;
-            }
-        }
-        if want_status.is_none() && want_comment.is_none() {
-            out.push(not_sent("Already posted."));
+        };
+        let Some(ticket) = tickets.get(&id).filter(|_| valid_id(&id)) else {
+            out.push(outcome(
+                "not-sent",
+                "This ticket is not in the run's snapshot, so nothing was sent.".into(),
+            ));
             continue;
-        }
+        };
+        let record = posted.drafts.get(&id).cloned().unwrap_or_default();
         let task = TaskRef::Id(id.clone());
         let mut done: Vec<String> = Vec::new();
-        if let Some(status) = want_status {
-            let result = client.set_status(&task, status);
-            let entry = posted.drafts.entry(id.clone()).or_default();
-            match result {
-                Ok(()) => {
-                    entry.status = Some(PartResult {
-                        result: "posted".into(),
-                        at: now(),
-                        value: status.into(),
-                        error: None,
-                    });
-                    done.push(format!("status set to {status}"));
-                    save!();
+        let mut failed: Vec<String> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+        if let Some(status) = request.status.as_deref() {
+            if draft.status.as_deref() != Some(status) {
+                skipped.push("Status not set: it is not the draft's status.".into());
+            } else if record
+                .status
+                .as_ref()
+                .is_some_and(|p| p.is("posted") && p.value == status)
+            {
+                skipped.push("Status already set.".into());
+            } else {
+                let result = check_status(client, &mut lists, ticket, status)
+                    .and_then(|()| client.set_status(&task, status).map_err(|e| e.to_string()));
+                let entry = posted.drafts.entry(id.clone()).or_default();
+                match result {
+                    Ok(()) => {
+                        entry.status = Some(PartResult {
+                            result: "posted".into(),
+                            at: now(),
+                            value: status.into(),
+                            error: None,
+                        });
+                        done.push(format!("status set to {status}"));
+                    }
+                    Err(message) => {
+                        entry.status = Some(PartResult {
+                            result: "failed".into(),
+                            at: now(),
+                            value: status.into(),
+                            error: Some(message.clone()),
+                        });
+                        failed.push(format!("Status not set: {message}"));
+                    }
                 }
-                Err(err) => {
-                    let message = err.to_string();
-                    entry.status = Some(PartResult {
-                        result: "failed".into(),
-                        at: now(),
-                        value: status.into(),
-                        error: Some(message.clone()),
-                    });
-                    save!();
-                    out.push(PostOutcome {
-                        ticket_id: id.clone(),
-                        result: "failed".into(),
-                        message: format!("Status not set: {message}"),
-                    });
-                    continue;
-                }
+                save!();
             }
         }
-        if let Some(text) = want_comment {
-            // Until ClickUp answers cleanly, the comment may be posted.
-            posted.drafts.entry(id.clone()).or_default().comment = Some(PartResult {
-                result: "sending".into(),
-                at: now(),
-                value: text.into(),
-                error: None,
-            });
-            save!();
-            let result = client.post_comment(&task, text);
-            let entry = posted.drafts.entry(id.clone()).or_default();
-            let at = now();
-            match result {
-                Ok(()) => {
-                    entry.comment = Some(PartResult {
-                        result: "posted".into(),
-                        at,
-                        value: text.into(),
-                        error: None,
-                    });
-                    done.push("comment posted".into());
-                    save!();
+        if let Some(text) = request.comment.as_deref() {
+            if draft.comment.is_none() {
+                skipped.push("This draft has no comment.".into());
+            } else if record.comment.as_ref().is_some_and(|p| p.is("posted")) {
+                skipped.push("Comment already posted.".into());
+            } else if let Err(why) = check_comment(text) {
+                skipped.push(why);
+            } else if needs_confirm(record.comment.as_ref()) && !request.confirm_resend {
+                skipped.push(RESEND_NEEDS_CONFIRM.into());
+            } else {
+                // Until ClickUp answers cleanly, the comment may be posted.
+                posted.drafts.entry(id.clone()).or_default().comment = Some(PartResult {
+                    result: "sending".into(),
+                    at: now(),
+                    value: text.into(),
+                    error: None,
+                });
+                save!();
+                let result = client.post_comment(&task, text);
+                let entry = posted.drafts.entry(id.clone()).or_default();
+                let at = now();
+                match result {
+                    Ok(()) => {
+                        entry.comment = Some(PartResult {
+                            result: "posted".into(),
+                            at,
+                            value: text.into(),
+                            error: None,
+                        });
+                        done.push("comment posted".into());
+                    }
+                    Err(err) => {
+                        let maybe = may_have_posted(&err);
+                        let message = if maybe {
+                            format!("{err} {MAYBE_POSTED}")
+                        } else {
+                            err.to_string()
+                        };
+                        entry.comment = Some(PartResult {
+                            result: if maybe { "maybe" } else { "failed" }.into(),
+                            at,
+                            value: text.into(),
+                            error: Some(message.clone()),
+                        });
+                        failed.push(format!("Comment not posted: {message}"));
+                    }
                 }
-                Err(err) => {
-                    let maybe = may_have_posted(&err);
-                    let message = if maybe {
-                        format!("{err} {MAYBE_POSTED}")
-                    } else {
-                        err.to_string()
-                    };
-                    entry.comment = Some(PartResult {
-                        result: if maybe { "maybe" } else { "failed" }.into(),
-                        at,
-                        value: text.into(),
-                        error: Some(message.clone()),
-                    });
-                    save!();
-                    let before = if done.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" ({}.)", done.join(", "))
-                    };
-                    out.push(PostOutcome {
-                        ticket_id: id.clone(),
-                        result: "failed".into(),
-                        message: format!("Comment not posted: {message}{before}"),
-                    });
-                    continue;
-                }
+                save!();
             }
         }
-        out.push(PostOutcome {
-            ticket_id: id.clone(),
-            result: "posted".into(),
-            message: done.join(", "),
-        });
+        let mut message: Vec<String> = Vec::new();
+        if !done.is_empty() {
+            message.push(done.join(", "));
+        }
+        message.extend(failed.iter().cloned());
+        message.extend(skipped.iter().cloned());
+        let result = if !failed.is_empty() {
+            "failed"
+        } else if !done.is_empty() {
+            "posted"
+        } else {
+            "not-sent"
+        };
+        if message.is_empty() {
+            message.push("Nothing ticked.".into());
+        }
+        out.push(outcome(result, message.join(" ")));
     }
     Ok(out)
 }
@@ -377,7 +420,7 @@ pub fn post(
 mod tests {
     use super::*;
     use crate::clickup::client::tests::{ok, status, Recorded};
-    use crate::clickup::transport::Reply;
+    use crate::clickup::intake::tests::sample;
     use crate::clickup::ClickUpToken;
 
     #[derive(Default)]
@@ -412,15 +455,27 @@ mod tests {
         .unwrap()
     }
 
-    fn tickets() -> HashSet<String> {
-        ["86b1aa001".to_string(), "86b1aa002".to_string()].into()
+    /// The app's snapshot: both tickets in list "1" ("Sprint").
+    fn tickets() -> HashMap<String, SnapshotTask> {
+        ["86b1aa001", "86b1aa002"]
+            .into_iter()
+            .map(|id| (id.to_string(), sample(id, "x")))
+            .collect()
     }
 
-    fn req(id: &str, comment: Option<&str>, status: bool) -> PostRequest {
+    const LIST: &str = "/list/1";
+    fn statuses() -> Result<crate::clickup::transport::Reply, crate::clickup::transport::NoReply> {
+        ok(
+            r#"{"id":"1","name":"Sprint","statuses":[{"status":"open"},{"status":"In Review"}]}"#
+                .into(),
+        )
+    }
+
+    fn req(id: &str, comment: Option<&str>, status: Option<&str>) -> PostRequest {
         PostRequest {
             ticket_id: id.into(),
             comment: comment.map(str::to_string),
-            status,
+            status: status.map(str::to_string),
             confirm_resend: false,
         }
     }
@@ -432,27 +487,36 @@ mod tests {
     const COMMENT1: &str = "POST /task/86b1aa001/comment";
     const STATUS1: &str = "PUT /task/86b1aa001";
 
+    fn send(
+        api: &Recorded,
+        posted: &mut Posted,
+        saves: &mut Saves,
+        r: &[PostRequest],
+    ) -> Vec<PostOutcome> {
+        let token = token();
+        let client = ClickUp::new(api, &token);
+        post(&client, &drafts(), &tickets(), posted, saves, r, &|| {
+            "t".into()
+        })
+        .unwrap()
+    }
+
     #[test]
-    fn only_ticked_drafts_are_posted_status_first_and_each_step_saved() {
+    fn only_ticked_parts_are_posted_status_first_and_each_step_saved() {
         let api = Recorded::default()
+            .on(LIST, statuses())
             .on(STATUS1, ok("{}".into()))
             .on(COMMENT1, ok("{}".into()));
-        let token = token();
-        let client = ClickUp::new(&api, &token);
         let mut posted = Posted::default();
         let mut saves = Saves::default();
-        let out = post(
-            &client,
-            &drafts(),
-            &tickets(),
+        let out = send(
+            &api,
             &mut posted,
             &mut saves,
-            &[req("86b1aa001", Some("Edited: S1"), true)],
-            &|| "t".into(),
-        )
-        .unwrap();
+            &[req("86b1aa001", Some("Edited: S1"), Some("in review"))],
+        );
         assert_eq!(out[0].result, "posted", "{out:?}");
-        assert_eq!(api.paths(), [STATUS1, COMMENT1]);
+        assert_eq!(api.paths(), [LIST, STATUS1, COMMENT1]);
         let writes = api.writes.lock().unwrap().clone();
         assert_eq!(writes[0].body, serde_json::json!({"status": "in review"}));
         assert_eq!(
@@ -473,111 +537,133 @@ mod tests {
         assert_eq!(rec.comment.as_ref().unwrap().result, "posted");
         assert_eq!(rec.status.as_ref().unwrap().value, "in review");
         assert!(!serde_json::to_string(&posted).unwrap().contains("pk_test"));
+        // The comment alone: no status call.
+        let api = Recorded::default().on("POST /task/86b1aa002/comment", ok("{}".into()));
+        let out = send(
+            &api,
+            &mut posted,
+            &mut saves,
+            &[req("86b1aa002", Some("No PR"), None)],
+        );
+        assert_eq!(out[0].result, "posted");
+        assert_eq!(api.paths(), ["POST /task/86b1aa002/comment"]);
     }
 
     #[test]
-    fn a_posted_draft_is_never_posted_twice() {
+    fn a_posted_part_is_never_posted_twice() {
         let api = Recorded::default()
+            .on(LIST, statuses())
             .on(STATUS1, ok("{}".into()))
             .on(COMMENT1, ok("{}".into()));
-        let token = token();
-        let client = ClickUp::new(&api, &token);
         let mut posted = Posted::default();
         let mut saves = Saves::default();
-        let r = [req("86b1aa001", Some("Done: S1"), true)];
-        post(
-            &client,
-            &drafts(),
-            &tickets(),
-            &mut posted,
-            &mut saves,
-            &r,
-            &|| "t".into(),
-        )
-        .unwrap();
-        let again = post(
-            &client,
-            &drafts(),
-            &tickets(),
-            &mut posted,
-            &mut saves,
-            &r,
-            &|| "t2".into(),
-        )
-        .unwrap();
+        let r = [req("86b1aa001", Some("Done: S1"), Some("in review"))];
+        send(&api, &mut posted, &mut saves, &r);
+        let again = send(&api, &mut posted, &mut saves, &r);
         assert_eq!(again[0].result, "not-sent");
-        assert_eq!(again[0].message, "Already posted.");
-        assert_eq!(api.paths().len(), 2, "no second call");
+        assert_eq!(
+            again[0].message,
+            "Status already set. Comment already posted."
+        );
+        assert_eq!(api.paths().len(), 3, "no second call");
         // A duplicate request in one send is sent once.
         let mut fresh = Posted::default();
         let api = Recorded::default().on("POST /task/86b1aa002/comment", ok("{}".into()));
-        let client = ClickUp::new(&api, &token);
         let r = [
-            req("86b1aa002", Some("No PR"), true),
-            req("86b1aa002", Some("No PR"), true),
+            req("86b1aa002", Some("No PR"), None),
+            req("86b1aa002", Some("No PR"), None),
         ];
-        let out = post(
-            &client,
-            &drafts(),
-            &tickets(),
-            &mut fresh,
-            &mut saves,
-            &r,
-            &|| "t".into(),
-        )
-        .unwrap();
+        let out = send(&api, &mut fresh, &mut saves, &r);
         assert_eq!(out.len(), 1);
-        assert_eq!(
-            api.paths(),
-            ["POST /task/86b1aa002/comment"],
-            "no status: the draft has none"
-        );
     }
 
     #[test]
-    fn drafts_for_tickets_outside_tickets_json_or_unknown_are_never_sent() {
+    fn drafts_outside_the_snapshot_a_foreign_status_or_an_empty_comment_are_never_sent() {
         let api = Recorded::default();
-        let token = token();
-        let client = ClickUp::new(&api, &token);
         let mut posted = Posted::default();
         let mut saves = Saves::default();
-        let out = post(
-            &client,
-            &drafts(),
-            &tickets(),
+        let out = send(
+            &api,
             &mut posted,
             &mut saves,
             &[
-                req("86zzzz999", Some("x"), true),
-                req("nothere1", Some("x"), false),
-                req("86b1aa001", Some("  "), false),
+                req("86zzzz999", Some("x"), Some("done")),
+                req("nothere1", Some("x"), None),
+                req("86b1aa001", Some("  "), Some("closed")),
+                req("86b1aa002", None, Some("done")),
             ],
-            &|| "t".into(),
-        )
-        .unwrap();
+        );
         assert!(out.iter().all(|o| o.result == "not-sent"), "{out:?}");
+        assert!(out[2].message.contains("not the draft's status"));
+        assert!(out[3].message.contains("not the draft's status"));
         assert!(api.paths().is_empty());
         assert!(saves.saved.is_empty());
     }
 
     #[test]
-    fn a_comment_that_may_have_posted_needs_confirmation_and_a_refusal_can_retry() {
-        let token = token();
-        let api = Recorded::default().on(COMMENT1, Err(NoReply::Timeout));
-        let client = ClickUp::new(&api, &token);
+    fn a_status_not_in_the_list_or_refused_does_not_block_the_comment() {
+        let api = Recorded::default()
+            .on(
+                LIST,
+                ok(r#"{"id":"1","name":"Sprint","statuses":[{"status":"open"}]}"#.into()),
+            )
+            .on(COMMENT1, ok("{}".into()));
         let mut posted = Posted::default();
         let mut saves = Saves::default();
-        let r = [req("86b1aa001", Some("Done: S1"), false)];
-        let out = post(
-            &client,
-            &drafts(),
-            &tickets(),
+        let out = send(
+            &api,
             &mut posted,
             &mut saves,
-            &r,
-            &|| "t".into(),
-        )
-        .unwrap();
+            &[req("86b1aa001", Some("Done: S1"), Some("in review"))],
+        );
+        assert_eq!(out[0].result, "failed");
+        assert!(
+            out[0].message.contains("comment posted"),
+            "{}",
+            out[0].message
+        );
+        assert!(out[0]
+            .message
+            .contains("\"in review\" is not a status in Sprint"));
+        assert_eq!(
+            api.paths(),
+            [LIST, COMMENT1],
+            "no PUT for a status the list lacks"
+        );
+        assert_eq!(
+            posted.drafts["86b1aa001"].status.as_ref().unwrap().result,
+            "failed"
+        );
+        // ClickUp refusing the PUT: the comment still goes.
+        let api = Recorded::default()
+            .on(LIST, statuses())
+            .on(STATUS1, status(422))
+            .on("POST /task/86b1aa001/comment", ok("{}".into()));
+        let mut posted = Posted::default();
+        let out = send(
+            &api,
+            &mut posted,
+            &mut saves,
+            &[req("86b1aa001", Some("Done: S1"), Some("in review"))],
+        );
+        assert!(
+            out[0].message.contains("Status not set"),
+            "{}",
+            out[0].message
+        );
+        assert_eq!(
+            posted.drafts["86b1aa001"].comment.as_ref().unwrap().result,
+            "posted"
+        );
+    }
+
+    #[test]
+    fn a_comment_that_may_have_posted_needs_confirmation_and_a_refusal_can_retry() {
+        let api = Recorded::default().on(COMMENT1, Err(NoReply::Timeout));
+        let mut posted = Posted::default();
+        let mut saves = Saves::default();
+        let r = [req("86b1aa001", Some("Done: S1"), None)];
+        let out = send(&api, &mut posted, &mut saves, &r);
         assert_eq!(out[0].result, "failed");
         assert!(
             out[0].message.contains("may have posted"),
@@ -588,103 +674,41 @@ mod tests {
             posted.drafts["86b1aa001"].comment.as_ref().unwrap().result,
             "maybe"
         );
-        // Without confirmation: nothing sent.
-        let out = post(
-            &client,
-            &drafts(),
-            &tickets(),
-            &mut posted,
-            &mut saves,
-            &r,
-            &|| "t".into(),
-        )
-        .unwrap();
+        let out = send(&api, &mut posted, &mut saves, &r);
         assert_eq!(out[0].message, RESEND_NEEDS_CONFIRM);
-        // With it: sent.
         let api = Recorded::default().on(COMMENT1, ok("{}".into()));
-        let client = ClickUp::new(&api, &token);
         let mut confirmed = r[0].clone();
         confirmed.confirm_resend = true;
-        let out = post(
-            &client,
-            &drafts(),
-            &tickets(),
-            &mut posted,
-            &mut saves,
-            &[confirmed],
-            &|| "t".into(),
-        )
-        .unwrap();
+        let out = send(&api, &mut posted, &mut saves, &[confirmed]);
         assert_eq!(out[0].result, "posted");
         // A 400 is certainly not posted: failed, and a plain retry is allowed.
         let api = Recorded::default()
             .on("POST /task/86b1aa002/comment", status(400))
             .on("POST /task/86b1aa002/comment", ok("{}".into()));
-        let client = ClickUp::new(&api, &token);
-        let r = [req("86b1aa002", Some("No PR"), false)];
-        let out = post(
-            &client,
-            &drafts(),
-            &tickets(),
-            &mut posted,
-            &mut saves,
-            &r,
-            &|| "t".into(),
-        )
-        .unwrap();
+        let r = [req("86b1aa002", Some("No PR"), None)];
+        send(&api, &mut posted, &mut saves, &r);
         assert_eq!(
             posted.drafts["86b1aa002"].comment.as_ref().unwrap().result,
-            "failed",
-            "{out:?}"
+            "failed"
         );
-        let out = post(
-            &client,
-            &drafts(),
-            &tickets(),
-            &mut posted,
-            &mut saves,
-            &r,
-            &|| "t".into(),
-        )
-        .unwrap();
+        let out = send(&api, &mut posted, &mut saves, &r);
         assert_eq!(out[0].result, "posted");
     }
 
     #[test]
-    fn a_status_failure_skips_the_comment_and_a_crash_mid_post_reads_as_sending() {
-        let token = token();
-        let api = Recorded::default().on(STATUS1, status(422));
-        let client = ClickUp::new(&api, &token);
-        let mut posted = Posted::default();
-        let mut saves = Saves::default();
-        let r = [req("86b1aa001", Some("Done: S1"), true)];
-        let out = post(
-            &client,
-            &drafts(),
-            &tickets(),
-            &mut posted,
-            &mut saves,
-            &r,
-            &|| "t".into(),
-        )
-        .unwrap();
-        assert!(
-            out[0].message.starts_with("Status not set"),
-            "{}",
-            out[0].message
-        );
-        assert_eq!(api.paths(), [STATUS1]);
-        assert!(posted.drafts["86b1aa001"].comment.is_none());
-        // The save after the POST fails (a stand-in for a crash): the file says sending.
+    fn a_crash_mid_post_reads_as_sending() {
         let api = Recorded::default()
+            .on(LIST, statuses())
             .on(STATUS1, ok("{}".into()))
             .on(COMMENT1, ok("{}".into()));
+        let token = token();
         let client = ClickUp::new(&api, &token);
         let mut posted = Posted::default();
         let mut saves = Saves {
             fail_at: Some(2),
             ..Saves::default()
         };
+        let r = [req("86b1aa001", Some("Done: S1"), Some("in review"))];
         let err = post(
             &client,
             &drafts(),
@@ -702,48 +726,110 @@ mod tests {
             "sending"
         );
         assert!(needs_confirm(on_disk.drafts["86b1aa001"].comment.as_ref()));
-        // The status, posted, is not set again on the next send.
-        let mut reread = on_disk.clone();
-        let api = Recorded::default();
-        let client = ClickUp::new(&api, &token);
-        let out = post(
-            &client,
-            &drafts(),
-            &tickets(),
-            &mut reread,
-            &mut Saves::default(),
-            &[req("86b1aa001", None, true)],
-            &|| "t".into(),
-        )
-        .unwrap();
-        assert_eq!(out[0].message, "Already posted.");
-        assert!(api.paths().is_empty());
-        let _ = Reply::default();
     }
 
     #[test]
-    fn the_skill_s_writeback_json_reads_and_an_unknown_schema_is_refused() {
+    fn writeback_json_is_read_with_a_version_and_checked() {
         let dir = crate::test_support::TempDir::new("wb_read");
         assert!(read_drafts(dir.path()).unwrap().is_none());
         std::fs::write(dir.join(DRAFTS_FILE), r#"{"schema":2,"drafts":[]}"#).unwrap();
         assert!(read_drafts(dir.path()).is_err());
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../fixtures/clickup/writeback-skill.json");
-        std::fs::copy(fixture, dir.join(DRAFTS_FILE)).unwrap();
-        let d = read_drafts(dir.path()).unwrap().unwrap();
+        std::fs::copy(&fixture, dir.join(DRAFTS_FILE)).unwrap();
+        let (d, version) = read_drafts(dir.path()).unwrap().unwrap();
         assert_eq!(d.drafts[0].ticket.custom_id.as_deref(), Some("KON-123"));
         assert_eq!(d.drafts[0].status.as_deref(), Some("in review"));
-        assert_eq!(
-            read_posted(dir.path()).unwrap(),
-            Posted {
-                schema: 1,
-                ..Posted::default()
-            }
+        assert_eq!(version.len(), 64);
+        std::fs::write(
+            dir.join(DRAFTS_FILE),
+            std::fs::read_to_string(&fixture)
+                .unwrap()
+                .replace("in review", "done"),
+        )
+        .unwrap();
+        assert_ne!(
+            read_drafts(dir.path()).unwrap().unwrap().1,
+            version,
+            "a changed file has a new version"
         );
-        std::fs::write(dir.join(POSTED_FILE), "{bad").unwrap();
+        let dup = r#"{"schema":1,"drafts":[{"ticket":{"id":"a1"}},{"ticket":{"id":"a1"}}]}"#;
+        std::fs::write(dir.join(DRAFTS_FILE), dup).unwrap();
+        assert!(read_drafts(dir.path()).unwrap_err().contains("two drafts"));
+        let many: Vec<_> = (0..=MAX_TICKETS)
+            .map(|n| serde_json::json!({"ticket": {"id": format!("t{n}")}}))
+            .collect();
+        std::fs::write(
+            dir.join(DRAFTS_FILE),
+            serde_json::json!({"schema": 1, "drafts": many}).to_string(),
+        )
+        .unwrap();
+        assert!(read_drafts(dir.path()).is_err());
+        std::fs::write(dir.join(DRAFTS_FILE), vec![b' '; MAX_DRAFTS_BYTES + 1]).unwrap();
+        assert!(read_drafts(dir.path()).unwrap_err().contains("2 MB"));
+    }
+
+    /// LOW 11: the app's tickets.json → `state.sh writeback` → read_drafts.
+    #[test]
+    fn the_skill_writes_drafts_from_the_app_s_tickets_json() {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = crate::test_support::TempDir::new("wb_roundtrip");
+        let run = dir.join("r-1");
+        std::fs::create_dir_all(&run).unwrap();
+        let mut task = sample("86b1aa001", "Export invoices");
+        task.custom_id = Some("QA-129".into());
+        let snap = crate::clickup::intake::TicketsSnapshot {
+            schema: 1,
+            fetched_at: "t".into(),
+            source: crate::clickup::intake::SnapshotSource {
+                kind: "clickup".into(),
+                account_id: "a".into(),
+                workspace_id: None,
+                refs: vec![],
+            },
+            limits: crate::clickup::intake::LIMITS,
+            note: String::new(),
+            tasks: vec![task, sample("86b1aa002", "Logs")],
+        };
+        crate::clickup::intake::write_snapshot(&run, &snap).unwrap();
+        std::fs::write(
+            run.join("plan.md"),
+            "# Plan\n\n### S1: Export\n- Tickets: QA-129\n\n## Tickets\n- 86b1aa001 | QA-129 | Export invoices | u | stories: S1 | ship status: in review\n- 86b1aa002 | - | Logs | u | stories: - | ship status: -\n",
+        )
+        .unwrap();
+        std::fs::write(
+            run.join("status.json"),
+            r#"{"schema":1,"runId":"r-1","stage":"shipping","prs":[{"id":"PR1","repo":"r","branch":"dcv2/r-1-pr1","prUrl":"https://github.com/o/r/pull/1","stories":{"ids":["S1"]},"check":{"command":"x","result":"pass"},"review":{"verdict":"APPROVED","round":1}}]}"#,
+        )
+        .unwrap();
+        let state =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugin/scripts/state.sh");
+        let out = std::process::Command::new("bash")
+            .arg(&state)
+            .args(["writeback", run.to_str().unwrap()])
+            .output()
+            .unwrap();
         assert!(
-            read_posted(dir.path()).is_err(),
-            "a damaged record never reads as nothing posted"
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
         );
+        let (d, _) = read_drafts(&run).unwrap().unwrap();
+        assert_eq!(d.drafts.len(), 2);
+        assert_eq!(d.drafts[0].ticket.id, "86b1aa001");
+        assert_eq!(d.drafts[0].ticket.custom_id.as_deref(), Some("QA-129"));
+        assert_eq!(d.drafts[0].ticket.title.as_deref(), Some("Export invoices"));
+        assert_eq!(d.drafts[0].status.as_deref(), Some("in review"));
+        assert_eq!(
+            d.drafts[0].prs[0].url.as_deref(),
+            Some("https://github.com/o/r/pull/1")
+        );
+        assert!(d.drafts[1].status.is_none());
     }
 }

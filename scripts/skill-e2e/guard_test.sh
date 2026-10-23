@@ -60,6 +60,11 @@ w 2 "" "$RUN/status.json"
 w 2 "" "$RUN/.guard.json"
 w 2 dcv2:implementer "$RUN/writeback.json"
 w 2 "" "$d/fake/status.json"
+for f in tickets.json meta.json writeback-posted.json tickets-pulls.json tickets-update.md app-checks.json; do
+  w 2 "" "$RUN/$f"
+  w 2 dcv2:planner "$RUN/$f"
+  b 2 dcv2:implementer "echo x > $RUN/$f"
+done
 expect 2 "implementer with no DCV2_RUN_DIR" "$(payload dcv2:implementer Write file_path "$WT/a.js")" -u DCV2_RUN_DIR
 expect 0 "user session with no DCV2_RUN_DIR" "$(payload "" Write file_path "$R/a.js")" -u DCV2_RUN_DIR
 

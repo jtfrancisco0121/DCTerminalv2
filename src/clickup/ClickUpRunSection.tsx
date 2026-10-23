@@ -21,6 +21,9 @@ type Props = {
 
 const name = (t: { id: string; customId: string | null }) => t.customId ?? t.id;
 
+/** A draft's label: always the app's snapshot, never writeback.json's words. */
+const draftName = (d: DraftView) => d.trusted?.customId ?? d.ticket.id;
+
 /** A draft with nothing left to send. */
 export function draftDone(d: DraftView): boolean {
   const commentDone = !d.comment || d.posted.comment?.result === "posted";
@@ -58,6 +61,7 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
   const [checking, setChecking] = useState(false);
   const [pullNote, setPullNote] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  // Two ticks per draft: `status:<id>` and `comment:<id>`.
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
@@ -109,27 +113,27 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
 
   const drafts = state.drafts ?? [];
   const commentOf = (d: DraftView) => edits[d.ticket.id] ?? d.comment ?? "";
-  const toggle = (id: string, on: boolean) =>
+  const toggle = (key: string, on: boolean) =>
     setTicked((set) => {
       const next = new Set(set);
-      if (on) next.add(id);
-      else next.delete(id);
+      if (on) next.add(key);
+      else next.delete(key);
       return next;
     });
 
   const postTicked = () => {
     const requests: PostRequest[] = drafts
-      .filter((d) => ticked.has(d.ticket.id))
+      .filter((d) => d.trusted && (ticked.has(`status:${d.ticket.id}`) || ticked.has(`comment:${d.ticket.id}`)))
       .map((d) => ({
         ticketId: d.ticket.id,
-        comment: d.comment && d.posted.comment?.result !== "posted" ? commentOf(d) : null,
-        status: !!d.status && d.posted.status?.result !== "posted",
+        comment: ticked.has(`comment:${d.ticket.id}`) ? commentOf(d) : null,
+        status: ticked.has(`status:${d.ticket.id}`) ? d.status : null,
         confirmResend: confirmed.has(d.ticket.id),
       }));
-    if (requests.length === 0) return;
+    if (requests.length === 0 || !state.draftsVersion) return;
     setPosting(true);
     setProblem(null);
-    clickupPostWriteback(runDir, requests)
+    clickupPostWriteback(runDir, state.draftsVersion, requests)
       .then(
         (reply) => {
           setOutcomes(reply.outcomes);
@@ -196,34 +200,58 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
           <ul>
             {drafts.map((d) => {
               const id = d.ticket.id;
-              const done = draftDone(d);
+              if (!d.trusted) {
+                return (
+                  <li key={id} className="clickup-draft warn" data-testid={`draft-${id}`}>
+                    Draft for {id}, which is not in this run's ticket snapshot: never posted.
+                  </li>
+                );
+              }
+              const label = draftName(d);
+              const statusPosted = d.posted.status?.result === "posted";
               const commentPosted = d.posted.comment?.result === "posted";
               const lines = [partText("Status", d.posted.status), partText("Comment", d.posted.comment)].filter(Boolean);
               return (
                 <li key={id} className="clickup-draft" data-testid={`draft-${id}`}>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={ticked.has(id)}
-                      disabled={done || !d.inTickets || posting}
-                      onChange={(event) => toggle(id, event.target.checked)}
-                      aria-label={`Post ${name(d.ticket)}`}
-                    />{" "}
-                    <strong>{name(d.ticket)}</strong> {d.ticket.title ?? ""}
-                  </label>
-                  {!d.inTickets && <p className="hint warn">Not in this run's tickets.json: never posted.</p>}
-                  <p className="hint">
-                    {d.status ? `Status → ${d.status}` : `Status unchanged${d.statusNote ? `: ${d.statusNote}` : ""}`}
-                  </p>
+                  <div>
+                    <strong>{label}</strong> {d.trusted.name}
+                  </div>
+                  {d.status ? (
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={ticked.has(`status:${id}`)}
+                        disabled={statusPosted || posting}
+                        onChange={(event) => toggle(`status:${id}`, event.target.checked)}
+                        aria-label={`Set status of ${label}`}
+                      />{" "}
+                      Status → {d.status}
+                      {d.trusted.list ? <span className="hint"> (list {d.trusted.list})</span> : null}
+                    </label>
+                  ) : (
+                    <p className="hint">Status unchanged{d.statusNote ? `: ${d.statusNote}` : ""}</p>
+                  )}
                   {d.comment && (
-                    <textarea
-                      className="text-input"
-                      rows={5}
-                      aria-label={`Comment for ${name(d.ticket)}`}
-                      value={commentOf(d)}
-                      disabled={commentPosted || posting}
-                      onChange={(event) => setEdits((all) => ({ ...all, [id]: event.target.value }))}
-                    />
+                    <>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={ticked.has(`comment:${id}`)}
+                          disabled={commentPosted || posting}
+                          onChange={(event) => toggle(`comment:${id}`, event.target.checked)}
+                          aria-label={`Post comment on ${label}`}
+                        />{" "}
+                        Comment
+                      </label>
+                      <textarea
+                        className="text-input"
+                        rows={5}
+                        aria-label={`Comment for ${label}`}
+                        value={commentOf(d)}
+                        disabled={commentPosted || posting}
+                        onChange={(event) => setEdits((all) => ({ ...all, [id]: event.target.value }))}
+                      />
+                    </>
                   )}
                   {lines.map((line) => (
                     <p key={line} className="hint">

@@ -15,6 +15,7 @@ const preview: IntakePreview = {
   ],
   excluded: [{ id: "86b1aa003", customId: null, title: "Old", status: "closed", list: "QA", url: "u3", reason: "Status is \"closed\" (closed)" }],
   problems: [{ line: 2, message: "ClickUp has no task with that id, or this account can't see it." }],
+  tooMany: null,
 };
 
 describe("ClickUpIntake", () => {

@@ -99,6 +99,11 @@ export function ClickUpIntake({ windowId, onChange, disabled }: Props) {
             </p>
           ))}
           {kept.length === 0 && <p className="hint">No tickets will be taken.</p>}
+          {kept.length > 100 && (
+            <p className="hint warn" data-testid="too-many">
+              {kept.length} tickets, more than the 100 one run takes: remove some before Start.
+            </p>
+          )}
           {kept.length > 0 && (
             <ul>
               {kept.map((t) => (

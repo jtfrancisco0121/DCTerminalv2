@@ -27,6 +27,7 @@ pub mod commands;
 pub mod intake;
 pub mod secret;
 pub mod transport;
+pub mod trust;
 pub mod types;
 pub mod writeback;
 

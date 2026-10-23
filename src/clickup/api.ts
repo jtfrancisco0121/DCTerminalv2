@@ -23,6 +23,8 @@ export type IntakePreview = {
   tickets: TicketRow[];
   excluded: ExcludedTicket[];
   problems: { line: number; message: string }[];
+  /** Over 100 tickets: shown, but Start refuses until some are removed. */
+  tooMany: string | null;
 };
 
 /** What Start passes to `start_run` for Eagle-Eye. */
@@ -44,7 +46,8 @@ export type DraftView = {
   statusNote: string | null;
   posted: { comment?: PartResult; status?: PartResult };
   needsConfirm: boolean;
-  inTickets: boolean;
+  /** From the app's own snapshot; null: not in it, never posted. */
+  trusted: { customId: string | null; name: string; url: string; list: string | null } | null;
 };
 
 export type RunClickUp = {
@@ -55,6 +58,8 @@ export type RunClickUp = {
   pulled: string[];
   updateFile: string | null;
   drafts: DraftView[] | null;
+  /** writeback.json's version as shown; posting with another is refused. */
+  draftsVersion: string | null;
   writebackProblem: string | null;
 };
 
@@ -69,9 +74,10 @@ export type ChangedTicket = {
 
 export type PostRequest = {
   ticketId: string;
-  /** The comment as shown (edited or not); null sends no comment. */
+  /** The comment as shown (edited or not); null: not ticked. */
   comment: string | null;
-  status: boolean;
+  /** The status as shown (the draft's); null: not ticked. */
+  status: string | null;
   confirmResend: boolean;
 };
 export type PostOutcome = { ticketId: string; result: string; message: string };
@@ -88,5 +94,5 @@ export const clickupRunState = (runDir: string) => invoke<RunClickUp>("clickup_r
 export const clickupCheckTickets = (runDir: string) => invoke<ChangedTicket[]>("clickup_check_tickets", { runDir });
 export const clickupPullTickets = (runDir: string, ids: string[]) =>
   invoke<{ pulled: string[]; updateFile: string }>("clickup_pull_tickets", { runDir, ids });
-export const clickupPostWriteback = (runDir: string, requests: PostRequest[]) =>
-  invoke<PostReply>("clickup_post_writeback", { runDir, requests });
+export const clickupPostWriteback = (runDir: string, draftsVersion: string, requests: PostRequest[]) =>
+  invoke<PostReply>("clickup_post_writeback", { runDir, draftsVersion, requests });

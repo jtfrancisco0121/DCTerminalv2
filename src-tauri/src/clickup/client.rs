@@ -470,8 +470,7 @@ impl<'a> ClickUp<'a> {
         Ok(tasks)
     }
 
-    /// A list and its statuses (kept from DCTerminal; unused in v2 yet).
-    #[allow(dead_code)]
+    /// A list and its statuses (a write-back status must be one of them).
     pub fn list(&self, list_id: &str) -> Result<List, ClickUpError> {
         if !valid_id(list_id) {
             return Err(ClickUpError::BadId);

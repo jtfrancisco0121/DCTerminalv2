@@ -173,7 +173,6 @@ pub struct TaskPage {
 
 /// `GET /list/{id}`: the list and the statuses a ticket can move to.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct List {
     #[serde(deserialize_with = "id_text")]
     pub id: String,

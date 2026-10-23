@@ -325,6 +325,9 @@ expect 1 "writeback refuses to overwrite" bash "$STATE" writeback "$RUN"
 is "  file kept" "$RUN/writeback.json" app '"edited"'
 expect 0 "writeback --force" bash "$STATE" writeback "$RUN" --force
 expect 1 "put refuses writeback.json" bash "$STATE" put "$RUN/writeback.json" <<<'{}'
+for f in tickets.json meta.json writeback-posted.json tickets-pulls.json tickets-update.md app-checks.json; do
+  expect 1 "put refuses the app's $f" bash "$STATE" put "$RUN/$f" <<<'{}'
+done
 
 echo "# done gate, report (R10)"
 bash "$STATE" log "$RUN" <<<'PR2 implementer retried: no JSON block' >/dev/null

@@ -6,13 +6,14 @@
 //! no reply carries it.
 
 use super::intake::{self, ChangedTicket, IntakePreview, IntakeRef};
+use super::trust;
 use super::writeback::{self, PostOutcome, PostRequest, PostedDraft};
 use super::{ClickUp, ClickUpError, ClickUpToken, KeychainStore, SecretStore, UreqTransport};
 use crate::run::checked_run_dir;
 use crate::store::settings_store::account_exists;
 use crate::store::{SettingsStore, StateStore};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
@@ -56,13 +57,6 @@ pub fn token_of(store: &dyn SecretStore, account_id: &str) -> Result<ClickUpToke
     store
         .get(account_id)?
         .ok_or_else(|| ClickUpError::NoToken.to_string())
-}
-
-/// The run's Claude account (meta.json), whose token the run uses.
-fn run_account(run_dir: &Path) -> Result<String, String> {
-    crate::run::folder::read_json_value(&run_dir.join("meta.json"))
-        .and_then(|m| m.get("account")?.get("id")?.as_str().map(str::to_string))
-        .ok_or_else(|| "This run's meta.json names no Claude account.".into())
 }
 
 // ---- Settings: the token -----------------------------------------------------------------
@@ -189,6 +183,16 @@ pub fn start_snapshot(
 
 // ---- Run panel ---------------------------------------------------------------------------
 
+/// A ticket as the app's own snapshot names it (never writeback.json's words).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustedTicket {
+    pub custom_id: Option<String>,
+    pub name: String,
+    pub url: String,
+    pub list: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DraftView {
@@ -197,8 +201,8 @@ pub struct DraftView {
     pub posted: PostedDraft,
     /// The comment's last send did not finish cleanly: resend needs a confirm.
     pub needs_confirm: bool,
-    /// The ticket is in tickets.json (else it is never posted).
-    pub in_tickets: bool,
+    /// From the app's snapshot; `None`: not in it, never posted.
+    pub trusted: Option<TrustedTicket>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -212,41 +216,63 @@ pub struct RunClickUp {
     pub pulled: Vec<String>,
     pub update_file: Option<String>,
     pub drafts: Option<Vec<DraftView>>,
+    /// sha-256 of writeback.json as shown; a post with another is refused.
+    pub drafts_version: Option<String>,
     pub writeback_problem: Option<String>,
 }
 
-pub fn run_clickup(run_dir: &Path) -> RunClickUp {
+const UNTRUSTED: &str = "This run's tickets.json was not written by this app's Start, so the app checks and posts nothing for it.";
+
+pub fn run_clickup(data: &Path, run_dir: &Path) -> RunClickUp {
     let mut out = RunClickUp::default();
-    let tickets: HashSet<String> = match intake::read_snapshot(run_dir) {
-        Ok(Some(snap)) => {
-            out.has_tickets = true;
-            out.ticket_count = snap.tasks.len();
-            out.fetched_at = Some(snap.fetched_at.clone());
-            snap.tasks.iter().map(|t| t.id.clone()).collect()
+    let trusted = match trust::load(data, run_dir) {
+        Ok(Some(t)) => Some(t),
+        Ok(None) => {
+            if run_dir.join(intake::TICKETS_FILE).exists() {
+                out.has_tickets = true;
+                out.tickets_problem = Some(UNTRUSTED.into());
+            }
+            None
         }
-        Ok(None) => HashSet::new(),
         Err(problem) => {
             out.has_tickets = true;
             out.tickets_problem = Some(problem);
-            HashSet::new()
+            None
         }
     };
-    let pulls = intake::read_pulls(run_dir);
-    let mut pulled: Vec<String> = pulls.tickets.keys().cloned().collect();
-    pulled.sort();
-    out.pulled = pulled;
+    let tickets: HashMap<String, intake::SnapshotTask> = trusted
+        .as_ref()
+        .map(|t| {
+            t.snapshot
+                .tasks
+                .iter()
+                .map(|x| (x.id.clone(), x.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(t) = &trusted {
+        out.has_tickets = true;
+        out.ticket_count = t.snapshot.tasks.len();
+        out.fetched_at = Some(t.snapshot.fetched_at.clone());
+        let mut pulled: Vec<String> = trust::read_pulls(data, run_dir)
+            .map(|p| p.tickets.keys().cloned().collect())
+            .unwrap_or_default();
+        pulled.sort();
+        out.pulled = pulled;
+    }
     if run_dir.join(intake::UPDATE_FILE).is_file() {
         out.update_file = Some(run_dir.join(intake::UPDATE_FILE).display().to_string());
     }
     match writeback::read_drafts(run_dir) {
         Ok(None) => {}
         Err(problem) => out.writeback_problem = Some(problem),
-        Ok(Some(drafts)) => {
-            let posted = writeback::read_posted(run_dir);
+        Ok(Some((drafts, version))) => {
+            let posted = trust::read_posted(data, run_dir);
             if let Err(problem) = &posted {
                 out.writeback_problem = Some(problem.clone());
             }
             let posted = posted.unwrap_or_default();
+            out.drafts_version = Some(version);
             out.drafts = Some(
                 drafts
                     .drafts
@@ -259,7 +285,12 @@ pub fn run_clickup(run_dir: &Path) -> RunClickUp {
                             .unwrap_or_default();
                         DraftView {
                             needs_confirm: writeback::needs_confirm(record.comment.as_ref()),
-                            in_tickets: tickets.contains(&draft.ticket.id),
+                            trusted: tickets.get(&draft.ticket.id).map(|t| TrustedTicket {
+                                custom_id: t.custom_id.clone(),
+                                name: t.name.clone(),
+                                url: t.url.clone(),
+                                list: t.list.as_ref().map(|l| l.name.clone()),
+                            }),
                             posted: record,
                             draft,
                         }
@@ -274,14 +305,16 @@ pub fn run_clickup(run_dir: &Path) -> RunClickUp {
 #[tauri::command]
 pub async fn clickup_run_state(app: AppHandle, run_dir: String) -> Result<RunClickUp, String> {
     blocking(move || {
-        let dir = checked_run_dir(&data_dir(&app), &run_dir)?;
-        Ok(run_clickup(&dir))
+        let data = data_dir(&app);
+        let dir = checked_run_dir(&data, &run_dir)?;
+        Ok(run_clickup(&data, &dir))
     })
     .await
 }
 
-fn snapshot_of(dir: &Path) -> Result<intake::TicketsSnapshot, String> {
-    intake::read_snapshot(dir)?.ok_or_else(|| "This run has no tickets.json.".to_string())
+/// The app's own record of the run, or why the app does nothing for it.
+fn trusted(data: &Path, dir: &Path) -> Result<trust::RunTrust, String> {
+    trust::load(data, dir)?.ok_or_else(|| UNTRUSTED.to_string())
 }
 
 /// R8: which tickets ClickUp changed since the run's version of them.
@@ -291,14 +324,15 @@ pub async fn clickup_check_tickets(
     run_dir: String,
 ) -> Result<Vec<ChangedTicket>, String> {
     blocking(move || {
-        let dir = checked_run_dir(&data_dir(&app), &run_dir)?;
-        let snap = snapshot_of(&dir)?;
-        let token = token_of(&KeychainStore, &run_account(&dir)?)?;
+        let data = data_dir(&app);
+        let dir = checked_run_dir(&data, &run_dir)?;
+        let run = trusted(&data, &dir)?;
+        let token = token_of(&KeychainStore, &run.account_id)?;
         let transport = UreqTransport::new();
         intake::check_changes(
             &ClickUp::new(&transport, &token),
-            &snap,
-            &intake::read_pulls(&dir),
+            &run.snapshot,
+            &trust::read_pulls(&data, &dir)?,
         )
     })
     .await
@@ -319,18 +353,22 @@ pub async fn clickup_pull_tickets(
     ids: Vec<String>,
 ) -> Result<Pulled, String> {
     blocking(move || {
-        let dir = checked_run_dir(&data_dir(&app), &run_dir)?;
-        let _lock = RunLock::take(&dir, "pull")?;
-        let snap = snapshot_of(&dir)?;
-        let token = token_of(&KeychainStore, &run_account(&dir)?)?;
+        let data = data_dir(&app);
+        let dir = checked_run_dir(&data, &run_dir)?;
+        let _lock = RunLock::take(&dir)?;
+        let run = trusted(&data, &dir)?;
+        let token = token_of(&KeychainStore, &run.account_id)?;
         let transport = UreqTransport::new();
+        let mut pulls = trust::read_pulls(&data, &dir)?;
         let pulled = intake::pull_in(
             &ClickUp::new(&transport, &token),
             &dir,
-            &snap,
+            &run.snapshot,
+            &mut pulls,
             &ids,
             &now_text(),
         )?;
+        trust::save_pulls(&data, &dir, &pulls)?;
         Ok(Pulled {
             pulled,
             update_file: dir.join(intake::UPDATE_FILE).display().to_string(),
@@ -347,42 +385,71 @@ pub struct PostReply {
     pub error: Option<String>,
 }
 
-/// Posts the ticked drafts. One send per run at a time.
+/// Checks before any call: writeback.json is still the version shown.
+pub fn post_checked(
+    client: &ClickUp,
+    data: &Path,
+    dir: &Path,
+    drafts_version: &str,
+    requests: &[PostRequest],
+) -> Result<PostReply, String> {
+    let run = trusted(data, dir)?;
+    let (drafts, version) =
+        writeback::read_drafts(dir)?.ok_or("This run has no writeback.json yet.")?;
+    if version != drafts_version {
+        return Err(writeback::DRAFTS_CHANGED.into());
+    }
+    let tickets: HashMap<String, intake::SnapshotTask> = run
+        .snapshot
+        .tasks
+        .into_iter()
+        .map(|t| (t.id.clone(), t))
+        .collect();
+    let mut posted = trust::read_posted(data, dir)?;
+    let mut store = trust::TrustStore { data, run_dir: dir };
+    Ok(
+        match writeback::post(
+            client,
+            &drafts,
+            &tickets,
+            &mut posted,
+            &mut store,
+            requests,
+            &now_text,
+        ) {
+            Ok(outcomes) => PostReply {
+                outcomes,
+                error: None,
+            },
+            Err((outcomes, error)) => PostReply {
+                outcomes,
+                error: Some(format!("The posted record could not be saved: {error}")),
+            },
+        },
+    )
+}
+
+/// Posts the ticked parts of the drafts. One send per run at a time.
 #[tauri::command]
 pub async fn clickup_post_writeback(
     app: AppHandle,
     run_dir: String,
+    drafts_version: String,
     requests: Vec<PostRequest>,
 ) -> Result<PostReply, String> {
     blocking(move || {
-        let dir = checked_run_dir(&data_dir(&app), &run_dir)?;
-        let _lock = RunLock::take(&dir, "post")?;
-        let drafts = writeback::read_drafts(&dir)?.ok_or("This run has no writeback.json yet.")?;
-        let tickets: HashSet<String> = snapshot_of(&dir)?.tasks.into_iter().map(|t| t.id).collect();
-        let mut posted = writeback::read_posted(&dir)?;
-        let token = token_of(&KeychainStore, &run_account(&dir)?)?;
+        let data = data_dir(&app);
+        let dir = checked_run_dir(&data, &run_dir)?;
+        let _lock = RunLock::take(&dir)?;
+        let run = trusted(&data, &dir)?;
+        let token = token_of(&KeychainStore, &run.account_id)?;
         let transport = UreqTransport::new();
-        let client = ClickUp::new(&transport, &token);
-        let mut store = writeback::FileStore(&dir);
-        Ok(
-            match writeback::post(
-                &client,
-                &drafts,
-                &tickets,
-                &mut posted,
-                &mut store,
-                &requests,
-                &now_text,
-            ) {
-                Ok(outcomes) => PostReply {
-                    outcomes,
-                    error: None,
-                },
-                Err((outcomes, error)) => PostReply {
-                    outcomes,
-                    error: Some(format!("writeback-posted.json: {error}")),
-                },
-            },
+        post_checked(
+            &ClickUp::new(&transport, &token),
+            &data,
+            &dir,
+            &drafts_version,
+            &requests,
         )
     })
     .await
@@ -394,7 +461,7 @@ static BUSY: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 struct RunLock(PathBuf);
 
 impl RunLock {
-    fn take(dir: &Path, _what: &str) -> Result<Self, String> {
+    fn take(dir: &Path) -> Result<Self, String> {
         let mut busy = BUSY.lock().map_err(|e| e.to_string())?;
         if !busy
             .get_or_insert_with(HashSet::new)
@@ -419,6 +486,7 @@ impl Drop for RunLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clickup::client::tests::{ok, Recorded};
     use crate::clickup::secret::MemoryStore;
     use crate::test_support::TempDir;
 
@@ -434,11 +502,8 @@ mod tests {
         assert!(token_of(&store, "personal").is_ok());
     }
 
-    #[test]
-    fn the_run_panel_view_joins_drafts_with_what_was_posted() {
-        let dir = TempDir::new("run_clickup");
-        assert!(!run_clickup(dir.path()).has_tickets);
-        let snap = intake::TicketsSnapshot {
+    fn snap(id: &str) -> intake::TicketsSnapshot {
+        intake::TicketsSnapshot {
             schema: 1,
             fetched_at: "2026-10-23T10:00:00Z".into(),
             source: intake::SnapshotSource {
@@ -449,34 +514,98 @@ mod tests {
             },
             limits: intake::LIMITS,
             note: String::new(),
-            tasks: vec![intake::tests::sample("86c0abcde", "Export invoices")],
-        };
-        intake::write_snapshot(dir.path(), &snap).unwrap();
+            tasks: vec![intake::tests::sample(id, "Export invoices (trusted)")],
+        }
+    }
+
+    fn run_with_drafts(tag: &str) -> (TempDir, PathBuf, PathBuf) {
+        let dir = TempDir::new(tag);
+        let data = dir.join("data");
+        let run = data.join("runs/r-1");
+        std::fs::create_dir_all(&run).unwrap();
         let fixture =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/clickup/writeback-skill.json");
-        std::fs::copy(fixture, dir.join(writeback::DRAFTS_FILE)).unwrap();
+        std::fs::copy(fixture, run.join(writeback::DRAFTS_FILE)).unwrap();
+        (dir, data, run)
+    }
+
+    #[test]
+    fn labels_come_from_the_app_s_snapshot_and_a_run_folder_snapshot_is_not_trusted() {
+        let (_dir, data, run) = run_with_drafts("run_clickup");
+        // Only the run folder has a tickets.json (Claude could have written it).
+        intake::write_snapshot(&run, &snap("86c0abcde")).unwrap();
+        let view = run_clickup(&data, &run);
+        assert_eq!(view.tickets_problem.as_deref(), Some(UNTRUSTED));
+        assert!(view.drafts.as_ref().unwrap()[0].trusted.is_none());
+        // Written at Start: trusted, with the snapshot's own name.
+        trust::write_start(&data, &run, "personal", &snap("86c0abcde")).unwrap();
         std::fs::write(
-            dir.join(writeback::POSTED_FILE),
+            trust::trust_dir(&data, &run).unwrap().join("posted.json"),
             r#"{"schema":1,"drafts":{"86c0abcde":{"comment":{"result":"sending","at":"t","value":"x"}}}}"#,
         )
         .unwrap();
-        let view = run_clickup(dir.path());
+        let view = run_clickup(&data, &run);
+        assert!(view.tickets_problem.is_none());
         assert_eq!(view.ticket_count, 1);
-        assert_eq!(view.fetched_at.as_deref(), Some("2026-10-23T10:00:00Z"));
+        assert_eq!(view.drafts_version.as_ref().unwrap().len(), 64);
         let drafts = view.drafts.unwrap();
-        assert!(drafts[0].in_tickets);
+        let trusted = drafts[0].trusted.as_ref().unwrap();
+        assert_eq!(trusted.name, "Export invoices (trusted)");
         assert!(drafts[0].needs_confirm);
         let json = serde_json::to_value(&drafts[0]).unwrap();
-        assert_eq!(json["ticket"]["customId"], "KON-123");
         assert_eq!(json["posted"]["comment"]["result"], "sending");
+        // A draft for a ticket outside the snapshot has no trusted label.
+        trust::write_start(&data, &run, "personal", &snap("86other1")).unwrap();
+        assert!(run_clickup(&data, &run).drafts.unwrap()[0]
+            .trusted
+            .is_none());
+    }
+
+    #[test]
+    fn a_post_is_refused_when_writeback_json_changed_or_the_run_is_untrusted() {
+        let (_dir, data, run) = run_with_drafts("post_checked");
+        let token = ClickUpToken::parse("pk_x").unwrap();
+        let api = Recorded::default();
+        let client = ClickUp::new(&api, &token);
+        let req = [PostRequest {
+            ticket_id: "86c0abcde".into(),
+            comment: Some("x".into()),
+            status: None,
+            confirm_resend: false,
+        }];
+        assert_eq!(
+            post_checked(&client, &data, &run, "v", &req).unwrap_err(),
+            UNTRUSTED
+        );
+        trust::write_start(&data, &run, "personal", &snap("86c0abcde")).unwrap();
+        let version = run_clickup(&data, &run).drafts_version.unwrap();
+        assert_eq!(
+            post_checked(&client, &data, &run, "old", &req).unwrap_err(),
+            writeback::DRAFTS_CHANGED
+        );
+        assert!(api.paths().is_empty());
+        let api = Recorded::default().on("POST /task/86c0abcde/comment", ok("{}".into()));
+        let client = ClickUp::new(&api, &token);
+        let reply = post_checked(&client, &data, &run, &version, &req).unwrap();
+        assert_eq!(reply.outcomes[0].result, "posted");
+        // Authoritative record app-side; the run folder has a mirror.
+        assert!(trust::read_posted(&data, &run)
+            .unwrap()
+            .drafts
+            .contains_key("86c0abcde"));
+        assert!(run.join(writeback::POSTED_FILE).exists());
+        // A forged run-folder record does not stop or fake anything.
+        std::fs::write(run.join(writeback::POSTED_FILE), "{}").unwrap();
+        let again = post_checked(&client, &data, &run, &version, &req).unwrap();
+        assert_eq!(again.outcomes[0].message, "Comment already posted.");
     }
 
     #[test]
     fn one_write_per_run_at_a_time() {
         let dir = TempDir::new("run_lock");
-        let first = RunLock::take(dir.path(), "post").unwrap();
-        assert!(RunLock::take(dir.path(), "pull").is_err());
+        let first = RunLock::take(dir.path()).unwrap();
+        assert!(RunLock::take(dir.path()).is_err());
         drop(first);
-        assert!(RunLock::take(dir.path(), "post").is_ok());
+        assert!(RunLock::take(dir.path()).is_ok());
     }
 }

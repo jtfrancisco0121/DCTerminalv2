@@ -32,8 +32,6 @@ pub const MAX_TICKETS: usize = 100;
 
 pub const TICKETS_FILE: &str = "tickets.json";
 pub const UPDATE_FILE: &str = "tickets-update.md";
-/// The app's record of what was pulled in (R8 baselines). The skill never reads it.
-pub const PULLS_FILE: &str = "tickets-pulls.json";
 
 /// What the snapshot keeps of each ticket.
 pub const LIMITS: Limits = Limits {
@@ -103,10 +101,15 @@ pub struct IntakePreview {
     pub tickets: Vec<TicketRow>,
     pub excluded: Vec<ExcludedTicket>,
     pub problems: Vec<RefProblem>,
+    /// More than [`MAX_TICKETS`]: shown, but Start refuses until some are removed.
+    pub too_many: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TicketComment {
+    /// ClickUp's comment id (R8 compares the newest one).
+    #[serde(default)]
+    pub id: String,
     /// The ClickUp username. Never an email.
     pub author: String,
     /// RFC 3339, UTC.
@@ -349,22 +352,24 @@ pub fn preview(
     workspace_id: Option<&str>,
 ) -> Result<IntakePreview, String> {
     let fetched = fetch(client, refs, workspace_id)?;
-    if fetched.tasks.len() > MAX_TICKETS {
-        return Err(format!(
-            "{} tickets match, more than the {MAX_TICKETS} one run takes. Paste a smaller list or the tickets themselves.",
+    let too_many = (fetched.tasks.len() > MAX_TICKETS).then(|| {
+        format!(
+            "{} tickets, more than the {MAX_TICKETS} one run takes: remove some before Start.",
             fetched.tasks.len()
-        ));
-    }
+        )
+    });
     Ok(IntakePreview {
         tickets: fetched.tasks.iter().map(row_of).collect(),
         excluded: fetched.excluded,
         problems: fetched.problems,
+        too_many,
     })
 }
 
 fn comment_of(comment: &Comment, limits: &Limits) -> TicketComment {
     let (text, truncated) = cap(&comment.comment_text, limits.comment_chars);
     TicketComment {
+        id: comment.id.clone(),
         author: comment.user.username.trim().to_string(),
         date: ms_to_rfc3339(&comment.date).unwrap_or_default(),
         text,
@@ -544,6 +549,7 @@ pub fn write_snapshot(run_dir: &Path, snapshot: &TicketsSnapshot) -> Result<(), 
     crate::store::write_json_atomic(&run_dir.join(TICKETS_FILE), snapshot)
 }
 
+#[cfg(test)]
 pub fn read_snapshot(run_dir: &Path) -> Result<Option<TicketsSnapshot>, String> {
     let path = run_dir.join(TICKETS_FILE);
     let text = match std::fs::read_to_string(&path) {
@@ -584,13 +590,6 @@ pub struct Pulls {
     pub pulled_at: HashMap<String, String>,
 }
 
-pub fn read_pulls(run_dir: &Path) -> Pulls {
-    std::fs::read_to_string(run_dir.join(PULLS_FILE))
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
-}
-
 fn short(text: &str) -> String {
     let line = one_line(text);
     if line.chars().count() > 60 {
@@ -602,6 +601,18 @@ fn short(text: &str) -> String {
 
 /// What changed between the version the run has and ClickUp's now.
 pub fn diff_summary(old: &SnapshotTask, new: &SnapshotTask) -> Vec<String> {
+    let mut out = visible_changes(old, new);
+    if out.is_empty() {
+        out.push(
+            "edited in ClickUp (no change to its title, status, description, tags or comments)"
+                .into(),
+        );
+    }
+    out
+}
+
+/// The changes a person can see; empty when none.
+fn visible_changes(old: &SnapshotTask, new: &SnapshotTask) -> Vec<String> {
     let mut out = Vec::new();
     if old.name != new.name {
         out.push(format!(
@@ -673,11 +684,10 @@ pub fn diff_summary(old: &SnapshotTask, new: &SnapshotTask) -> Vec<String> {
             if fresh == 1 { "comment" } else { "comments" }
         ));
     }
-    if out.is_empty() {
-        out.push(
-            "edited in ClickUp (no change to its title, status, description, tags or comments)"
-                .into(),
-        );
+    let newest = |t: &SnapshotTask| t.comments.first().map(|c| (c.id.clone(), c.date.clone()));
+    if fresh == 0 && newest(old).is_some_and(|(id, _)| !id.is_empty()) && newest(old) != newest(new)
+    {
+        out.push("the newest comment changed or was removed".into());
     }
     out
 }
@@ -720,15 +730,25 @@ pub fn check_changes(
             }
             Err(err) => return Err(err.to_string()),
         };
-        let now = task.date_updated.as_deref().and_then(ms_to_rfc3339);
-        if now.is_none() || now == old.date_updated {
-            return Ok(None);
-        }
+        // Comments are read for every ticket: a new comment does not always
+        // move the task's date_updated.
         let comments = client.comments(&own_ref(&old.id)).map_err(String::from)?;
         let mut task = task;
         task.subtasks.clear();
         let new = task_of(&task, &comments, &LIMITS);
-        Ok(Some(entry(false, now, diff_summary(old, &new))))
+        let visible = visible_changes(old, &new);
+        // A baseline without a date (None) never counts as "edited" by itself.
+        let date_moved = old.date_updated.is_some()
+            && new.date_updated.is_some()
+            && new.date_updated != old.date_updated;
+        if visible.is_empty() && !date_moved {
+            return Ok(None);
+        }
+        Ok(Some(entry(
+            false,
+            new.date_updated.clone(),
+            diff_summary(old, &new),
+        )))
     });
     let mut out = Vec::new();
     for result in results {
@@ -739,18 +759,18 @@ pub fn check_changes(
     Ok(out)
 }
 
-/// Pull in: reads `ids` again and writes `tickets-update.md` with every
-/// ticket pulled in so far (newest version, what changed, as data), and
-/// records them in `tickets-pulls.json`. Returns the ids pulled.
+/// Pull in: reads `ids` again, records them in `pulls` (the caller keeps
+/// it app-side) and writes `tickets-update.md` with every ticket pulled in
+/// so far (newest version, what changed, as data). Returns the ids pulled.
 pub fn pull_in(
     client: &ClickUp,
     run_dir: &Path,
     snapshot: &TicketsSnapshot,
+    pulls: &mut Pulls,
     ids: &[String],
     now: &str,
 ) -> Result<Vec<String>, String> {
-    let mut pulls = read_pulls(run_dir);
-    let base: HashMap<String, SnapshotTask> = baseline(snapshot, &pulls)
+    let base: HashMap<String, SnapshotTask> = baseline(snapshot, pulls)
         .into_iter()
         .map(|t| (t.id.clone(), t.clone()))
         .collect();
@@ -779,8 +799,7 @@ pub fn pull_in(
         return Err("ClickUp no longer finds those tickets; nothing was pulled in.".into());
     }
     pulls.schema = 1;
-    crate::store::write_json_atomic(&run_dir.join(PULLS_FILE), &pulls)?;
-    let md = update_md(snapshot, &pulls, &changes);
+    let md = update_md(snapshot, pulls, &changes);
     let tmp = run_dir.join(format!(".{UPDATE_FILE}.tmp"));
     std::fs::write(&tmp, md).map_err(|e| format!("{UPDATE_FILE}: {e}"))?;
     std::fs::rename(&tmp, run_dir.join(UPDATE_FILE)).map_err(|e| format!("{UPDATE_FILE}: {e}"))?;
@@ -1055,6 +1074,25 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn over_a_hundred_tickets_are_shown_with_a_warning_and_refused_only_at_start() {
+        let tasks: Vec<serde_json::Value> = (0..=MAX_TICKETS)
+            .map(|n| serde_json::json!({"id": format!("86t{n:04}"), "name": "t", "status": {"status": "open", "type": "open"}}))
+            .collect();
+        let page = serde_json::json!({"tasks": tasks, "last_page": true}).to_string();
+        let api = Recorded::default().on(
+            "/list/77/task?page=0&subtasks=true&include_closed=true",
+            ok(page),
+        );
+        let token = token();
+        let client = ClickUp::new(&api, &token);
+        let preview = preview(&client, &[list_ref("77", 1)], None).unwrap();
+        assert_eq!(preview.tickets.len(), MAX_TICKETS + 1);
+        assert!(preview.too_many.unwrap().contains("remove some"));
+        let ids: Vec<String> = preview.tickets.iter().map(|t| t.id.clone()).collect();
+        assert!(snapshot(&client, "a", None, &[], &ids, "t").is_err());
+    }
+
+    #[test]
     fn the_diff_summary_names_each_change() {
         let old = sample("86x1", "Export");
         let mut new = old.clone();
@@ -1064,6 +1102,7 @@ pub(crate) mod tests {
         new.description = "new longer text".into();
         new.tags = vec!["web".into()];
         new.comments.push(TicketComment {
+            id: "c1".into(),
             author: "jt".into(),
             date: "d".into(),
             text: "x".into(),
@@ -1087,10 +1126,34 @@ pub(crate) mod tests {
         let token = token();
         let client = ClickUp::new(&api, &token);
         let snap = snapshot(&client, "p", None, &[], &["86b1aa001".into()], "t0").unwrap();
-        // Unchanged: same date_updated.
-        let api = Recorded::default().on(TASK1, ok(fixture("task-86b1aa001.json")));
+        let comments = "/task/86b1aa001/comment";
+        // Unchanged: same date_updated and comments.
+        let api = Recorded::default()
+            .on(TASK1, ok(fixture("task-86b1aa001.json")))
+            .on(comments, ok(fixture("comments.json")));
         let client = ClickUp::new(&api, &token);
         assert!(check_changes(&client, &snap, &Pulls::default())
+            .unwrap()
+            .is_empty());
+        // A new comment counts even when date_updated did not move.
+        let api = Recorded::default()
+            .on(TASK1, ok(fixture("task-86b1aa001.json")))
+            .on(comments, ok(r#"{"comments":[{"id":"c-new","comment_text":"new","date":"1790000000000","user":{"username":"jt"}}]}"#.into()));
+        let client = ClickUp::new(&api, &token);
+        let changed = check_changes(&client, &snap, &Pulls::default()).unwrap();
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert!(changed[0]
+            .changes
+            .iter()
+            .any(|c| c.contains("new or edited comment")));
+        // A baseline with no date is not "edited" forever once ClickUp sends one.
+        let mut undated = snap.clone();
+        undated.tasks[0].date_updated = None;
+        let api = Recorded::default()
+            .on(TASK1, ok(fixture("task-86b1aa001.json")))
+            .on(comments, ok(fixture("comments.json")));
+        let client = ClickUp::new(&api, &token);
+        assert!(check_changes(&client, &undated, &Pulls::default())
             .unwrap()
             .is_empty());
         // Changed: an older snapshot date, a renamed ticket; a second ticket gone.
@@ -1100,7 +1163,7 @@ pub(crate) mod tests {
         old.tasks.push(sample("86b1aa002", "Gone"));
         let api = Recorded::default()
             .on(TASK1, ok(fixture("task-86b1aa001.json")))
-            .on("/task/86b1aa001/comment", ok(fixture("comments.json")))
+            .on(comments, ok(fixture("comments.json")))
             .on(TASK2, status(404));
         let client = ClickUp::new(&api, &token);
         let changed = check_changes(&client, &old, &Pulls::default()).unwrap();
@@ -1115,16 +1178,17 @@ pub(crate) mod tests {
             changed[0]
         );
         assert!(changed[1].missing);
-        // Pull it in: tickets-update.md + baseline; tickets.json untouched.
+        // Pull it in: tickets-update.md + the baseline in `pulls`; tickets.json untouched.
         write_snapshot(dir.path(), &old).unwrap();
         let before = std::fs::read_to_string(dir.join(TICKETS_FILE)).unwrap();
         let api = api_for_one();
-        let api = api.on("/task/86b1aa001/comment", ok(fixture("comments.json")));
         let client = ClickUp::new(&api, &token);
+        let mut pulls = Pulls::default();
         let pulled = pull_in(
             &client,
             dir.path(),
             &old,
+            &mut pulls,
             &["86b1aa001".into(), "nope".into()],
             "t1",
         )
@@ -1140,9 +1204,9 @@ pub(crate) mod tests {
             "frozen"
         );
         // After the pull the ticket is no longer "changed".
-        let pulls = read_pulls(dir.path());
         let api = Recorded::default()
             .on(TASK1, ok(fixture("task-86b1aa001.json")))
+            .on(comments, ok(fixture("comments.json")))
             .on(TASK2, status(404));
         let client = ClickUp::new(&api, &token);
         let changed = check_changes(&client, &old, &pulls).unwrap();
