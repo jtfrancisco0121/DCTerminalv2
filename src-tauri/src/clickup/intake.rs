@@ -731,7 +731,10 @@ pub fn check_changes(
             Err(err) => return Err(err.to_string()),
         };
         // Comments are read for every ticket: a new comment does not always
-        // move the task's date_updated.
+        // move the task's date_updated. Chosen over "only when the date
+        // moved": the check runs on demand and once at plan approval, with at
+        // most 4 calls in flight and the per-token rate limit honoured by
+        // the client's gate (100 tickets: about 200 calls, two rate windows).
         let comments = client.comments(&own_ref(&old.id)).map_err(String::from)?;
         let mut task = task;
         task.subtasks.clear();

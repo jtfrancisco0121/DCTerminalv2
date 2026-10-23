@@ -223,22 +223,27 @@ fn check_comment(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `status` is one of the ticket's list's statuses (read once per
-/// list). `Err` is the reason it is not sent.
+/// Whether `status` is one of the statuses of the list the ticket is in
+/// NOW (read fresh: it may have moved since the snapshot), each list read
+/// once per send. `Err` is the reason it is not sent.
 fn check_status(
     client: &ClickUp,
     lists: &mut HashMap<String, Result<Vec<String>, String>>,
     ticket: &SnapshotTask,
     status: &str,
 ) -> Result<(), String> {
-    let Some(list) = ticket.list.as_ref().filter(|l| valid_id(&l.id)) else {
+    let now = client
+        .task(&TaskRef::Id(ticket.id.clone()))
+        .map_err(|e| format!("Could not read the ticket's list: {e}"))?;
+    let (list_id, list_name) = (now.list.id.clone(), now.list.name.trim().to_string());
+    if !valid_id(&list_id) {
         return Err("The ticket's list is not known, so its statuses cannot be checked.".into());
-    };
-    let statuses = lists.entry(list.id.clone()).or_insert_with(|| {
+    }
+    let statuses = lists.entry(list_id.clone()).or_insert_with(|| {
         client
-            .list(&list.id)
+            .list(&list_id)
             .map(|l| l.statuses.into_iter().map(|s| s.status).collect())
-            .map_err(|e| format!("Could not read the statuses of {}: {e}", list.name))
+            .map_err(|e| format!("Could not read the statuses of {list_name}: {e}"))
     });
     let statuses = statuses.as_ref().map_err(String::clone)?;
     if statuses
@@ -247,10 +252,10 @@ fn check_status(
     {
         Ok(())
     } else {
-        let name = if list.name.is_empty() {
-            &list.id
+        let name = if list_name.is_empty() {
+            &list_id
         } else {
-            &list.name
+            &list_name
         };
         Err(format!("\"{status}\" is not a status in {name}."))
     }
@@ -464,6 +469,15 @@ mod tests {
     }
 
     const LIST: &str = "/list/1";
+    const TASK1: &str = "/task/86b1aa001?include_subtasks=true&include_markdown_description=true";
+    /// The ticket as ClickUp has it now: in list 1, unless `list` says otherwise.
+    fn task_now(
+        list: &str,
+    ) -> Result<crate::clickup::transport::Reply, crate::clickup::transport::NoReply> {
+        ok(format!(
+            r#"{{"id":"86b1aa001","name":"x","list":{{"id":"{list}","name":"List {list}"}}}}"#
+        ))
+    }
     fn statuses() -> Result<crate::clickup::transport::Reply, crate::clickup::transport::NoReply> {
         ok(
             r#"{"id":"1","name":"Sprint","statuses":[{"status":"open"},{"status":"In Review"}]}"#
@@ -504,6 +518,7 @@ mod tests {
     #[test]
     fn only_ticked_parts_are_posted_status_first_and_each_step_saved() {
         let api = Recorded::default()
+            .on(TASK1, task_now("1"))
             .on(LIST, statuses())
             .on(STATUS1, ok("{}".into()))
             .on(COMMENT1, ok("{}".into()));
@@ -516,7 +531,7 @@ mod tests {
             &[req("86b1aa001", Some("Edited: S1"), Some("in review"))],
         );
         assert_eq!(out[0].result, "posted", "{out:?}");
-        assert_eq!(api.paths(), [LIST, STATUS1, COMMENT1]);
+        assert_eq!(api.paths(), [TASK1, LIST, STATUS1, COMMENT1]);
         let writes = api.writes.lock().unwrap().clone();
         assert_eq!(writes[0].body, serde_json::json!({"status": "in review"}));
         assert_eq!(
@@ -552,6 +567,7 @@ mod tests {
     #[test]
     fn a_posted_part_is_never_posted_twice() {
         let api = Recorded::default()
+            .on(TASK1, task_now("1"))
             .on(LIST, statuses())
             .on(STATUS1, ok("{}".into()))
             .on(COMMENT1, ok("{}".into()));
@@ -565,7 +581,7 @@ mod tests {
             again[0].message,
             "Status already set. Comment already posted."
         );
-        assert_eq!(api.paths().len(), 3, "no second call");
+        assert_eq!(api.paths().len(), 4, "no second call");
         // A duplicate request in one send is sent once.
         let mut fresh = Posted::default();
         let api = Recorded::default().on("POST /task/86b1aa002/comment", ok("{}".into()));
@@ -603,6 +619,7 @@ mod tests {
     #[test]
     fn a_status_not_in_the_list_or_refused_does_not_block_the_comment() {
         let api = Recorded::default()
+            .on(TASK1, task_now("1"))
             .on(
                 LIST,
                 ok(r#"{"id":"1","name":"Sprint","statuses":[{"status":"open"}]}"#.into()),
@@ -624,10 +641,10 @@ mod tests {
         );
         assert!(out[0]
             .message
-            .contains("\"in review\" is not a status in Sprint"));
+            .contains("\"in review\" is not a status in List 1"));
         assert_eq!(
             api.paths(),
-            [LIST, COMMENT1],
+            [TASK1, LIST, COMMENT1],
             "no PUT for a status the list lacks"
         );
         assert_eq!(
@@ -636,6 +653,7 @@ mod tests {
         );
         // ClickUp refusing the PUT: the comment still goes.
         let api = Recorded::default()
+            .on(TASK1, task_now("1"))
             .on(LIST, statuses())
             .on(STATUS1, status(422))
             .on("POST /task/86b1aa001/comment", ok("{}".into()));
@@ -655,6 +673,29 @@ mod tests {
             posted.drafts["86b1aa001"].comment.as_ref().unwrap().result,
             "posted"
         );
+    }
+
+    #[test]
+    fn the_status_is_checked_against_the_list_the_ticket_is_in_now() {
+        // The snapshot says list 1; the ticket moved to list 2, which lacks the status.
+        let api = Recorded::default().on(TASK1, task_now("2")).on(
+            "/list/2",
+            ok(r#"{"id":"2","name":"Done list","statuses":[{"status":"closed"}]}"#.into()),
+        );
+        let mut posted = Posted::default();
+        let mut saves = Saves::default();
+        let out = send(
+            &api,
+            &mut posted,
+            &mut saves,
+            &[req("86b1aa001", None, Some("in review"))],
+        );
+        assert!(
+            out[0].message.contains("not a status in List 2"),
+            "{}",
+            out[0].message
+        );
+        assert_eq!(api.paths(), [TASK1, "/list/2"]);
     }
 
     #[test]
@@ -698,6 +739,7 @@ mod tests {
     #[test]
     fn a_crash_mid_post_reads_as_sending() {
         let api = Recorded::default()
+            .on(TASK1, task_now("1"))
             .on(LIST, statuses())
             .on(STATUS1, ok("{}".into()))
             .on(COMMENT1, ok("{}".into()));

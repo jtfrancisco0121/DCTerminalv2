@@ -223,9 +223,16 @@ pub struct RunClickUp {
 
 const UNTRUSTED: &str = "This run's tickets.json was not written by this app's Start, so the app checks and posts nothing for it.";
 
-pub fn run_clickup(data: &Path, run_dir: &Path) -> RunClickUp {
+pub fn run_clickup(key: &Result<trust::Key, String>, data: &Path, run_dir: &Path) -> RunClickUp {
     let mut out = RunClickUp::default();
-    let trusted = match trust::load(data, run_dir) {
+    let loaded = match key {
+        Ok(key) => trust::load(key, data, run_dir),
+        Err(problem) if trust::trust_dir(data, run_dir).is_ok_and(|d| d.exists()) => {
+            Err(problem.clone())
+        }
+        Err(_) => Ok(None),
+    };
+    let trusted = match loaded {
         Ok(Some(t)) => Some(t),
         Ok(None) => {
             if run_dir.join(intake::TICKETS_FILE).exists() {
@@ -254,7 +261,8 @@ pub fn run_clickup(data: &Path, run_dir: &Path) -> RunClickUp {
         out.has_tickets = true;
         out.ticket_count = t.snapshot.tasks.len();
         out.fetched_at = Some(t.snapshot.fetched_at.clone());
-        let mut pulled: Vec<String> = trust::read_pulls(data, run_dir)
+        let key = key.as_ref().expect("trusted implies a key");
+        let mut pulled: Vec<String> = trust::read_pulls(key, data, run_dir)
             .map(|p| p.tickets.keys().cloned().collect())
             .unwrap_or_default();
         pulled.sort();
@@ -267,7 +275,10 @@ pub fn run_clickup(data: &Path, run_dir: &Path) -> RunClickUp {
         Ok(None) => {}
         Err(problem) => out.writeback_problem = Some(problem),
         Ok(Some((drafts, version))) => {
-            let posted = trust::read_posted(data, run_dir);
+            let posted = match (key, &trusted) {
+                (Ok(key), Some(_)) => trust::read_posted(key, data, run_dir),
+                _ => Ok(writeback::Posted::default()),
+            };
             if let Err(problem) = &posted {
                 out.writeback_problem = Some(problem.clone());
             }
@@ -307,14 +318,14 @@ pub async fn clickup_run_state(app: AppHandle, run_dir: String) -> Result<RunCli
     blocking(move || {
         let data = data_dir(&app);
         let dir = checked_run_dir(&data, &run_dir)?;
-        Ok(run_clickup(&data, &dir))
+        Ok(run_clickup(&trust::install_key(), &data, &dir))
     })
     .await
 }
 
 /// The app's own record of the run, or why the app does nothing for it.
-fn trusted(data: &Path, dir: &Path) -> Result<trust::RunTrust, String> {
-    trust::load(data, dir)?.ok_or_else(|| UNTRUSTED.to_string())
+fn trusted(key: &trust::Key, data: &Path, dir: &Path) -> Result<trust::RunTrust, String> {
+    trust::load(key, data, dir)?.ok_or_else(|| UNTRUSTED.to_string())
 }
 
 /// R8: which tickets ClickUp changed since the run's version of them.
@@ -326,13 +337,14 @@ pub async fn clickup_check_tickets(
     blocking(move || {
         let data = data_dir(&app);
         let dir = checked_run_dir(&data, &run_dir)?;
-        let run = trusted(&data, &dir)?;
+        let key = trust::install_key()?;
+        let run = trusted(&key, &data, &dir)?;
         let token = token_of(&KeychainStore, &run.account_id)?;
         let transport = UreqTransport::new();
         intake::check_changes(
             &ClickUp::new(&transport, &token),
             &run.snapshot,
-            &trust::read_pulls(&data, &dir)?,
+            &trust::read_pulls(&key, &data, &dir)?,
         )
     })
     .await
@@ -356,10 +368,11 @@ pub async fn clickup_pull_tickets(
         let data = data_dir(&app);
         let dir = checked_run_dir(&data, &run_dir)?;
         let _lock = RunLock::take(&dir)?;
-        let run = trusted(&data, &dir)?;
+        let key = trust::install_key()?;
+        let run = trusted(&key, &data, &dir)?;
         let token = token_of(&KeychainStore, &run.account_id)?;
         let transport = UreqTransport::new();
-        let mut pulls = trust::read_pulls(&data, &dir)?;
+        let mut pulls = trust::read_pulls(&key, &data, &dir)?;
         let pulled = intake::pull_in(
             &ClickUp::new(&transport, &token),
             &dir,
@@ -368,7 +381,7 @@ pub async fn clickup_pull_tickets(
             &ids,
             &now_text(),
         )?;
-        trust::save_pulls(&data, &dir, &pulls)?;
+        trust::save_pulls(&key, &data, &dir, &pulls)?;
         Ok(Pulled {
             pulled,
             update_file: dir.join(intake::UPDATE_FILE).display().to_string(),
@@ -388,12 +401,13 @@ pub struct PostReply {
 /// Checks before any call: writeback.json is still the version shown.
 pub fn post_checked(
     client: &ClickUp,
+    key: &trust::Key,
     data: &Path,
     dir: &Path,
     drafts_version: &str,
     requests: &[PostRequest],
 ) -> Result<PostReply, String> {
-    let run = trusted(data, dir)?;
+    let run = trusted(key, data, dir)?;
     let (drafts, version) =
         writeback::read_drafts(dir)?.ok_or("This run has no writeback.json yet.")?;
     if version != drafts_version {
@@ -405,8 +419,12 @@ pub fn post_checked(
         .into_iter()
         .map(|t| (t.id.clone(), t))
         .collect();
-    let mut posted = trust::read_posted(data, dir)?;
-    let mut store = trust::TrustStore { data, run_dir: dir };
+    let mut posted = trust::read_posted(key, data, dir)?;
+    let mut store = trust::TrustStore {
+        key,
+        data,
+        run_dir: dir,
+    };
     Ok(
         match writeback::post(
             client,
@@ -441,11 +459,13 @@ pub async fn clickup_post_writeback(
         let data = data_dir(&app);
         let dir = checked_run_dir(&data, &run_dir)?;
         let _lock = RunLock::take(&dir)?;
-        let run = trusted(&data, &dir)?;
+        let key = trust::install_key()?;
+        let run = trusted(&key, &data, &dir)?;
         let token = token_of(&KeychainStore, &run.account_id)?;
         let transport = UreqTransport::new();
         post_checked(
             &ClickUp::new(&transport, &token),
+            &key,
             &data,
             &dir,
             &drafts_version,
@@ -488,7 +508,12 @@ mod tests {
     use super::*;
     use crate::clickup::client::tests::{ok, Recorded};
     use crate::clickup::secret::MemoryStore;
+    use crate::clickup::writeback::PostedStore;
     use crate::test_support::TempDir;
+
+    fn k() -> trust::Key {
+        trust::tests::key()
+    }
 
     #[test]
     fn no_token_is_a_plain_error_and_tokens_stay_per_account() {
@@ -534,17 +559,23 @@ mod tests {
         let (_dir, data, run) = run_with_drafts("run_clickup");
         // Only the run folder has a tickets.json (Claude could have written it).
         intake::write_snapshot(&run, &snap("86c0abcde")).unwrap();
-        let view = run_clickup(&data, &run);
+        let view = run_clickup(&Ok(k()), &data, &run);
         assert_eq!(view.tickets_problem.as_deref(), Some(UNTRUSTED));
         assert!(view.drafts.as_ref().unwrap()[0].trusted.is_none());
         // Written at Start: trusted, with the snapshot's own name.
-        trust::write_start(&data, &run, "personal", &snap("86c0abcde")).unwrap();
-        std::fs::write(
-            trust::trust_dir(&data, &run).unwrap().join("posted.json"),
+        trust::write_start(&k(), &data, &run, "personal", &snap("86c0abcde")).unwrap();
+        let sending: writeback::Posted = serde_json::from_str(
             r#"{"schema":1,"drafts":{"86c0abcde":{"comment":{"result":"sending","at":"t","value":"x"}}}}"#,
         )
         .unwrap();
-        let view = run_clickup(&data, &run);
+        trust::TrustStore {
+            key: &k(),
+            data: &data,
+            run_dir: &run,
+        }
+        .save(&sending)
+        .unwrap();
+        let view = run_clickup(&Ok(k()), &data, &run);
         assert!(view.tickets_problem.is_none());
         assert_eq!(view.ticket_count, 1);
         assert_eq!(view.drafts_version.as_ref().unwrap().len(), 64);
@@ -555,8 +586,8 @@ mod tests {
         let json = serde_json::to_value(&drafts[0]).unwrap();
         assert_eq!(json["posted"]["comment"]["result"], "sending");
         // A draft for a ticket outside the snapshot has no trusted label.
-        trust::write_start(&data, &run, "personal", &snap("86other1")).unwrap();
-        assert!(run_clickup(&data, &run).drafts.unwrap()[0]
+        trust::write_start(&k(), &data, &run, "personal", &snap("86other1")).unwrap();
+        assert!(run_clickup(&Ok(k()), &data, &run).drafts.unwrap()[0]
             .trusted
             .is_none());
     }
@@ -574,30 +605,59 @@ mod tests {
             confirm_resend: false,
         }];
         assert_eq!(
-            post_checked(&client, &data, &run, "v", &req).unwrap_err(),
+            post_checked(&client, &k(), &data, &run, "v", &req).unwrap_err(),
             UNTRUSTED
         );
-        trust::write_start(&data, &run, "personal", &snap("86c0abcde")).unwrap();
-        let version = run_clickup(&data, &run).drafts_version.unwrap();
+        trust::write_start(&k(), &data, &run, "personal", &snap("86c0abcde")).unwrap();
+        let version = run_clickup(&Ok(k()), &data, &run).drafts_version.unwrap();
         assert_eq!(
-            post_checked(&client, &data, &run, "old", &req).unwrap_err(),
+            post_checked(&client, &k(), &data, &run, "old", &req).unwrap_err(),
             writeback::DRAFTS_CHANGED
         );
         assert!(api.paths().is_empty());
         let api = Recorded::default().on("POST /task/86c0abcde/comment", ok("{}".into()));
         let client = ClickUp::new(&api, &token);
-        let reply = post_checked(&client, &data, &run, &version, &req).unwrap();
+        let reply = post_checked(&client, &k(), &data, &run, &version, &req).unwrap();
         assert_eq!(reply.outcomes[0].result, "posted");
         // Authoritative record app-side; the run folder has a mirror.
-        assert!(trust::read_posted(&data, &run)
+        assert!(trust::read_posted(&k(), &data, &run)
             .unwrap()
             .drafts
             .contains_key("86c0abcde"));
         assert!(run.join(writeback::POSTED_FILE).exists());
         // A forged run-folder record does not stop or fake anything.
         std::fs::write(run.join(writeback::POSTED_FILE), "{}").unwrap();
-        let again = post_checked(&client, &data, &run, &version, &req).unwrap();
+        let again = post_checked(&client, &k(), &data, &run, &version, &req).unwrap();
         assert_eq!(again.outcomes[0].message, "Comment already posted.");
+    }
+
+    #[test]
+    fn a_tampered_record_turns_clickup_off_with_a_message() {
+        let (_dir, data, run) = run_with_drafts("tampered");
+        trust::write_start(&k(), &data, &run, "personal", &snap("86c0abcde")).unwrap();
+        let path = trust::trust_dir(&data, &run).unwrap().join("trust.json");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace("personal", "work")).unwrap();
+        let view = run_clickup(&Ok(k()), &data, &run);
+        assert_eq!(view.tickets_problem.as_deref(), Some(trust::TAMPERED));
+        assert!(view.drafts.unwrap()[0].trusted.is_none());
+        let token = ClickUpToken::parse("pk_x").unwrap();
+        let api = Recorded::default();
+        let client = ClickUp::new(&api, &token);
+        let req = [PostRequest {
+            ticket_id: "86c0abcde".into(),
+            comment: Some("x".into()),
+            status: None,
+            confirm_resend: false,
+        }];
+        assert_eq!(
+            post_checked(&client, &k(), &data, &run, "v", &req).unwrap_err(),
+            trust::TAMPERED
+        );
+        assert!(api.paths().is_empty());
+        // No key from the keychain: the panel says so, nothing is trusted.
+        let view = run_clickup(&Err("no keychain".into()), &data, &run);
+        assert_eq!(view.tickets_problem.as_deref(), Some("no keychain"));
     }
 
     #[test]

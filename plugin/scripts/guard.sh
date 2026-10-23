@@ -67,6 +67,9 @@ cwd0 = str(data.get("cwd") or "/")
 
 run = os.environ.get("DCV2_RUN_DIR") or ""
 run = os.path.realpath(run) if run else ""
+# The app's signed ClickUp records of each run: <app data>/run-trust (the run is <app data>/runs/<id>).
+trust_root = os.path.join(os.path.dirname(os.path.dirname(run)), "run-trust") if run else ""
+TRUST_MSG = "the app's run records (run-trust) are written only by the app, never by Claude."
 mem = os.environ.get("DCV2_MEMORY_DIR") or ""
 mem = os.path.realpath(os.path.expanduser(mem)) if mem else ""
 worktrees, repos, status = [], [], {}
@@ -148,6 +151,8 @@ if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
             block(f"{tool} without a file path")
         sys.exit(0)
     p = real(str(path), cwd0)
+    if inside(p, trust_root):
+        block(TRUST_MSG)
     if protected(p):
         block("write run-folder state only with scripts/state.sh (put / approve / writeback / worktree), never with Edit or Write.")
     if inside(p, mem):
@@ -213,6 +218,8 @@ def check_write(t, cwd):
     if t in SAFE_DEV or t.startswith("/dev/fd/"):
         return
     if re.search(r"[$`*?]", t) or (cwd is None and not os.path.isabs(os.path.expanduser(t))):
+        if trust_root and "run-trust" in t:
+            block(TRUST_MSG)
         if mem and re.search(r"\$\{?DCV2_MEMORY_DIR\b", t):
             block("codebase memory is written only with memory.sh write, never with a shell redirect.")
         if mem and cwd is None and MEM_MENTIONED:
@@ -222,6 +229,8 @@ def check_write(t, cwd):
             block(f"cannot check the write target {t!r}: write to a literal absolute path")
         return
     p = real(t, cwd)
+    if inside(p, trust_root):
+        block(TRUST_MSG)
     if inside(p, mem):
         block("codebase memory is written only with memory.sh write, never with a shell redirect, copy or move.")
     if not bound:

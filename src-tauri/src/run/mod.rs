@@ -316,7 +316,8 @@ pub fn save_tickets(
     account_id: &str,
     snapshot: &crate::clickup::intake::TicketsSnapshot,
 ) -> Result<(), String> {
-    crate::clickup::trust::write_start(data, run_dir, account_id, snapshot)?;
+    let key = crate::clickup::trust::install_key()?;
+    crate::clickup::trust::write_start(&key, data, run_dir, account_id, snapshot)?;
     crate::clickup::intake::write_snapshot(run_dir, snapshot)
 }
 
@@ -379,6 +380,7 @@ pub async fn start_run(
                 // The app's own copy first (outside the run folder), then
                 // Claude's; on failure the half-made run folder goes.
                 if let Err(err) = save_tickets(&data, &run_dir, &ctx.account_id, snapshot) {
+                    crate::clickup::trust::remove(&data, &run_dir);
                     let _ = std::fs::remove_dir_all(&run_dir);
                     return Err(err);
                 }
