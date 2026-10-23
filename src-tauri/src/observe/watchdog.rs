@@ -2,6 +2,7 @@
 //! the run is not waiting for you and not finished → the panel says so and
 //! offers Nudge (only on click) and Resume.
 
+use super::hooks::TabActivity;
 use serde::Serialize;
 use std::time::{Duration, SystemTime};
 
@@ -15,6 +16,12 @@ pub struct WatchInput {
     pub waiting_for: bool,
     /// The run is `done` or `failed`, or has no status.json yet.
     pub finished: bool,
+    /// From hook events; None when the tab has no hook state.
+    pub activity: Option<TabActivity>,
+    /// A tool started and has not finished (a long Bash, say).
+    pub tool_running: bool,
+    /// The last hook event.
+    pub hook_updated: Option<SystemTime>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -30,10 +37,20 @@ pub fn check(now: SystemTime, input: &WatchInput, threshold_minutes: u32) -> Opt
     if input.waiting_for || input.finished || threshold_minutes == 0 {
         return None;
     }
-    let last = match (input.status_changed, input.transcript_written) {
-        (Some(a), Some(b)) => a.max(b),
-        (a, b) => a.or(b)?,
-    };
+    match input.activity {
+        // Claude asks you something in the tab: that is not a stall.
+        Some(TabActivity::NeedsYou) => return None,
+        Some(TabActivity::Working) if input.tool_running => return None,
+        _ => {}
+    }
+    let last = [
+        input.status_changed,
+        input.transcript_written,
+        input.hook_updated,
+    ]
+    .into_iter()
+    .flatten()
+    .max()?;
     let idle = now.duration_since(last).unwrap_or(Duration::ZERO);
     let threshold = Duration::from_secs(u64::from(threshold_minutes) * 60);
     (idle >= threshold).then_some(Stall {
@@ -44,6 +61,12 @@ pub fn check(now: SystemTime, input: &WatchInput, threshold_minutes: u32) -> Opt
 
 /// What Nudge types into the orchestrator's terminal (then Enter).
 pub const NUDGE_TEXT: &str = "continue from status.json";
+
+/// Nudge never types into a tab that may show a permission menu.
+pub fn nudge_refusal(activity: Option<TabActivity>) -> Option<&'static str> {
+    (activity == Some(TabActivity::NeedsYou))
+        .then_some("Claude is asking you something in the tab; answer it there first.")
+}
 
 #[cfg(test)]
 mod tests {
@@ -102,6 +125,40 @@ mod tests {
             None,
             "nothing to measure"
         );
+        let quiet = t0 + min(30);
+        let asking = WatchInput {
+            activity: Some(TabActivity::NeedsYou),
+            ..input.clone()
+        };
+        assert_eq!(
+            check(quiet, &asking, 10),
+            None,
+            "a permission prompt is not a stall"
+        );
+        let long_bash = WatchInput {
+            activity: Some(TabActivity::Working),
+            tool_running: true,
+            ..input.clone()
+        };
+        assert_eq!(
+            check(quiet, &long_bash, 10),
+            None,
+            "a tool still running is work"
+        );
+        let hook_moved = WatchInput {
+            hook_updated: Some(t0 + min(25)),
+            ..input.clone()
+        };
+        assert_eq!(
+            check(quiet, &hook_moved, 10),
+            None,
+            "a recent hook event is progress"
+        );
+        let idle = WatchInput {
+            activity: Some(TabActivity::Working),
+            ..input.clone()
+        };
+        assert!(check(quiet, &idle, 10).is_some());
         let only_status = WatchInput {
             status_changed: Some(t0),
             ..Default::default()

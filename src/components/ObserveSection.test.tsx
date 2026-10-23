@@ -7,8 +7,9 @@ import { ObserveView } from "./ObserveSection";
 
 const tokens = { input: 10, output: 5, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 1000 };
 const seen: TabObservation = {
-  hook: { activity: "needs-you", lastEvent: "PermissionRequest", updatedMs: 1, subagentsRunning: 2 },
+  hook: { activity: "needs-you", lastEvent: "PermissionRequest", updatedMs: 1, subagentsRunning: 2, toolRunning: false, sessionId: null },
   hooksActive: true,
+  hooksInstalled: true,
   transcriptFound: true,
   context: { model: "claude-opus-5-5", used: 650_000, window: 1_000_000, percent: 65, warn: true },
   subagents: [
@@ -48,7 +49,8 @@ describe("ObserveView", () => {
   it("offers Nudge and Resume only on a stall, and nudges only on click", () => {
     const onNudge = vi.fn();
     const onResume = vi.fn();
-    const { rerender } = render(<ObserveView seen={seen} nudging={false} onNudge={onNudge} onResume={onResume} />);
+    const working = { ...seen, hook: { ...seen.hook!, activity: "working" as const } };
+    const { rerender } = render(<ObserveView seen={working} nudging={false} onNudge={onNudge} onResume={onResume} />);
     expect(screen.getByTestId("run-stall").textContent).toContain("No progress for 12 min");
     expect(onNudge).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText("Nudge"));
@@ -57,6 +59,19 @@ describe("ObserveView", () => {
     expect(onResume).toHaveBeenCalledTimes(1);
     rerender(<ObserveView seen={{ ...seen, stall: null }} nudging={false} onNudge={onNudge} onResume={onResume} />);
     expect(screen.queryByTestId("run-stall")).toBeNull();
+  });
+
+  it("hides Nudge while Claude needs you and asks first when the state is unknown", () => {
+    const onNudge = vi.fn();
+    const { rerender } = render(<ObserveView seen={seen} nudging={false} onNudge={onNudge} onResume={vi.fn()} />);
+    expect(screen.queryByText("Nudge")).toBeNull();
+    const unknown = { ...seen, hook: null, hooksActive: false, hooksInstalled: false };
+    rerender(<ObserveView seen={unknown} nudging={false} onNudge={onNudge} onResume={vi.fn()} />);
+    expect(screen.getByTestId("hooks-missing").textContent).toContain("dcv2-hook not found");
+    fireEvent.click(screen.getByText("Nudge"));
+    expect(onNudge).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Type it"));
+    expect(onNudge).toHaveBeenCalledTimes(1);
   });
 });
 

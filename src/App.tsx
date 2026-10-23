@@ -154,7 +154,9 @@ function App() {
 
   // P3b: what each tab's Claude does, from its hook events.
   const [activity, setActivity] = useState<Record<string, string>>({});
+  const hasDcv2Tab = (state?.tabs ?? []).some((tab) => Boolean(tab.role));
   useEffect(() => {
+    if (!hasDcv2Tab) return;
     const timer = window.setInterval(() => {
       observeTabs().then(
         (states) => setActivity(Object.fromEntries(Object.entries(states).map(([id, s]) => [id, s.activity]))),
@@ -162,7 +164,7 @@ function App() {
       );
     }, 3000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [hasDcv2Tab]);
 
   const resumeActiveRun = (runDir: string) => {
     resumeRun(windowId, runDir).then(

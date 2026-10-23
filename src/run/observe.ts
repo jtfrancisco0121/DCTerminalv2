@@ -14,6 +14,8 @@ export type TabHookState = {
   lastEvent: string | null;
   updatedMs: number | null;
   subagentsRunning: number;
+  toolRunning: boolean;
+  sessionId: string | null;
 };
 
 export type Tokens = { input: number; output: number; cacheWrite5m: number; cacheWrite1h: number; cacheRead: number };
@@ -47,6 +49,8 @@ export type Stall = { minutes: number; threshold: number };
 export type TabObservation = {
   hook: TabHookState | null;
   hooksActive: boolean;
+  /** The launch got the hook forwarder (false: `dcv2-hook` not found). */
+  hooksInstalled: boolean;
   transcriptFound: boolean;
   context: ContextMeter | null;
   subagents: SubagentInfo[];

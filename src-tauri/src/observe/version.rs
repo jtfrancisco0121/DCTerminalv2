@@ -75,6 +75,8 @@ pub fn selftest_args(plugin: &Path) -> Vec<String> {
         "--output-format".into(),
         "stream-json".into(),
         "--verbose".into(),
+        // The self-test leaves no session behind in the account folder.
+        "--no-session-persistence".into(),
         "--max-turns".into(),
         "4".into(),
         selftest_prompt(),
@@ -178,6 +180,21 @@ pub fn selftest_wanted(detected: Option<&str>, last: Option<&SelfTest>) -> bool 
         != Some(detected)
 }
 
+#[cfg(unix)]
+fn kill_group(pid: u32) {
+    extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    const SIGKILL: i32 = 9;
+    if let Ok(pid) = i32::try_from(pid) {
+        // Safety: signals only the self-test's own process group.
+        unsafe { kill(-pid, SIGKILL) };
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_group(_pid: u32) {}
+
 /// Runs the self-test: `program prefix… args` in a fresh temp folder, killed
 /// after `timeout`. Output goes to a file so a full pipe never blocks it.
 pub fn run_selftest(
@@ -204,6 +221,12 @@ pub fn run_selftest(
         return fail("Could not write the self-test output.".into());
     };
     let mut command = std::process::Command::new(program);
+    #[cfg(unix)]
+    {
+        // Its own process group, so a timeout stops Claude's children too.
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     command
         .args(prefix)
         .args(selftest_args(plugin))
@@ -224,6 +247,7 @@ pub fn run_selftest(
         match child.try_wait() {
             Ok(Some(_)) => break false,
             Ok(None) if std::time::Instant::now() >= deadline => {
+                kill_group(child.id());
                 let _ = child.kill();
                 let _ = child.wait();
                 break true;
@@ -290,6 +314,7 @@ mod tests {
         let unfinished = text.replace(SELFTEST_DONE, "nope");
         assert!(!evaluate_stream(&unfinished).ok);
         assert!(!evaluate_stream("").ok);
+        assert!(selftest_args(Path::new("/p")).contains(&"--no-session-persistence".to_string()));
     }
 
     #[test]

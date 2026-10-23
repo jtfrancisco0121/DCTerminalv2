@@ -20,7 +20,17 @@ type ViewProps = {
 
 /** P3b in the run panel: tab state, watchdog, context meter, sub-agents, cost/time. */
 export function ObserveView({ seen, nudging, onNudge, onResume }: ViewProps) {
+  const [confirming, setConfirming] = useState(false);
   const activity = activityText(seen.hook?.activity);
+  // Never type into a tab that may show a permission menu.
+  const canNudge = seen.hook?.activity !== "needs-you";
+  const nudge = () => {
+    if (!seen.hooksActive) {
+      setConfirming(true);
+      return;
+    }
+    onNudge();
+  };
   const usage = seen.usage;
   const subs = seen.subagents.slice(-8).reverse();
   return (
@@ -31,13 +41,38 @@ export function ObserveView({ seen, nudging, onNudge, onResume }: ViewProps) {
           {seen.hook && seen.hook.subagentsRunning > 0 && ` · ${seen.hook.subagentsRunning} sub-agents running`}
         </p>
       )}
+      {!seen.hooksInstalled && (
+        <p className="hint" data-testid="hooks-missing">
+          Hook status unavailable (dcv2-hook not found, or the tab started before this app run).
+        </p>
+      )}
       {seen.stall && (
         <div className="run-stall" role="status" data-testid="run-stall">
           <p className="hint warn">No progress for {seen.stall.minutes} min.</p>
           <div className="button-row">
-            <button type="button" className="secondary-button" disabled={nudging} onClick={onNudge}>
-              Nudge
-            </button>
+            {canNudge && !confirming && (
+              <button type="button" className="secondary-button" disabled={nudging} onClick={nudge}>
+                Nudge
+              </button>
+            )}
+            {confirming && (
+              <>
+                <span>Claude's state is unknown; a permission menu may be open. Type anyway?</span>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    setConfirming(false);
+                    onNudge();
+                  }}
+                >
+                  Type it
+                </button>
+                <button type="button" className="secondary-button" onClick={() => setConfirming(false)}>
+                  Cancel
+                </button>
+              </>
+            )}
             <button type="button" className="secondary-button" onClick={onResume}>
               Resume
             </button>

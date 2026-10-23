@@ -89,6 +89,8 @@ pub struct TabObservation {
     /// From hook events; None before the first one (or with no forwarder).
     pub hook: Option<hooks::TabHookState>,
     pub hooks_active: bool,
+    /// The tab's launch got the hook forwarder (false: `dcv2-hook` missing).
+    pub hooks_installed: bool,
     pub transcript_found: bool,
     pub context: Option<transcript::ContextMeter>,
     pub subagents: Vec<transcript::SubagentInfo>,
@@ -127,6 +129,7 @@ fn timeline(run_dir: &Path) -> Vec<(i64, String)> {
 pub fn observe(
     tracker: &mut transcript::SessionTracker,
     run_dir: Option<&Path>,
+    hook: Option<&hooks::TabHookState>,
     watchdog_minutes: u32,
     now: std::time::SystemTime,
 ) -> TabObservation {
@@ -148,6 +151,11 @@ pub fn observe(
                 transcript_written: tracker.last_write,
                 waiting_for: waiting,
                 finished,
+                activity: hook.map(|h| h.activity),
+                tool_running: hook.is_some_and(|h| h.tool_running),
+                hook_updated: hook.and_then(|h| h.updated_ms).map(|ms| {
+                    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(ms)
+                }),
             },
             watchdog_minutes,
         );
@@ -177,12 +185,22 @@ pub async fn observe_tab(app: AppHandle, tab_id: String) -> Result<TabObservatio
         };
         let observe_state = app.state::<ObserveState>();
         let hook = observe_state.hooks.as_ref().and_then(|h| h.state(&tab_id));
+        let installed = observe_state
+            .hooks
+            .as_ref()
+            .is_some_and(|h| h.has_tab(&tab_id));
         let run_dir = tab
             .launch
             .as_ref()
             .and_then(|l| l.run_dir.as_deref())
             .and_then(|d| crate::run::checked_run_dir(&data_dir(&app), d).ok());
-        let session = tab.claude_session_id.clone().unwrap_or_default();
+        // A `/clear` (or a resume that forks) moves Claude to a new session;
+        // SessionStart's session id says which log to follow.
+        let session = hook
+            .as_ref()
+            .and_then(|h| h.session_id.clone())
+            .or_else(|| tab.claude_session_id.clone())
+            .unwrap_or_default();
         let mut trackers = observe_state.trackers.lock().map_err(|e| e.to_string())?;
         let fresh = trackers
             .get(&tab_id)
@@ -200,15 +218,29 @@ pub async fn observe_tab(app: AppHandle, tab_id: String) -> Result<TabObservatio
         let mut out = observe(
             tracker,
             run_dir.as_deref(),
+            hook.as_ref(),
             minutes,
             std::time::SystemTime::now(),
         );
         out.hooks_active = hook.is_some();
+        out.hooks_installed = installed;
         out.hook = hook;
         Ok(out)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// A closed tab's token and session tracker go.
+pub fn forget_tab(app: &AppHandle, tab_id: &str) {
+    if let Some(state) = app.try_state::<ObserveState>() {
+        if let Some(hooks) = &state.hooks {
+            hooks.forget_tab(tab_id);
+        }
+        if let Ok(mut trackers) = state.trackers.lock() {
+            trackers.remove(tab_id);
+        }
+    }
 }
 
 /// Every tab's hook state, for the tab bar.
@@ -222,6 +254,15 @@ pub fn observe_tabs(state: tauri::State<ObserveState>) -> HashMap<String, hooks:
 #[tauri::command]
 pub async fn nudge_tab(app: AppHandle, tab_id: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let activity = app
+            .state::<ObserveState>()
+            .hooks
+            .as_ref()
+            .and_then(|h| h.state(&tab_id))
+            .map(|s| s.activity);
+        if let Some(why) = watchdog::nudge_refusal(activity) {
+            return Err(why.to_string());
+        }
         let registry = app.state::<Mutex<crate::pty::PtyRegistry>>();
         crate::pty::write_to_tab(&registry, &tab_id, watchdog::NUDGE_TEXT.as_bytes())?;
         // Apart, so Claude's input box takes the Enter as a submit, not as
@@ -402,19 +443,39 @@ mod tests {
         .unwrap();
         let mut tracker = transcript::SessionTracker::default();
         let later = SystemTime::now() + Duration::from_secs(11 * 60);
-        let seen = observe(&mut tracker, Some(&run), 10, later);
+        let seen = observe(&mut tracker, Some(&run), None, 10, later);
         assert_eq!(seen.stall.unwrap().threshold, 10);
         assert!(!seen.transcript_found);
-        assert!(observe(&mut tracker, Some(&run), 10, SystemTime::now())
-            .stall
-            .is_none());
+        assert!(
+            observe(&mut tracker, Some(&run), None, 10, SystemTime::now())
+                .stall
+                .is_none()
+        );
         std::fs::write(
             run.join("status.json"),
             r#"{"stage":"plan-approval","waitingFor":"plan-approval"}"#,
         )
         .unwrap();
-        assert!(observe(&mut tracker, Some(&run), 10, later).stall.is_none());
+        assert!(observe(&mut tracker, Some(&run), None, 10, later)
+            .stall
+            .is_none());
+        let asking = hooks::TabHookState {
+            activity: hooks::TabActivity::NeedsYou,
+            ..Default::default()
+        };
+        std::fs::write(
+            run.join("status.json"),
+            r#"{"stage":"building","waitingFor":null}"#,
+        )
+        .unwrap();
+        assert!(observe(&mut tracker, Some(&run), Some(&asking), 10, later)
+            .stall
+            .is_none());
+        assert!(watchdog::nudge_refusal(Some(hooks::TabActivity::NeedsYou)).is_some());
+        assert!(watchdog::nudge_refusal(None).is_none());
         std::fs::write(run.join("status.json"), r#"{"stage":"done"}"#).unwrap();
-        assert!(observe(&mut tracker, Some(&run), 10, later).stall.is_none());
+        assert!(observe(&mut tracker, Some(&run), None, 10, later)
+            .stall
+            .is_none());
     }
 }

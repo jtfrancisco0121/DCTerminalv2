@@ -56,6 +56,40 @@ pub fn reduce(payload: &Value) -> Value {
     Value::Object(out)
 }
 
+/// The top-level string fields [`reduce`] keeps, picked from the start of a
+/// payload too large to parse. Claude Code writes the ids first.
+pub fn prefix_fields(raw: &[u8]) -> Value {
+    let text = String::from_utf8_lossy(raw);
+    let mut out = Map::new();
+    for key in [
+        "hook_event_name",
+        "session_id",
+        "agent_id",
+        "agent_type",
+        "tool_name",
+        "notification_type",
+    ] {
+        let needle = format!("\"{key}\"");
+        let Some(at) = text.find(&needle) else {
+            continue;
+        };
+        let rest = text[at + needle.len()..].trim_start();
+        let Some(rest) = rest.strip_prefix(':').map(str::trim_start) else {
+            continue;
+        };
+        let Some(rest) = rest.strip_prefix('"') else {
+            continue;
+        };
+        let value: String = rest
+            .chars()
+            .take_while(|c| *c != '"' && *c != '\\')
+            .take(200)
+            .collect();
+        out.insert(key.into(), Value::String(value));
+    }
+    Value::Object(out)
+}
+
 /// The HTTP request the forwarder sends.
 pub fn request(port: u16, token: &str, tab: &str, body: &str) -> String {
     format!(
@@ -90,8 +124,11 @@ pub fn forward(
     if stdin.take(MAX_INPUT).read_to_end(&mut raw).is_err() {
         return false;
     }
-    let Ok(payload) = serde_json::from_slice::<Value>(&raw) else {
-        return false;
+    let payload = match serde_json::from_slice::<Value>(&raw) {
+        Ok(payload) => payload,
+        // Cut at MAX_INPUT (a huge tool output): the ids are near the start.
+        Err(_) if raw.len() as u64 >= MAX_INPUT => prefix_fields(&raw),
+        Err(_) => return false,
     };
     let body = reduce(&payload).to_string();
     let addr = SocketAddr::from(([127, 0, 0, 1], port));

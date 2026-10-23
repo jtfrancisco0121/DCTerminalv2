@@ -32,9 +32,15 @@ const TABLE: &[(&str, Price, u64)] = &[
     ("mythos", price(10.0, 50.0, 1.0), 1_000_000),
     ("opus-5-5", price(4.0, 20.0, 0.20), 1_000_000),
     ("opus-5", price(5.0, 25.0, 0.50), 1_000_000),
-    ("opus-4", price(5.0, 25.0, 0.50), 200_000),
+    ("opus-4-8", price(5.0, 25.0, 0.50), 1_000_000),
+    ("opus-4-7", price(5.0, 25.0, 0.50), 1_000_000),
+    ("opus-4-6", price(5.0, 25.0, 0.50), 1_000_000),
+    ("opus-4-5", price(5.0, 25.0, 0.50), 200_000),
+    // Opus 4 and 4.1.
+    ("opus-4", price(15.0, 75.0, 1.50), 200_000),
     ("opus", price(5.0, 25.0, 0.50), 200_000),
     ("sonnet-5", price(2.0, 10.0, 0.20), 1_000_000),
+    ("sonnet-4-6", price(3.0, 15.0, 0.30), 1_000_000),
     ("sonnet-4", price(3.0, 15.0, 0.30), 200_000),
     ("sonnet", price(3.0, 15.0, 0.30), 200_000),
     ("haiku", price(1.0, 5.0, 0.10), 200_000),
@@ -140,7 +146,14 @@ mod tests {
         assert!(price_for("gpt-x").is_none());
         assert_eq!(context_window("claude-haiku-4-5"), 200_000);
         assert_eq!(context_window("claude-opus-5-5"), 1_000_000);
-        assert_eq!(context_window("claude-sonnet-4-6[1m]"), 1_000_000);
+        assert_eq!(context_window("claude-sonnet-4-5[1m]"), 1_000_000);
+        assert_eq!(context_window("claude-sonnet-4-6"), 1_000_000);
+        assert_eq!(context_window("claude-sonnet-4-5"), 200_000);
+        assert_eq!(context_window("claude-opus-4-8"), 1_000_000);
+        assert_eq!(context_window("claude-opus-4-6"), 1_000_000);
+        assert_eq!(price_for("claude-opus-4-1-20250805").unwrap().input, 15.0);
+        assert_eq!(price_for("claude-opus-4-20250514").unwrap().output, 75.0);
+        assert_eq!(price_for("claude-opus-4-5").unwrap().input, 5.0);
     }
 
     #[test]
