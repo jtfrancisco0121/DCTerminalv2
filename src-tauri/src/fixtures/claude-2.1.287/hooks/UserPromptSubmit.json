@@ -1,0 +1,9 @@
+{
+  "session_id": "de6a6329-de0f-49da-960b-f50fed9236e4",
+  "transcript_path": "/config/projects/-work-toy/de6a6329-de0f-49da-960b-f50fed9236e4.jsonl",
+  "cwd": "/work/toy",
+  "prompt_id": "0e37ed4f-5a58-4171-9a49-c4c8d61bab9e",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "This is a self-test of the dcv2 plugin. Use the Agent tool exactly once, in the foreground, with subagent_type \"dcv2:plan-reviewer\", model \"haiku\", description \"dcv2 self-test\" and prompt \"Self-test only. Do not read or write any files and do not run commands. Reply with exactly: OK\". After it returns, reply with exactly: SELFTEST-DONE"
+}

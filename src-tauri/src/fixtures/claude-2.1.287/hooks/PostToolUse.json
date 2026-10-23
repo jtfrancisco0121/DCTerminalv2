@@ -1,0 +1,71 @@
+{
+  "session_id": "de6a6329-de0f-49da-960b-f50fed9236e4",
+  "transcript_path": "/config/projects/-work-toy/de6a6329-de0f-49da-960b-f50fed9236e4.jsonl",
+  "cwd": "/work/toy",
+  "prompt_id": "0e37ed4f-5a58-4171-9a49-c4c8d61bab9e",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+    "description": "dcv2 self-test",
+    "prompt": "Self-test only. Do not read or write any files and do not run commands. Reply with exactly: OK",
+    "subagent_type": "dcv2:plan-reviewer",
+    "model": "haiku",
+    "run_in_background": false
+  },
+  "tool_response": {
+    "status": "completed",
+    "prompt": "Self-test only. Do not read or write any files and do not run commands. Reply with exactly: OK",
+    "agentId": "a2f2a89910f21f43e",
+    "agentType": "dcv2:plan-reviewer",
+    "harnessNoteCount": 0,
+    "harnessTailCount": 0,
+    "harnessSectionHash": "056f371b8718da5c",
+    "content": [
+      {
+        "type": "text",
+        "text": "OK"
+      }
+    ],
+    "resolvedModel": "claude-haiku-4-5-20251001",
+    "totalDurationMs": 1173,
+    "totalTokens": 6135,
+    "totalToolUseCount": 0,
+    "usage": {
+      "output_tokens_details": {
+        "thinking_tokens": 47
+      },
+      "input_tokens": 10,
+      "cache_creation_input_tokens": 1777,
+      "cache_read_input_tokens": 4294,
+      "output_tokens": 54,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 1777
+      },
+      "inference_geo": "not_available",
+      "iterations": [
+        {
+          "input_tokens": 10,
+          "output_tokens": 54,
+          "cache_read_input_tokens": 4294,
+          "cache_creation_input_tokens": 1777,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 1777,
+            "ephemeral_1h_input_tokens": 0
+          },
+          "type": "message"
+        }
+      ],
+      "speed": "standard",
+      "fallback_credit": null
+    }
+  },
+  "tool_use_id": "toolu_014z93kPSuie6cXVZCWDsh32",
+  "duration_ms": 1173
+}

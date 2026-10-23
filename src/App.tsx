@@ -23,7 +23,7 @@ import { InlineNotice } from "./components/InlineNotice";
 import { NewTabForm } from "./components/NewTabForm";
 import { RunPanel } from "./components/RunPanel";
 import { StartScreen } from "./components/StartScreen";
-import type { StartedRun } from "./run/api";
+import { resumeRun, type StartedRun } from "./run/api";
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
 import { TabBar } from "./components/TabBar";
@@ -37,6 +37,8 @@ import { applyTheme, watchSystemTheme } from "./theme";
 import { reportError, setErrorNotifier } from "./uiErrors";
 import { statusLimit } from "./usage/limits";
 import { keyAction, pageAction, type PageAction } from "./pageActions";
+import { ClaudeVersionBanner } from "./components/ClaudeVersionBanner";
+import { observeTabs } from "./run/observe";
 import "./App.css";
 
 /** How often the usage line is read again while nothing else asks. */
@@ -148,6 +150,27 @@ function App() {
     setDialog(null);
     setPlainTab(false);
     await reload();
+  };
+
+  // P3b: what each tab's Claude does, from its hook events.
+  const [activity, setActivity] = useState<Record<string, string>>({});
+  const hasDcv2Tab = (state?.tabs ?? []).some((tab) => Boolean(tab.role));
+  useEffect(() => {
+    if (!hasDcv2Tab) return;
+    const timer = window.setInterval(() => {
+      observeTabs().then(
+        (states) => setActivity(Object.fromEntries(Object.entries(states).map(([id, s]) => [id, s.activity]))),
+        () => undefined,
+      );
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [hasDcv2Tab]);
+
+  const resumeActiveRun = (runDir: string) => {
+    resumeRun(windowId, runDir).then(
+      (run) => void started(run),
+      (err: unknown) => fail("Resume", err),
+    );
   };
 
   const doClose = (tabId: string) => {
@@ -272,6 +295,7 @@ function App() {
           tabs={state.tabs}
           activeTabId={state.activeTabId}
           exited={exited}
+          activity={activity}
           onSelect={select}
           onClose={requestClose}
           onRename={rename}
@@ -282,6 +306,7 @@ function App() {
         />
       )}
       <section className="workspace-body">
+        <ClaudeVersionBanner windowId={windowId} />
         {accountMissing && !blocked && (
           <InlineNotice
             tone="warning"
@@ -335,7 +360,12 @@ function App() {
         {active && !blocked && active.runDir && (
           <div className="run-layout">
             <TerminalView key={active.id} tab={active} fontSize={fontSize} autoFocus={!dialog} />
-            <RunPanel key={active.runDir} runDir={active.runDir} />
+            <RunPanel
+              key={active.runDir}
+              runDir={active.runDir}
+              tabId={active.id}
+              onResume={() => resumeActiveRun(active.runDir!)}
+            />
           </div>
         )}
       </section>

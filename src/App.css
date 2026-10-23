@@ -1323,3 +1323,64 @@ body,
   font-family: var(--font-mono, monospace);
   font-size: var(--text-xs);
 }
+
+/* P3b: session state, watchdog, context meter, cost line, version banner. */
+.run-observe {
+  margin: var(--space-2) 0;
+}
+
+.run-activity {
+  margin: 0 0 var(--space-1);
+  font-weight: 600;
+}
+
+.run-activity-needs-you {
+  color: var(--warning);
+}
+
+.run-stall {
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin: var(--space-2) 0;
+}
+
+.run-subagents {
+  list-style: none;
+  margin: var(--space-1) 0;
+  padding: 0;
+  font-size: var(--text-xs);
+}
+
+.run-cost table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.run-cost th,
+.run-cost td {
+  text-align: left;
+  padding: 2px var(--space-1);
+}
+
+.version-banner {
+  padding: 0 var(--space-3);
+}
+
+.tab-activity {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-left: var(--space-1);
+  border-radius: 50%;
+  background: var(--border);
+}
+
+.tab-activity-working {
+  background: var(--success);
+}
+
+.tab-activity-needs-you {
+  background: var(--warning);
+}

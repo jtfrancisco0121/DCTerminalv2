@@ -271,6 +271,15 @@ pub struct RunSettings {
     /// `DCV2_STOP_HOOKS` (A3 kill switch).
     #[serde(default = "default_true")]
     pub stop_hooks: bool,
+    /// R2 watchdog: minutes with no progress before the panel says so; 0 is off.
+    #[serde(default = "default_watchdog_minutes")]
+    pub watchdog_minutes: u32,
+}
+
+pub const WATCHDOG_MINUTES_LIMIT: u32 = 240;
+
+fn default_watchdog_minutes() -> u32 {
+    crate::observe::watchdog::DEFAULT_MINUTES
 }
 
 pub const MAX_IMPLEMENTERS_LIMIT: u32 = 8;
@@ -288,6 +297,7 @@ impl Default for RunSettings {
         Self {
             max_implementers: default_max_implementers(),
             stop_hooks: true,
+            watchdog_minutes: default_watchdog_minutes(),
         }
     }
 }
@@ -370,6 +380,7 @@ impl SettingsStore {
         self.data.run = RunSettings {
             max_implementers: next.max_implementers.clamp(1, MAX_IMPLEMENTERS_LIMIT),
             stop_hooks: next.stop_hooks,
+            watchdog_minutes: next.watchdog_minutes.min(WATCHDOG_MINUTES_LIMIT),
         };
         self.save()
     }

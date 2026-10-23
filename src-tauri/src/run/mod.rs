@@ -45,6 +45,11 @@ fn plugin_dir(app: &AppHandle) -> Option<PathBuf> {
     launch::resolve_plugin_dir(env.as_deref(), resource.as_deref(), &repo)
 }
 
+/// The plugin folder a launch uses (the R3 self-test loads the same one).
+pub fn plugin_dir_for(app: &AppHandle) -> Option<PathBuf> {
+    plugin_dir(app)
+}
+
 const NO_PLUGIN: &str =
     "The dcv2 plugin folder was not found (set DCTV2_PLUGIN_DIR, or reinstall the app).";
 

@@ -347,6 +347,20 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
           />{" "}
           Run the repo's checks when an agent stops (stop hooks)
         </label>
+        <label className="field-label">
+          Say “no progress” after this many quiet minutes (0 is off)
+          <input
+            className="text-input text-input-narrow"
+            type="number"
+            min={0}
+            max={240}
+            value={runSettings.watchdogMinutes ?? 10}
+            onChange={(event) => {
+              const minutes = Number(event.target.value);
+              setRun({ ...runSettings, watchdogMinutes: Number.isFinite(minutes) && minutes >= 0 ? minutes : 10 });
+            }}
+          />
+        </label>
         <div className="button-row">
           <button type="button" className="primary-button" onClick={() => void saveRun()}>
             Save run settings
