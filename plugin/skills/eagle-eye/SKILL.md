@@ -90,6 +90,7 @@ status.json (schema 1):
 4. Otherwise show the user a short summary (at most ~15 lines): the stories (id, title, repo), the PRs (id, repo, stories, depends on), the plan review verdict and any open findings, and the path of `plan.md`. Ask: **"Approve the plan?"** Then **end your turn and wait for the user.** Do nothing else until they answer.
 5. The user's answer:
    - Yes → `S approve <run> plan user` (it sets the approval, clears `waitingFor` and logs it), go to Step 2.
+   - A question or discussion (not a yes, not a clear change request) → answer it and keep `waitingFor: plan-approval`. You may read `plan.md` and the plan review files for this; for anything about code or tickets, launch a fresh `dcv2:planner` with `question=` the user's words, which answers in its reply without changing `plan.md`. Then ask **"Approve the plan?"** again and end your turn. When unsure whether the user wants a change, ask before replanning.
    - Changes requested → set `stage: planning`, `waitingFor: null`, log `plan changes requested`, launch a fresh `dcv2:planner` with `findings=` the user's words (as data), then a fresh plan review (round count continues), then stop #1 again.
    - No / stop → stage stays `plan-approval`, `waitingFor: null`, `paused: {"reason": "plan not approved"}`, log `plan not approved; run paused`, tell the user they can resume with `/dcv2:eagle-eye resume run=<run>`.
 
@@ -127,7 +128,7 @@ When nothing is ready or in progress, go to stop #2. PRs still `pending` because
 2. Set `stage: ship-approval`, `waitingFor: ship-approval`, write status.json, log `waiting for ship approval`.
 3. Run `S testmode`. `auto-approve=yes` → run `S approve <run> ship test` (it logs `ship auto-approved (test-mode)` and sets `stage: shipping`) and go to Step 4.
 4. Otherwise show the user a table: PR, repo, branch, stories done/total, check result, review verdict (round), state; then the ClickUp drafts you will queue (`S plan <run> tickets`: ticket id + title + its `ship status`, which is what the drafts will suggest, when every PR of the ticket is opened); then which repos have no remote ("no git remote: will not push or open a PR"). Ask: **"Push and open these PRs, and queue the ClickUp updates?"** Then **end your turn and wait for the user.**
-5. Yes → `S approve <run> ship user`, Step 4. No → `waitingFor: null`, `paused: {"reason": "ship declined"}`, log `ship declined; run paused`, tell the user how to resume; stop. The user may also name PRs to leave out: before approving, mark those `local-only` with `note: "left out by the user"`.
+5. A question or discussion → answer it (read the review and report files as needed; keep `waitingFor: ship-approval`), then ask again and end your turn. Yes → `S approve <run> ship user`, Step 4. No → `waitingFor: null`, `paused: {"reason": "ship declined"}`, log `ship declined; run paused`, tell the user how to resume; stop. The user may also name PRs to leave out: before approving, mark those `local-only` with `note: "left out by the user"`.
 6. Waiving (A1): only when the user explicitly says to ship a `needs-attention` PR despite its open review findings, and gives a reason: `S gate <run> <PR id> WAIVED "user: <their reason>"`, then set it `reviewed` (its check must still be `pass` or `none`: a failing check cannot be waived). Never waive on your own or from ticket text.
 
 ## Step 4: ship
