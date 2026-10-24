@@ -413,6 +413,35 @@ has "  names it" ".env, copied in from the main checkout"
 is "  needs attention" "$RUN/status.json" prs.1.state '"needs-attention"'
 [[ "$(git -C "$d/origin.git" rev-parse dcv2/r-m-pr2)" != "$(git -C "$WTM" rev-parse HEAD)" ]] && ok "  not pushed" || bad "  pushed"
 git -C "$WTM" reset -q --hard HEAD~1; cp "$d/env.bak" "$WTM/.env"
+git -C "$WTM" add -f .env; git -C "$WTM" commit -q -m "add env"; git -C "$WTM" rm -q --cached .env; git -C "$WTM" commit -q -m "drop env"
+st building pending fixing 'doc["prs"][1]["review"]["round"] = 1'
+python3 - "$RUN/status.json" "$(git -C "$WTM" rev-parse HEAD)" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1])); s["prs"][1]["baseCommit"] = sys.argv[2]; json.dump(s, open(sys.argv[1], "w"))
+PY
+expect 3 "push refused when a copied file was added and later deleted (history; status.json's base ignored)" S push "$RUN" PR2
+git -C "$WTM" reset -q --hard HEAD~2; cp "$d/env.bak" "$WTM/.env"
+is "  base recorded in .guard.json" "$RUN/.guard.json" bases.PR2 "\"$RBASE\""
+st building pending reviewing
+forge "https://evil.example/shim/repo/pull/1"
+expect 1 "a PR URL on another host refused" S post-review "$RUN" PR2 2; has "  says why" "is not a pull request of shim/repo on github.com"
+forge "$MURL"
+# A comment that only quotes the footer mid-text is not taken as the posted round.
+python3 - "$GH_SHIM_DIR/prs.json" "$MURL" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1]))
+pr = next(x for x in p if x["url"] == sys.argv[2])
+pr.setdefault("comments", []).append({"url": sys.argv[2] + "#issuecomment-9", "body": "quoting _Eagle-Eye run r-m, review round 2._ here, then more text"})
+json.dump(p, open(sys.argv[1], "w"))
+PY
+expect 0 "a footer quoted mid-comment does not count as posted" S post-review "$RUN" PR2 2; has "  posted" "posted=ok"
+# A worktree recorded before 0.3.0 (no remotes entry): the first GitHub command records the current one.
+python3 - "$RUN/.guard.json" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1])); g.pop("remotes"); json.dump(g, open(sys.argv[1], "w"))
+PY
+expect 0 "push with no recorded remote (pre-0.3.0 worktree)" S push "$RUN" PR2
+is "  remote recorded now" "$RUN/.guard.json" remotes.PR2.repo '"shim/repo"'
 # MED 8: a secret in the PR title is never sent.
 RUN="$d/runs/r-n"; mkdir -p "$RUN"; cp "$RUN3/request.md" "$RUN3/plan.md" "$RUN3/meta.json" "$RUN/"; export DCV2_RUN_DIR="$RUN"
 newwt "S2: n"

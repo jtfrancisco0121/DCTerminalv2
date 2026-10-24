@@ -585,7 +585,7 @@ def cmd_base(repo):
     print(f"base={base} baseCommit={commit} remote={remote or 'none'}")
 
 
-def record_guard(run, repo, pr_id, wt, copied=None, remote=None):
+def record_guard(run, repo, pr_id, wt, copied=None, remote=None, base=None):
     path = os.path.join(run, ".guard.json")
     g = load_json(path)
     if not isinstance(g, dict) or g.get("runDir") != run:
@@ -596,6 +596,8 @@ def record_guard(run, repo, pr_id, wt, copied=None, remote=None):
     if copied is not None:  # files copied in from the main checkout: never staged or committed (guard)
         old = g.setdefault("copied", {}).get(pr_id) or []
         g["copied"][pr_id] = sorted(set(old) | set(copied))
+    if base and pr_id not in (g.get("bases") or {}):  # the base commit the worktree was made from (fixed)
+        g.setdefault("bases", {})[pr_id] = base
     if remote and pr_id not in (g.get("remotes") or {}):  # the push target, fixed when the worktree is first made
         g.setdefault("remotes", {})[pr_id] = remote
     atomic_write(path, json.dumps(g, indent=2) + "\n")
@@ -741,13 +743,13 @@ def cmd_worktree(run, repo, pr_id, base):
         made = True
     remote = remote_record(run, repo)
     if not made:
-        record_guard(run, repo, pr_id, wt, remote=remote)
+        record_guard(run, repo, pr_id, wt, remote=remote, base=base)
         print(f"branch={branch} worktree={wt}")
         return
     # A newly made worktree (fresh or re-made folder): local files, then the install step.
     entry = repo_entry(run, repo)
     copied, refused = copy_files(repo, wt, entry.get("copyFiles"))
-    record_guard(run, repo, pr_id, wt, copied, remote)
+    record_guard(run, repo, pr_id, wt, copied, remote, base)
     print(f"branch={branch} worktree={wt}" + (" remade=yes" if remade else ""))
     if copied or refused:
         print(f"copied={len(copied)}" + (f" refused: {'; '.join(refused)}" if refused else ""))
@@ -915,6 +917,14 @@ def github_pr(run, pid, stages=GITHUB_STAGES):
     g = guard_rec(run)
     if (g.get("worktrees") or {}).get(pid) != wt:
         die(f"NOT DONE: {pid}'s worktree is not recorded in .guard.json (run `state.sh worktree` for it)")
+    if pid not in (g.get("remotes") or {}):
+        # A worktree made before 0.3.0 has no recorded remote. A github-mode run is always a 0.3.0 run (the app
+        # writes reviewMode only then), whose worktrees were recorded when made; this fallback records the
+        # repo's current remote once, and from then on the guard keeps the Implementer from changing remotes.
+        r = remote_record(run, os.path.realpath(pr["repoPath"]))
+        if r:
+            record_guard(run, os.path.realpath(pr["repoPath"]), pid, wt, remote=r)
+            g = guard_rec(run)
     rem = (g.get("remotes") or {}).get(pid)
     if rem and not (isinstance(rem, dict) and rem.get("url")):
         rem = None
@@ -938,11 +948,18 @@ def attention(run, st, pr, why, what="NOT DONE"):
 
 def copied_committed(run, pr):
     """Files copied in from the main checkout (recorded in .guard.json) that the branch's commits touch."""
-    files = (guard_rec(run).get("copied") or {}).get(pr.get("id")) or []
+    g = guard_rec(run)
+    files = (g.get("copied") or {}).get(pr.get("id")) or []
     if not files:
         return []
-    r = git("-C", pr["worktree"], "diff", "--name-only", f"{pr.get('baseCommit')}..HEAD")
-    changed = set(r.stdout.split("\n")) if r.returncode == 0 else set()
+    base = (g.get("bases") or {}).get(pr.get("id"))  # recorded by state.sh worktree, not status.json's copy
+    if not base:
+        return files  # cannot tell what the branch adds: treat every copied file as at risk
+    # Every commit, not the net diff: a file added and later deleted is still in the pushed history.
+    r = git("-C", pr["worktree"], "log", "--name-only", "--format=", f"{base}..HEAD")
+    if r.returncode != 0:
+        return files
+    changed = set(l.strip() for l in r.stdout.splitlines())
     return [f for f in files if f in changed]
 
 
@@ -961,12 +978,18 @@ def clean_text(run, st, pr, text, label, what):
         attention(run, st, pr, f"{label} not sent to GitHub: {why}", what)
 
 
+REMOTE_HOST = re.compile(r"^(?:https?://(?:[^@/]+@)?|ssh://(?:[^@/]+@)?|[\w.-]+@)([^/:\s]+)")
+
+
 def verify_pr(pr, rem, url):
-    """None when url is this branch's own PR in the recorded repo, else why not."""
+    """None when url is this branch's own PR in the recorded repo (on github.com or the remote's host), else why not."""
     m = GH_URL.match(str(url or ""))
     slug = rem.get("repo") or ""
-    if not m or f"{m.group(1)}/{m.group(2)}".lower() != slug.lower():
-        return f"{url} is not a pull request of {slug or 'the recorded repo'}"
+    hm = REMOTE_HOST.match(rem.get("url") or "")
+    hosts = {"github.com"} | ({hm.group(1).lower()} if hm else set())
+    host = str(url).split("/")[2].lower() if m else ""
+    if not m or f"{m.group(1)}/{m.group(2)}".lower() != slug.lower() or host not in hosts:
+        return f"{url} is not a pull request of {slug or 'the recorded repo'} on {' / '.join(sorted(hosts))}"
     r = gh(["pr", "view", url, "--json", "url,headRefName,headRepository,headRepositoryOwner,isCrossRepository"], pr["worktree"], slug, 60)
     if r.returncode != 0:
         return gh_err(r, "gh pr view")
@@ -1120,7 +1143,7 @@ def posted_already(pr, rem, footer):
         cs = json.loads(r.stdout or "{}").get("comments") or []
     except (ValueError, AttributeError):
         return None
-    hit = next((c for c in cs if isinstance(c, dict) and footer in str(c.get("body") or "")), None)
+    hit = next((c for c in cs if isinstance(c, dict) and str(c.get("body") or "").rstrip().endswith(footer)), None)
     return (hit.get("url") or pr["prUrl"]) if hit else None
 
 
