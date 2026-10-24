@@ -15,14 +15,16 @@ The contract between the `dcv2:eagle-eye` skill and the app. The app creates the
   reviews/          skill   plan-round<n>.md, PR<n>-round<n>.md (full reviews)
   reports/          skill   PR<n>-build<n>.md, PR<n>-fix<n>.md (implementer reports)
   logs/             skill   PR<n>-check.txt etc. (full check output)
-  pr-bodies/        skill   PR<n>.md (the GitHub PR body state.sh ship-pr opened the PR with)
+  pr-bodies/        skill   PR<n>.md (the GitHub PR body state.sh ship-pr / draft-pr / ready opened or set)
+  pr-comments/      skill   PR<n>-round<n>.md, PR<n>-round<n>-fixes.md (github mode: exactly what was posted)
+  logs/PR<n>-setup.txt skill the worktree setup step's output (state.sh worktree)
   gates/            skill   PR<n>.yml (A1: the PR Reviewer step's gate, written by state.sh gate)
   report.md         skill   the run report (R10), written by state.sh at done / failed
   memory-update.md  skill   what the end-of-run memory update changed (or why nothing)
   logs/PR<n>-stop-check.txt, logs/.stop-check.json   the Stop hook's last failing check output, and its per-PR timing cache
 ```
 
-`runId` is the folder's name. Every JSON file the skill writes is written atomically: the whole document to a temp file made with `mkstemp` in the same folder (`.<name>.<random>.tmp`), then renamed over `<name>`. Readers never see a half-written file; readers ignore dot-files and `*.tmp`. The skill writes only through `plugin/scripts/state.sh` (`put`, `approve`, `worktree`, `ship-pr`, `writeback`, `log`, `gate`, `report`), which refuses invalid documents (the old file stays in place). All times are UTC ISO-8601 (`2026-10-22T13:04:05Z`).
+`runId` is the folder's name. Every JSON file the skill writes is written atomically: the whole document to a temp file made with `mkstemp` in the same folder (`.<name>.<random>.tmp`), then renamed over `<name>`. Readers never see a half-written file; readers ignore dot-files and `*.tmp`. The skill writes only through `plugin/scripts/state.sh` (`put`, `approve`, `worktree`, `ship-pr`, `writeback`, `log`, `gate`, `report`, and in github review mode `draft-pr`, `push`, `post-review`, `comment`, `ready`), which refuses invalid documents (the old file stays in place). All times are UTC ISO-8601 (`2026-10-22T13:04:05Z`).
 
 ## Launch environment
 
@@ -59,6 +61,13 @@ Everything else is the request itself (what to build or fix), written by the use
   ]
 }
 ```
+
+Each repo may also have (app-written, optional):
+
+| Key | Meaning |
+|---|---|
+| `setup` | string or null. The install step `state.sh worktree` runs in a **newly made** worktree (fresh, or re-made because the folder was gone; never a reused one), `bash -c` in the worktree, own process group, killed after 10 min (`DCV2_SETUP_TIMEOUT` seconds, tests only), output to `logs/<PR>-setup.txt` (first line `$ <command>`). `null` or missing → detect (only in runs whose meta.json has a `reviewMode` key; older runs get only an explicit setup): `package-lock.json` → `npm ci`, `pnpm-lock.yaml` → `pnpm install --frozen-lockfile`, `yarn.lock` → `yarn install --frozen-lockfile`, `go.mod` → `go mod download`, else none. `""` → none. It prints one line `setup=ok\|failed\|none log=<path>\|-`; a failure never fails the worktree (the Implementer is told and retries it once). |
+| `copyFiles` | string[] (default `[]`). Paths relative to the repo, copied from the main checkout into a newly made worktree (before `setup`): only regular files that exist, are **git-ignored** there and not tracked, with no symlink anywhere on the path (absolute paths, `..` and `.git` refused). Each refusal is printed (`copied=<n> refused: <path>: <why>; …`); a missing file is skipped silently. The copied list is recorded in `.guard.json` `copied`, and the guard blocks the Implementer's `git add` / `git commit` naming one of them (best effort; the role also checks `git diff --cached`). The janitor removes them with the worktree. |
 
 `check: null` means "none known". The Implementer Stop hook (A3) runs only these commands (never status.json's), so without repos.json it does nothing. When the file is missing the skill detects: the start folder itself if it is a git repo (`git -C <folder> rev-parse --show-toplevel` equals the folder), else each child folder that is a git repo, named after its folder. Check per repo, first match wins (ported from DCTerminal `workspace_repos.rs` + `gates.rs`):
 
@@ -170,7 +179,9 @@ request.md names the tickets only, after the user's words: `Tickets from ClickUp
 | `prs[].commits` | int | commits on the branch since `baseCommit` |
 | `prs[].check` | object | `command` (string or null); `result`: `not-run`, `pass`, `fail`, `none` (no check command), `error` (the check could not run); `summary` one line or null; `cwd` (absolute folder the check runs in, or null; defaults to the worktree); `log` (path of the last full check output, absolute or relative to the run folder, or null) |
 | `prs[].review` | object | `round` (int 0-3: the round in flight while `reviewing` / `fixing`, else the last finished round; 0 before the first review), `verdict` (`APPROVED`, `REQUEST CHANGES`, or null), `openFindings` (int, MEDIUM+), `path` (last review file: absolute, or relative to the run folder; null before a review) |
-| `prs[].prUrl` | string or null | set by `state.sh ship-pr` once the GitHub PR exists |
+| `prs[].prUrl` | string or null | set by `state.sh ship-pr` / `ready` once the GitHub PR exists, and in github mode by `state.sh draft-pr` once the draft exists |
+| `prs[].draft` | bool (optional) | github mode: `true` while the PR is a draft (set by `draft-pr`), `false` after `ready`. Missing = not known / local mode |
+| `prs[].comments` | array (optional) | github mode: one entry per posted review round, `{"round": n, "url": "<comment url>", "head": "<sha reviewed>", "fixesUrl": "<url>"?}` (`head` and `fixesUrl` are extra; `fixesUrl` is the round's "Round n fixes" comment). Written only by `post-review` / `comment`; `put` keeps the recorded value |
 | `prs[].state` | string | see below |
 | `prs[].note` | string or null | one human line when something needs attention (blocked story, unresolved findings, push refused); required with `needs-attention` |
 | `prs[].startedAt` | string or null | UTC time the PR first left `pending` (set by `state.sh put`) |
@@ -187,13 +198,23 @@ PR `state`:
 |---|---|
 | `pending` | not started; waiting for a dependency when `dependsOn` is not all `reviewed` |
 | `building` | an Implementer is working its stories |
+| `drafted` | github mode: built (round 1, check pass), its draft PR open (`prUrl` set, required), first review not started yet; the flow treats it like `reviewing`/`fixing` (in progress) |
 | `reviewing` | a PR Reviewer is reviewing round `review.round` |
 | `fixing` | an Implementer is fixing the findings of round `review.round` |
 | `reviewed` | review verdict `APPROVED` (no MEDIUM+ open), the check `pass` or `none`, and `gates/<id>.yml` PASS, CONCERNS or WAIVED for the current `review.round` (all enforced); ready to ship |
 | `needs-attention` | blocked, failing or broken check it could not fix, MEDIUM+ still open after 3 review rounds, a sub-agent that failed twice, a branch that disappeared, or a base missing on the remote; `note` says why. Dependents stay `pending`. |
-| `opened` | branch pushed and the GitHub PR created (`prUrl` set) |
+| `opened` | branch pushed and the GitHub PR created and **ready for review** (`prUrl` set; github mode: `draft: false` after `state.sh ready`) |
 | `pushed` | branch pushed but `gh pr create` failed (`note` says why); a resumed ship looks the PR up with `gh pr view <branch>` before opening one |
-| `local-only` | shipping found no git remote (or the user left the PR out): the work stays committed in the worktree |
+| `local-only` | shipping found no git remote (or the user left the PR out; github mode: a left-out draft stays a draft): the work stays committed in the worktree |
+
+### Review mode (meta.json `reviewMode`)
+
+`meta.json` (app-written, guard-protected) has `"reviewMode": "github" | "local"`; missing or anything else = `local`, so a run keeps the flow it started with. `state.sh mode <run>` (and `preflight`) print `reviewMode=…`.
+
+- **local**: the flow above: nothing goes to GitHub until stop #2, then `state.sh ship-pr` pushes and opens each PR.
+- **github**: stop #1's yes also allows pushing the run's `dcv2/` branches, draft PRs and review comments. After an Implementer's round 1 with the check `pass`/`none`, `state.sh draft-pr <run> <PR>` pushes (never force) and runs `gh pr create --draft` (title from status.json, body `pr-bodies/<PR>.md`: the stories + "Eagle-Eye run … — review in progress"), records `prUrl`, `draft: true`, state `drafted`; it first looks for the branch's PR (`gh pr list --head <branch> --state all`) and never opens a second one (a closed/merged one is reported, not reopened). Each review round, `state.sh post-review <run> <PR> <n>` posts `reviews/<PR>-round<n>.md` as **one** `gh pr comment` (scanned with `memory.sh scan`: on a hit nothing is sent and the PR becomes `needs-attention`; capped at 60 000 characters with a "full review in the run folder" tail; the posted text is kept in `pr-comments/`), records it in `comments`, and never re-posts a recorded round. After a fix round, `state.sh push <run> <PR>` (new commits only, never force) and `state.sh comment <run> <PR> fixes <n>` (the one fixed template: "Round n fixes: <k> commit(s)" + short shas and subjects, subjects dropped if they look like a secret). Stop #2 asks "Mark these N draft PRs ready for review, and queue the ClickUp updates?"; yes → `state.sh ready <run> <PR>` (refused without `shipApproval`): pushes what is left, writes the final body (stories, check, review rounds with comment links), `gh pr edit --body-file`, `gh pr ready`; a PR with no draft (draft failed earlier) is opened ready; no remote → `local-only`. No at stop #2 leaves the drafts as drafts. A repo with no remote gets no draft (`draft=no-remote`) and behaves as in local mode. `ship-pr` refuses in github mode; the GitHub commands refuse in local mode, before the plan approval, or outside the PR's canonical worktree and branch. writeback.json counts a PR as opened only when its state is `opened` (a draft's url is listed with "(draft)").
+
+Safety of the GitHub writes: `prUrl` is set only by state.sh (`put` always keeps the recorded value). Before commenting on, editing or readying a PR, state.sh checks with `gh pr view <url> -R <repo> --json url,headRefName,headRepository,headRepositoryOwner,isCrossRepository` that the URL is a PR of the recorded repo whose head is the run's own `dcv2/` branch in that repo (not a fork); otherwise it refuses (`ready`: needs-attention). Everything posted (review rounds, fixes comments, PR title and bodies) has @mentions and `owner/repo#n` references neutralised (a zero-width joiner after `@` / `#`), is capped (title 256, bodies and comments 60 000 characters) and secret-scanned (a hit: nothing sent, needs-attention). `draft-pr`, `push` and `ready` refuse (needs-attention) when any commit since the base recorded in `.guard.json` `bases` (not status.json's) touches a copied file, even if a later commit deletes it. PR URLs must be on github.com or the recorded remote's host. A round counts as already posted only when a comment ends with its exact footer. A worktree recorded before 0.3.0 (no `remotes` entry) gets its remote recorded at the first GitHub command; only github-mode runs (always 0.3.0+, whose worktrees are recorded when made) reach that. Before posting a round, `post-review` / `comment` look for the round's footer (`_Eagle-Eye run <id>, review round <n>._` / `…, round <n> fixes._`) among the PR's comments and record that comment instead of posting again.
 
 ### Readers and schema changes
 
@@ -207,7 +228,7 @@ PR `state`:
 {"schema": 1, "runDir": "/abs/runs/r-20261022-1304", "repos": ["/abs/ws/mathlib"], "worktrees": {"PR1": "/abs/ws/mathlib-worktrees/dcv2-r-20261022-1304-pr1"}}
 ```
 
-Written only by `state.sh worktree` (real paths). The guard hook reads `$DCV2_RUN_DIR/.guard.json`: the Implementer may write only in the run folder and these worktrees; everyone else only in the run folder. Edit/Write and shell redirects on `status.json`, `writeback.json` and `.guard.json` are blocked for everyone. The app does not need to read it.
+Written only by `state.sh worktree` (real paths). The guard hook reads `$DCV2_RUN_DIR/.guard.json`: the Implementer may write only in the run folder and these worktrees; everyone else only in the run folder. Edit/Write and shell redirects on `status.json`, `writeback.json` and `.guard.json` are blocked for everyone. `copied` (`{"PR1": [".env"]}`) lists the files `state.sh worktree` copied in (repos.json `copyFiles`); `remotes` (`{"PR1": {"name", "url", "repo": "owner/name"}}`) is the push remote recorded when the PR's worktree was first made (`repo` from the URL, else `gh repo view` in github mode). Every github-mode push goes to that URL (`git -c core.hooksPath=/dev/null push <url> refs/heads/<b>:refs/heads/<b>`, never force) and every `gh` call names `-R <repo>`. The app does not need to read it.
 
 ## writeback.json (skill output)
 
@@ -289,7 +310,7 @@ The app creates the folder and writes, besides the inputs above:
 
 | File | Use |
 |---|---|
-| `meta.json` | `{"schema":1,"runId","createdAt","folder","pluginVersion","claudeVersion","account":{"id","name","configDir"},"app"}`: what the run was started with (launch.md). |
+| `meta.json` | `{"schema":1,"runId","createdAt","folder","pluginVersion","claudeVersion","account":{"id","name","configDir"},"app","reviewMode":"github"\|"local"}`: what the run was started with (launch.md). `reviewMode` missing = `local` (see Review mode above). |
 | `memory-prompt.md` | The `--append-system-prompt-file` of the launch, from `memory.sh compose` (absent when the plugin has no `memory.sh`). Rewritten on every resume. |
 | `app-checks.json` | R1: the app's own re-run of each PR's check, `{"schema":1,"checks":{"PR1":{"result":"pass|fail|timeout|error|none|running","command","skillCommand","head","clean","cwd","exitCode","finishedAt","log","detail"}}}`. `command` is always repos.json's check for the PR's repo (status.json's `check.command` is never run; `skillCommand` records it when it differs). It runs only in a worktree at `<repo parent>/<repo>-worktrees/dcv2-<runId>-<pr>` on branch `dcv2/<runId>-<pr>`, with `check.cwd` inside it. The skill never reads it. |
 | `logs/<PR>-app-check.txt` | The full output of that re-run. |
@@ -298,7 +319,7 @@ The app creates the folder and writes, besides the inputs above:
 
 ### What the app trusts (P4)
 
-Claude can write the run folder, so the app does not trust it for ClickUp. At Start it also writes `<app data>/run-trust/<runId>/`: `trust.json` (the run folder and the Claude account whose token the run uses), `tickets.json` (its own copy of the snapshot), `pulls.json` (R8 baselines) and `posted.json` (the authoritative posted record), all four at Start. Each is signed, `{"mac": <hex>, "body": …}`, with an HMAC-SHA256 over the run id, the file name and the body, using a per-install key kept in the macOS keychain (service `com.jtfrancisco.dcterminalv2.trust`). A bad or missing MAC (or a missing file) turns ClickUp off for the run, with a message in the panel; it is never read as "nothing posted". The guard also blocks Edit/Write and shell write targets inside `<app data>/run-trust` for everyone in a dcv2 run (it is the run folder's grandparent + `run-trust`). Posts, R8 checks, pulls, tick-box labels (custom id, name, url from the snapshot, never from `writeback.json`) and the account all come from these records. A draft whose ticket is not in the snapshot is shown as a warning row and never posted. A run with a `tickets.json` but no app-side record gets no ClickUp calls. A Start that fails after the run folder was made removes both the folder and its `run-trust` records. Run ids are `r-YYYYMMDD-HHMMSS-<4 hex>`, never reused, so no old record can match a new run. `guard.sh` PROTECTED and `state.sh put` also refuse writes to `tickets.json`, `meta.json`, `writeback-posted.json`, `tickets-pulls.json`, `tickets-update.md` and `app-checks.json`.
+Claude can write the run folder, so the app does not trust it for ClickUp. At Start it also writes `<app data>/run-trust/<runId>/`: `trust.json` (the run folder and the Claude account whose token the run uses), `tickets.json` (its own copy of the snapshot), `pulls.json` (R8 baselines) and `posted.json` (the authoritative posted record), all four at Start. Each is signed, `{"mac": <hex>, "body": …}`, with an HMAC-SHA256 over the run id, the file name and the body, using a per-install key kept in the macOS keychain (service `com.jtfrancisco.dcterminalv2.trust`). A bad or missing MAC (or a missing file) turns ClickUp off for the run, with a message in the panel; it is never read as "nothing posted". The guard also blocks Edit/Write and shell write targets inside `<app data>/run-trust` for everyone in a dcv2 run (it is the run folder's grandparent + `run-trust`). Posts, R8 checks, pulls, tick-box labels (custom id, name, url from the snapshot, never from `writeback.json`) and the account all come from these records. A draft whose ticket is not in the snapshot is shown as a warning row and never posted. A run with a `tickets.json` but no app-side record gets no ClickUp calls. A Start that fails after the run folder was made removes both the folder and its `run-trust` records. Run ids are `r-YYYYMMDD-HHMMSS-<4 hex>`, never reused, so no old record can match a new run. `guard.sh` PROTECTED and `state.sh put` also refuse writes to `tickets.json`, `meta.json`, `repos.json`, `writeback-posted.json`, `tickets-pulls.json`, `tickets-update.md` and `app-checks.json`.
 
 R8 reads each ticket and its comments on every check (at most 4 calls in flight, rate limit honoured).
 

@@ -43,7 +43,11 @@ Act as a senior software engineer and strict code reviewer. Decide whether a cha
 
 ## Review format
 
+The review may be posted as a GitHub PR comment exactly as written, so keep this format (Markdown, no HTML), and never quote secrets, tokens or `.env` values in it. The first line is fixed: `n` is the round, `X` the count of CRITICAL/HIGH/MEDIUM findings, `Y` the count of LOW ones.
+
 ```markdown
+Eagle-Eye review — round n: APPROVED | REQUEST CHANGES — X MEDIUM+, Y LOW
+
 ## Verdict
 APPROVED | REQUEST CHANGES
 
@@ -51,7 +55,7 @@ APPROVED | REQUEST CHANGES
 <what the change does and what you found>
 
 ## Findings
-1. [SEVERITY] `path/to/file:line`: <problem>. Why it matters: <consequence>. Evidence: <code or behaviour>. Fix: <what should change>.
+1. SEVERITY — `path/to/file:line` — <what is wrong, and why it matters (evidence)> — Fix: <what should change>
 (or `No significant correctness, security, data, performance, or regression issues were identified.`)
 
 ## Requirement coverage

@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""A fake `gh` for the dcv2 tests (no network, no real GitHub). Put this folder first on PATH.
+
+State lives in $GH_SHIM_DIR (required): prs.json, comments/<pr>-<n>.md, calls.log (one line per call).
+Every call may name the repo with -R (it must be $GH_SHIM_REPO, default shim/repo). PRs in prs.json may
+carry "headRepo" (a fork) to test cross-repo checks. Knows: repo view --json nameWithOwner; pr list --head <b> --json ...; pr create [--draft] --head <b> --title <t> --body-file <f>;
+pr comment <url> --body-file <f>; pr edit <url> --body-file <f>; pr ready <url>; pr view <b|url> [--json ...] (head, head repo, comments).
+GH_SHIM_FAIL=<verb>[,<verb>] makes those verbs (e.g. comment, ready, create, list) fail.
+Anything else exits 1 ("not supported by the shim").
+"""
+import json, os, sys
+
+d = os.environ.get("GH_SHIM_DIR")
+if not d:
+    sys.exit("gh shim: GH_SHIM_DIR is not set")
+os.makedirs(os.path.join(d, "comments"), exist_ok=True)
+args = sys.argv[1:]
+with open(os.path.join(d, "calls.log"), "a") as f:
+    f.write(" ".join(args) + "\n")
+repo = None
+if "-R" in args:  # the repo the call names; the shim is one repo, GH_SHIM_REPO (default shim/repo)
+    i = args.index("-R")
+    repo = args[i + 1] if i + 1 < len(args) else ""
+    del args[i:i + 2]
+SLUG = os.environ.get("GH_SHIM_REPO", "shim/repo")
+if repo is not None and repo != SLUG:
+    sys.exit(f"gh shim: no repo {repo}")
+db_path = os.path.join(d, "prs.json")
+try:
+    prs = json.load(open(db_path))
+except (OSError, ValueError):
+    prs = []
+
+
+def opt(name):
+    return args[args.index(name) + 1] if name in args and args.index(name) + 1 < len(args) else None
+
+
+def save():
+    json.dump(prs, open(db_path, "w"), indent=1)
+
+
+def by_url(u):
+    return next((p for p in prs if p["url"] == u), None)
+
+
+sub, verb = (args + ["", ""])[:2]
+if verb in (os.environ.get("GH_SHIM_FAIL") or "").split(","):
+    sys.exit(f"gh shim: {verb} failed (GH_SHIM_FAIL)")
+if sub == "repo" and verb == "view" and "nameWithOwner" in " ".join(args):
+    print(SLUG)
+    sys.exit(0)
+if sub != "pr":
+    sys.exit("gh shim: not supported by the shim")
+if verb == "list":
+    head = opt("--head")
+    print(json.dumps([{"url": p["url"], "isDraft": p["isDraft"], "state": p["state"]} for p in prs if p["head"] == head]))
+elif verb == "create":
+    head = opt("--head")
+    if any(p["head"] == head and p["state"] == "OPEN" for p in prs):
+        sys.exit(f"a pull request for branch \"{head}\" already exists")
+    body = open(opt("--body-file")).read() if opt("--body-file") else ""
+    url = f"https://github.com/{SLUG}/pull/{len(prs) + 1}"
+    prs.append({"url": url, "head": head, "base": opt("--base"), "title": opt("--title"), "body": body,
+                "isDraft": "--draft" in args, "state": "OPEN"})
+    save()
+    print(url)
+elif verb in ("comment", "edit", "ready"):
+    p = by_url(args[2] if len(args) > 2 else "")
+    if not p:
+        sys.exit("gh shim: no such pull request")
+    if verb == "comment":
+        n = len([x for x in os.listdir(os.path.join(d, "comments")) if x.startswith(p["url"].rsplit("/", 1)[1] + "-")]) + 1
+        k = f"{p['url'].rsplit('/', 1)[1]}-{n}"
+        text = open(opt("--body-file")).read()
+        with open(os.path.join(d, "comments", f"{k}.md"), "w") as f:
+            f.write(text)
+        p.setdefault("comments", []).append({"url": f"{p['url']}#issuecomment-{1000 + n}", "body": text})
+        save()
+        print(f"{p['url']}#issuecomment-{1000 + n}")
+    elif verb == "edit":
+        p["body"] = open(opt("--body-file")).read()
+        save()
+        print(p["url"])
+    else:
+        if not p["isDraft"]:
+            sys.exit("pull request is not a draft")
+        p["isDraft"] = False
+        save()
+        print(f"Pull request {p['url']} is marked as \"ready for review\"")
+elif verb == "view":
+    p = next((x for x in prs if x["head"] == (args[2] if len(args) > 2 else "") or x["url"] == (args[2] if len(args) > 2 else "")), None)
+    if not p:
+        sys.exit("no pull requests found")
+    if "--json" in args:
+        owner, name = p.get("headRepo", SLUG).split("/", 1)
+        print(json.dumps({"url": p["url"], "headRefName": p["head"], "headRepository": {"name": name},
+                          "headRepositoryOwner": {"login": owner}, "isCrossRepository": p.get("headRepo", SLUG) != SLUG,
+                          "comments": p.get("comments", [])}))
+    else:
+        print(p["url"])
+else:
+    sys.exit("gh shim: not supported by the shim")

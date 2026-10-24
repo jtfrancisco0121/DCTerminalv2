@@ -17,6 +17,9 @@
 #   memory.sh touched <repo path> <from> [<to>]  agent helper: topics whose covered paths changed in
 #                                                `git diff <from>..<to>` (to defaults to HEAD), and
 #                                                changed paths no topic covers
+#   memory.sh scan  < text                       the secret scanner alone (state.sh uses it before posting
+#                                                to GitHub): prints "clean" (exit 0) or the line numbers
+#                                                and kinds of the hits, never the values (exit 1)
 #
 # Errors: exit 1 with one stderr line. Nothing secret is printed.
 set -euo pipefail
@@ -488,14 +491,20 @@ if "--root" in args:
     ROOT = args[i + 1]
     del args[i:i + 2]
 cmd, rest = (args[0] if args else ""), args[1:]
-need = {"id": 1, "compose": 2, "status": 1, "write": 2, "touched": 2}
+need = {"id": 1, "compose": 2, "status": 1, "write": 2, "touched": 2, "scan": 0}
 if cmd not in need or len(rest) < need[cmd]:
-    die("usage: memory.sh id <repo> | compose <folder> <out> | status <folder> | write <id> <file> < content | touched <repo> <from> [<to>]")
+    die("usage: memory.sh id <repo> | compose <folder> <out> | status <folder> | write <id> <file> < content | touched <repo> <from> [<to>] | scan < text")
 if cmd == "id": cmd_id(rest[0])
 elif cmd == "compose": cmd_compose(rest[0], rest[1])
 elif cmd == "status": cmd_status(rest[0])
 elif cmd == "write": cmd_write(rest[0], rest[1])
 elif cmd == "touched": cmd_touched(rest[0], rest[1], rest[2] if len(rest) > 2 else "HEAD")
+elif cmd == "scan":
+    found = secret_hits(sys.stdin.read())
+    if found:
+        print("looks like a secret on line " + ", ".join(f"{n} ({k})" for n, k in found[:10]))
+        sys.exit(1)
+    print("clean")
 PY
 
 DCV2_MEMORY_SH="${BASH_SOURCE[0]}" python3 -c "$PY" "$@"
