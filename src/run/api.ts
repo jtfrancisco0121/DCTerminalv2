@@ -8,7 +8,21 @@ import { invoke } from "@tauri-apps/api/core";
 import type { TabSummary } from "../bridge";
 import type { ClickUpStart } from "../clickup/api";
 
-export type Repo = { name: string; path: string; check: string | null };
+export type Repo = {
+  name: string;
+  path: string;
+  check: string | null;
+  /** Worktree setup command (app setting); null: the plugin detects it from the lockfile. */
+  setup?: string | null;
+  /** Git-ignored files copied from the main checkout into run worktrees. */
+  copyFiles?: string[];
+};
+
+/** One repo's worktree setup (app settings, keyed by the repo's real path). */
+export type RepoSetup = { setup: string | null; copyFiles: string[] };
+
+/** `github`: draft PRs + one review comment per round; `local`: the quiet local loop. */
+export type ReviewMode = "github" | "local";
 
 export type FolderRepos = {
   /** `repo`, `workspace`, `inside-repo` or `none`. */
@@ -26,6 +40,8 @@ export type RunListItem = {
   stage: string | null;
   updatedAt: string | null;
   title: string | null;
+  /** A dev-app run used in place (Import from dev app). */
+  adopted?: boolean;
 };
 
 export type RunOverview = {
@@ -89,6 +105,10 @@ export type PrView = {
   worktreeClean: boolean | null;
   /** The app's check ran on another HEAD than the worktree's now. */
   appCheckStale: boolean;
+  /** Review on GitHub: true while the PR is a draft. Missing on older runs. */
+  draft?: boolean | null;
+  /** One PR comment per review round. */
+  comments?: { round: number | null; url: string }[];
 };
 
 export type LogLine = { time: string | null; stage: string | null; text: string };
@@ -109,6 +129,10 @@ export type RunView = {
   shipNote: string | null;
   timeline: LogLine[];
   hasReport: boolean;
+  /** meta.json's review mode; missing is `local`. */
+  reviewMode?: string;
+  /** status.json has `shipApproval`. */
+  shipApproved?: boolean;
 };
 
 export type WorktreeItem = {
@@ -159,7 +183,10 @@ export const startRun = (
   request: string,
   role: string,
   clickup: ClickUpStart | null = null,
-) => invoke<StartedRun>("start_run", { windowId, folder, request, role, clickup });
+  reviewMode: ReviewMode | null = null,
+) => invoke<StartedRun>("start_run", { windowId, folder, request, role, clickup, reviewMode });
+export const setRepoSetup = (repoPath: string, setup: RepoSetup) =>
+  invoke<RepoSetup>("set_repo_setup", { repoPath, setup });
 export const resumeRun = (windowId: string, runDir: string) => invoke<StartedRun>("resume_run", { windowId, runDir });
 export const readRun = (runDir: string) => invoke<RunView>("read_run", { runDir });
 export const rerunChecks = (runDir: string) => invoke<void>("rerun_checks", { runDir });

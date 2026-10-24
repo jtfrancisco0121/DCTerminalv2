@@ -14,6 +14,7 @@ import {
 import {
   checkMark,
   checkSignature,
+  draftBadge,
   prStateText,
   reviewText,
   runFinished,
@@ -49,12 +50,19 @@ function PrRow({ pr, onOpenFile, onOpenUrl }: { pr: PrView } & Pick<ViewProps, "
   const stories = storiesText(pr);
   const review = reviewText(pr);
   const gate = pr.gateStatus;
+  const badge = draftBadge(pr);
+  const comments = (pr.comments ?? []).filter((c) => safeUrl(c.url));
   return (
     <li className="run-pr" data-testid={`pr-${pr.id}`}>
       <div className="run-pr-head">
         <strong>{pr.id}</strong>
         {pr.repo && <span className="run-pr-repo">{pr.repo}</span>}
         <span className={`run-pr-state run-pr-state-${pr.state ?? "unknown"}`}>{prStateText(pr.state)}</span>
+        {badge && (
+          <span className={`run-pr-badge run-pr-badge-${badge}`} data-testid={`badge-${pr.id}`}>
+            {badge}
+          </span>
+        )}
       </div>
       {pr.title && <div className="run-pr-title">{pr.title}</div>}
       <div className="run-pr-facts">
@@ -94,8 +102,18 @@ function PrRow({ pr, onOpenFile, onOpenUrl }: { pr: PrView } & Pick<ViewProps, "
       {pr.note && <div className="run-pr-note">{pr.note}</div>}
       {url && (
         <button type="button" className="link-button" onClick={() => onOpenUrl(url)}>
-          Open PR
+          {badge === "draft" ? "Open draft PR" : "Open PR"}
         </button>
+      )}
+      {comments.length > 0 && (
+        <div className="run-pr-comments" data-testid={`comments-${pr.id}`}>
+          Review comments:
+          {comments.map((c, at) => (
+            <button key={c.url} type="button" className="link-button" onClick={() => onOpenUrl(c.url)}>
+              round {c.round ?? at + 1}
+            </button>
+          ))}
+        </div>
       )}
     </li>
   );

@@ -4,6 +4,7 @@ mod clickup;
 mod commands;
 mod crash_log;
 mod data_dir;
+mod import_dev;
 #[cfg(target_os = "macos")]
 mod macos_terminate;
 pub(crate) mod observe;
@@ -93,6 +94,7 @@ pub fn run() {
             // PATH cache, for the next launch).
             shell_env::spawn_login_path_refresh();
             run::spawn_prune_launch_prompts(app.handle());
+            clickup::commands::spawn_auto_post_sweep(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -122,6 +124,7 @@ pub fn run() {
             set_run_settings,
             run::run_overview,
             run::detect_folder_repos,
+            run::set_repo_setup,
             run::start_run,
             run::resume_run,
             run::read_run,
@@ -140,6 +143,11 @@ pub fn run() {
             clickup::commands::clickup_check_tickets,
             clickup::commands::clickup_pull_tickets,
             clickup::commands::clickup_post_writeback,
+            clickup::commands::clickup_auto_post_retry,
+            clickup::commands::clickup_set_auto_post,
+            import_dev::dev_import_status,
+            import_dev::dev_import_dismiss,
+            import_dev::import_from_dev_app,
             observe::observe_tab,
             observe::observe_tabs,
             observe::nudge_tab,

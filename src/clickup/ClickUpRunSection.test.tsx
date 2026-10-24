@@ -8,12 +8,14 @@ const api = {
   check: vi.fn<(runDir: string) => Promise<ChangedTicket[]>>(),
   pull: vi.fn<(runDir: string, ids: string[]) => Promise<{ pulled: string[]; updateFile: string }>>(),
   post: vi.fn<(runDir: string, version: string, requests: PostRequest[]) => Promise<PostReply>>(),
+  retry: vi.fn<(runDir: string, ticketId: string) => Promise<unknown>>(),
 };
 vi.mock("./api", () => ({
   clickupRunState: (d: string) => api.state(d),
   clickupCheckTickets: (d: string) => api.check(d),
   clickupPullTickets: (d: string, ids: string[]) => api.pull(d, ids),
   clickupPostWriteback: (d: string, v: string, r: PostRequest[]) => api.post(d, v, r),
+  clickupAutoPostRetry: (d: string, id: string) => api.retry(d, id),
 }));
 
 import { ClickUpRunSection, draftDone, tellClaude } from "./ClickUpRunSection";
@@ -159,5 +161,42 @@ describe("ClickUpRunSection", () => {
     expect(draftDone(draft("a"))).toBe(false);
     expect(draftDone(draft("a", { comment: null, status: null }))).toBe(true);
     expect(draftDone(draft("a", { status: null, posted: { comment: { result: "posted", at: "", value: "" } } }))).toBe(true);
+  });
+});
+
+describe("comments posted automatically", () => {
+  it("lists posted, failed (with retry), blocked and skipped comments with ticket links", async () => {
+    api.state.mockResolvedValue({
+      ...base,
+      drafts: [draft("86a1"), draft("86a2"), draft("86a3")],
+      draftsVersion: "v1",
+      autoPost: {
+        enabled: true,
+        running: false,
+        problem: null,
+        record: {
+          schema: 1,
+          writebackSha: "v1",
+          at: "t",
+          results: [
+            { ticketId: "86a1", result: "posted", message: "comment posted", url: "https://app.clickup.com/t/86a1", at: "t" },
+            { ticketId: "86a2", result: "failed", message: "Token invalid", url: "https://app.clickup.com/t/86a2", at: "t" },
+            { ticketId: "86a3", result: "blocked", message: "blocked: looks like a secret (a JWT).", url: null, at: "t" },
+          ],
+        },
+      },
+    });
+    api.retry.mockResolvedValue({});
+    render(<ClickUpRunSection runDir="/runs/r-1" stage="shipping" updatedAt="t" />);
+    const list = await screen.findByTestId("autopost");
+    expect(within(list).getByTestId("autopost-86a1").textContent).toContain("QA-86a1 posted");
+    expect(within(list).getByTestId("autopost-86a1").textContent).toContain("open ticket");
+    const failed = within(list).getByTestId("autopost-86a2");
+    expect(failed.textContent).toContain("failed");
+    expect(within(list).getByTestId("autopost-86a3").textContent).toContain("blocked: looks like a secret");
+    expect(within(list).queryAllByText("Retry")).toHaveLength(1);
+    fireEvent.click(within(failed).getByText("Retry"));
+    await waitFor(() => expect(api.retry).toHaveBeenCalledWith("/runs/r-1", "86a2"));
+    expect(list.textContent).toContain("Status changes are never posted on their own");
   });
 });

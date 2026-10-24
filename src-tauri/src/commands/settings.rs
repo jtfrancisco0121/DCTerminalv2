@@ -20,6 +20,8 @@ pub struct SettingsView {
     pub ui: UiSettings,
     pub claude: ClaudeSettings,
     pub run: RunSettings,
+    /// ClickUp per-account switches (auto-post after ship approval).
+    pub clickup: crate::store::settings_store::ClickUpSettings,
     /// Each saved account with its resolved folder. Login is a separate call.
     pub accounts: Vec<ResolvedClaudeAccount>,
     /// Value of `DCTV2_CLAUDE_CONFIG_DIR` when set (the first account only).
@@ -57,6 +59,7 @@ fn view(settings: &SettingsStore) -> SettingsView {
         ui: settings.ui().clone(),
         claude: claude.clone(),
         run: settings.run().clone(),
+        clickup: settings.clickup().clone(),
         accounts,
         config_dir_env: env,
     }

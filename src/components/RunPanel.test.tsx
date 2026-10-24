@@ -21,6 +21,31 @@ function renderPanel(overrides: Partial<RunView> = {}) {
 }
 
 describe("RunPanelView", () => {
+  it("shows a draft/ready badge and a link per review-round comment", () => {
+    const handlers = renderPanel();
+    // PR4 in the fixture: marked ready, two review comments.
+    expect(screen.getByTestId("badge-PR4").textContent).toBe("ready");
+    const comments = within(screen.getByTestId("comments-PR4"));
+    fireEvent.click(comments.getByText("round 2"));
+    expect(handlers.onOpenUrl).toHaveBeenCalledWith("https://github.com/o/mathlib/pull/7#issuecomment-102");
+    expect(screen.queryByTestId("badge-PR1")).toBeNull();
+  });
+
+  it("names a drafted PR a draft and links it from the first draft", () => {
+    const prs = view.prs.map((pr) =>
+      pr.id === "PR1"
+        ? { ...pr, state: "drafted", draft: true, prUrl: "https://github.com/o/mathlib/pull/9", comments: [{ round: 1, url: "javascript:alert(1)" }] }
+        : pr,
+    );
+    const handlers = renderPanel({ prs });
+    const pr1 = within(screen.getByTestId("pr-PR1"));
+    expect(screen.getByTestId("badge-PR1").textContent).toBe("draft");
+    expect(pr1.getByText("draft PR open")).toBeTruthy();
+    expect(screen.queryByTestId("comments-PR1")).toBeNull();
+    fireEvent.click(pr1.getByText("Open draft PR"));
+    expect(handlers.onOpenUrl).toHaveBeenCalledWith("https://github.com/o/mathlib/pull/9");
+  });
+
   it("shows the stage, that Claude is asking in the tab, and the plan", () => {
     renderPanel();
     expect(screen.getByTestId("run-stage").textContent).toBe("Waiting for your go to open the PRs");

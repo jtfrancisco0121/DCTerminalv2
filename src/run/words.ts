@@ -25,6 +25,7 @@ const PR_STATES: Record<string, string> = {
   fixing: "fixing review findings",
   reviewed: "reviewed",
   "needs-attention": "needs attention",
+  drafted: "draft PR open",
   opened: "PR opened",
   pushed: "pushed (PR not opened)",
   "local-only": "local only",
@@ -33,6 +34,13 @@ const PR_STATES: Record<string, string> = {
 export function prStateText(state: string | null): string {
   if (!state) return "unknown";
   return PR_STATES[state] ?? state;
+}
+
+/** Review on GitHub: "draft" while the PR is a draft, "ready" once marked ready; null when not on GitHub. */
+export function draftBadge(pr: { draft?: boolean | null; prUrl: string | null; state: string | null }): string | null {
+  if (pr.draft === true || pr.state === "drafted") return "draft";
+  if (pr.draft === false && pr.prUrl) return "ready";
+  return null;
 }
 
 export function checkMark(result: string | null | undefined): string {

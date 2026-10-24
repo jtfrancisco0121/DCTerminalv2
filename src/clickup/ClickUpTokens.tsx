@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 import { errorText } from "../components/InlineNotice";
-import { clickupClearToken, clickupSetToken, clickupTestToken, clickupTokenStatus, type TokenStatus } from "./api";
+import {
+  clickupClearToken,
+  clickupSetAutoPost,
+  clickupSetToken,
+  clickupTestToken,
+  clickupTokenStatus,
+  type TokenStatus,
+} from "./api";
 
 type Account = { id: string; name: string };
 
@@ -9,7 +16,7 @@ type Account = { id: string; name: string };
  * keychain. The token is never shown again, logged, written to a file or
  * given to Claude.
  */
-export function ClickUpTokens({ accounts }: { accounts: Account[] }) {
+export function ClickUpTokens({ accounts, autoPost = {} }: { accounts: Account[]; autoPost?: Record<string, boolean> }) {
   return (
     <section className="settings-section" aria-label="ClickUp">
       <h2>ClickUp</h2>
@@ -20,6 +27,12 @@ export function ClickUpTokens({ accounts }: { accounts: Account[] }) {
       <ul className="account-list">
         {accounts.map((account) => (
           <TokenRow key={account.id} account={account} />
+        ))}
+      </ul>
+      <h3>After ship approval</h3>
+      <ul className="account-list">
+        {accounts.map((account) => (
+          <AutoPostRow key={account.id} account={account} initial={autoPost[account.id] ?? true} />
         ))}
       </ul>
     </section>
@@ -100,6 +113,33 @@ function TokenRow({ account }: { account: Account }) {
         </button>
       </span>
       {note && <p className={note.tone === "error" ? "error" : "hint"}>{note.text}</p>}
+    </li>
+  );
+}
+
+/**
+ * "Post ClickUp comments automatically after ship approval" (per account,
+ * default on): only the comment drafts, never statuses (those stay ticks).
+ */
+function AutoPostRow({ account, initial }: { account: Account; initial: boolean }) {
+  const [on, setOn] = useState(initial);
+  const [problem, setProblem] = useState<string | null>(null);
+  const change = (next: boolean) => {
+    setOn(next);
+    setProblem(null);
+    clickupSetAutoPost(account.id, next).catch((err: unknown) => {
+      setOn(!next);
+      setProblem(errorText(err));
+    });
+  };
+  return (
+    <li className="account-row">
+      <label className="check-label">
+        <input type="checkbox" checked={on} onChange={(event) => change(event.target.checked)} />
+        {account.name}: post ClickUp comments automatically after ship approval
+      </label>
+      <span className="hint">Comments only; status changes stay ticks in the run panel.</span>
+      {problem && <span className="error">{problem}</span>}
     </li>
   );
 }

@@ -5,6 +5,7 @@
 //! token is read from the keychain inside the command and dropped with it;
 //! no reply carries it.
 
+use super::autopost;
 use super::intake::{self, ChangedTicket, IntakePreview, IntakeRef};
 use super::trust;
 use super::writeback::{self, PostOutcome, PostRequest, PostedDraft};
@@ -219,6 +220,19 @@ pub struct RunClickUp {
     /// sha-256 of writeback.json as shown; a post with another is refused.
     pub drafts_version: Option<String>,
     pub writeback_problem: Option<String>,
+    /// Comments posted on their own after the ship approval.
+    pub auto_post: Option<AutoPostView>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoPostView {
+    /// The run's account has "Post ClickUp comments automatically" on.
+    pub enabled: bool,
+    /// Posting now (in the background).
+    pub running: bool,
+    pub record: Option<autopost::AutoPostRecord>,
+    pub problem: Option<String>,
 }
 
 const UNTRUSTED: &str = "This run's tickets.json was not written by this app's Start, so the app checks and posts nothing for it.";
@@ -318,9 +332,154 @@ pub async fn clickup_run_state(app: AppHandle, run_dir: String) -> Result<RunCli
     blocking(move || {
         let data = data_dir(&app);
         let dir = checked_run_dir(&data, &run_dir)?;
-        Ok(run_clickup(&trust::install_key(), &data, &dir))
+        // An adopted run's records are its own data folder's run-trust.
+        let data = crate::run::trust_data_dir(&data, &dir);
+        let key = trust::install_key();
+        let mut view = run_clickup(&key, &data, &dir);
+        if autopost::may_be_due(&dir) {
+            if let Ok(key) = &key {
+                view.auto_post = Some(auto_post_view(&app, key, &data, &dir));
+            }
+        }
+        Ok(view)
     })
     .await
+}
+
+fn auto_post_on(app: &AppHandle, account_id: &str) -> bool {
+    let settings = app.state::<Mutex<SettingsStore>>();
+    settings
+        .lock()
+        .map(|s| s.clickup().auto_post_for(account_id))
+        .unwrap_or(false)
+}
+
+/// The auto-post part of the panel; starts the post when it is due.
+fn auto_post_view(app: &AppHandle, key: &trust::Key, data: &Path, dir: &Path) -> AutoPostView {
+    let mut view = AutoPostView::default();
+    let run = match trust::load(key, data, dir) {
+        Ok(Some(run)) => run,
+        Ok(None) => return view,
+        Err(problem) => {
+            view.problem = Some(problem);
+            return view;
+        }
+    };
+    view.enabled = auto_post_on(app, &run.account_id);
+    match trust::read_autopost(key, data, dir) {
+        Ok(record) => view.record = record,
+        Err(problem) => view.problem = Some(problem),
+    }
+    view.running = BUSY
+        .lock()
+        .map(|b| b.as_ref().is_some_and(|set| set.contains(dir)))
+        .unwrap_or(false);
+    if view.enabled && !view.running && view.problem.is_none() {
+        if let Ok(Some(_)) = autopost::due(key, data, dir) {
+            view.running = spawn_auto_post(
+                key.clone(),
+                data.to_path_buf(),
+                dir.to_path_buf(),
+                run.account_id,
+            );
+        }
+    }
+    view
+}
+
+/// Posts in the background under the run's lock; `false` when busy.
+fn spawn_auto_post(key: trust::Key, data: PathBuf, dir: PathBuf, account_id: String) -> bool {
+    let Ok(lock) = RunLock::take(&dir) else {
+        return false;
+    };
+    std::thread::spawn(move || {
+        let _lock = lock;
+        if let Err(err) = run_auto_post(&key, &data, &dir, &account_id) {
+            eprintln!("DCTerminalv2: ClickUp auto-post: {err}");
+        }
+    });
+    true
+}
+
+fn run_auto_post(
+    key: &trust::Key,
+    data: &Path,
+    dir: &Path,
+    account_id: &str,
+) -> Result<(), String> {
+    if autopost::due(key, data, dir)?.is_none() {
+        return Ok(());
+    }
+    // The run's own account's token, from the signed record (never the window's).
+    let token = token_of(&KeychainStore, account_id)?;
+    let transport = UreqTransport::new();
+    autopost::auto_post(&ClickUp::new(&transport, &token), key, data, dir, &now_text).map(|_| ())
+}
+
+/// Retries one failed auto-posted comment.
+#[tauri::command]
+pub async fn clickup_auto_post_retry(
+    app: AppHandle,
+    run_dir: String,
+    ticket_id: String,
+) -> Result<autopost::AutoPostRecord, String> {
+    blocking(move || {
+        let data = data_dir(&app);
+        let dir = checked_run_dir(&data, &run_dir)?;
+        let data = crate::run::trust_data_dir(&data, &dir);
+        let _lock = RunLock::take(&dir)?;
+        let key = trust::install_key()?;
+        let run = trusted(&key, &data, &dir)?;
+        let token = token_of(&KeychainStore, &run.account_id)?;
+        let transport = UreqTransport::new();
+        autopost::retry(
+            &ClickUp::new(&transport, &token),
+            &key,
+            &data,
+            &dir,
+            &ticket_id,
+            &now_text,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn clickup_set_auto_post(app: AppHandle, account_id: String, on: bool) -> Result<(), String> {
+    let settings = app.state::<Mutex<SettingsStore>>();
+    let mut settings = settings.lock().map_err(|e| e.to_string())?;
+    settings.set_auto_post(&account_id, on)
+}
+
+/// How often the app looks for runs whose comments are due.
+const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Auto-post without the panel open: every minute, each run (own and
+/// adopted) that is approved and has drafts is looked at; the keychain is
+/// read only for those.
+pub fn spawn_auto_post_sweep(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(SWEEP_EVERY);
+        let data = data_dir(&app);
+        for run in crate::run::folder::list_runs(&data) {
+            let dir = PathBuf::from(&run.run_dir);
+            if !autopost::may_be_due(&dir) {
+                continue;
+            }
+            let Ok(key) = trust::install_key() else {
+                break;
+            };
+            let tdata = crate::run::trust_data_dir(&data, &dir);
+            if let Ok(Some(t)) = trust::load(&key, &tdata, &dir) {
+                if auto_post_on(&app, &t.account_id)
+                    && matches!(autopost::due(&key, &tdata, &dir), Ok(Some(_)))
+                {
+                    spawn_auto_post(key.clone(), tdata, dir, t.account_id);
+                }
+            }
+        }
+    });
 }
 
 /// The app's own record of the run, or why the app does nothing for it.
@@ -337,6 +496,8 @@ pub async fn clickup_check_tickets(
     blocking(move || {
         let data = data_dir(&app);
         let dir = checked_run_dir(&data, &run_dir)?;
+        // An adopted run's records are its own data folder's run-trust.
+        let data = crate::run::trust_data_dir(&data, &dir);
         let key = trust::install_key()?;
         let run = trusted(&key, &data, &dir)?;
         let token = token_of(&KeychainStore, &run.account_id)?;
@@ -367,6 +528,8 @@ pub async fn clickup_pull_tickets(
     blocking(move || {
         let data = data_dir(&app);
         let dir = checked_run_dir(&data, &run_dir)?;
+        // An adopted run's records are its own data folder's run-trust.
+        let data = crate::run::trust_data_dir(&data, &dir);
         let _lock = RunLock::take(&dir)?;
         let key = trust::install_key()?;
         let run = trusted(&key, &data, &dir)?;
@@ -458,6 +621,8 @@ pub async fn clickup_post_writeback(
     blocking(move || {
         let data = data_dir(&app);
         let dir = checked_run_dir(&data, &run_dir)?;
+        // An adopted run's records are its own data folder's run-trust.
+        let data = crate::run::trust_data_dir(&data, &dir);
         let _lock = RunLock::take(&dir)?;
         let key = trust::install_key()?;
         let run = trusted(&key, &data, &dir)?;

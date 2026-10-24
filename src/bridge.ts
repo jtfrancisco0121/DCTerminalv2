@@ -94,6 +94,8 @@ export type SettingsView = {
   claude: ClaudeSettings;
   /** Eagle-Eye launch settings; absent from older test fixtures. */
   run?: RunSettings;
+  /** Per account: auto-post ClickUp comments after ship approval (missing: on). */
+  clickup?: { autoPost: Record<string, boolean> };
   accounts: ResolvedClaudeAccount[];
   configDirEnv: string | null;
 };

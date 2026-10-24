@@ -34,7 +34,9 @@
         "summary": "4 tests passed"
       },
       "checkKnown": true,
+      "comments": [],
       "currentHead": null,
+      "draft": null,
       "gate": {
         "gate": "PASS",
         "problem": null,
@@ -85,7 +87,9 @@
         "summary": null
       },
       "checkKnown": true,
+      "comments": [],
       "currentHead": null,
+      "draft": null,
       "gate": {
         "gate": "WAIVED",
         "problem": null,
@@ -125,7 +129,9 @@
         "summary": null
       },
       "checkKnown": false,
+      "comments": [],
       "currentHead": null,
+      "draft": null,
       "gate": {
         "gate": null,
         "problem": "no gate: line",
@@ -165,7 +171,18 @@
         "summary": null
       },
       "checkKnown": false,
+      "comments": [
+        {
+          "round": 1,
+          "url": "https://github.com/o/mathlib/pull/7#issuecomment-101"
+        },
+        {
+          "round": 2,
+          "url": "https://github.com/o/mathlib/pull/7#issuecomment-102"
+        }
+      ],
       "currentHead": null,
+      "draft": false,
       "gate": null,
       "gateStatus": {
         "kind": "none",
@@ -200,7 +217,9 @@
         "summary": null
       },
       "checkKnown": false,
+      "comments": [],
       "currentHead": null,
+      "draft": null,
       "gate": {
         "gate": "PASS",
         "problem": null,
@@ -229,8 +248,10 @@
       "worktreeClean": null
     }
   ],
+  "reviewMode": "local",
   "runDir": "",
   "runId": "r-20261022-1304",
+  "shipApproved": false,
   "shipNote": null,
   "stage": "ship-approval",
   "statusProblem": null,

@@ -282,6 +282,24 @@ pub fn read_posted(key: &Key, data: &Path, run_dir: &Path) -> Result<Posted, Str
     read_signed(key, data, run_dir, "posted.json")?.ok_or_else(|| TAMPERED.to_string())
 }
 
+/// The auto-post record (`autopost.json`); `None` before the first auto-post.
+pub fn read_autopost(
+    key: &Key,
+    data: &Path,
+    run_dir: &Path,
+) -> Result<Option<super::autopost::AutoPostRecord>, String> {
+    read_signed(key, data, run_dir, super::autopost::AUTOPOST_FILE)
+}
+
+pub fn save_autopost(
+    key: &Key,
+    data: &Path,
+    run_dir: &Path,
+    record: &super::autopost::AutoPostRecord,
+) -> Result<(), String> {
+    write_signed(key, data, run_dir, super::autopost::AUTOPOST_FILE, record)
+}
+
 /// Saves the posted record app-side, signed (must succeed), then mirrors it
 /// into the run folder for people to read (best effort).
 pub struct TrustStore<'a> {

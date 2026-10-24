@@ -101,6 +101,24 @@ pub struct RunMeta {
     pub account_id: String,
     pub account_name: String,
     pub config_dir: String,
+    /// `github` (draft PRs + review comments) or `local`; `None` is not
+    /// recorded (the skill then runs the local flow).
+    pub review_mode: Option<String>,
+}
+
+/// The review modes meta.json can record.
+pub const REVIEW_MODES: &[&str] = &["github", "local"];
+
+/// meta.json's `reviewMode`: `github` or `local`; missing or unknown → `local`.
+pub fn review_mode_of(run_dir: &Path) -> String {
+    read_json_value(&run_dir.join("meta.json"))
+        .and_then(|m| {
+            m.get("reviewMode")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .filter(|m| REVIEW_MODES.contains(&m.as_str()))
+        .unwrap_or_else(|| "local".into())
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -138,19 +156,24 @@ pub fn create_run(
         &dir.join("repos.json"),
         &json!({"schema": 1, "repos": repos}),
     )?;
-    write_json_atomic(
-        &dir.join("meta.json"),
-        &json!({
-            "schema": 1,
-            "runId": run_id,
-            "createdAt": now.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-            "folder": folder.display().to_string(),
-            "pluginVersion": meta.plugin_version,
-            "claudeVersion": meta.claude_version,
-            "account": {"id": meta.account_id, "name": meta.account_name, "configDir": meta.config_dir},
-            "app": format!("dcterminalv2 {}", env!("CARGO_PKG_VERSION")),
-        }),
-    )?;
+    let mut meta_json = json!({
+        "schema": 1,
+        "runId": run_id,
+        "createdAt": now.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        "folder": folder.display().to_string(),
+        "pluginVersion": meta.plugin_version,
+        "claudeVersion": meta.claude_version,
+        "account": {"id": meta.account_id, "name": meta.account_name, "configDir": meta.config_dir},
+        "app": format!("dcterminalv2 {}", env!("CARGO_PKG_VERSION")),
+    });
+    if let Some(mode) = meta
+        .review_mode
+        .as_deref()
+        .filter(|m| REVIEW_MODES.contains(m))
+    {
+        meta_json["reviewMode"] = json!(mode);
+    }
+    write_json_atomic(&dir.join("meta.json"), &meta_json)?;
     Ok(CreatedRun {
         run_id,
         run_dir: dir.display().to_string(),
@@ -178,6 +201,57 @@ pub fn read_json_value(path: &Path) -> Option<Value> {
     serde_json::from_str(&text).ok()
 }
 
+/// `<data>/adopted-runs.json`: run folders another data folder made (the
+/// dev app's), used in place: `{"schema":1,"runs":["/abs/run/dir", …]}`.
+pub const ADOPTED_FILE: &str = "adopted-runs.json";
+
+/// The adopted run folders that still exist, canonical, in file order.
+pub fn adopted_runs(data_dir: &Path) -> Vec<PathBuf> {
+    let Some(value) = read_json_value(&data_dir.join(ADOPTED_FILE)) else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    value
+        .get("runs")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .filter_map(|p| p.canonicalize().ok())
+                .filter(|p| p.is_dir() && seen.insert(p.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Adds run folders to the adopted index (kept, deduplicated). Returns
+/// how many were new.
+pub fn adopt_runs(data_dir: &Path, dirs: &[PathBuf]) -> Result<usize, String> {
+    let mut list: Vec<String> = read_json_value(&data_dir.join(ADOPTED_FILE))
+        .and_then(|v| v.get("runs").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    let mut added = 0;
+    for dir in dirs {
+        let dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        let text = dir.display().to_string();
+        if !list.contains(&text) {
+            list.push(text);
+            added += 1;
+        }
+    }
+    std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
+    write_json_atomic(
+        &data_dir.join(ADOPTED_FILE),
+        &json!({"schema": 1, "runs": list}),
+    )?;
+    Ok(added)
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RunListItem {
@@ -190,22 +264,27 @@ pub struct RunListItem {
     pub updated_at: Option<String>,
     /// The request's first line, short.
     pub title: Option<String>,
+    /// Used in place from another data folder (the dev app's).
+    #[serde(default)]
+    pub adopted: bool,
 }
 
-/// The runs under `<data>/runs`, newest first. Dot-folders are skipped.
+/// The runs under `<data>/runs` and the adopted ones, newest first.
+/// Dot-folders are skipped.
 pub fn list_runs(data_dir: &Path) -> Vec<RunListItem> {
-    let Ok(entries) = std::fs::read_dir(runs_dir(data_dir)) else {
-        return Vec::new();
-    };
-    let mut runs: Vec<(RunListItem, Option<std::time::SystemTime>)> = entries
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| {
-            let run_id = e.file_name().to_str()?.to_string();
+    let own: Vec<(PathBuf, bool)> = std::fs::read_dir(runs_dir(data_dir))
+        .map(|entries| entries.flatten().map(|e| (e.path(), false)).collect())
+        .unwrap_or_default();
+    let adopted = adopted_runs(data_dir).into_iter().map(|p| (p, true));
+    let mut runs: Vec<(RunListItem, Option<std::time::SystemTime>)> = own
+        .into_iter()
+        .chain(adopted)
+        .filter(|(p, _)| p.is_dir())
+        .filter_map(|(dir, adopted)| {
+            let run_id = dir.file_name()?.to_str()?.to_string();
             if run_id.starts_with('.') {
                 return None;
             }
-            let dir = e.path();
             let meta = read_json_value(&dir.join("meta.json"));
             let status = read_json_value(&dir.join("status.json"));
             let text = |v: &Option<Value>, key: &str| {
@@ -227,6 +306,7 @@ pub fn list_runs(data_dir: &Path) -> Vec<RunListItem> {
                     title: request_title(&dir),
                     run_id,
                     run_dir: dir.display().to_string(),
+                    adopted,
                 },
                 made,
             ))
@@ -289,6 +369,8 @@ mod tests {
             name: "mathlib".into(),
             path: "/w/mathlib".into(),
             check: Some("npm test".into()),
+            setup: None,
+            copy_files: vec![".env".into()],
         }];
         let meta = RunMeta {
             plugin_version: Some("abc123".into()),
@@ -296,6 +378,7 @@ mod tests {
             account_id: "default".into(),
             account_name: "Personal".into(),
             config_dir: "/tmp/acct".into(),
+            review_mode: None,
         };
         assert!(create_run(dir.path(), Path::new("/w"), &repos, &[], "  ", &meta).is_err());
         let one = create_run(
@@ -318,6 +401,10 @@ mod tests {
         assert_eq!(repos_json["repos"][0]["check"], "npm test");
         let meta_json = read_json_value(&run.join("meta.json")).unwrap();
         assert_eq!(meta_json["pluginVersion"], "abc123");
+        assert_eq!(repos_json["repos"][0]["copyFiles"][0], ".env");
+        assert!(repos_json["repos"][0]["setup"].is_null());
+        assert!(meta_json.get("reviewMode").is_none(), "not recorded");
+        assert_eq!(review_mode_of(run), "local");
         assert_eq!(meta_json["account"]["name"], "Personal");
         assert!(meta_json["claudeVersion"].is_null());
         std::fs::write(
@@ -333,6 +420,48 @@ mod tests {
         assert_eq!(first.folder.as_deref(), Some("/w"));
         assert_eq!(first.title.as_deref(), Some("Add multiply()"));
         assert_eq!(list[0].run_id, two.run_id);
+
+        let gh = create_run(
+            dir.path(),
+            Path::new("/w"),
+            &repos,
+            &[],
+            "Third",
+            &RunMeta {
+                review_mode: Some("github".into()),
+                ..meta.clone()
+            },
+        )
+        .unwrap();
+        assert_eq!(review_mode_of(Path::new(&gh.run_dir)), "github");
+        assert_eq!(
+            read_json_value(&Path::new(&gh.run_dir).join("meta.json")).unwrap()["reviewMode"],
+            "github"
+        );
+
+        // An adopted run elsewhere is listed too, once; a missing one is not.
+        let other = dir.join("dev/runs/r-20260101-000000-abcd");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(
+            other.join("request.md"),
+            "# Request\n\nfolder: /w\n\n## What to do\n\nOld\n",
+        )
+        .unwrap();
+        adopt_runs(
+            dir.path(),
+            &[other.clone(), other.clone(), dir.join("gone")],
+        )
+        .unwrap();
+        assert_eq!(
+            adopt_runs(dir.path(), std::slice::from_ref(&other)).unwrap(),
+            0
+        );
+        let list = list_runs(dir.path());
+        assert_eq!(list.len(), 4);
+        let adopted: Vec<_> = list.iter().filter(|r| r.adopted).collect();
+        assert_eq!(adopted.len(), 1);
+        assert_eq!(adopted[0].title.as_deref(), Some("Old"));
+        assert_eq!(adopted_runs(dir.path()), [other.canonicalize().unwrap()]);
     }
 
     #[test]

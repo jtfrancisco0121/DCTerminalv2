@@ -99,6 +99,11 @@
       "repo": "mathlib",
       "state": "opened",
       "prUrl": "https://github.com/o/mathlib/pull/7",
+      "draft": false,
+      "comments": [
+        { "round": 1, "url": "https://github.com/o/mathlib/pull/7#issuecomment-101" },
+        { "round": 2, "url": "https://github.com/o/mathlib/pull/7#issuecomment-102" }
+      ],
       "check": {
         "result": "pass"
       },
