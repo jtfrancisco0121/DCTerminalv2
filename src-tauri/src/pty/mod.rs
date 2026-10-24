@@ -259,7 +259,7 @@ fn open_session(
     on_output: Channel<PtyPacket>,
 ) -> Result<Option<u32>, String> {
     let token = begin_open(registry, id)?;
-    open_session_as(registry, id, token, spec, on_output, || true)
+    open_session_as(registry, id, token, spec, on_output, || true, || Ok(()))
 }
 
 /// Start the terminal `id` for the open `token` ([`begin_open`]),
@@ -283,6 +283,7 @@ fn open_session_as(
     spec: SpawnSpec,
     on_output: Channel<PtyPacket>,
     still_wanted: impl FnOnce() -> bool,
+    before_spawn: impl FnOnce() -> Result<(), String>,
 ) -> Result<Option<u32>, String> {
     let stopping = {
         let mut registry = registry.lock().map_err(|err| err.to_string())?;
@@ -303,6 +304,15 @@ fn open_session_as(
     };
     if let Some(group) = stopping {
         wait_until_stopped(&group);
+    }
+    // After the old program is gone (so it is never mistaken for another).
+    if let Err(err) = before_spawn() {
+        if let Ok(mut registry) = registry.lock() {
+            if open_is_current(&registry, id, token).unwrap_or(false) {
+                registry.opening.remove(id);
+            }
+        }
+        return Err(err);
     }
     let mut registry = registry.lock().map_err(|err| err.to_string())?;
     if !open_is_current(&registry, id, token)? {
@@ -455,7 +465,24 @@ fn pty_open_blocking(
             .unwrap_or(false);
         tab_open && app.get_webview_window(&window).is_some()
     };
-    let pid = open_session_as(&registry, &tab.id, token, spec, on_output, still_wanted)?;
+    // An adopted (dev-app) run's conversation is never resumed while a
+    // process outside this app (the dev app) still runs it.
+    let resumes = adopted_run_tab(app, &tab)
+        .then(|| resumed_session(&spec.args))
+        .flatten();
+    let before_spawn = || match resumes.as_deref() {
+        Some(id) => crate::import_dev::refuse_live_session(id),
+        None => Ok(()),
+    };
+    let pid = open_session_as(
+        &registry,
+        &tab.id,
+        token,
+        spec,
+        on_output,
+        still_wanted,
+        before_spawn,
+    )?;
     // The frontend does not use the pid; 0 means a newer open replaced this one.
     Ok(pid.unwrap_or(0))
 }
@@ -505,11 +532,6 @@ fn spawn_spec(
                 &current,
             );
             let start = claude_start(input.resume, resumable)?;
-            // An adopted (dev-app) run's conversation: never resumed while
-            // another process (the dev app) still runs it.
-            if start.resumed && adopted_run_tab(app, &tab) {
-                crate::import_dev::refuse_live_session(&start.session_id)?;
-            }
             let kind = if start.resumed {
                 TerminalKind::Resume {
                     session_id: start.session_id.clone(),
@@ -553,6 +575,13 @@ fn spawn_spec(
         rows: input.rows,
     };
     Ok((tab, spec))
+}
+
+/// The id after `--resume` in a Claude command line.
+fn resumed_session(args: &[String]) -> Option<String> {
+    args.windows(2)
+        .find(|w| w[0] == "--resume")
+        .map(|w| w[1].clone())
 }
 
 /// The tab's launch names a run folder outside this app's own runs (adopted).
@@ -990,6 +1019,7 @@ mod tests {
             sh_spec(dir.path(), &format!("touch '{}'", started.display())),
             Channel::new(|_| Ok(())),
             || true,
+            || Ok(()),
         );
         assert!(opened.is_err(), "the open was cancelled: {opened:?}");
         assert!(registry.lock().unwrap().sessions.is_empty());
@@ -999,6 +1029,70 @@ mod tests {
         let token = begin_open(&registry, "u").unwrap();
         end_open(&registry, "u", token);
         assert!(registry.lock().unwrap().opening.is_empty());
+    }
+
+    // Review: the live-session check of an adopted run's tab ran before the
+    // old program was stopped, so a Restart always saw its own `claude`.
+    // It runs after the wait now, and a refusal starts nothing.
+    #[cfg(unix)]
+    #[test]
+    fn the_check_before_the_spawn_runs_once_the_old_program_is_gone() {
+        let dir = crate::test_support::TempDir::new("pty_before_spawn");
+        let registry = Mutex::new(PtyRegistry::new());
+        let pid_file = dir.join("old.pid");
+        let token = begin_open(&registry, "t").unwrap();
+        open_session_as(
+            &registry,
+            "t",
+            token,
+            sh_spec(
+                dir.path(),
+                &format!("echo $$ > '{}'; sleep 30", pid_file.display()),
+            ),
+            Channel::new(|_| Ok(())),
+            || true,
+            || Ok(()),
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !pid_file.exists() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        let old = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .to_string();
+        let started = dir.join("started");
+        let token = begin_open(&registry, "t").unwrap();
+        let old_alive = std::cell::Cell::new(true);
+        let opened = open_session_as(
+            &registry,
+            "t",
+            token,
+            sh_spec(dir.path(), &format!("touch '{}'", started.display())),
+            Channel::new(|_| Ok(())),
+            || true,
+            || {
+                // Gone, or a zombie waiting to be reaped (not running).
+                let alive = std::process::Command::new("ps")
+                    .args(["-o", "stat=", "-p", &old])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .is_ok_and(|stat| !stat.is_empty() && !stat.starts_with('Z'));
+                old_alive.set(alive);
+                Err("refused".into())
+            },
+        );
+        assert_eq!(opened.unwrap_err(), "refused");
+        assert!(
+            !old_alive.get(),
+            "the old program was stopped before the check"
+        );
+        let reg = registry.lock().unwrap();
+        assert!(reg.sessions.is_empty() && reg.opening.is_empty());
+        drop(reg);
+        thread::sleep(Duration::from_millis(200));
+        assert!(!started.exists(), "nothing started");
     }
 
     // The tab (or its window) is checked under the registry lock right
@@ -1017,6 +1111,7 @@ mod tests {
             sh_spec(dir.path(), &format!("touch '{}'", started.display())),
             Channel::new(|_| Ok(())),
             || false,
+            || Ok(()),
         );
         assert!(opened.unwrap_err().contains("closed"));
         let registry = registry.lock().unwrap();
@@ -1055,6 +1150,7 @@ mod tests {
                     ),
                     Channel::new(|_| Ok(())),
                     || store.lock().unwrap().tab_by_id(&tab).is_some(),
+                    || Ok(()),
                 )
             });
             thread::sleep(Duration::from_millis(100));

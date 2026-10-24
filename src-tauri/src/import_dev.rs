@@ -458,10 +458,10 @@ pub fn lock_held(dir: &Path) -> bool {
     )
 }
 
-/// The command lines of every process (`ps`), or empty when ps fails.
+/// Every process as `pid ppid command` (`ps`), or empty when ps fails.
 pub fn process_lines() -> String {
     std::process::Command::new("ps")
-        .args(["-axww", "-o", "command="])
+        .args(["-axww", "-o", "pid=,ppid=,command="])
         .output()
         .ok()
         .filter(|o| o.status.success())
@@ -469,18 +469,50 @@ pub fn process_lines() -> String {
         .unwrap_or_default()
 }
 
-/// A `claude` process runs session `id` (`--resume <id>` / `--session-id <id>`).
-pub fn session_in_use(ps: &str, id: &str) -> bool {
-    let id = id.trim();
-    !id.is_empty()
-        && ps.lines().any(|line| {
-            line.contains("claude")
-                && line
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .windows(2)
-                    .any(|w| (w[0] == "--resume" || w[0] == "--session-id") && w[1] == id)
+/// `pid ppid command` lines.
+fn parse_ps(ps: &str) -> Vec<(u32, u32, &str)> {
+    ps.lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let (pid, rest) = line.split_once(char::is_whitespace)?;
+            let rest = rest.trim_start();
+            let (ppid, command) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            Some((pid.parse().ok()?, ppid.parse().ok()?, command))
         })
+        .collect()
+}
+
+/// A `claude` process outside `own_pid`'s process tree runs session `id`
+/// (`--resume <id>` / `--session-id <id>`). This app's own terminals (its
+/// children) never count.
+pub fn session_in_use(ps: &str, id: &str, own_pid: u32) -> bool {
+    let id = id.trim();
+    if id.is_empty() {
+        return false;
+    }
+    let procs = parse_ps(ps);
+    let parent: HashMap<u32, u32> = procs.iter().map(|(p, pp, _)| (*p, *pp)).collect();
+    let ours = |mut pid: u32| {
+        for _ in 0..64 {
+            if pid == own_pid {
+                return true;
+            }
+            match parent.get(&pid) {
+                Some(&pp) if pp != pid && pp != 0 => pid = pp,
+                _ => return false,
+            }
+        }
+        false
+    };
+    procs.iter().any(|(pid, _, command)| {
+        command.contains("claude")
+            && command
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .windows(2)
+                .any(|w| (w[0] == "--resume" || w[0] == "--session-id") && w[1] == id)
+            && !ours(*pid)
+    })
 }
 
 /// Why the dev app looks live, if it does: its app lock is held, or a tab's
@@ -494,7 +526,7 @@ pub fn dev_live_reason(dev: &Path, ps: &str, now: std::time::SystemTime) -> Opti
         let Some(id) = tab.claude_session_id.as_deref() else {
             continue;
         };
-        if session_in_use(ps, id) {
+        if session_in_use(ps, id, std::process::id()) {
             return Some(format!(
                 "{QUIT_DEV_FIRST}: a Claude session of tab \"{}\" is still running.",
                 tab.label
@@ -520,7 +552,7 @@ pub fn dev_live_reason(dev: &Path, ps: &str, now: std::time::SystemTime) -> Opti
 /// Before resuming an adopted run's tab: refused while another process runs
 /// that session (the dev app still has it open).
 pub fn refuse_live_session(session_id: &str) -> Result<(), String> {
-    if session_in_use(&process_lines(), session_id) {
+    if session_in_use(&process_lines(), session_id, std::process::id()) {
         return Err("Another Claude process is using this conversation (is the dev app still running it?). Quit it first, then reopen the tab.".into());
     }
     Ok(())
@@ -1039,13 +1071,21 @@ mod tests {
         let fresh = dev_live_reason(&dev, "", std::time::SystemTime::now()).unwrap();
         assert!(fresh.starts_with(QUIT_DEV_FIRST), "{fresh}");
         // A claude process runs that session.
-        let ps = format!("/usr/bin/zsh\nnode /opt/claude/cli.js --settings {{}} --resume {SID} --plugin-dir /p\n");
-        assert!(session_in_use(&ps, SID));
-        assert!(!session_in_use(&ps, SID2));
-        assert!(!session_in_use(&format!("vim {SID}.jsonl"), SID));
+        let ps = format!("  1 0 /sbin/launchd\n 500 1 /usr/bin/zsh\n 501 500 node /opt/claude/cli.js --settings {{}} --resume {SID} --plugin-dir /p\n");
+        let me = std::process::id();
+        assert!(session_in_use(&ps, SID, me));
+        assert!(!session_in_use(&ps, SID2, me));
+        assert!(!session_in_use(&format!(" 9 1 vim {SID}.jsonl"), SID, me));
         assert!(dev_live_reason(&dev, &ps, later)
             .unwrap()
             .contains("still running"));
+        // The same claude in this app's own tree (its terminal) never counts:
+        // a restart of the tab, or a re-import after resuming it here.
+        let own = format!("  1 0 /sbin/launchd\n {me} 1 dcterminalv2\n 700 {me} /bin/zsh -l\n 701 700 claude --resume {SID}\n");
+        assert!(!session_in_use(&own, SID, me));
+        assert_eq!(dev_live_reason(&dev, &own, later), None);
+        assert!(session_in_use(&own, SID, 12345), "another app's view: live");
+        assert!(refuse_live_session("00000000-0000-4000-8000-000000000000").is_ok());
         let before = snapshot(&dev);
         // The app lock of a running build (another open file holds it).
         let held = hold_app_lock(&root.join("other-app")).unwrap();
