@@ -37,7 +37,7 @@ def load_status(run):
 
 
 STAGES = {"planning", "plan-approval", "building", "ship-approval", "shipping", "done", "failed"}
-PR_STATES = {"pending", "building", "reviewing", "fixing", "reviewed", "needs-attention", "opened", "pushed", "local-only"}
+PR_STATES = {"pending", "building", "drafted", "reviewing", "fixing", "reviewed", "needs-attention", "opened", "pushed", "local-only"}
 CHECK_RESULTS = {"not-run", "pass", "fail", "none", "error"}
 
 

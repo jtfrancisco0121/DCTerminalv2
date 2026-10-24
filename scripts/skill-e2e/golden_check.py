@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Assertions for the golden-run suite (golden.sh), reusing check_run.py's helpers.
 
-golden_check.py <case> <run> <ws> <transcript.jsonl> <memory root> [<onboard transcript>]
+golden_check.py <case> <run> <ws> <transcript.jsonl> <memory root> [<onboard transcript> | <bare origin (github)>]
 """
 import json
 import os
@@ -20,6 +20,7 @@ CASES = {
     "multi": {"repos": {"strutil": ["npm", "run", "-s", "check"], "units": ["npm", "test", "-s"]}, "prs": 2},
     "dep": {"repos": {"pricing": ["npm", "run", "-s", "check"], "shop": ["npm", "test", "-s"]}, "prs": 2},
     "fix": {"repos": {"textkit": ["npm", "run", "-s", "check"]}, "prs": 1},
+    "github": {"repos": {"greet": ["npm", "run", "-s", "check"]}, "prs": 1, "state": "opened"},
 }
 
 
@@ -53,9 +54,9 @@ def first(lines, rx):
     return next((i for i, l in enumerate(lines) if re.search(rx, l)), None)
 
 
-def check_pr(pr, ws, cmds):
+def check_pr(pr, ws, cmds, want="local-only"):
     pid = pr["id"]
-    check(pr.get("state") == "local-only", f"{pid} local-only (got {pr.get('state')}: {pr.get('note')})")
+    check(pr.get("state") == want, f"{pid} {want} (got {pr.get('state')}: {pr.get('note')})")
     check((pr.get("check") or {}).get("result") == "pass", f"{pid} check pass")
     g = read_gate(cr_run, pid)
     check(g in ("PASS", "CONCERNS"), f"{pid} gate PASS/CONCERNS (got {g})")
@@ -88,7 +89,8 @@ def check_memory_writes(events, mem, label):
 def main():
     global cr_run
     case, run, ws, tpath, mem = sys.argv[1:6]
-    onboard = sys.argv[6] if len(sys.argv) > 6 else None
+    onboard = sys.argv[6] if len(sys.argv) > 6 and case == "multi" else None
+    origin = sys.argv[6] if len(sys.argv) > 6 and case == "github" else None
     spec = CASES[case]
     ws, mem, cr_run = os.path.realpath(ws), os.path.realpath(mem), run
     st = cr.load_status(run)
@@ -108,7 +110,7 @@ def main():
     prs = st.get("prs") or []
     check(len(prs) == spec["prs"], f"{spec['prs']} PR(s) ({len(prs)})")
     for pr in prs:
-        check_pr(pr, ws, spec["repos"])
+        check_pr(pr, ws, spec["repos"], spec.get("state", "local-only"))
     check_mains(ws, spec["repos"])
     rep = os.path.join(run, "report.md")
     if check(os.path.isfile(rep), "report.md written (R10)"):
@@ -163,7 +165,58 @@ def main():
             ran = subprocess.run(["node", "-e", "const t=require('./text'); process.exit(t.capitalize('') === '' ? 0 : 1)"],
                                  cwd=p["worktree"], capture_output=True)
             check(ran.returncode == 0, "the pre-existing capitalize('') failure was fixed too")
+    elif case == "github":
+        check_github(run, prs, events, origin, lines)
     cr.report()
+
+
+def check_github(run, prs, events, origin, lines):
+    shim = os.environ.get("GH_SHIM_DIR", "")
+    calls = open(os.path.join(shim, "calls.log")).read().splitlines() if os.path.isfile(os.path.join(shim, "calls.log")) else []
+    try:
+        gh_prs = json.load(open(os.path.join(shim, "prs.json")))
+    except (OSError, ValueError):
+        gh_prs = []
+    pr = prs[0] if prs else {}
+    check(len(gh_prs) == 1, f"one PR on the (fake) GitHub ({len(gh_prs)})")
+    check(any(c.startswith("pr create --draft") for c in calls), "opened as a draft (gh pr create --draft)")
+    check(not any(c.startswith("pr create") and "--draft" not in c for c in calls), "never a non-draft gh pr create")
+    check(any(c.startswith("pr ready") for c in calls), "marked ready at stop #2 (gh pr ready)")
+    if gh_prs:
+        g = gh_prs[0]
+        check(g.get("url") == pr.get("prUrl"), f"prUrl is the PR's ({pr.get('prUrl')} vs {g.get('url')})")
+        check(g.get("isDraft") is False, "the PR is ready for review now")
+        check("Eagle-Eye review rounds" in (g.get("body") or ""), "final body lists the review rounds")
+    check(pr.get("draft") is False, f"status.json draft false ({pr.get('draft')})")
+    comments = pr.get("comments") or []
+    check(comments and comments[0].get("round") == 1 and str(comments[0].get("url", "")).startswith("https://"),
+          f"review round 1 posted and recorded ({comments})")
+    rounds = (pr.get("review") or {}).get("round") or 0
+    check(len(comments) == rounds, f"one comment per review round ({len(comments)} comments, {rounds} rounds)")
+    posted = [c for c in calls if c.startswith("pr comment")]
+    want = len(comments) + sum(1 for c in comments if c.get("fixesUrl"))
+    check(len(posted) == want, f"no comment posted twice ({len(posted)} gh pr comment calls, {want} recorded)")
+    first = open(os.path.join(run, "reviews", f"{pr.get('id')}-round1.md")).readline() if pr.get("id") else ""
+    check(re.match(r"^\W*Eagle-Eye review\s*[\u2014\u2013-]+\s*round 1:\s*(APPROVED|REQUEST CHANGES)", first), f"review file first line is the fixed verdict line ({first.strip()[:80]})")
+    wt = pr.get("worktree") or ""
+    if origin and wt:
+        on = git("--git-dir", origin, "rev-parse", f"refs/heads/{pr.get('branch')}").stdout.strip()
+        check(on and on == git("-C", wt, "rev-parse", "HEAD").stdout.strip(), "the branch on the remote is the worktree's HEAD")
+    if wt:
+        check(os.path.isfile(os.path.join(wt, ".env")), "copyFiles: .env copied into the worktree")
+        tree = git("-C", wt, "log", "--all", "--name-only", "--format=").stdout.split()
+        check(".env" not in tree, "copyFiles: .env never committed")
+    blocked = cr.guard_blocked(events)
+    direct = [str(i.get("command"))[:120] for n, i, tid in all_tool_uses(events)
+              if n == "Bash" and tid not in blocked and "state.sh" not in str(i.get("command"))
+              and re.search(r"\bgit\b[^|;&]*\bpush\b|\bgh\s+pr\s+(create|comment|edit|ready|merge|close)\b|\bgh\s+api\b.*\s(-X|--method|-f|-F|--field|--raw-field|--input)\b|\bgh\s+issue\s+comment\b", str(i.get("command")))]
+    check(not direct, f"no direct git push / gh by any agent: {direct[:3]}")
+    check(first_idx(lines, r"draft PR (opened|found)") is not None, "log: draft PR opened")
+    check(first_idx(lines, r"review round 1 posted") is not None, "log: review round 1 posted")
+
+
+def first_idx(lines, rx):
+    return first(lines, rx)
 
 
 if __name__ == "__main__":

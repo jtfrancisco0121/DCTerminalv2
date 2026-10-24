@@ -20,11 +20,18 @@
 #   - No DCV2_RUN_DIR, python3 missing, or a payload that does not parse: blocked (fail closed).
 #     Exception: the memory-updater also runs at the end of a standalone /dcv2:developer session
 #     (no run): then it may not Edit/Write anything (it writes memory only with memory.sh write).
-# The orchestrator (no agent_type) in a bound run: `git push` and `gh pr create` only when
-# status.json has stage shipping and a shipApproval (state.sh ship-pr does both itself); a push
-# names only dcv2/ branches; never a force push, --all/--mirror or a branch delete; never
-# `gh pr merge|close|edit`. It never writes into (or runs changing git in) a repo's main
-# checkout recorded in .guard.json.
+# The orchestrator (no agent_type) in a bound run: local review mode (meta.json reviewMode missing
+# or "local"): `git push` and `gh pr create` only when status.json has stage shipping and a
+# shipApproval (state.sh ship-pr does both itself). github mode: no direct `git push` / `gh pr
+# create` at all; `state.sh draft-pr|push|post-review|comment` only after the plan approval and
+# `state.sh ready` only after the ship approval (state.sh checks the same). Either mode: a push
+# names only dcv2/ branches; never a force push, --all/--mirror or a branch delete; no GitHub-writing
+# gh (`gh api` with a non-GET method or -f/-F/--field/--raw-field/--input, `gh pr merge|close|edit|
+# ready|comment|...`, `gh <anything> create|comment|edit|delete|...`). It never writes into (or
+# runs changing git in) a repo's main checkout recorded in .guard.json.
+# Implementer: `git add|commit` naming a file state.sh worktree copied in from the main checkout
+# (.guard.json "copied", from repos.json copyFiles) is blocked (best effort).
+# Everyone in a run: no `security dump-keychain`, and no `security find-*-password` naming dcterminalv2.
 # Everyone: status.json, writeback.json and .guard.json in a run folder are written only by
 # state.sh. When DCV2_MEMORY_DIR is set (every dcv2 launch), nobody writes into it with
 # Edit/Write or a shell redirect/copy: agents use memory.sh write (the app's editor writes as the
@@ -72,15 +79,23 @@ trust_root = os.path.join(os.path.dirname(os.path.dirname(run)), "run-trust") if
 TRUST_MSG = "the app's run records (run-trust) are written only by the app, never by Claude."
 mem = os.environ.get("DCV2_MEMORY_DIR") or ""
 mem = os.path.realpath(os.path.expanduser(mem)) if mem else ""
-worktrees, repos, status = [], [], {}
+worktrees, repos, status, copied, mode = [], [], {}, set(), "local"
 if run:
     try:
         g = json.load(open(os.path.join(run, ".guard.json")))
         if os.path.realpath(str(g.get("runDir") or "")) == run:
-            worktrees = [os.path.realpath(w) for w in (g.get("worktrees") or {}).values() if isinstance(w, str) and os.path.isabs(w)]
+            wmap = {k: os.path.realpath(w) for k, w in (g.get("worktrees") or {}).items() if isinstance(w, str) and os.path.isabs(w)}
+            worktrees = list(wmap.values())
             repos = [os.path.realpath(r) for r in g.get("repos") or [] if isinstance(r, str) and os.path.isabs(r)]
+            for k, files in (g.get("copied") or {}).items():  # files copied in from the main checkout (never committed)
+                if k in wmap and isinstance(files, list):
+                    copied.update(os.path.normpath(os.path.join(wmap[k], str(f))) for f in files)
     except Exception:
         pass
+    try:
+        mode = "github" if json.load(open(os.path.join(run, "meta.json"))).get("reviewMode") == "github" else "local"
+    except Exception:
+        mode = "local"
     try:
         status = json.load(open(os.path.join(run, "status.json")))
         status = status if isinstance(status, dict) else {}
@@ -351,6 +366,8 @@ def check_git(args, cwd):
             dst = dst[len("refs/heads/"):] if dst.startswith("refs/heads/") else dst
             if dst != "HEAD" and not dst.startswith("dcv2/") or (dst == "HEAD" and ":" in ref):
                 block(f"the run pushes only its own dcv2/ branches (not {ref!r}); ship with state.sh ship-pr.")
+        if mode == "github":
+            block("this run reviews on GitHub: pushes go only through state.sh (draft-pr / push / ready), which check the stage and approvals.")
         ship_gate("git push")
         return
     if not pipeline:
@@ -358,6 +375,15 @@ def check_git(args, cwd):
             block(f"the orchestrator never runs `git {sub}` in a repo's main checkout ({target}); worktrees go through state.sh worktree.")
         return
     if role == "implementer" and target and any(inside(target, w) for w in worktrees):
+        if sub in ("add", "stage", "commit") and copied:
+            force = any(a == "--force" or (re.match(r"^-[a-zA-Z]+$", a) and "f" in a) for a in rest)
+            for a in rest:
+                if a.startswith("-") or "$" in a:
+                    continue
+                p = os.path.normpath(os.path.join(target, os.path.expanduser(a)))
+                if p in copied or (force and any(c.startswith(p.rstrip(os.sep) + os.sep) for c in copied)):
+                    block(f"`git {sub}` would include {a!r}, a file copied in from the main checkout (repos.json copyFiles): "
+                          "it is never staged or committed. Stage only the files your story changed.")
         return
     if git_readonly(sub, rest):
         return
@@ -366,10 +392,21 @@ def check_git(args, cwd):
              else "it may only run read-only git commands."))
 
 
+GH_VALUE_FLAGS = ("-R", "--repo", "--hostname", "-X", "--method", "-H", "--header", "-q", "--jq", "-t", "--template")
+
+
 def check_gh(args):
     if not bound:
         return
-    words = [a for a in args if not a.startswith("-")]
+    words, i = [], 0
+    while i < len(args):
+        a = args[i]
+        if a in GH_VALUE_FLAGS:
+            i += 2
+            continue
+        if not a.startswith("-"):
+            words.append(a)
+        i += 1
     sub, verb = (words + ["", ""])[:2]
     if pipeline:
         if sub in ("pr", "api"):
@@ -377,10 +414,54 @@ def check_gh(args):
         if verb in GH_WRITES:
             block(f"{who} never changes anything on GitHub (`gh {sub} {verb}`).")
         return
+    if sub == "api":
+        method = None
+        for j, a in enumerate(args):
+            if a in ("-X", "--method") and j + 1 < len(args):
+                method = args[j + 1]
+            elif a.startswith("--method="):
+                method = a.split("=", 1)[1]
+            elif re.match(r"^-X\S", a):
+                method = a[2:]
+        fields = any(a in ("-f", "-F", "--field", "--raw-field", "--input") or
+                     re.match(r"^(-[fF]\S|--field=|--raw-field=|--input=)", a) for a in args)
+        if (method and method.upper() != "GET") or fields:
+            block("the run never writes to GitHub with `gh api`; every GitHub write goes through a state.sh command.")
+        return
     if sub == "pr" and verb in ("merge", "close", "edit", "ready", "reopen", "review", "comment", "lock"):
-        block(f"the run never runs `gh pr {verb}`: it never merges, closes or edits PRs.")
+        block(f"the run never runs `gh pr {verb}` itself: it never merges, closes or edits PRs"
+              + ("; drafts, comments and `ready` go through state.sh." if mode == "github" else "."))
     if sub == "pr" and verb == "create":
+        if mode == "github":
+            block("this run reviews on GitHub: PRs are opened only by `state.sh draft-pr` / `state.sh ready`.")
         ship_gate("gh pr create")
+        return
+    if verb in GH_WRITES:
+        block(f"the run never changes anything on GitHub with `gh {sub} {verb}`; GitHub writes go through state.sh.")
+
+
+GH_STATE = ("draft-pr", "push", "post-review", "comment")
+
+
+def check_state_sh(args):
+    """The orchestrator's GitHub writes through state.sh: github mode, after the plan / ship approval (state.sh checks too)."""
+    sub = next((a for a in args[1:] if not a.startswith("-")), "")
+    if sub in GH_STATE:
+        if mode != "github":
+            block(f"`state.sh {sub}` is for runs that review on GitHub; this run's review mode is local.")
+        plan = status.get("plan") if isinstance(status.get("plan"), dict) else {}
+        if not plan.get("approval"):
+            block(f"`state.sh {sub}` needs the plan approval first (stop #1).")
+    if sub == "ready" and not status.get("shipApproval"):
+        block("`state.sh ready` needs the ship approval first (stop #2).")
+
+
+def check_security(args):
+    """No reading the app's keychain items (ClickUp token, trust key) from inside a run."""
+    sub = next((a for a in args if not a.startswith("-")), "")
+    if sub == "dump-keychain" or (sub in ("find-generic-password", "find-internet-password", "export")
+                                  and any("dcterminalv2" in a.lower() for a in args)):
+        block("the app's keychain items are never read from inside a run.")
 
 
 def analyze(cmd, cwd, depth=0):
@@ -450,6 +531,10 @@ def analyze(cmd, cwd, depth=0):
             check_git(args, cwd)
         elif name == "gh":
             check_gh(args)
+        elif name == "security" and bound:
+            check_security(args)
+        elif name in ("bash", "sh") and args and os.path.basename(args[0]) == "state.sh" and run and not pipeline:
+            check_state_sh(args)
         elif name in ("bash", "sh", "zsh", "dash", "ksh") and "-c" in args and args.index("-c") + 1 < len(args):
             analyze(args[args.index("-c") + 1], cwd, depth + 1)
         elif name == "eval":

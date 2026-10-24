@@ -20,9 +20,24 @@
 #                                             make (or reuse / re-make) the PR's worktree beside the
 #                                             repo, record it in <run>/.guard.json, print
 #                                             "branch=<b> worktree=<path>". Never touches the main checkout.
+#                                             A newly made worktree also gets repos.json's copyFiles
+#                                             (git-ignored files only) and its setup (or the lockfile's
+#                                             install), printing "setup=ok|failed|none log=<path>"
+#   state.sh mode <run>                       print "reviewMode=github|local" (meta.json; missing = local)
 #   state.sh ship-check <run>                 per PR: remote, and whether its base is on the remote
-#   state.sh ship-pr <run> <pr id>            push the PR's branch and open its GitHub PR (stage
-#                                             shipping + ship approval only); updates status.json
+#   state.sh ship-pr <run> <pr id>            local mode: push the PR's branch and open its GitHub PR
+#                                             (stage shipping + ship approval only); updates status.json
+# github review mode only (meta.json reviewMode "github"; after the plan approval):
+#   state.sh draft-pr <run> <pr id>           push the branch (never force) and open a DRAFT PR (or find
+#                                             the branch's existing one); records prUrl, draft, state drafted
+#   state.sh push <run> <pr id>               push new commits of a drafted PR (never force)
+#   state.sh post-review <run> <pr id> <round>
+#                                             post reviews/<pr>-round<n>.md as one PR comment (secret-scanned,
+#                                             capped); records prs[].comments; never posts a round twice
+#   state.sh comment <run> <pr id> fixes <round>
+#                                             post the fixed "Round n fixes: <commits>" comment (once per round)
+#   state.sh ready <run> <pr id>              after the ship approval: final PR body + `gh pr ready`
+#                                             (opens a ready PR when no draft exists); updates status.json
 #   state.sh writeback <run> [--force]        write writeback.json from tickets.json, plan.md and
 #                                             status.json (refuses to overwrite it without --force)
 #   state.sh gate <run> <pr id> PASS|CONCERNS|FAIL|WAIVED "<reason>" [--review <file>]
@@ -42,10 +57,13 @@ set -euo pipefail
 py_works() { command -v python3 >/dev/null 2>&1 && python3 -c 'import json, sys; sys.exit(0)' >/dev/null 2>&1; }
 
 IFS= read -r -d '' PY <<'PY' || true
-import datetime, json, os, re, subprocess, sys, tempfile
+import datetime, json, os, re, shutil, signal, subprocess, sys, tempfile
 
 STAGES = ["planning", "plan-approval", "building", "ship-approval", "shipping", "done", "failed"]
-STATES = ["pending", "building", "reviewing", "fixing", "reviewed", "needs-attention", "opened", "pushed", "local-only"]
+STATES = ["pending", "building", "drafted", "reviewing", "fixing", "reviewed", "needs-attention", "opened", "pushed", "local-only"]
+COMMENT_CAP = 60000
+GITHUB_STAGES = ("building", "ship-approval", "shipping")
+PLUGIN_ROOT = os.environ.get("DCV2_PLUGIN_ROOT", "")
 CHECK_RESULTS = ["not-run", "pass", "fail", "none", "error"]
 POST_APPROVAL = ("building", "ship-approval", "shipping", "done")
 SHIPPED = ("opened", "pushed", "local-only")
@@ -140,6 +158,12 @@ def resumed(run):
     return "resumed at stage" in read(os.path.join(run, "log.md"))
 
 
+def review_mode(run):
+    """meta.json's reviewMode (written by the app at Start). Missing or unknown = local (old runs keep their flow)."""
+    m = load_json(os.path.join(run, "meta.json"))
+    return "github" if isinstance(m, dict) and m.get("reviewMode") == "github" else "local"
+
+
 def remote_of(repo):
     remotes = git("-C", repo, "remote").stdout.split()
     return "origin" if "origin" in remotes else (remotes[0] if remotes else None)
@@ -228,6 +252,14 @@ def validate_status(doc, run):
             p.append(f"{pid}: reviewed needs check.result pass or none (got {result!r}); a failing or broken check means needs-attention")
         if state == "needs-attention" and not pr.get("note"):
             p.append(f"{pid}: needs-attention needs a one-line note")
+        if state == "drafted" and not pr.get("prUrl"):
+            p.append(f"{pid}: drafted needs the draft PR's prUrl (set only by `state.sh draft-pr`)")
+        if "draft" in pr and not isinstance(pr.get("draft"), bool):
+            p.append(f"{pid}: draft must be true or false")
+        cm = pr.get("comments")
+        if cm is not None and not (isinstance(cm, list) and all(isinstance(c, dict) and isinstance(c.get("round"), int)
+                                                                  and isinstance(c.get("url"), str) for c in cm)):
+            p.append(f"{pid}: comments must be a list of {{round: <n>, url: <comment url>}}")
         if stage in POST_APPROVAL:
             ids = (pr.get("stories") or {}).get("ids") if isinstance(pr.get("stories"), dict) else None
             if not (isinstance(ids, list) and ids and all(isinstance(i, str) for i in ids)):
@@ -274,8 +306,16 @@ def prepare_status(doc, old, trusted, run_dir=None):
         o = oprs.get(pr.get("id")) or {}
         if not trusted and o.get("state") in SHIPPED and pr.get("state") != o.get("state"):
             bad.append(f"{pr.get('id')} is {o['state']} (written by state.sh ship-pr); re-read status.json and keep it")
+        if not trusted and o.get("prUrl") and pr.get("prUrl") is None:
+            pr["prUrl"] = o["prUrl"]
         if not trusted and o.get("prUrl") and pr.get("prUrl") != o.get("prUrl"):
-            bad.append(f"{pr.get('id')}.prUrl is {o['prUrl']} (written by state.sh ship-pr); keep it")
+            bad.append(f"{pr.get('id')}.prUrl is {o['prUrl']} (written by state.sh ship-pr / draft-pr); keep it")
+        if not trusted:  # draft and comments are written only by state.sh's GitHub commands
+            for k in ("draft", "comments"):
+                if k in o:
+                    pr[k] = o[k]
+                else:
+                    pr.pop(k, None)
         state = pr.get("state")
         if state == "reviewed" and o.get("state") != "reviewed" and run_dir:
             g = read_gate(run_dir, pr.get("id"))
@@ -349,9 +389,10 @@ def gates(doc, run, old=None):
             return "NOT WRITTEN: tickets.json exists but writeback.json does not. Run `state.sh writeback <run>` first, then write stage done.", out
         if not doc.get("ship"):
             return "NOT WRITTEN: stage done needs \"ship\" set ({remote, pushed, note}). Do Step 4 first.", out
-        early = [p.get("id") for p in doc.get("prs") or [] if isinstance(p, dict) and p.get("state") in ("reviewed", "building", "reviewing", "fixing")]
+        early = [p.get("id") for p in doc.get("prs") or [] if isinstance(p, dict) and p.get("state") in ("reviewed", "building", "drafted", "reviewing", "fixing")]
         if early:
-            return f"NOT WRITTEN: stage done but {', '.join(early)} not shipped or finished; run `state.sh ship-pr <run> <pr id>` for reviewed PRs first.", out
+            how = "state.sh ready" if review_mode(run) == "github" else "state.sh ship-pr"
+            return f"NOT WRITTEN: stage done but {', '.join(early)} not shipped or finished; run `{how} <run> <pr id>` for reviewed PRs first.", out
     if doc.get("waitingFor") and tm["auto"]:
         what = "plan" if doc["waitingFor"] == "plan-approval" else "ship"
         out.append(f"AUTO-APPROVE (test-mode): do not wait for the user. Run `state.sh approve <run> {what} test` and continue past {doc['waitingFor']} now.")
@@ -452,6 +493,7 @@ def cmd_preflight(run, resume=False):
     print(f"maxImplementers={max_implementers()}")
     mem = os.environ.get("DCV2_MEMORY_DIR", "")
     print(f"memory={os.path.realpath(mem) if mem else 'none'}")
+    print(f"reviewMode={review_mode(run)}")
     if resume:
         st = load_json(os.path.join(run, "status.json"))
         if isinstance(st, dict) and st.get("stage") in STAGES:
@@ -543,7 +585,7 @@ def cmd_base(repo):
     print(f"base={base} baseCommit={commit} remote={remote or 'none'}")
 
 
-def record_guard(run, repo, pr_id, wt):
+def record_guard(run, repo, pr_id, wt, copied=None):
     path = os.path.join(run, ".guard.json")
     g = load_json(path)
     if not isinstance(g, dict) or g.get("runDir") != run:
@@ -551,7 +593,94 @@ def record_guard(run, repo, pr_id, wt):
     if repo not in g["repos"]:
         g["repos"].append(repo)
     g["worktrees"][pr_id] = wt
+    if copied is not None:  # files copied in from the main checkout: never staged or committed (guard)
+        g.setdefault("copied", {})[pr_id] = copied
     atomic_write(path, json.dumps(g, indent=2) + "\n")
+
+
+def repo_entry(run, repo):
+    """repos.json's entry for this repo (matched by real path), or {}."""
+    rj = load_json(os.path.join(run, "repos.json"))
+    for r in (rj.get("repos") if isinstance(rj, dict) else None) or []:
+        if isinstance(r, dict) and isinstance(r.get("path"), str) and os.path.realpath(r["path"]) == repo:
+            return r
+    return {}
+
+
+def copy_files(repo, wt, paths):
+    """Copy git-ignored files from the main checkout into a new worktree. Returns (copied, refused)."""
+    copied, refused = [], []
+    for rel in paths if isinstance(paths, list) else []:
+        rel = str(rel).strip()
+        parts = rel.replace("\\", "/").split("/")
+        if not rel or os.path.isabs(rel) or ".." in parts or parts[0] == ".git":
+            refused.append(f"{rel or '(empty)'}: not a plain relative path")
+            continue
+        src = os.path.join(repo, rel)
+        if not os.path.lexists(src):
+            continue  # nothing to copy (optional by design)
+        # Never follow a symlink anywhere on the way (in particular out of the repo).
+        d, link = repo, False
+        for part in parts:
+            d = os.path.join(d, part)
+            link = link or os.path.islink(d)
+        if link or not os.path.realpath(src).startswith(repo + os.sep):
+            refused.append(f"{rel}: a symlink (not copied)")
+            continue
+        if not os.path.isfile(src):
+            refused.append(f"{rel}: not a file")
+            continue
+        if git("-C", repo, "ls-files", "--error-unmatch", "--", rel).returncode == 0:
+            refused.append(f"{rel}: tracked by git (only git-ignored files are copied)")
+            continue
+        if git("-C", repo, "check-ignore", "-q", "--", rel).returncode != 0:
+            refused.append(f"{rel}: not git-ignored (only git-ignored files are copied)")
+            continue
+        dest = os.path.join(wt, rel)
+        if os.path.lexists(dest):
+            continue
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copy2(src, dest, follow_symlinks=False)
+        copied.append(rel)
+    return copied, refused
+
+
+def detect_setup(wt):
+    for f, cmd in (("package-lock.json", "npm ci"), ("pnpm-lock.yaml", "pnpm install --frozen-lockfile"),
+                   ("yarn.lock", "yarn install --frozen-lockfile"), ("go.mod", "go mod download")):
+        if os.path.isfile(os.path.join(wt, f)):
+            return cmd
+    return None
+
+
+def run_setup(run, wt, pr_id, cmd):
+    """Run the worktree's setup command (own process group, killed whole on timeout); never raises."""
+    log = os.path.join(run, "logs", f"{pr_id}-setup.txt")
+    if not cmd:
+        return "none", None
+    os.makedirs(os.path.dirname(log), exist_ok=True)
+    timeout = int(os.environ.get("DCV2_SETUP_TIMEOUT", "") or 600)
+    with open(log, "w") as out:
+        out.write(f"$ {cmd}\n(in {wt})\n")
+        out.flush()
+        try:
+            p = subprocess.Popen(["bash", "-c", cmd], cwd=wt, stdout=out, stderr=subprocess.STDOUT,
+                                 stdin=subprocess.DEVNULL, start_new_session=True)
+        except OSError as e:
+            out.write(f"could not start: {e}\n")
+            return "failed", log
+        try:
+            rc = p.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            p.wait()
+            out.write(f"\nsetup timed out after {timeout} s\n")
+            return "failed", log
+        out.write(f"\nexit code {rc}\n")
+    return ("ok" if rc == 0 else "failed"), log
 
 
 def cmd_worktree(run, repo, pr_id, base):
@@ -566,7 +695,7 @@ def cmd_worktree(run, repo, pr_id, base):
     st = load_json(os.path.join(run, "status.json")) or {}
     rec = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == pr_id), {})
     listed = f"worktree {wt}" in git("-C", repo, "worktree", "list", "--porcelain").stdout.splitlines()
-    remade = False
+    remade = made = False
     if listed and os.path.isdir(wt):
         head = git("-C", wt, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
         if head != branch:
@@ -583,8 +712,22 @@ def cmd_worktree(run, repo, pr_id, base):
             r = git("-C", repo, "worktree", "add", "-q", "-b", branch, wt, base)
         if r.returncode != 0:
             die(f"NOT MADE: git worktree add failed: {first_line(r.stderr)}")
-    record_guard(run, repo, pr_id, wt)
+        made = True
+    if not made:
+        record_guard(run, repo, pr_id, wt)
+        print(f"branch={branch} worktree={wt}")
+        return
+    # A newly made worktree (fresh or re-made folder): local files, then the install step.
+    entry = repo_entry(run, repo)
+    copied, refused = copy_files(repo, wt, entry.get("copyFiles"))
+    record_guard(run, repo, pr_id, wt, copied)
     print(f"branch={branch} worktree={wt}" + (" remade=yes" if remade else ""))
+    if copied or refused:
+        print(f"copied={len(copied)}" + (f" refused: {'; '.join(refused)}" if refused else ""))
+    setup = entry.get("setup")
+    cmd = setup.strip() if isinstance(setup, str) else detect_setup(wt)
+    result, log = run_setup(run, wt, pr_id, cmd or None)
+    print(f"setup={result} log={log or '-'}")
 
 
 def cmd_ship_check(run):
@@ -615,6 +758,8 @@ def pr_body(run, st, pr):
 
 def cmd_ship_pr(run, pid):
     st = load_status(run)
+    if review_mode(run) == "github":
+        die("NOT SHIPPED: this run reviews on GitHub (meta.json reviewMode github): ship with `state.sh ready <run> <pr id>`")
     if st.get("stage") != "shipping" or not st.get("shipApproval"):
         die(f"NOT SHIPPED: shipping needs stage shipping and a ship approval (stage {st.get('stage')}, "
             f"shipApproval {'set' if st.get('shipApproval') else 'missing'})")
@@ -658,6 +803,326 @@ def cmd_ship_pr(run, pid):
     if c.returncode == 0 and url:
         return save("opened", None, url)
     save("pushed", "gh pr create failed: " + (first_line(c.stderr) or first_line(c.stdout))[:200])
+
+
+# ---- github review mode (draft PRs + review comments) ---------------------------------------
+
+GH_URL = re.compile(r"^https://[^\s/]+/[^\s/]+/[^\s/]+/pull/\d+$")
+
+
+def http_line(out):
+    return next((l.strip() for l in reversed((out or "").splitlines()) if l.strip().startswith("https://")), None)
+
+
+def find_pr(wt, branch):
+    """The branch's PR on GitHub: ({url, isDraft, state} or {} when none, error or None)."""
+    r = run_cmd(["gh", "pr", "list", "--head", branch, "--state", "all", "--json", "url,isDraft,state", "--limit", "10"], cwd=wt, timeout=60)
+    if r.returncode != 0:
+        return None, "gh pr list failed: " + (first_line(r.stderr) or first_line(r.stdout))[:200]
+    try:
+        rows = json.loads(r.stdout or "[]")
+    except ValueError:
+        return None, "gh pr list printed no JSON"
+    rows = [x for x in rows if isinstance(x, dict) and GH_URL.match(str(x.get("url") or ""))] if isinstance(rows, list) else []
+    if not rows:
+        return {}, None
+    return (next((x for x in rows if x.get("state") == "OPEN"), None) or rows[0]), None
+
+
+def remote_sha(repo, remote, branch):
+    r = git("-C", repo, "ls-remote", "--heads", remote, f"refs/heads/{branch}")
+    return (r.stdout.split() or [None])[0] if r.returncode == 0 else None
+
+
+def scan_secrets(text):
+    """memory.sh's scanner: (clean, detail). Fails closed when the scanner cannot run."""
+    sh = os.path.join(PLUGIN_ROOT, "scripts", "memory.sh")
+    try:
+        r = subprocess.run(["bash", sh, "scan"], input=text, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, f"the secret scanner did not run ({e})"
+    if r.returncode == 0:
+        return True, None
+    if r.returncode == 1 and r.stdout.startswith("looks like a secret"):
+        return False, first_line(r.stdout)
+    return None, "the secret scanner did not run: " + (first_line(r.stderr) or f"exit {r.returncode}")
+
+
+def capped(text, tail):
+    if len(text) <= COMMENT_CAP:
+        return text
+    tail = f"\n\n… (cut at {COMMENT_CAP} characters) {tail}"
+    return text[:COMMENT_CAP - len(tail)] + tail
+
+
+def github_pr(run, pid, stages=GITHUB_STAGES):
+    """Status + the PR entry for a GitHub write; refuses outside github mode, before the plan approval, or off its branch."""
+    st = load_status(run)
+    if review_mode(run) != "github":
+        die("NOT DONE: this run's review mode is local (meta.json): nothing goes to GitHub before stop #2 (`state.sh ship-pr`)")
+    if not (st.get("plan") or {}).get("approval"):
+        die("NOT DONE: GitHub writes need the plan approval first (stop #1: `state.sh approve <run> plan user`)")
+    if st.get("stage") not in stages:
+        die(f"NOT DONE: stage {st.get('stage')}: this command runs only at stage {' / '.join(stages)}")
+    pr = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == pid), None)
+    if pr is None:
+        die(f"NOT DONE: no {pid} in status.json")
+    branch, wt = canon(pr.get("repoPath") or "/", st.get("runId"), pid)
+    if pr.get("branch") != branch or os.path.realpath(str(pr.get("worktree") or "")) != wt or not os.path.isdir(wt):
+        die(f"NOT DONE: {pid} must be on {branch} in its worktree {wt} (made by state.sh worktree)")
+    if git("-C", wt, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() != branch:
+        die(f"NOT DONE: {wt} is not on {branch}")
+    return st, pr
+
+
+def save_pr(run, st, pr, msg):
+    for m in write_status(run, st, trusted=True):
+        print(m)
+    print(msg)
+
+
+def draft_body(run, st, pr):
+    titles = dict(re.findall(r"^###\s+(S\d+)\s*[:\-—]+\s*(.+?)\s*$", read(os.path.join(run, "plan.md")), re.M))
+    lines = ["## Stories", ""] + [f"- {s}: {titles.get(s, '')}".rstrip(": ") for s in (pr.get("stories") or {}).get("ids") or []]
+    lines += ["", f"\U0001F916 Eagle-Eye run {st.get('runId')} — review in progress. Each review round is posted as a comment; "
+              "this PR is marked ready for review only after the run's ship approval.", ""]
+    return "\n".join(lines)
+
+
+def final_body(run, st, pr):
+    lines = pr_body(run, st, pr).rstrip("\n").splitlines()
+    rounds = sorted(pr.get("comments") or [], key=lambda c: c.get("round", 0))
+    if rounds:
+        lines += ["", "## Eagle-Eye review rounds", ""] + [f"- Round {c['round']}: {c['url']}" + (f" (fixes: {c['fixesUrl']})" if c.get("fixesUrl") else "") for c in rounds]
+    return "\n".join(lines) + "\n"
+
+
+def cmd_draft_pr(run, pid):
+    st, pr = github_pr(run, pid, ("building",))
+    if pr.get("prUrl"):
+        print(f"draft=exists url={pr['prUrl']}")
+        return
+    if pr.get("state") not in ("building", "drafted"):
+        die(f"NOT DRAFTED: {pid} is {pr.get('state')}; the draft opens right after the Implementer's first round")
+    result = (pr.get("check") or {}).get("result")
+    if result not in ("pass", "none"):
+        die(f"NOT DRAFTED: the check must pass first (check.result {result})")
+    repo, wt, branch, base = os.path.realpath(pr["repoPath"]), pr["worktree"], pr["branch"], pr.get("base")
+    n = git("-C", wt, "rev-list", "--count", f"{pr.get('baseCommit')}..HEAD").stdout.strip()
+    if not n.isdigit() or int(n) == 0:
+        die(f"NOT DRAFTED: {pid} has no commits since its base")
+
+    def failed(why):
+        pr["note"] = ("draft PR not opened: " + why)[:300]
+        save_pr(run, st, pr, f"draft=failed reason={why}")
+
+    remote = remote_of(repo)
+    if not remote:
+        print("draft=no-remote: no git remote: the reviews stay in the run folder; stop #2 marks it local-only")
+        return
+    if not on_remote(repo, remote, base):
+        return failed(f"base {base} is not on {remote}")
+    found, err = find_pr(wt, branch)
+    if err:
+        return failed(err)
+    if found and found.get("state") != "OPEN":
+        return failed(f"the branch already has a {str(found.get('state')).lower()} PR ({found.get('url')}); not opening a second one")
+    r = git("-C", wt, "push", "-u", remote, branch)
+    if r.returncode != 0:
+        return failed("push refused: " + first_line(r.stderr)[:200])
+    if found:
+        url, draft, how = found["url"], bool(found.get("isDraft")), "found"
+    else:
+        body = os.path.join(run, "pr-bodies", f"{pid}.md")
+        os.makedirs(os.path.dirname(body), exist_ok=True)
+        atomic_write(body, draft_body(run, st, pr))
+        c = run_cmd(["gh", "pr", "create", "--draft", "--base", base, "--head", branch, "--title", str(pr.get("title") or pid),
+                     "--body-file", body], cwd=wt, timeout=120)
+        url, draft, how = http_line(c.stdout), True, "opened"
+        if c.returncode != 0 or not url or not GH_URL.match(url):
+            return failed("gh pr create --draft failed: " + (first_line(c.stderr) or first_line(c.stdout))[:200])
+    pr.update(prUrl=url, draft=draft, state="drafted", note=None)
+    pr["comments"] = pr.get("comments") or []
+    append_log(run, st.get("stage") or "building", f"{pid} draft PR {how}: {url}")
+    save_pr(run, st, pr, f"draft={how} url={url}")
+
+
+def cmd_push(run, pid):
+    st, pr = github_pr(run, pid)
+    if not pr.get("prUrl"):
+        print("push=skipped: no draft PR (the review loop stays local)")
+        return
+    if pr.get("state") in ("opened", "local-only"):
+        die(f"NOT PUSHED: {pid} is {pr['state']}")
+    repo, wt, branch = os.path.realpath(pr["repoPath"]), pr["worktree"], pr["branch"]
+    remote = remote_of(repo)
+    if not remote:
+        die("NOT PUSHED: the repo has no git remote")
+    head = git("-C", wt, "rev-parse", "HEAD").stdout.strip()
+    if remote_sha(repo, remote, branch) == head:
+        print(f"push=up-to-date head={head[:12]}")
+        return
+    r = git("-C", wt, "push", remote, branch)
+    if r.returncode != 0:
+        pr["note"] = ("push refused: " + first_line(r.stderr))[:300]
+        save_pr(run, st, pr, f"push=failed reason={pr['note']}")
+        return
+    append_log(run, st.get("stage") or "building", f"{pid} pushed {head[:12]}")
+    print(f"push=ok head={head[:12]}")
+
+
+def post_comment(run, st, pr, text, name):
+    """Write pr-comments/<name>.md and post it with gh pr comment. (url, error)."""
+    f = os.path.join(run, "pr-comments", f"{name}.md")
+    os.makedirs(os.path.dirname(f), exist_ok=True)
+    atomic_write(f, text)
+    c = run_cmd(["gh", "pr", "comment", pr["prUrl"], "--body-file", f], cwd=pr["worktree"], timeout=120)
+    if c.returncode != 0:
+        return None, "gh pr comment failed: " + (first_line(c.stderr) or first_line(c.stdout))[:200]
+    return http_line(c.stdout) or pr["prUrl"], None
+
+
+def cmd_post_review(run, pid, rnd):
+    if not re.fullmatch(r"[1-3]", rnd):
+        die("NOT POSTED: round must be 1, 2 or 3")
+    rnd = int(rnd)
+    st, pr = github_pr(run, pid)
+    if not pr.get("prUrl"):
+        print("posted=no: no draft PR; the review stays in the run folder")
+        return
+    comments = pr.get("comments") or []
+    old = next((c for c in comments if c.get("round") == rnd), None)
+    if old:
+        print(f"posted=already url={old.get('url')}")
+        return
+    rel = f"reviews/{pid}-round{rnd}.md"
+    text = read(os.path.join(run, rel)).strip()
+    if not text:
+        die(f"NOT POSTED: {rel} is missing or empty")
+    clean, why = scan_secrets(text)
+    if clean is None:
+        die(f"NOT POSTED: {why}")
+    if not clean:
+        pr["state"], pr["note"] = "needs-attention", f"review round {rnd} not posted to GitHub: {why}"[:300]
+        append_log(run, st.get("stage") or "building", f"{pid} review round {rnd} not posted: {why}")
+        for m in write_status(run, st, trusted=True):
+            print(m)
+        die(f"NOT POSTED: {rel} {why}; {pid} needs attention (nothing was sent)", 3)
+    body = capped(text, f"The full review is in the run folder: {rel}.") + f"\n\n_Eagle-Eye run {st.get('runId')}, review round {rnd}._\n"
+    url, err = post_comment(run, st, pr, body, f"{pid}-round{rnd}")
+    if err:
+        print(f"posted=failed reason={err}")
+        return
+    head = git("-C", pr["worktree"], "rev-parse", "HEAD").stdout.strip()
+    pr["comments"] = comments + [{"round": rnd, "url": url, "head": head}]
+    append_log(run, st.get("stage") or "building", f"{pid} review round {rnd} posted: {url}")
+    save_pr(run, st, pr, f"posted=ok url={url}")
+
+
+def cmd_comment(run, pid, kind, rnd):
+    if kind != "fixes" or not re.fullmatch(r"[1-3]", rnd):
+        die("usage: state.sh comment <run> <pr id> fixes <round 1-3> (the only template)")
+    rnd = int(rnd)
+    st, pr = github_pr(run, pid)
+    if not pr.get("prUrl"):
+        print("posted=no: no draft PR")
+        return
+    entry = next((c for c in pr.get("comments") or [] if c.get("round") == rnd), None)
+    if not entry or not entry.get("head"):
+        die(f"NOT POSTED: round {rnd}'s review was not posted (`state.sh post-review <run> {pid} {rnd}` first)")
+    if entry.get("fixesUrl"):
+        print(f"posted=already url={entry['fixesUrl']}")
+        return
+    wt, repo = pr["worktree"], os.path.realpath(pr["repoPath"])
+    log = git("-C", wt, "log", "--reverse", "--format=%h %s", f"{entry['head']}..HEAD")
+    commits = [l for l in log.stdout.splitlines() if l.strip()] if log.returncode == 0 else []
+    if not commits:
+        die(f"NOT POSTED: no commits since round {rnd}'s review")
+    remote = remote_of(repo)
+    if not remote or remote_sha(repo, remote, pr["branch"]) != git("-C", wt, "rev-parse", "HEAD").stdout.strip():
+        die("NOT POSTED: push the fixes first (`state.sh push <run> <pr id>`)")
+    clean, _ = scan_secrets("\n".join(commits))
+    items = [f"- `{c.split(' ', 1)[0]}` {c.split(' ', 1)[1] if ' ' in c and clean else ''}".rstrip() for c in commits]
+    body = capped(f"Round {rnd} fixes: {len(commits)} commit(s)\n\n" + "\n".join(items), "See the branch for the rest.") + \
+        f"\n\n_Eagle-Eye run {st.get('runId')}: review round {rnd + 1} follows._\n"
+    url, err = post_comment(run, st, pr, body, f"{pid}-round{rnd}-fixes")
+    if err:
+        print(f"posted=failed reason={err}")
+        return
+    entry["fixesUrl"] = url
+    append_log(run, st.get("stage") or "building", f"{pid} round {rnd} fixes posted: {url}")
+    save_pr(run, st, pr, f"posted=ok url={url}")
+
+
+def cmd_ready(run, pid):
+    st = load_status(run)
+    if st.get("stage") != "shipping" or not st.get("shipApproval"):
+        die(f"NOT READY: needs stage shipping and the ship approval (stage {st.get('stage')}, "
+            f"shipApproval {'set' if st.get('shipApproval') else 'missing'})")
+    if review_mode(run) != "github":
+        die("NOT READY: this run's review mode is local: ship with `state.sh ship-pr <run> <pr id>`")
+    pr = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == pid), None)
+    if pr is None:
+        die(f"NOT READY: no {pid} in status.json")
+    if pr.get("state") in ("opened", "local-only"):
+        print(f"{pid} already {pr['state']}" + (f": {pr.get('prUrl')}" if pr.get("prUrl") else ""))
+        return
+    if pr.get("state") not in ("reviewed", "pushed"):
+        die(f"NOT READY: {pid} is {pr.get('state')}; only reviewed PRs are marked ready")
+    st, pr = github_pr(run, pid, ("shipping",))
+
+    def save(state, note=None, url=None):
+        pr["state"], pr["note"] = state, note
+        if url:
+            pr["prUrl"] = url
+        save_pr(run, st, pr, f"{pid} {state}" + (f": {url}" if url else "") + (f" ({note})" if note else ""))
+
+    repo, wt, branch, base = os.path.realpath(pr["repoPath"]), pr["worktree"], pr["branch"], pr.get("base")
+    remote = remote_of(repo)
+    if not remote:
+        return save("local-only", "no git remote: nothing pushed, no PR opened")
+    if not on_remote(repo, remote, base):
+        return save("needs-attention", f"base {base} is not on {remote}")
+    head = git("-C", wt, "rev-parse", "HEAD").stdout.strip()
+    if remote_sha(repo, remote, branch) != head:
+        r = git("-C", wt, "push", "-u", remote, branch)
+        if r.returncode != 0:
+            return save("needs-attention", "push refused: " + first_line(r.stderr)[:200])
+    url, draft = pr.get("prUrl"), pr.get("draft")
+    if not url:
+        found, err = find_pr(wt, branch)
+        if err:
+            return save("pushed", err)
+        if found and found.get("state") != "OPEN":
+            return save("needs-attention", f"the branch's PR is {str(found.get('state')).lower()}: {found.get('url')}")
+        if found:
+            url, draft = found["url"], bool(found.get("isDraft"))
+    body = os.path.join(run, "pr-bodies", f"{pid}.md")
+    os.makedirs(os.path.dirname(body), exist_ok=True)
+    atomic_write(body, final_body(run, st, pr))
+    if not url:
+        c = run_cmd(["gh", "pr", "create", "--base", base, "--head", branch, "--title", str(pr.get("title") or pid),
+                     "--body-file", body], cwd=wt, timeout=120)
+        new = http_line(c.stdout)
+        if c.returncode == 0 and new and GH_URL.match(new):
+            pr["draft"] = False
+            return save("opened", None, new)
+        return save("pushed", "gh pr create failed: " + (first_line(c.stderr) or first_line(c.stdout))[:200])
+    note = None
+    e = run_cmd(["gh", "pr", "edit", url, "--body-file", body], cwd=wt, timeout=120)
+    if e.returncode != 0:
+        note = "final PR body not set: " + (first_line(e.stderr) or first_line(e.stdout))[:150]
+    if draft is not False:
+        r = run_cmd(["gh", "pr", "ready", url], cwd=wt, timeout=120)
+        if r.returncode != 0:
+            return save("pushed", "gh pr ready failed: " + (first_line(r.stderr) or first_line(r.stdout))[:200], url)
+    pr["draft"] = False
+    append_log(run, "shipping", f"{pid} marked ready for review: {url}")
+    save("opened", note, url)
+
+
+def cmd_mode(run):
+    print(f"reviewMode={review_mode(run)}")
 
 
 def ticket_ship_statuses(plan):
@@ -706,16 +1171,20 @@ def cmd_writeback(run, force):
         for sid in stories:
             pr = story_pr.get(sid)
             if pr and not any(p["id"] == pr["id"] for p in prs):
-                prs.append({"id": pr["id"], "repo": pr.get("repo"), "url": pr.get("prUrl")})
+                prs.append({"id": pr["id"], "repo": pr.get("repo"), "url": pr.get("prUrl"), "opened": pr.get("state") == "opened"})
         lines = []
         for p in prs:
             pr = next(x for x in st["prs"] if x["id"] == p["id"])
             where = pr.get("prUrl") or f"local branch `{pr.get('branch')}` (not pushed: {pr.get('note') or 'no PR opened'})"
+            if pr.get("prUrl") and pr.get("state") != "opened":
+                where += " (draft)"
             chk, rev = pr.get("check") or {}, pr.get("review") or {}
             lines.append(f"- {pr['id']} ({pr.get('repo')}): {where}. Check `{chk.get('command')}`: {chk.get('result')}. Review: {rev.get('verdict')} (round {rev.get('round')}).")
         done = [f"- {s}: {titles.get(s, '')}".rstrip(": ") for s in stories]
         comment = "Eagle-Eye run " + str(st.get("runId", "")) + "\n\nDone:\n" + "\n".join(done or ["- (no story covers this ticket)"]) + "\n\nPull requests:\n" + "\n".join(lines or ["- none"])
-        opened = bool(prs) and all(p["url"] for p in prs)
+        # Opened = ready for review (a PR left as a draft has a url but does not count).
+        flags = [bool(p.pop("opened") and p["url"]) for p in prs]
+        opened = bool(prs) and all(flags)
         planned = next((ship_status[k] for k in sorted(keys) if ship_status.get(k)), None)
         if not prs:
             note = "No PR covers this ticket."
@@ -756,6 +1225,9 @@ def cmd_gate(run, pid, gate, reason, review=None):
         text = read(review if review and os.path.isabs(review) else os.path.join(run, review or "-"))
         m = re.search(r"^#+\s*Verdict\b[:\s]*([^\n]*)\n*([^\n]*)", text or "", re.M | re.I)
         line = ((m.group(1).strip() or m.group(2)) if m else "")
+        if not m:  # the comment-friendly first line: "Eagle-Eye review \u2014 round n: APPROVED \u2014 ..."
+            m1 = re.match(r"^\s*\**Eagle-Eye review\s*[\u2014\u2013-]+\s*round\s*\d+\s*:\s*(APPROVED|REQUEST CHANGES)\b", text or "", re.I)
+            line = m1.group(1) if m1 else ""
         verdict = re.sub(r"[*`_#>]", "", line).strip().upper() or None
         if not (verdict or "").startswith("APPROVED"):
             die(f"NOT WRITTEN: {gate} needs the review file {review} to exist with verdict APPROVED (found {verdict or 'no review'}); "
@@ -854,7 +1326,7 @@ def cmd_report(run):
 def main(argv):
     cmd, args = (argv[0] if argv else ""), argv[1:]
     need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0,
-            "gate": 4, "report": 1}
+            "gate": 4, "report": 1, "mode": 1, "draft-pr": 2, "push": 2, "post-review": 3, "comment": 4, "ready": 2}
     if cmd not in need or len(args) < need[cmd]:
         die("usage: see the header of state.sh", 2)
     if cmd == "preflight": cmd_preflight(args[0], "resume" in args[1:])
@@ -871,6 +1343,12 @@ def main(argv):
         rv = args[args.index("--review") + 1] if "--review" in args[4:-1] else None
         cmd_gate(args[0], args[1], args[2], args[3], rv)
     elif cmd == "report": cmd_report(args[0])
+    elif cmd == "mode": cmd_mode(args[0])
+    elif cmd == "draft-pr": cmd_draft_pr(args[0], args[1])
+    elif cmd == "push": cmd_push(args[0], args[1])
+    elif cmd == "post-review": cmd_post_review(args[0], args[1], args[2])
+    elif cmd == "comment": cmd_comment(args[0], args[1], args[2], args[3])
+    elif cmd == "ready": cmd_ready(args[0], args[1])
 
 
 main(sys.argv[1:])

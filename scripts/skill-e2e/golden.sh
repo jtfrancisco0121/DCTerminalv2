@@ -12,9 +12,14 @@
 #   dep   : two repos where PR2 depends on PR1: PR2 starts only after PR1 is reviewed clean.
 #   fix   : one repo whose check already fails for a reason the request does not name: the
 #           PR is reviewed only once the whole check passes.
+#   github: github review mode (meta.json reviewMode github) on one repo with a local bare remote
+#           and the gh shim (scripts/skill-e2e/gh-shim, no real GitHub): a draft PR after the first
+#           build, each review round posted as a comment, marked ready at stop #2; repos.json
+#           copyFiles brings a git-ignored .env into the worktree and it is never committed.
+#           Not in the default set: `golden.sh github`.
 #
 # Env as run.sh (DCV2_E2E_MODEL default haiku, DCV2_E2E_TIMEOUT, DCV2_E2E_TMP). Uses the current
-# Claude account (CLAUDE_CONFIG_DIR). No remotes: nothing is pushed.
+# Claude account (CLAUDE_CONFIG_DIR). No remotes (github: a local bare one): nothing reaches GitHub.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 CASES=("$@")
@@ -162,10 +167,43 @@ EOF
   python3 "$E2E_DIR/golden_check.py" fix "$run" "$ws" "$TMP/fix.jsonl" "$TMP/memory"
 }
 
+case_github() {
+  local ws="$TMP/ws-github" run="$TMP/runs/r-golden-github" shimdir="$TMP/gh-shim-state"
+  node_repo "$ws/greet" '{"check": "node test.js"}'
+  cat > "$ws/greet/greet.js" <<'EOF'
+function greet(name) { return "Hello " + name; }
+module.exports = { greet };
+EOF
+  cat > "$ws/greet/test.js" <<'EOF'
+const assert = require("assert");
+const { greet } = require("./greet");
+assert.strictEqual(greet("Ann"), "Hello, Ann!");
+assert.strictEqual(greet(""), "Hello, friend!");
+console.log("greet: ok");
+EOF
+  printf '.env\n' > "$ws/greet/.gitignore"
+  git_init_repo "$ws/greet"
+  echo 'GREETING_STYLE=formal' > "$ws/greet/.env"
+  git init -q --bare -b main "$TMP/greet-origin.git"
+  git -C "$ws/greet" remote add origin "$TMP/greet-origin.git"
+  git -C "$ws/greet" push -q origin main
+  git -C "$ws/greet" remote set-head origin main >/dev/null 2>&1 || true
+  mkdir -p "$shimdir"
+  request "$run" "$ws" <<'EOF'
+# Request
+
+greet: `greet(name)` must return `"Hello, <name>!"`, and `"Hello, friend!"` for an empty name. One story, one PR. `npm run check` must pass.
+EOF
+  printf '{"schema": 1, "runId": "r-golden-github", "reviewMode": "github"}\n' > "$run/meta.json"
+  printf '{"schema": 1, "repos": [{"name": "greet", "path": "%s", "check": "npm run check", "setup": "", "copyFiles": [".env"]}]}\n' "$ws/greet" > "$run/repos.json"
+  launch github "$ws" "$run" PATH="$E2E_DIR/gh-shim:$PATH" GH_SHIM_DIR="$shimdir"
+  GH_SHIM_DIR="$shimdir" python3 "$E2E_DIR/golden_check.py" github "$run" "$ws" "$TMP/github.jsonl" "$TMP/memory" "$TMP/greet-origin.git"
+}
+
 status=0
 pids=()
 for c in "${CASES[@]}"; do
-  declare -F "case_$c" >/dev/null || fail "unknown case $c (multi, dep, fix)"
+  declare -F "case_$c" >/dev/null || fail "unknown case $c (multi, dep, fix, github)"
   ( "case_$c" > "$TMP/$c.out" 2>&1 ) &
   pids+=("$!")
   note "started case $c (output $TMP/$c.out)"

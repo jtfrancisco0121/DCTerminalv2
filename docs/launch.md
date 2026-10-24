@@ -40,11 +40,17 @@ All commands read `DCV2_MEMORY_DIR` (or `--root <dir>`), print nothing secret, e
 | `memory.sh compose <start folder> <out file>` | Writes the system-prompt file for a launch: the trust rule, the memory root path, `workspace.md` (folder of repos) + contracts, each in-play repo's `index.md`, and a list of stale topics. Always succeeds when the folder exists; with no memory it writes a short "no memory yet, `/dcv2:onboard` creates it" note. Bounded size (caps below). |
 | `memory.sh status <start folder>` | JSON for the app panel: `{"schema":1,"workspace":{"present":bool,"path":..}|null,"repos":[{"name","path","id","present","head","topics":[{"name","checkedAt","stale":bool}],"staleCount","indexBytes"}]}` |
 | `memory.sh write <repo id or "workspace:<id>"> <relative file> < content` | The only write path for agents: enforces size caps, secret scan, pinned lines (`<!-- pinned -->` lines cannot be removed or changed by an automatic write), topic header. Rejects with a reason. |
+| `memory.sh scan < text` | The secret scanner alone: `clean` (exit 0), or `looks like a secret on line <n> (<kind>)` (exit 1), never the value. `state.sh` runs it on every GitHub post (fails closed when it cannot run). |
 
 The guard blocks Edit/Write into `DCV2_MEMORY_DIR` (agents use `memory.sh write`). The app's own memory editor (P3) writes files directly, as the user.
 
 ## Run folder additions (P2b)
 
+- `meta.json` gains `"reviewMode": "github" | "local"` (app-written at Start from the start-screen toggle "Review on GitHub (draft PRs)"; guard-protected; missing = `local`). The plugin reads it only through `state.sh mode` / `preflight` and branches on it (run-folder.md, Review mode).
+- `repos.json` repos gain `"setup": "<command>" | null` and `"copyFiles": ["relative/path", …]` (app-written; run-folder.md, repos.json): `state.sh worktree` copies the git-ignored files and runs the setup in newly made worktrees, output in `logs/<PR>-setup.txt`.
+- status.json PRs gain `draft` (bool) and `comments` (`[{"round", "url"}]`) and the state `drafted` (github mode); `opened` means ready for review. Schema stays 1 (optional fields).
+- `pr-comments/<PR>-round<n>.md`: what was posted (github mode).
+- Guard (0.3.0): the orchestrator runs no GitHub-writing `gh` at all (`gh api` with a non-GET method or `-f/-F/--field/--raw-field/--input`, `gh <x> create|comment|edit|ready|…`); in github mode it pushes and posts only through `state.sh` (after the plan approval; `ready` after the ship approval); `security dump-keychain` and `security find-*-password … dcterminalv2…` are blocked for everyone in a run.
 - `gates/<PR id>.yml` (A1): written by the PR Reviewer step through `state.sh gate`: `gate: PASS|CONCERNS|FAIL|WAIVED`, `reason: <one line>`, `updated: <UTC>`, `review: <review file>`. A PR is green in the app only when the gate is PASS or WAIVED **and** the app's own check re-run (R1) passes.
 - `report.md` (R10): written at `done`/`failed`: planned vs built per PR, review rounds, retries, gate per PR, check results.
 - `memory-update.md`: what the end-of-run memory update changed (or "no topic touched").

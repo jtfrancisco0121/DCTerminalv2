@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""A fake `gh` for the dcv2 tests (no network, no real GitHub). Put this folder first on PATH.
+
+State lives in $GH_SHIM_DIR (required): prs.json, comments/<pr>-<n>.md, calls.log (one line per call).
+Knows: pr list --head <b> --json ...; pr create [--draft] --head <b> --title <t> --body-file <f>;
+pr comment <url> --body-file <f>; pr edit <url> --body-file <f>; pr ready <url>; pr view <b>.
+GH_SHIM_FAIL=<verb>[,<verb>] makes those verbs (e.g. comment, ready, create, list) fail.
+Anything else exits 1 ("not supported by the shim").
+"""
+import json, os, sys
+
+d = os.environ.get("GH_SHIM_DIR")
+if not d:
+    sys.exit("gh shim: GH_SHIM_DIR is not set")
+os.makedirs(os.path.join(d, "comments"), exist_ok=True)
+args = sys.argv[1:]
+with open(os.path.join(d, "calls.log"), "a") as f:
+    f.write(" ".join(args) + "\n")
+db_path = os.path.join(d, "prs.json")
+try:
+    prs = json.load(open(db_path))
+except (OSError, ValueError):
+    prs = []
+
+
+def opt(name):
+    return args[args.index(name) + 1] if name in args and args.index(name) + 1 < len(args) else None
+
+
+def save():
+    json.dump(prs, open(db_path, "w"), indent=1)
+
+
+def by_url(u):
+    return next((p for p in prs if p["url"] == u), None)
+
+
+sub, verb = (args + ["", ""])[:2]
+if verb in (os.environ.get("GH_SHIM_FAIL") or "").split(","):
+    sys.exit(f"gh shim: {verb} failed (GH_SHIM_FAIL)")
+if sub != "pr":
+    sys.exit("gh shim: not supported by the shim")
+if verb == "list":
+    head = opt("--head")
+    print(json.dumps([{"url": p["url"], "isDraft": p["isDraft"], "state": p["state"]} for p in prs if p["head"] == head]))
+elif verb == "create":
+    head = opt("--head")
+    if any(p["head"] == head and p["state"] == "OPEN" for p in prs):
+        sys.exit(f"a pull request for branch \"{head}\" already exists")
+    body = open(opt("--body-file")).read() if opt("--body-file") else ""
+    url = f"https://github.com/shim/repo/pull/{len(prs) + 1}"
+    prs.append({"url": url, "head": head, "base": opt("--base"), "title": opt("--title"), "body": body,
+                "isDraft": "--draft" in args, "state": "OPEN"})
+    save()
+    print(url)
+elif verb in ("comment", "edit", "ready"):
+    p = by_url(args[2] if len(args) > 2 else "")
+    if not p:
+        sys.exit("gh shim: no such pull request")
+    if verb == "comment":
+        n = len([x for x in os.listdir(os.path.join(d, "comments")) if x.startswith(p["url"].rsplit("/", 1)[1] + "-")]) + 1
+        k = f"{p['url'].rsplit('/', 1)[1]}-{n}"
+        with open(os.path.join(d, "comments", f"{k}.md"), "w") as f:
+            f.write(open(opt("--body-file")).read())
+        print(f"{p['url']}#issuecomment-{1000 + n}")
+    elif verb == "edit":
+        p["body"] = open(opt("--body-file")).read()
+        save()
+        print(p["url"])
+    else:
+        if not p["isDraft"]:
+            sys.exit("pull request is not a draft")
+        p["isDraft"] = False
+        save()
+        print(f"Pull request {p['url']} is marked as \"ready for review\"")
+elif verb == "view":
+    p = next((x for x in prs if x["head"] == (args[2] if len(args) > 2 else "") or x["url"] == (args[2] if len(args) > 2 else "")), None)
+    if not p:
+        sys.exit("no pull requests found")
+    print(p["url"])
+else:
+    sys.exit("gh shim: not supported by the shim")
