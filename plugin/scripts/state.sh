@@ -898,12 +898,14 @@ def final_body(run, st, pr):
 
 
 def cmd_draft_pr(run, pid):
-    st, pr = github_pr(run, pid, ("building",))
+    st, pr = github_pr(run, pid, ("building", "ship-approval"))
     if pr.get("prUrl"):
         print(f"draft=exists url={pr['prUrl']}")
         return
-    if pr.get("state") not in ("building", "drafted"):
-        die(f"NOT DRAFTED: {pid} is {pr.get('state')}; the draft opens right after the Implementer's first round")
+    # Normally called right after the Implementer's first round (state building); a late call still
+    # opens the draft (commits + a passing check are what count) and keeps a later state as it is.
+    if pr.get("state") not in ("pending", "building", "drafted", "reviewing", "fixing", "reviewed"):
+        die(f"NOT DRAFTED: {pid} is {pr.get('state')}")
     result = (pr.get("check") or {}).get("result")
     if result not in ("pass", "none"):
         die(f"NOT DRAFTED: the check must pass first (check.result {result})")
@@ -941,7 +943,9 @@ def cmd_draft_pr(run, pid):
         url, draft, how = http_line(c.stdout), True, "opened"
         if c.returncode != 0 or not url or not GH_URL.match(url):
             return failed("gh pr create --draft failed: " + (first_line(c.stderr) or first_line(c.stdout))[:200])
-    pr.update(prUrl=url, draft=draft, state="drafted", note=None)
+    pr.update(prUrl=url, draft=draft, note=None)
+    if pr.get("state") in ("pending", "building"):
+        pr["state"] = "drafted"
     pr["comments"] = pr.get("comments") or []
     append_log(run, st.get("stage") or "building", f"{pid} draft PR {how}: {url}")
     save_pr(run, st, pr, f"draft={how} url={url}")

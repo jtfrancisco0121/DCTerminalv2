@@ -301,6 +301,16 @@ st shipping reviewed reviewed 'doc["shipApproval"] = {"by": "user", "at": "2026-
 expect 0 "ready with no draft opens the PR" env DCV2_RUN_DIR="$RUN3" bash "$STATE" ready "$RUN3" PR2
 is "  opened" "$RUN3/status.json" prs.1.state '"opened"'
 python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))[1]; sys.exit(0 if not p["isDraft"] else 1)' "$GH_SHIM_DIR/prs.json" && ok "  not a draft" || bad "  shim: $(cat "$GH_SHIM_DIR/prs.json")"
+RUN="$d/runs/r-k"; mkdir -p "$RUN"; cp "$RUN3/request.md" "$RUN3/plan.md" "$RUN3/meta.json" "$RUN/"
+git -C "$RR" worktree add -q -b dcv2/r-k-pr2 "$WS/rr-worktrees/dcv2-r-k-pr2" "$RBASE"
+git -C "$WS/rr-worktrees/dcv2-r-k-pr2" commit -q --allow-empty -m "S2: z"
+st building pending needs-attention 'doc["prs"][1]["note"] = "x"'
+expect 1 "draft-pr refused for a needs-attention PR" env DCV2_RUN_DIR="$RUN" bash "$STATE" draft-pr "$RUN" PR2
+st building pending reviewed
+expect 0 "a late draft-pr (PR already reviewed) still opens the draft" env DCV2_RUN_DIR="$RUN" bash "$STATE" draft-pr "$RUN" PR2
+has "  opened" "draft=opened"
+is "  state stays reviewed" "$RUN/status.json" prs.1.state '"reviewed"'
+is "  draft true" "$RUN/status.json" prs.1.draft true
 RUN="$RUN_SAVE"
 
 echo "# writeback: a PR left as a draft does not count as opened"
