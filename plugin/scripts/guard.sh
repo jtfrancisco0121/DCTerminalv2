@@ -31,7 +31,8 @@
 # runs changing git in) a repo's main checkout recorded in .guard.json.
 # Implementer: `git add|commit` naming a file state.sh worktree copied in from the main checkout
 # (.guard.json "copied", from repos.json copyFiles) is blocked (best effort).
-# Everyone in a run: no `security dump-keychain`, and no `security find-*-password` naming dcterminalv2.
+# Everyone in a run: no `security dump-keychain|find-generic-password|find-internet-password|export`.
+# Sub-agents never run state.sh's GitHub commands; the Implementer never changes git remotes/config.
 # Everyone: status.json, writeback.json and .guard.json in a run folder are written only by
 # state.sh. When DCV2_MEMORY_DIR is set (every dcv2 launch), nobody writes into it with
 # Edit/Write or a shell redirect/copy: agents use memory.sh write (the app's editor writes as the
@@ -104,7 +105,7 @@ if run:
 # Written only by state.sh (status, writeback, guard) or only by the app
 # (the ClickUp snapshot and records, meta.json, the app's own check results).
 PROTECTED = ("status.json", "writeback.json", ".guard.json",
-             "tickets.json", "meta.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json")
+             "tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json")
 who = agent or "the orchestrator"
 where = "your worktree or the run folder" if role == "implementer" else "the run folder"
 
@@ -375,6 +376,8 @@ def check_git(args, cwd):
             block(f"the orchestrator never runs `git {sub}` in a repo's main checkout ({target}); worktrees go through state.sh worktree.")
         return
     if role == "implementer" and target and any(inside(target, w) for w in worktrees):
+        if sub in ("remote", "config") and not git_readonly(sub, rest):
+            block(f"{who} never changes git remotes or config (`git {sub} ...`); pushes go to the remote recorded for the run.")
         if sub in ("add", "stage", "commit") and copied:
             force = any(a == "--force" or (re.match(r"^-[a-zA-Z]+$", a) and "f" in a) for a in rest)
             for a in rest:
@@ -415,17 +418,30 @@ def check_gh(args):
             block(f"{who} never changes anything on GitHub (`gh {sub} {verb}`).")
         return
     if sub == "api":
-        method = None
-        for j, a in enumerate(args):
-            if a in ("-X", "--method") and j + 1 < len(args):
-                method = args[j + 1]
-            elif a.startswith("--method="):
+        # Only reads: no method flag, or GET. Any short-flag cluster with X sets the method (-X PUT, -XPUT,
+        # -iX PUT, -iXPUT); a cluster with f/F, or --field/--raw-field/--input, sends a body.
+        method, fields, j = None, False, 0
+        while j < len(args):
+            a = args[j]
+            nxt = args[j + 1] if j + 1 < len(args) else ""
+            if a == "--method":
+                method, j = nxt, j + 2
+                continue
+            if a.startswith("--method="):
                 method = a.split("=", 1)[1]
-            elif re.match(r"^-X\S", a):
-                method = a[2:]
-        fields = any(a in ("-f", "-F", "--field", "--raw-field", "--input") or
-                     re.match(r"^(-[fF]\S|--field=|--raw-field=|--input=)", a) for a in args)
-        if (method and method.upper() != "GET") or fields:
+            elif a in ("--field", "--raw-field", "--input") or re.match(r"^--(field|raw-field|input)=", a):
+                fields = True
+            elif re.match(r"^-[A-Za-z]", a) and not a.startswith("--"):
+                cluster = a[1:]
+                head, x, tail = cluster.partition("X")
+                if "f" in head or "F" in head:
+                    fields = True
+                if x:
+                    method = tail if tail else nxt
+                    j += 1 if tail else 2
+                    continue
+            j += 1
+        if (method is not None and method.upper() != "GET") or fields:
             block("the run never writes to GitHub with `gh api`; every GitHub write goes through a state.sh command.")
         return
     if sub == "pr" and verb in ("merge", "close", "edit", "ready", "reopen", "review", "comment", "lock"):
@@ -444,8 +460,13 @@ GH_STATE = ("draft-pr", "push", "post-review", "comment")
 
 
 def check_state_sh(args):
-    """The orchestrator's GitHub writes through state.sh: github mode, after the plan / ship approval (state.sh checks too)."""
+    """GitHub writes through state.sh: never by a sub-agent; the orchestrator's only in github mode, after the plan /
+    ship approval (state.sh checks too)."""
     sub = next((a for a in args[1:] if not a.startswith("-")), "")
+    if pipeline:
+        if sub in GH_STATE + ("ready", "ship-pr"):
+            block(f"{who} never runs `state.sh {sub}`: only the orchestrator touches GitHub.")
+        return
     if sub in GH_STATE:
         if mode != "github":
             block(f"`state.sh {sub}` is for runs that review on GitHub; this run's review mode is local.")
@@ -459,8 +480,7 @@ def check_state_sh(args):
 def check_security(args):
     """No reading the app's keychain items (ClickUp token, trust key) from inside a run."""
     sub = next((a for a in args if not a.startswith("-")), "")
-    if sub == "dump-keychain" or (sub in ("find-generic-password", "find-internet-password", "export")
-                                  and any("dcterminalv2" in a.lower() for a in args)):
+    if sub in ("dump-keychain", "find-generic-password", "find-internet-password", "export", "find-key", "find-certificate"):
         block("the app's keychain items are never read from inside a run.")
 
 
@@ -533,7 +553,9 @@ def analyze(cmd, cwd, depth=0):
             check_gh(args)
         elif name == "security" and bound:
             check_security(args)
-        elif name in ("bash", "sh") and args and os.path.basename(args[0]) == "state.sh" and run and not pipeline:
+        elif name == "state.sh" and bound:  # run directly by path
+            check_state_sh([words[0]] + args)
+        elif name in ("bash", "sh", "zsh", "dash", "ksh") and args and os.path.basename(args[0]) == "state.sh" and bound:
             check_state_sh(args)
         elif name in ("bash", "sh", "zsh", "dash", "ksh") and "-c" in args and args.index("-c") + 1 < len(args):
             analyze(args[args.index("-c") + 1], cwd, depth + 1)

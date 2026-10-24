@@ -224,7 +224,6 @@ for who in "" dcv2:implementer dcv2:pr-reviewer; do
   b 2 "$who" "security dump-keychain -d"
   b 2 "$who" "echo \$(security find-generic-password -a x -s DCTerminalV2-clickup -w)"
 done
-b 0 "" "security find-generic-password -s some-other-service"
 expect 0 "user session (no run): security is theirs" "$(payload "" Bash command "security dump-keychain")" -u DCV2_RUN_DIR
 
 echo "# meta.json (app-written) for everyone"
@@ -280,5 +279,49 @@ b 2 dcv2:implementer "git -C $WT commit -m x -- .env"
 b 0 dcv2:implementer "git -C $WT add src/a.js && git -C $WT commit -m 'S1: x'"
 b 0 dcv2:implementer "cd $WT && git add -A"
 b 0 dcv2:implementer "git -C $WT add config/other.json"
+
+echo "# review fixes (PR #9)"
+echo '{"schema": 1, "reviewMode": "github"}' > "$RUN/meta.json"
+python3 - "$RUN/status.json" <<'PY'
+import json, sys
+json.dump({"schema": 1, "stage": "shipping", "plan": {"approval": {"by": "user", "at": "2026-10-24T00:00:00Z"}},
+           "shipApproval": {"by": "user", "at": "2026-10-24T01:00:00Z"}}, open(sys.argv[1], "w"))
+PY
+for who in dcv2:implementer dcv2:pr-reviewer dcv2:planner implementer; do                      # MED 2
+  for sub in draft-pr push "post-review" "comment" ready ship-pr; do
+    b 2 "$who" "bash $STATE $sub $RUN PR1 1"
+  done
+done
+b 0 dcv2:implementer "bash $STATE plan $RUN prs"
+b 2 dcv2:pr-reviewer "$STATE post-review $RUN PR1 1"                                       # MED 3: by path, no bash
+b 2 dcv2:pr-reviewer "/some/other/copy/scripts/state.sh ready $RUN PR1"
+b 2 dcv2:implementer "sh ./state.sh draft-pr $RUN PR1" "$ROOT/plugin/scripts"
+b 0 "" "$STATE ready $RUN PR1"
+python3 - "$RUN/status.json" <<'PY'
+import json, sys
+json.dump({"schema": 1, "stage": "building", "plan": {"approval": {"by": "user", "at": "2026-10-24T00:00:00Z"}}, "shipApproval": None}, open(sys.argv[1], "w"))
+PY
+b 2 "" "$STATE ready $RUN PR1"                                                             # by path: still gated
+b 0 "" "$STATE draft-pr $RUN PR1"
+for c in "gh api -iX PUT repos/o/r/x" "gh api -iXPUT repos/o/r/x" "gh api -XPATCH repos/o/r/x" "gh api --method POST repos/o/r/x" \
+         "gh api --method=delete repos/o/r/x" "gh api -X put repos/o/r/x" "gh api -if body=x repos/o/r/x" "gh api --raw-field=a=b x"; do   # MED 4
+  b 2 "" "$c"
+done
+b 0 "" "gh api -iX GET repos/o/r/pulls"
+b 0 "" "gh api -i repos/o/r/pulls"
+w 2 "" "$RUN/repos.json"                                                                     # MED 5
+b 2 "" "echo '{}' > $RUN/repos.json"
+b 2 dcv2:implementer "cp /tmp/x $RUN/repos.json"
+b 2 dcv2:implementer "git -C $WT remote set-url origin https://evil.example/x.git"          # MED 9
+b 2 dcv2:implementer "git -C $WT remote add evil /tmp/evil.git"
+b 2 dcv2:implementer "git -C $WT config core.hooksPath /tmp/h"
+b 2 dcv2:implementer "cd $WT && git config remote.origin.url /tmp/evil.git"
+b 0 dcv2:implementer "git -C $WT remote -v && git -C $WT config --get user.name"
+for who in "" dcv2:implementer; do                                                           # LOW 12
+  b 2 "$who" "security find-generic-password -s anything -w"
+  b 2 "$who" "security find-internet-password -s github.com"
+  b 2 "$who" "security export -k login.keychain"
+done
+echo '{"schema": 1}' > "$RUN/meta.json"
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

@@ -294,16 +294,19 @@ expect 0 "ready PR1 (no remote)" S ready "$RUN" PR1; is "  local-only" "$RUN/sta
 
 echo "# ready without a draft (draft failed earlier): opens a ready PR"
 RUN3="$d/runs/r-h"; mkdir -p "$RUN3"; cp "$RUN/request.md" "$RUN/plan.md" "$RUN/meta.json" "$RUN3/"
-git -C "$RR" worktree add -q -b dcv2/r-h-pr2 "$WS/rr-worktrees/dcv2-r-h-pr2" "$RBASE"
-git -C "$WS/rr-worktrees/dcv2-r-h-pr2" commit -q --allow-empty -m "S2: y"
 RUN_SAVE="$RUN"; RUN="$RUN3"
+newwt() { # <pr2 worktree commit message>: make PR2's worktree in $RUN through state.sh, one commit
+  st building pending pending 'for p in doc["prs"]: p["commits"] = 0'
+  DCV2_RUN_DIR="$RUN" bash "$STATE" worktree "$RUN" "$RR" PR2 "$RBASE" >/dev/null
+  git -C "$WS/rr-worktrees/dcv2-$(basename "$RUN")-pr2" commit -q --allow-empty -m "$1"
+}
+newwt "S2: y"
 st shipping reviewed reviewed 'doc["shipApproval"] = {"by": "user", "at": "2026-10-24T01:00:00Z"}'
 expect 0 "ready with no draft opens the PR" env DCV2_RUN_DIR="$RUN3" bash "$STATE" ready "$RUN3" PR2
 is "  opened" "$RUN3/status.json" prs.1.state '"opened"'
 python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))[1]; sys.exit(0 if not p["isDraft"] else 1)' "$GH_SHIM_DIR/prs.json" && ok "  not a draft" || bad "  shim: $(cat "$GH_SHIM_DIR/prs.json")"
 RUN="$d/runs/r-k"; mkdir -p "$RUN"; cp "$RUN3/request.md" "$RUN3/plan.md" "$RUN3/meta.json" "$RUN/"
-git -C "$RR" worktree add -q -b dcv2/r-k-pr2 "$WS/rr-worktrees/dcv2-r-k-pr2" "$RBASE"
-git -C "$WS/rr-worktrees/dcv2-r-k-pr2" commit -q --allow-empty -m "S2: z"
+newwt "S2: z"
 st building pending needs-attention 'doc["prs"][1]["note"] = "x"'
 expect 1 "draft-pr refused for a needs-attention PR" env DCV2_RUN_DIR="$RUN" bash "$STATE" draft-pr "$RUN" PR2
 st building pending reviewed
@@ -331,6 +334,103 @@ echo "# gate reads the comment-friendly first line"
 printf 'Eagle-Eye review — round 1: APPROVED — 0 MEDIUM+, 1 LOW\n\n## Findings\n1. LOW — a.js:1 — x — y\n' > "$RUN/reviews/PR1-round1.md"
 st building reviewing pending
 expect 0 "gate PASS from the first line" S gate "$RUN" PR1 PASS "clean"
+
+echo "# review fixes: forged prUrl, foreign PRs, recorded remote, hooks, copied files, mentions, lost records"
+RUN="$d/runs/r-m"; mkdir -p "$RUN"; cp "$RUN3/request.md" "$RUN3/plan.md" "$RUN3/meta.json" "$RUN_SAVE/repos.json" "$RUN/"
+export DCV2_RUN_DIR="$RUN"
+newwt "S2: m"
+WTM="$WS/rr-worktrees/dcv2-r-m-pr2"
+is "  remote recorded at worktree time" "$RUN/.guard.json" remotes.PR2.repo '"shim/repo"'
+st building pending building
+python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); s["prs"][1]["prUrl"]="https://github.com/shim/repo/pull/1"; print(json.dumps(s))' "$RUN/status.json" > "$d/doc.json"
+expect 0 "put cannot set a prUrl (HIGH 1)" S put "$RUN/status.json" < "$d/doc.json"
+has "  says so" "prUrl is set only by state.sh"
+is "  prUrl stays null" "$RUN/status.json" prs.1.prUrl null
+# The repo's origin is re-pointed after the worktree was made, and a pre-push hook exists: neither is used.
+git init -q --bare -b main "$d/evil.git"
+git -C "$RR" remote set-url origin "$d/evil.git"
+mkdir -p "$RR/.git/hooks"
+printf '#!/bin/sh\ntouch "%s/hook-ran"\n' "$d" > "$RR/.git/hooks/pre-push"; chmod +x "$RR/.git/hooks/pre-push"
+expect 0 "draft-pr pushes to the recorded URL" S draft-pr "$RUN" PR2
+has "  opened" "draft=opened"
+git -C "$d/origin.git" show-ref -q --verify refs/heads/dcv2/r-m-pr2 && ok "  on the recorded remote" || bad "  not on the recorded remote"
+git -C "$d/evil.git" show-ref -q --verify refs/heads/dcv2/r-m-pr2 && bad "  pushed to the re-pointed remote" || ok "  not on the re-pointed remote"
+[[ ! -e "$d/hook-ran" ]] && ok "  no push hook ran" || bad "  the pre-push hook ran"
+git -C "$RR" remote set-url origin "$d/origin.git"
+grep -q -- "-R shim/repo" "$GH_SHIM_DIR/calls.log" && ok "  gh calls name the repo (-R)" || bad "  no -R"
+mkdir -p "$RUN/reviews"; MURL="$(field "$RUN/status.json" prs.1.prUrl | tr -d '"')"
+printf 'Eagle-Eye review — round 1: REQUEST CHANGES — 1 MEDIUM+, 0 LOW\n\ncc @octocat, see other/repo#12 and #3; mail a@b.com\n' > "$RUN/reviews/PR2-round1.md"
+st building pending reviewing
+expect 0 "post-review neutralises mentions and cross-repo refs" S post-review "$RUN" PR2 1
+f="$RUN/pr-comments/PR2-round1.md"
+python3 - "$f" <<'PY' && ok "  @octocat and other/repo#12 neutralised, #3 and a@b.com kept" || bad "  text: $(cat "$f")"
+import sys; t = open(sys.argv[1]).read()
+sys.exit(0 if "@‍octocat" in t and "other/repo#‍12" in t and " #3" in t and "a@b.com" in t and "@octocat" not in t else 1)
+PY
+# LOW 10: the record of a posted round is lost; the comment on GitHub (its footer) is found, not posted twice.
+python3 - "$RUN/status.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1])); s["prs"][1]["comments"] = []; json.dump(s, open(sys.argv[1], "w"))
+PY
+n0="$(grep -c '^pr comment' "$GH_SHIM_DIR/calls.log")"
+expect 0 "post-review after a lost record" S post-review "$RUN" PR2 1
+has "  found" "posted=found"
+[[ "$(grep -c '^pr comment' "$GH_SHIM_DIR/calls.log")" == "$n0" ]] && ok "  not posted twice" || bad "  posted again"
+# HIGH 1: a prUrl that is not this branch's PR (written past state.sh) is refused before any write.
+python3 - "$GH_SHIM_DIR/prs.json" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1]))
+p.append({"url": "https://github.com/shim/repo/pull/%d" % (len(p) + 1), "head": "someone-elses-branch", "isDraft": False, "state": "OPEN", "body": ""})
+p.append({"url": "https://github.com/shim/repo/pull/%d" % (len(p) + 1), "head": "dcv2/r-m-pr2", "headRepo": "fork/repo", "isDraft": True, "state": "OPEN", "body": ""})
+json.dump(p, open(sys.argv[1], "w"))
+PY
+NP="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$GH_SHIM_DIR/prs.json")"
+forge() { python3 - "$RUN/status.json" "$1" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1])); s["prs"][1]["prUrl"] = sys.argv[2]; s["prs"][1]["comments"] = []; json.dump(s, open(sys.argv[1], "w"))
+PY
+}
+n0="$(grep -c '^pr comment' "$GH_SHIM_DIR/calls.log")"
+printf 'Eagle-Eye review — round 2: APPROVED — 0 MEDIUM+, 0 LOW\n' > "$RUN/reviews/PR2-round2.md"
+forge "https://github.com/shim/repo/pull/$((NP - 1))"
+expect 1 "post-review to another branch's PR refused" S post-review "$RUN" PR2 2; has "  says why" "is not this run's PR"
+forge "https://github.com/shim/repo/pull/$NP"
+expect 1 "post-review to a fork's PR with the same branch name refused" S post-review "$RUN" PR2 2
+forge "https://github.com/other/repo/pull/1"
+expect 1 "post-review to another repo's PR refused" S post-review "$RUN" PR2 2; has "  says why" "is not a pull request of shim/repo"
+[[ "$(grep -c '^pr comment' "$GH_SHIM_DIR/calls.log")" == "$n0" ]] && ok "  nothing posted" || bad "  posted to a foreign PR"
+st shipping pending reviewed 'doc["shipApproval"] = {"by": "user", "at": "2026-10-24T01:00:00Z"}'
+forge "https://github.com/shim/repo/pull/$((NP - 1))"
+expect 0 "ready on a foreign prUrl" S ready "$RUN" PR2
+is "  needs attention, not readied" "$RUN/status.json" prs.1.state '"needs-attention"'
+grep -q "^pr \(ready\|edit\) https://github.com/shim/repo/pull/$((NP - 1))" "$GH_SHIM_DIR/calls.log" && bad "  touched the foreign PR" || ok "  foreign PR untouched"
+forge "$MURL"
+# MED 6: a copied file committed on the branch blocks every push.
+cp "$WTM/.env" "$d/env.bak"; git -C "$WTM" add -f .env; git -C "$WTM" commit -q -m "oops"
+st building pending fixing 'doc["prs"][1]["review"]["round"] = 1'
+expect 3 "push refused when the branch commits a copied file" S push "$RUN" PR2
+has "  names it" ".env, copied in from the main checkout"
+is "  needs attention" "$RUN/status.json" prs.1.state '"needs-attention"'
+[[ "$(git -C "$d/origin.git" rev-parse dcv2/r-m-pr2)" != "$(git -C "$WTM" rev-parse HEAD)" ]] && ok "  not pushed" || bad "  pushed"
+git -C "$WTM" reset -q --hard HEAD~1; cp "$d/env.bak" "$WTM/.env"
+# MED 8: a secret in the PR title is never sent.
+RUN="$d/runs/r-n"; mkdir -p "$RUN"; cp "$RUN3/request.md" "$RUN3/plan.md" "$RUN3/meta.json" "$RUN/"; export DCV2_RUN_DIR="$RUN"
+newwt "S2: n"
+st building pending building 'doc["prs"][1]["title"] = "Fix token=ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"'
+n0="$(grep -c '^pr create' "$GH_SHIM_DIR/calls.log")"
+expect 3 "draft-pr with a secret in the title" S draft-pr "$RUN" PR2
+has "  says why" "PR title/body not sent"; hasnt "  no value" "AbCdEfGh"
+[[ "$(grep -c '^pr create' "$GH_SHIM_DIR/calls.log")" == "$n0" ]] && ok "  no PR created" || bad "  created"
+git -C "$d/origin.git" show-ref -q --verify refs/heads/dcv2/r-n-pr2 && bad "  pushed anyway" || ok "  nothing pushed"
+# Old runs (meta.json without reviewMode): no detected setup, only an explicit one.
+RUN="$d/runs/r-o"; mkdir -p "$RUN"; cp "$RUN3/request.md" "$RUN3/plan.md" "$RUN/"; echo '{"schema": 1}' > "$RUN/meta.json"; export DCV2_RUN_DIR="$RUN"
+python3 - "$RUN/repos.json" "$R" <<'PY'
+import json, sys
+json.dump({"schema": 1, "repos": [{"name": "r", "path": sys.argv[2], "check": "true"}]}, open(sys.argv[1], "w"))
+PY
+st building pending pending 'for p in doc["prs"]: p["commits"] = 0'
+expect 0 "old run: worktree with a package-lock.json" S worktree "$RUN" "$R" PR1 "$BASE"
+has "  no detected setup" "setup=none"
 
 echo "# memory.sh scan"
 out="$(printf 'ok\n' | bash "$ROOT/plugin/scripts/memory.sh" scan)"; has "clean text" "clean"

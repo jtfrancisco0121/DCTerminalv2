@@ -68,7 +68,7 @@ CHECK_RESULTS = ["not-run", "pass", "fail", "none", "error"]
 POST_APPROVAL = ("building", "ship-approval", "shipping", "done")
 SHIPPED = ("opened", "pushed", "local-only")
 # Run files only the app writes (docs/run-folder.md); `put` refuses them.
-APP_FILES = ("tickets.json", "meta.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json")
+APP_FILES = ("tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json")
 ISO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 AGENT_FOR_STATE = {"building": "implementer", "fixing": "implementer", "reviewing": "pr-reviewer"}
 GATES = ("PASS", "CONCERNS", "FAIL", "WAIVED")
@@ -306,10 +306,10 @@ def prepare_status(doc, old, trusted, run_dir=None):
         o = oprs.get(pr.get("id")) or {}
         if not trusted and o.get("state") in SHIPPED and pr.get("state") != o.get("state"):
             bad.append(f"{pr.get('id')} is {o['state']} (written by state.sh ship-pr); re-read status.json and keep it")
-        if not trusted and o.get("prUrl") and pr.get("prUrl") is None:
-            pr["prUrl"] = o["prUrl"]
-        if not trusted and o.get("prUrl") and pr.get("prUrl") != o.get("prUrl"):
-            bad.append(f"{pr.get('id')}.prUrl is {o['prUrl']} (written by state.sh ship-pr / draft-pr); keep it")
+        if not trusted:  # prUrl is set only by state.sh (ship-pr / draft-pr / ready): a put never changes it
+            if pr.get("prUrl") not in (None, o.get("prUrl")):
+                notes.append(f"note: {pr.get('id')}.prUrl is set only by state.sh; kept the recorded value ({o.get('prUrl')})")
+            pr["prUrl"] = o.get("prUrl")
         if not trusted:  # draft and comments are written only by state.sh's GitHub commands
             for k in ("draft", "comments"):
                 if k in o:
@@ -585,7 +585,7 @@ def cmd_base(repo):
     print(f"base={base} baseCommit={commit} remote={remote or 'none'}")
 
 
-def record_guard(run, repo, pr_id, wt, copied=None):
+def record_guard(run, repo, pr_id, wt, copied=None, remote=None):
     path = os.path.join(run, ".guard.json")
     g = load_json(path)
     if not isinstance(g, dict) or g.get("runDir") != run:
@@ -594,8 +594,34 @@ def record_guard(run, repo, pr_id, wt, copied=None):
         g["repos"].append(repo)
     g["worktrees"][pr_id] = wt
     if copied is not None:  # files copied in from the main checkout: never staged or committed (guard)
-        g.setdefault("copied", {})[pr_id] = copied
+        old = g.setdefault("copied", {}).get(pr_id) or []
+        g["copied"][pr_id] = sorted(set(old) | set(copied))
+    if remote and pr_id not in (g.get("remotes") or {}):  # the push target, fixed when the worktree is first made
+        g.setdefault("remotes", {})[pr_id] = remote
     atomic_write(path, json.dumps(g, indent=2) + "\n")
+
+
+SLUG = re.compile(r"^(?:https?://[^/\s]+/|ssh://[^/\s]+/|[\w.-]+@[^:/\s]+:)([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
+
+
+def remote_record(run, repo):
+    """{name, url, repo: owner/name} of the repo's push remote now, or None (no remote)."""
+    name = remote_of(repo)
+    if not name:
+        return None
+    url = git("-C", repo, "remote", "get-url", "--push", name).stdout.strip() or git("-C", repo, "remote", "get-url", name).stdout.strip()
+    m = SLUG.match(url)
+    slug = f"{m.group(1)}/{m.group(2)}" if m else None
+    if not slug and review_mode(run) == "github":  # e.g. a local mirror: ask gh which GitHub repo this is
+        r = run_cmd(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], cwd=repo, timeout=60)
+        v = r.stdout.strip()
+        slug = v if r.returncode == 0 and re.fullmatch(r"[\w.-]+/[\w.-]+", v) else None
+    return {"name": name, "url": url, "repo": slug}
+
+
+def guard_rec(run):
+    g = load_json(os.path.join(run, ".guard.json"))
+    return g if isinstance(g, dict) else {}
 
 
 def repo_entry(run, repo):
@@ -713,19 +739,23 @@ def cmd_worktree(run, repo, pr_id, base):
         if r.returncode != 0:
             die(f"NOT MADE: git worktree add failed: {first_line(r.stderr)}")
         made = True
+    remote = remote_record(run, repo)
     if not made:
-        record_guard(run, repo, pr_id, wt)
+        record_guard(run, repo, pr_id, wt, remote=remote)
         print(f"branch={branch} worktree={wt}")
         return
     # A newly made worktree (fresh or re-made folder): local files, then the install step.
     entry = repo_entry(run, repo)
     copied, refused = copy_files(repo, wt, entry.get("copyFiles"))
-    record_guard(run, repo, pr_id, wt, copied)
+    record_guard(run, repo, pr_id, wt, copied, remote)
     print(f"branch={branch} worktree={wt}" + (" remade=yes" if remade else ""))
     if copied or refused:
         print(f"copied={len(copied)}" + (f" refused: {'; '.join(refused)}" if refused else ""))
     setup = entry.get("setup")
-    cmd = setup.strip() if isinstance(setup, str) else detect_setup(wt)
+    # Old runs (meta.json without reviewMode, plugin 0.2.x) get no detected install: only an explicit setup.
+    meta = load_json(os.path.join(run, "meta.json"))
+    new_run = isinstance(meta, dict) and "reviewMode" in meta
+    cmd = setup.strip() if isinstance(setup, str) else (detect_setup(wt) if new_run else None)
     result, log = run_setup(run, wt, pr_id, cmd or None)
     print(f"setup={result} log={log or '-'}")
 
@@ -806,32 +836,41 @@ def cmd_ship_pr(run, pid):
 
 
 # ---- github review mode (draft PRs + review comments) ---------------------------------------
+# Every GitHub call names the repo (`gh -R <owner/name>` recorded at `state.sh worktree` time), every push
+# goes to the remote URL recorded then (never a remote name the worktree could re-point), without hooks,
+# and every write to an existing PR first checks that the PR is this branch's PR in that repo.
 
-GH_URL = re.compile(r"^https://[^\s/]+/[^\s/]+/[^\s/]+/pull/\d+$")
+GH_URL = re.compile(r"^https://[^\s/]+/([^\s/]+)/([^\s/]+)/pull/(\d+)$")
+TITLE_CAP = 256
+ZWJ = "‍"
 
 
 def http_line(out):
     return next((l.strip() for l in reversed((out or "").splitlines()) if l.strip().startswith("https://")), None)
 
 
-def find_pr(wt, branch):
-    """The branch's PR on GitHub: ({url, isDraft, state} or {} when none, error or None)."""
-    r = run_cmd(["gh", "pr", "list", "--head", branch, "--state", "all", "--json", "url,isDraft,state", "--limit", "10"], cwd=wt, timeout=60)
-    if r.returncode != 0:
-        return None, "gh pr list failed: " + (first_line(r.stderr) or first_line(r.stdout))[:200]
-    try:
-        rows = json.loads(r.stdout or "[]")
-    except ValueError:
-        return None, "gh pr list printed no JSON"
-    rows = [x for x in rows if isinstance(x, dict) and GH_URL.match(str(x.get("url") or ""))] if isinstance(rows, list) else []
-    if not rows:
-        return {}, None
-    return (next((x for x in rows if x.get("state") == "OPEN"), None) or rows[0]), None
+def gh(args, cwd, slug, timeout=120):
+    return run_cmd(["gh", *args, "-R", slug], cwd=cwd, timeout=timeout)
 
 
-def remote_sha(repo, remote, branch):
-    r = git("-C", repo, "ls-remote", "--heads", remote, f"refs/heads/{branch}")
+def gh_err(r, what):
+    return f"{what} failed: " + (first_line(r.stderr) or first_line(r.stdout))[:200]
+
+
+def neutral(text):
+    """No @mentions and no cross-repo references in anything posted (they notify or backlink other people)."""
+    text = re.sub(r"(?<![\w`@" + ZWJ + r"])@(?=[A-Za-z0-9])", "@" + ZWJ, text)
+    return re.sub(r"(?<![\w/])([A-Za-z0-9][\w.-]*/[\w.-]+)#(?=\d)", r"\1#" + ZWJ, text)
+
+
+def remote_sha(url, branch):
+    r = git("ls-remote", "--heads", url, f"refs/heads/{branch}")
     return (r.stdout.split() or [None])[0] if r.returncode == 0 else None
+
+
+def push_branch(wt, url, branch):
+    """Push the branch to the recorded URL: never force, no hooks."""
+    return git("-c", "core.hooksPath=/dev/null", "-C", wt, "push", url, f"refs/heads/{branch}:refs/heads/{branch}")
 
 
 def scan_secrets(text):
@@ -848,15 +887,16 @@ def scan_secrets(text):
     return None, "the secret scanner did not run: " + (first_line(r.stderr) or f"exit {r.returncode}")
 
 
-def capped(text, tail):
-    if len(text) <= COMMENT_CAP:
+def capped(text, tail, cap=COMMENT_CAP):
+    if len(text) <= cap:
         return text
-    tail = f"\n\n… (cut at {COMMENT_CAP} characters) {tail}"
-    return text[:COMMENT_CAP - len(tail)] + tail
+    tail = f"\n\n… (cut at {cap} characters) {tail}"
+    return text[:cap - len(tail)] + tail
 
 
 def github_pr(run, pid, stages=GITHUB_STAGES):
-    """Status + the PR entry for a GitHub write; refuses outside github mode, before the plan approval, or off its branch."""
+    """Status, the PR entry and its recorded remote for a GitHub write; refuses outside github mode, before the
+    plan approval, or off its canonical branch and worktree."""
     st = load_status(run)
     if review_mode(run) != "github":
         die("NOT DONE: this run's review mode is local (meta.json): nothing goes to GitHub before stop #2 (`state.sh ship-pr`)")
@@ -872,7 +912,13 @@ def github_pr(run, pid, stages=GITHUB_STAGES):
         die(f"NOT DONE: {pid} must be on {branch} in its worktree {wt} (made by state.sh worktree)")
     if git("-C", wt, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() != branch:
         die(f"NOT DONE: {wt} is not on {branch}")
-    return st, pr
+    g = guard_rec(run)
+    if (g.get("worktrees") or {}).get(pid) != wt:
+        die(f"NOT DONE: {pid}'s worktree is not recorded in .guard.json (run `state.sh worktree` for it)")
+    rem = (g.get("remotes") or {}).get(pid)
+    if rem and not (isinstance(rem, dict) and rem.get("url")):
+        rem = None
+    return st, pr, rem
 
 
 def save_pr(run, st, pr, msg):
@@ -881,9 +927,90 @@ def save_pr(run, st, pr, msg):
     print(msg)
 
 
-def draft_body(run, st, pr):
+def attention(run, st, pr, why, what="NOT DONE"):
+    """Mark the PR needs-attention, log it, exit 3."""
+    pr["state"], pr["note"] = "needs-attention", why[:300]
+    append_log(run, st.get("stage") or "building", f"{pr.get('id')} needs attention: {why}")
+    for m in write_status(run, st, trusted=True):
+        print(m)
+    die(f"{what}: {why}; {pr.get('id')} needs attention (nothing was sent)", 3)
+
+
+def copied_committed(run, pr):
+    """Files copied in from the main checkout (recorded in .guard.json) that the branch's commits touch."""
+    files = (guard_rec(run).get("copied") or {}).get(pr.get("id")) or []
+    if not files:
+        return []
+    r = git("-C", pr["worktree"], "diff", "--name-only", f"{pr.get('baseCommit')}..HEAD")
+    changed = set(r.stdout.split("\n")) if r.returncode == 0 else set()
+    return [f for f in files if f in changed]
+
+
+def no_copied(run, st, pr, what):
+    bad = copied_committed(run, pr)
+    if bad:
+        attention(run, st, pr, f"the branch commits {', '.join(bad)}, copied in from the main checkout (copyFiles); remove it from the commits", what)
+
+
+def clean_text(run, st, pr, text, label, what):
+    """Secret scan before anything is sent; a hit or a scanner that cannot run refuses (a hit: needs-attention)."""
+    clean, why = scan_secrets(text)
+    if clean is None:
+        die(f"{what}: {why}")
+    if not clean:
+        attention(run, st, pr, f"{label} not sent to GitHub: {why}", what)
+
+
+def verify_pr(pr, rem, url):
+    """None when url is this branch's own PR in the recorded repo, else why not."""
+    m = GH_URL.match(str(url or ""))
+    slug = rem.get("repo") or ""
+    if not m or f"{m.group(1)}/{m.group(2)}".lower() != slug.lower():
+        return f"{url} is not a pull request of {slug or 'the recorded repo'}"
+    r = gh(["pr", "view", url, "--json", "url,headRefName,headRepository,headRepositoryOwner,isCrossRepository"], pr["worktree"], slug, 60)
+    if r.returncode != 0:
+        return gh_err(r, "gh pr view")
+    try:
+        v = json.loads(r.stdout or "{}")
+    except ValueError:
+        return "gh pr view printed no JSON"
+    owner = ((v.get("headRepositoryOwner") or {}).get("login") or "")
+    name = ((v.get("headRepository") or {}).get("name") or "")
+    if v.get("headRefName") != pr.get("branch") or v.get("isCrossRepository") or f"{owner}/{name}".lower() != slug.lower():
+        return f"{url} is not this run's PR (head {owner}/{name}:{v.get('headRefName')}, want {slug}:{pr.get('branch')})"
+    return None
+
+
+def find_pr(pr, rem):
+    """The branch's PR in the recorded repo: ({url, isDraft, state} or {} when none, error or None)."""
+    r = gh(["pr", "list", "--head", pr["branch"], "--state", "all", "--json", "url,isDraft,state", "--limit", "10"], pr["worktree"], rem["repo"], 60)
+    if r.returncode != 0:
+        return None, gh_err(r, "gh pr list")
+    try:
+        rows = json.loads(r.stdout or "[]")
+    except ValueError:
+        return None, "gh pr list printed no JSON"
+    rows = [x for x in rows if isinstance(x, dict) and GH_URL.match(str(x.get("url") or ""))] if isinstance(rows, list) else []
+    rows = [x for x in rows if verify_pr(pr, rem, x["url"]) is None]
+    if not rows:
+        return {}, None
+    return (next((x for x in rows if x.get("state") == "OPEN"), None) or rows[0]), None
+
+
+def need_remote(rem, what):
+    if not rem:
+        die(f"{what}: the repo had no git remote when its worktree was made")
+    if not rem.get("repo"):
+        die(f"{what}: cannot tell which GitHub repo {rem.get('url')} is (no owner/name in the URL, and `gh repo view` did not say)")
+
+
+def story_lines(run, pr):
     titles = dict(re.findall(r"^###\s+(S\d+)\s*[:\-—]+\s*(.+?)\s*$", read(os.path.join(run, "plan.md")), re.M))
-    lines = ["## Stories", ""] + [f"- {s}: {titles.get(s, '')}".rstrip(": ") for s in (pr.get("stories") or {}).get("ids") or []]
+    return [f"- {s}: {titles.get(s, '')}".rstrip(": ") for s in (pr.get("stories") or {}).get("ids") or []]
+
+
+def draft_body(run, st, pr):
+    lines = ["## Stories", ""] + story_lines(run, pr)
     lines += ["", f"\U0001F916 Eagle-Eye run {st.get('runId')} — review in progress. Each review round is posted as a comment; "
               "this PR is marked ready for review only after the run's ship approval.", ""]
     return "\n".join(lines)
@@ -897,8 +1024,19 @@ def final_body(run, st, pr):
     return "\n".join(lines) + "\n"
 
 
+def title_and_body(run, st, pr, body, what):
+    """Neutralised, capped, secret-scanned title + body; the body is written to pr-bodies/<PR>.md."""
+    title = capped(neutral(" ".join(str(pr.get("title") or pr["id"]).split())), "", TITLE_CAP).replace("\n", " ")
+    body = capped(neutral(body), "The full text is in the run folder.")
+    clean_text(run, st, pr, title + "\n" + body, "the PR title/body", what)
+    f = os.path.join(run, "pr-bodies", f"{pr['id']}.md")
+    os.makedirs(os.path.dirname(f), exist_ok=True)
+    atomic_write(f, body)
+    return title, f
+
+
 def cmd_draft_pr(run, pid):
-    st, pr = github_pr(run, pid, ("building", "ship-approval"))
+    st, pr, rem = github_pr(run, pid, ("building", "ship-approval"))
     if pr.get("prUrl"):
         print(f"draft=exists url={pr['prUrl']}")
         return
@@ -909,7 +1047,7 @@ def cmd_draft_pr(run, pid):
     result = (pr.get("check") or {}).get("result")
     if result not in ("pass", "none"):
         die(f"NOT DRAFTED: the check must pass first (check.result {result})")
-    repo, wt, branch, base = os.path.realpath(pr["repoPath"]), pr["worktree"], pr["branch"], pr.get("base")
+    wt, branch, base = pr["worktree"], pr["branch"], pr.get("base")
     n = git("-C", wt, "rev-list", "--count", f"{pr.get('baseCommit')}..HEAD").stdout.strip()
     if not n.isdigit() or int(n) == 0:
         die(f"NOT DRAFTED: {pid} has no commits since its base")
@@ -918,31 +1056,30 @@ def cmd_draft_pr(run, pid):
         pr["note"] = ("draft PR not opened: " + why)[:300]
         save_pr(run, st, pr, f"draft=failed reason={why}")
 
-    remote = remote_of(repo)
-    if not remote:
+    if not rem:
         print("draft=no-remote: no git remote: the reviews stay in the run folder; stop #2 marks it local-only")
         return
-    if not on_remote(repo, remote, base):
-        return failed(f"base {base} is not on {remote}")
-    found, err = find_pr(wt, branch)
+    if not rem.get("repo"):
+        return failed(f"cannot tell which GitHub repo {rem.get('url')} is")
+    no_copied(run, st, pr, "NOT DRAFTED")
+    if not remote_sha(rem["url"], base):
+        return failed(f"base {base} is not on {rem['url']}")
+    found, err = find_pr(pr, rem)
     if err:
         return failed(err)
     if found and found.get("state") != "OPEN":
         return failed(f"the branch already has a {str(found.get('state')).lower()} PR ({found.get('url')}); not opening a second one")
-    r = git("-C", wt, "push", "-u", remote, branch)
+    title, body = title_and_body(run, st, pr, draft_body(run, st, pr), "NOT DRAFTED") if not found else (None, None)
+    r = push_branch(wt, rem["url"], branch)
     if r.returncode != 0:
         return failed("push refused: " + first_line(r.stderr)[:200])
     if found:
         url, draft, how = found["url"], bool(found.get("isDraft")), "found"
     else:
-        body = os.path.join(run, "pr-bodies", f"{pid}.md")
-        os.makedirs(os.path.dirname(body), exist_ok=True)
-        atomic_write(body, draft_body(run, st, pr))
-        c = run_cmd(["gh", "pr", "create", "--draft", "--base", base, "--head", branch, "--title", str(pr.get("title") or pid),
-                     "--body-file", body], cwd=wt, timeout=120)
+        c = gh(["pr", "create", "--draft", "--base", base, "--head", branch, "--title", title, "--body-file", body], wt, rem["repo"])
         url, draft, how = http_line(c.stdout), True, "opened"
         if c.returncode != 0 or not url or not GH_URL.match(url):
-            return failed("gh pr create --draft failed: " + (first_line(c.stderr) or first_line(c.stdout))[:200])
+            return failed(gh_err(c, "gh pr create --draft"))
     pr.update(prUrl=url, draft=draft, note=None)
     if pr.get("state") in ("pending", "building"):
         pr["state"] = "drafted"
@@ -952,21 +1089,20 @@ def cmd_draft_pr(run, pid):
 
 
 def cmd_push(run, pid):
-    st, pr = github_pr(run, pid)
+    st, pr, rem = github_pr(run, pid)
     if not pr.get("prUrl"):
         print("push=skipped: no draft PR (the review loop stays local)")
         return
     if pr.get("state") in ("opened", "local-only"):
         die(f"NOT PUSHED: {pid} is {pr['state']}")
-    repo, wt, branch = os.path.realpath(pr["repoPath"]), pr["worktree"], pr["branch"]
-    remote = remote_of(repo)
-    if not remote:
-        die("NOT PUSHED: the repo has no git remote")
+    need_remote(rem, "NOT PUSHED")
+    wt, branch = pr["worktree"], pr["branch"]
     head = git("-C", wt, "rev-parse", "HEAD").stdout.strip()
-    if remote_sha(repo, remote, branch) == head:
+    if remote_sha(rem["url"], branch) == head:
         print(f"push=up-to-date head={head[:12]}")
         return
-    r = git("-C", wt, "push", remote, branch)
+    no_copied(run, st, pr, "NOT PUSHED")
+    r = push_branch(wt, rem["url"], branch)
     if r.returncode != 0:
         pr["note"] = ("push refused: " + first_line(r.stderr))[:300]
         save_pr(run, st, pr, f"push=failed reason={pr['note']}")
@@ -975,22 +1111,42 @@ def cmd_push(run, pid):
     print(f"push=ok head={head[:12]}")
 
 
-def post_comment(run, st, pr, text, name):
+def posted_already(pr, rem, footer):
+    """The URL of a comment on the PR that carries this footer (a post whose record was lost), or None."""
+    r = gh(["pr", "view", pr["prUrl"], "--json", "comments"], pr["worktree"], rem["repo"], 60)
+    if r.returncode != 0:
+        return None
+    try:
+        cs = json.loads(r.stdout or "{}").get("comments") or []
+    except (ValueError, AttributeError):
+        return None
+    hit = next((c for c in cs if isinstance(c, dict) and footer in str(c.get("body") or "")), None)
+    return (hit.get("url") or pr["prUrl"]) if hit else None
+
+
+def post_comment(run, st, pr, rem, text, name):
     """Write pr-comments/<name>.md and post it with gh pr comment. (url, error)."""
     f = os.path.join(run, "pr-comments", f"{name}.md")
     os.makedirs(os.path.dirname(f), exist_ok=True)
     atomic_write(f, text)
-    c = run_cmd(["gh", "pr", "comment", pr["prUrl"], "--body-file", f], cwd=pr["worktree"], timeout=120)
+    c = gh(["pr", "comment", pr["prUrl"], "--body-file", f], pr["worktree"], rem["repo"])
     if c.returncode != 0:
-        return None, "gh pr comment failed: " + (first_line(c.stderr) or first_line(c.stdout))[:200]
+        return None, gh_err(c, "gh pr comment")
     return http_line(c.stdout) or pr["prUrl"], None
+
+
+def checked_pr(run, st, pr, rem, what):
+    need_remote(rem, what)
+    bad = verify_pr(pr, rem, pr["prUrl"])
+    if bad:
+        die(f"{what}: {bad}")
 
 
 def cmd_post_review(run, pid, rnd):
     if not re.fullmatch(r"[1-3]", rnd):
         die("NOT POSTED: round must be 1, 2 or 3")
     rnd = int(rnd)
-    st, pr = github_pr(run, pid)
+    st, pr, rem = github_pr(run, pid)
     if not pr.get("prUrl"):
         print("posted=no: no draft PR; the review stays in the run folder")
         return
@@ -1003,31 +1159,29 @@ def cmd_post_review(run, pid, rnd):
     text = read(os.path.join(run, rel)).strip()
     if not text:
         die(f"NOT POSTED: {rel} is missing or empty")
-    clean, why = scan_secrets(text)
-    if clean is None:
-        die(f"NOT POSTED: {why}")
-    if not clean:
-        pr["state"], pr["note"] = "needs-attention", f"review round {rnd} not posted to GitHub: {why}"[:300]
-        append_log(run, st.get("stage") or "building", f"{pid} review round {rnd} not posted: {why}")
-        for m in write_status(run, st, trusted=True):
-            print(m)
-        die(f"NOT POSTED: {rel} {why}; {pid} needs attention (nothing was sent)", 3)
-    body = capped(text, f"The full review is in the run folder: {rel}.") + f"\n\n_Eagle-Eye run {st.get('runId')}, review round {rnd}._\n"
-    url, err = post_comment(run, st, pr, body, f"{pid}-round{rnd}")
-    if err:
-        print(f"posted=failed reason={err}")
-        return
+    checked_pr(run, st, pr, rem, "NOT POSTED")
+    footer = f"_Eagle-Eye run {st.get('runId')}, review round {rnd}._"
     head = git("-C", pr["worktree"], "rev-parse", "HEAD").stdout.strip()
+    url = posted_already(pr, rem, footer)
+    how = "found"
+    if not url:
+        body = capped(neutral(text), f"The full review is in the run folder: {rel}.") + f"\n\n{footer}\n"
+        clean_text(run, st, pr, body, f"review round {rnd}", "NOT POSTED")
+        url, err = post_comment(run, st, pr, rem, body, f"{pid}-round{rnd}")
+        if err:
+            print(f"posted=failed reason={err}")
+            return
+        how = "ok"
     pr["comments"] = comments + [{"round": rnd, "url": url, "head": head}]
     append_log(run, st.get("stage") or "building", f"{pid} review round {rnd} posted: {url}")
-    save_pr(run, st, pr, f"posted=ok url={url}")
+    save_pr(run, st, pr, f"posted={how} url={url}")
 
 
 def cmd_comment(run, pid, kind, rnd):
     if kind != "fixes" or not re.fullmatch(r"[1-3]", rnd):
         die("usage: state.sh comment <run> <pr id> fixes <round 1-3> (the only template)")
     rnd = int(rnd)
-    st, pr = github_pr(run, pid)
+    st, pr, rem = github_pr(run, pid)
     if not pr.get("prUrl"):
         print("posted=no: no draft PR")
         return
@@ -1037,25 +1191,30 @@ def cmd_comment(run, pid, kind, rnd):
     if entry.get("fixesUrl"):
         print(f"posted=already url={entry['fixesUrl']}")
         return
-    wt, repo = pr["worktree"], os.path.realpath(pr["repoPath"])
+    wt = pr["worktree"]
     log = git("-C", wt, "log", "--reverse", "--format=%h %s", f"{entry['head']}..HEAD")
     commits = [l for l in log.stdout.splitlines() if l.strip()] if log.returncode == 0 else []
     if not commits:
         die(f"NOT POSTED: no commits since round {rnd}'s review")
-    remote = remote_of(repo)
-    if not remote or remote_sha(repo, remote, pr["branch"]) != git("-C", wt, "rev-parse", "HEAD").stdout.strip():
+    checked_pr(run, st, pr, rem, "NOT POSTED")
+    if remote_sha(rem["url"], pr["branch"]) != git("-C", wt, "rev-parse", "HEAD").stdout.strip():
         die("NOT POSTED: push the fixes first (`state.sh push <run> <pr id>`)")
-    clean, _ = scan_secrets("\n".join(commits))
-    items = [f"- `{c.split(' ', 1)[0]}` {c.split(' ', 1)[1] if ' ' in c and clean else ''}".rstrip() for c in commits]
-    body = capped(f"Round {rnd} fixes: {len(commits)} commit(s)\n\n" + "\n".join(items), "See the branch for the rest.") + \
-        f"\n\n_Eagle-Eye run {st.get('runId')}: review round {rnd + 1} follows._\n"
-    url, err = post_comment(run, st, pr, body, f"{pid}-round{rnd}-fixes")
-    if err:
-        print(f"posted=failed reason={err}")
-        return
+    footer = f"_Eagle-Eye run {st.get('runId')}, round {rnd} fixes._"
+    url, how = posted_already(pr, rem, footer), "found"
+    if not url:
+        clean, _ = scan_secrets("\n".join(commits))
+        items = [f"- `{c.split(' ', 1)[0]}` {c.split(' ', 1)[1] if ' ' in c and clean else ''}".rstrip() for c in commits]
+        body = capped(neutral(f"Round {rnd} fixes: {len(commits)} commit(s)\n\n" + "\n".join(items)), "See the branch for the rest.") + \
+            f"\n\nReview round {rnd + 1} follows.\n\n{footer}\n"
+        clean_text(run, st, pr, body, f"round {rnd} fixes comment", "NOT POSTED")
+        url, err = post_comment(run, st, pr, rem, body, f"{pid}-round{rnd}-fixes")
+        if err:
+            print(f"posted=failed reason={err}")
+            return
+        how = "ok"
     entry["fixesUrl"] = url
     append_log(run, st.get("stage") or "building", f"{pid} round {rnd} fixes posted: {url}")
-    save_pr(run, st, pr, f"posted=ok url={url}")
+    save_pr(run, st, pr, f"posted={how} url={url}")
 
 
 def cmd_ready(run, pid):
@@ -1073,7 +1232,7 @@ def cmd_ready(run, pid):
         return
     if pr.get("state") not in ("reviewed", "pushed"):
         die(f"NOT READY: {pid} is {pr.get('state')}; only reviewed PRs are marked ready")
-    st, pr = github_pr(run, pid, ("shipping",))
+    st, pr, rem = github_pr(run, pid, ("shipping",))
 
     def save(state, note=None, url=None):
         pr["state"], pr["note"] = state, note
@@ -1081,45 +1240,48 @@ def cmd_ready(run, pid):
             pr["prUrl"] = url
         save_pr(run, st, pr, f"{pid} {state}" + (f": {url}" if url else "") + (f" ({note})" if note else ""))
 
-    repo, wt, branch, base = os.path.realpath(pr["repoPath"]), pr["worktree"], pr["branch"], pr.get("base")
-    remote = remote_of(repo)
-    if not remote:
+    wt, branch, base = pr["worktree"], pr["branch"], pr.get("base")
+    if not rem:
         return save("local-only", "no git remote: nothing pushed, no PR opened")
-    if not on_remote(repo, remote, base):
-        return save("needs-attention", f"base {base} is not on {remote}")
-    head = git("-C", wt, "rev-parse", "HEAD").stdout.strip()
-    if remote_sha(repo, remote, branch) != head:
-        r = git("-C", wt, "push", "-u", remote, branch)
-        if r.returncode != 0:
-            return save("needs-attention", "push refused: " + first_line(r.stderr)[:200])
+    if not rem.get("repo"):
+        return save("needs-attention", f"cannot tell which GitHub repo {rem.get('url')} is")
+    if not remote_sha(rem["url"], base):
+        return save("needs-attention", f"base {base} is not on {rem['url']}")
+    no_copied(run, st, pr, "NOT READY")
     url, draft = pr.get("prUrl"), pr.get("draft")
-    if not url:
-        found, err = find_pr(wt, branch)
+    if url:
+        bad = verify_pr(pr, rem, url)
+        if bad:
+            return save("needs-attention", bad)
+    else:
+        found, err = find_pr(pr, rem)
         if err:
-            return save("pushed", err)
+            return save("pushed" if remote_sha(rem["url"], branch) else "needs-attention", err)
         if found and found.get("state") != "OPEN":
             return save("needs-attention", f"the branch's PR is {str(found.get('state')).lower()}: {found.get('url')}")
         if found:
             url, draft = found["url"], bool(found.get("isDraft"))
-    body = os.path.join(run, "pr-bodies", f"{pid}.md")
-    os.makedirs(os.path.dirname(body), exist_ok=True)
-    atomic_write(body, final_body(run, st, pr))
+    title, body = title_and_body(run, st, pr, final_body(run, st, pr), "NOT READY")
+    head = git("-C", wt, "rev-parse", "HEAD").stdout.strip()
+    if remote_sha(rem["url"], branch) != head:
+        r = push_branch(wt, rem["url"], branch)
+        if r.returncode != 0:
+            return save("needs-attention", "push refused: " + first_line(r.stderr)[:200])
     if not url:
-        c = run_cmd(["gh", "pr", "create", "--base", base, "--head", branch, "--title", str(pr.get("title") or pid),
-                     "--body-file", body], cwd=wt, timeout=120)
+        c = gh(["pr", "create", "--base", base, "--head", branch, "--title", title, "--body-file", body], wt, rem["repo"])
         new = http_line(c.stdout)
         if c.returncode == 0 and new and GH_URL.match(new):
             pr["draft"] = False
             return save("opened", None, new)
-        return save("pushed", "gh pr create failed: " + (first_line(c.stderr) or first_line(c.stdout))[:200])
+        return save("pushed", gh_err(c, "gh pr create"))
     note = None
-    e = run_cmd(["gh", "pr", "edit", url, "--body-file", body], cwd=wt, timeout=120)
+    e = gh(["pr", "edit", url, "--body-file", body], wt, rem["repo"])
     if e.returncode != 0:
-        note = "final PR body not set: " + (first_line(e.stderr) or first_line(e.stdout))[:150]
+        note = gh_err(e, "final PR body: gh pr edit")[:200]
     if draft is not False:
-        r = run_cmd(["gh", "pr", "ready", url], cwd=wt, timeout=120)
+        r = gh(["pr", "ready", url], wt, rem["repo"])
         if r.returncode != 0:
-            return save("pushed", "gh pr ready failed: " + (first_line(r.stderr) or first_line(r.stdout))[:200], url)
+            return save("pushed", gh_err(r, "gh pr ready"), url)
     pr["draft"] = False
     append_log(run, "shipping", f"{pid} marked ready for review: {url}")
     save("opened", note, url)
