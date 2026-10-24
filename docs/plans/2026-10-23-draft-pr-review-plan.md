@@ -66,3 +66,8 @@ One PR (plugin + app panel + tests), the usual loop: build in a worktree → rev
 - `state.sh worktree` runs a setup step after making a new worktree: install packages from the repo's lockfile (`npm ci` / `pnpm install --frozen-lockfile` / `yarn install --frozen-lockfile` / `go mod download` / none for Cargo), output to `<run>/logs/<PR>-setup.txt`, one status line back. A failed install marks the PR's check `error` with the log path, not a crash.
 - Per-repo setting in the app, off by default: "Copy these local files into run worktrees" (e.g. `.env`, `.env.local`), an explicit list of paths from the main checkout. Copied files are git-ignored ones only (refuse a tracked path), never committed (guard + `git status` check before each commit), and removed by the janitor with the worktree.
 - `repos.json` gains `setup` (command or null) and `copyFiles` ([paths]) per repo, written by the app.
+
+### Runs started before this change, and dev → built app
+
+- A run keeps the flow it started with: `meta.json` records the plugin VERSION and the review mode; a run with no mode recorded resumes with the old local flow (no drafts until stop #2, ClickUp ticks). No half-migrated runs.
+- Debug builds use `<app data>.dev`, release builds `<app data>`. The built app offers once to copy runs, run-trust, memory and saved tabs from the `.dev` folder, so a run (and onboarded memory) started in `npm run dev:app` can be resumed in the built app.
