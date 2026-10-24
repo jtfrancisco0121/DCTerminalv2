@@ -1384,3 +1384,28 @@ body,
 .tab-activity-needs-you {
   background: var(--warning);
 }
+
+/* Review on GitHub: the PR's draft / ready badge and its review-round comment links. */
+.run-pr-badge {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  padding: 0 6px;
+}
+
+.run-pr-badge-ready {
+  color: var(--success);
+}
+
+.run-pr-comments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.clickup-autopost ul,
+.repo-setup ul {
+  list-style: none;
+  padding-left: 0;
+}

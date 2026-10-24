@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { errorText } from "../components/InlineNotice";
+import { safeUrl } from "../run/words";
 import {
+  clickupAutoPostRetry,
   clickupCheckTickets,
   clickupPostWriteback,
   clickupPullTickets,
   clickupRunState,
+  type AutoPostView,
   type ChangedTicket,
   type DraftView,
   type PostOutcome,
@@ -81,6 +85,14 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
   useEffect(() => {
     void load();
   }, [load, updatedAt, stage]);
+
+  // While comments post in the background, look again shortly.
+  const autoRunning = state?.autoPost?.running ?? false;
+  useEffect(() => {
+    if (!autoRunning) return;
+    const timer = window.setTimeout(() => void load(), 3000);
+    return () => window.clearTimeout(timer);
+  }, [autoRunning, load, state]);
 
   const check = useCallback(() => {
     setChecking(true);
@@ -193,6 +205,23 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
         </p>
       )}
       {state.writebackProblem && <p className="hint warn">{state.writebackProblem}</p>}
+      {state.autoPost && (
+        <AutoPostList
+          view={state.autoPost}
+          label={(id) => {
+            const d = drafts.find((x) => x.ticket.id === id);
+            return d ? draftName(d) : id;
+          }}
+          onRetry={(id) => {
+            setProblem(null);
+            clickupAutoPostRetry(runDir, id).then(
+              () => void load(),
+              (err: unknown) => setProblem(errorText(err)),
+            );
+          }}
+          onOpen={(url) => void openUrl(url).catch((err: unknown) => setProblem(errorText(err)))}
+        />
+      )}
       {state.drafts && (
         <div className="clickup-drafts" aria-label="ClickUp updates">
           <h4>Updates to post</h4>
@@ -303,5 +332,73 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
       )}
       {problem && <p className="error">{problem}</p>}
     </section>
+  );
+}
+
+const AUTO_RESULT: Record<string, string> = {
+  posted: "posted",
+  failed: "failed",
+  maybe: "may have been posted (confirm below before sending again)",
+  skipped: "skipped",
+  blocked: "blocked: looks like a secret",
+};
+
+/** The comments the app posted on its own after the ship approval. */
+export function AutoPostList({
+  view,
+  label,
+  onRetry,
+  onOpen,
+}: {
+  view: AutoPostView;
+  label: (ticketId: string) => string;
+  onRetry: (ticketId: string) => void;
+  onOpen: (url: string) => void;
+}) {
+  if (view.adopted && !view.record) {
+    return <p className="hint">This run came from the dev app: its comments are not posted automatically here. Tick them below.</p>;
+  }
+  if (!view.enabled && !view.record) {
+    return <p className="hint">Comments are not posted automatically for this account (Settings › ClickUp): tick them below.</p>;
+  }
+  return (
+    <div className="clickup-autopost" aria-label="Posted automatically" data-testid="autopost">
+      <h4>Comments posted automatically</h4>
+      {view.problem && <p className="hint warn">{view.problem}</p>}
+      {view.running && <p className="hint">Posting the comments…</p>}
+      {view.record && (
+        <ul>
+          {view.record.results.map((r) => {
+            const url = safeUrl(r.url);
+            return (
+              <li key={r.ticketId} data-testid={`autopost-${r.ticketId}`}>
+                <strong>{label(r.ticketId)}</strong>{" "}
+                <span className={r.result === "posted" ? "" : "warn"}>
+                  {r.result === "blocked" ? AUTO_RESULT.blocked : (AUTO_RESULT[r.result] ?? r.result)}
+                </span>
+                {r.message && r.result !== "posted" && <span className="hint"> — {r.message}</span>}
+                {url && (
+                  <button type="button" className="link-button" onClick={() => onOpen(url)}>
+                    open ticket
+                  </button>
+                )}
+                {r.text && (
+                  <details className="clickup-autopost-text">
+                    <summary>comment</summary>
+                    <pre>{r.text}</pre>
+                  </details>
+                )}
+                {r.result === "failed" && (
+                  <button type="button" className="link-button" onClick={() => onRetry(r.ticketId)}>
+                    Retry
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <p className="hint">Status changes are never posted on their own: tick them below.</p>
+    </div>
   );
 }

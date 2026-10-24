@@ -113,6 +113,17 @@ pub struct PrView {
     pub worktree_clean: Option<bool>,
     /// The app's check ran on another HEAD than the worktree's now.
     pub app_check_stale: bool,
+    /// `prs[].draft`: the PR is a draft on GitHub (review on GitHub).
+    pub draft: Option<bool>,
+    /// `prs[].comments`: one review comment per round, posted on the PR.
+    pub comments: Vec<PrComment>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrComment {
+    pub round: Option<i64>,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -143,6 +154,10 @@ pub struct RunView {
     pub ship_note: Option<String>,
     pub timeline: Vec<LogLine>,
     pub has_report: bool,
+    /// meta.json's `reviewMode` (`github` / `local`; missing is `local`).
+    pub review_mode: String,
+    /// status.json has `shipApproval` (the yes at stop #2).
+    pub ship_approved: bool,
 }
 
 fn s(v: &Value, key: &str) -> Option<String> {
@@ -222,6 +237,7 @@ pub fn parse_status(value: &Value) -> Result<RunView, String> {
         plan,
         prs,
         ship_note: s(ship, "note"),
+        ship_approved: value.get("shipApproval").is_some_and(Value::is_object),
         ..RunView::default()
     })
 }
@@ -253,6 +269,23 @@ fn parse_pr(pr: &Value, index: usize) -> PrView {
             open_findings: i(review, "openFindings"),
         },
         pr_url: s(pr, "prUrl"),
+        draft: pr.get("draft").and_then(Value::as_bool),
+        comments: pr
+            .get("comments")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|c| {
+                        let url = s(c, "url")?;
+                        Some(PrComment {
+                            round: i(c, "round"),
+                            url,
+                        })
+                    })
+                    .take(50)
+                    .collect()
+            })
+            .unwrap_or_default(),
         ..PrView::default()
     }
 }
@@ -496,6 +529,7 @@ pub fn read_run(run_dir: &Path, checks_running: bool) -> RunView {
     };
     view.run_id = run_id;
     view.run_dir = run_dir.display().to_string();
+    view.review_mode = super::folder::review_mode_of(run_dir);
     if view.folder.is_none() {
         view.folder = super::folder::run_folder_of(run_dir);
     }
@@ -784,6 +818,45 @@ mod tests {
         assert!(!broken.has_status);
         let empty = read_run(&dir.join("none"), false);
         assert!(!empty.has_status && empty.status_problem.is_none());
+    }
+}
+
+#[cfg(test)]
+mod draft_pr_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn draft_prs_and_their_review_comments_are_read_tolerantly() {
+        let view = parse_status(&json!({
+            "schema": 1, "stage": "reviewing", "shipApproval": null,
+            "prs": [
+                {"id": "PR1", "state": "drafted", "draft": true, "prUrl": "https://github.com/o/r/pull/7",
+                 "comments": [{"round": 1, "url": "https://github.com/o/r/pull/7#issuecomment-1"},
+                              {"round": "2", "url": "https://github.com/o/r/pull/7#issuecomment-2"},
+                              {"round": 3}, "junk", {"url": 5}]},
+                {"id": "PR2", "draft": "yes", "comments": {"round": 1}},
+                {"id": "PR3", "state": "opened", "draft": false}
+            ]
+        }))
+        .unwrap();
+        assert!(!view.ship_approved);
+        let one = &view.prs[0];
+        assert_eq!(one.draft, Some(true));
+        assert_eq!(one.state.as_deref(), Some("drafted"));
+        assert_eq!(one.comments.len(), 3, "{:?}", one.comments);
+        assert_eq!(one.comments[1].round, Some(2));
+        assert_eq!(one.comments[2].url, "5");
+        assert_eq!(view.prs[1].draft, None);
+        assert!(view.prs[1].comments.is_empty());
+        assert_eq!(view.prs[2].draft, Some(false));
+        let approved = parse_status(&json!({"shipApproval": {"by": "user", "at": "t"}})).unwrap();
+        assert!(approved.ship_approved);
+        // An old run (no reviewMode in meta.json) reads as local.
+        assert_eq!(
+            read_run(Path::new("/nonexistent/r-1"), false).review_mode,
+            "local"
+        );
     }
 }
 

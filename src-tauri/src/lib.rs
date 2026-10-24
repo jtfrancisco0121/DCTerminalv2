@@ -4,6 +4,7 @@ mod clickup;
 mod commands;
 mod crash_log;
 mod data_dir;
+mod import_dev;
 #[cfg(target_os = "macos")]
 mod macos_terminate;
 pub(crate) mod observe;
@@ -50,6 +51,9 @@ const STARTUP_ENV_STEPS: [(&str, fn()); 2] = [
     ("apply_login_path", shell_env::apply_login_path),
 ];
 
+/// `<app data>/app.lock`, flock'd for the app's whole life.
+static APP_LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Before anything else, on the main thread with no other thread yet.
@@ -75,6 +79,10 @@ pub fn run() {
                 eprintln!("DCTerminalv2: {warning}");
             }
             let data_dir = resolved.path;
+            // Held until exit: another build can tell this one is running.
+            if let Some(lock) = import_dev::hold_app_lock(&data_dir) {
+                let _ = APP_LOCK.set(lock);
+            }
             let state_store = StateStore::load_or_default(app.handle())?;
             let settings_store = SettingsStore::open(&data_dir)?;
             app.manage(Mutex::new(state_store));
@@ -93,6 +101,7 @@ pub fn run() {
             // PATH cache, for the next launch).
             shell_env::spawn_login_path_refresh();
             run::spawn_prune_launch_prompts(app.handle());
+            clickup::commands::spawn_auto_post_sweep(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -122,6 +131,7 @@ pub fn run() {
             set_run_settings,
             run::run_overview,
             run::detect_folder_repos,
+            run::set_repo_setup,
             run::start_run,
             run::resume_run,
             run::read_run,
@@ -140,6 +150,11 @@ pub fn run() {
             clickup::commands::clickup_check_tickets,
             clickup::commands::clickup_pull_tickets,
             clickup::commands::clickup_post_writeback,
+            clickup::commands::clickup_auto_post_retry,
+            clickup::commands::clickup_set_auto_post,
+            import_dev::dev_import_status,
+            import_dev::dev_import_dismiss,
+            import_dev::import_from_dev_app,
             observe::observe_tab,
             observe::observe_tabs,
             observe::nudge_tab,

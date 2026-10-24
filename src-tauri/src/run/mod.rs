@@ -67,18 +67,39 @@ pub fn start_folder(raw: &str) -> Result<PathBuf, String> {
     Ok(folder)
 }
 
-/// `run_dir` must be a run folder of this app: a direct child of `<data>/runs`.
+/// `run_dir` must be a run folder of this app: a direct child of
+/// `<data>/runs`, or one listed in `<data>/adopted-runs.json` (a dev-app
+/// run used in place).
 pub fn checked_run_dir(data: &Path, run_dir: &str) -> Result<PathBuf, String> {
-    let runs = folder::runs_dir(data)
-        .canonicalize()
-        .map_err(|_| "no runs yet".to_string())?;
     let dir = Path::new(run_dir.trim())
         .canonicalize()
         .map_err(|_| format!("run folder not found: {run_dir}"))?;
-    if dir.parent() != Some(runs.as_path()) || !dir.is_dir() {
+    if !dir.is_dir() {
         return Err(format!("not a run folder: {run_dir}"));
     }
-    Ok(dir)
+    let runs = folder::runs_dir(data).canonicalize().ok();
+    if runs.is_some() && dir.parent() == runs.as_deref() {
+        return Ok(dir);
+    }
+    if folder::adopted_runs(data).contains(&dir) {
+        return Ok(dir);
+    }
+    Err(format!("not a run folder: {run_dir}"))
+}
+
+/// The data folder whose `run-trust` holds a run's signed records: this
+/// app's for its own runs, the run's grandparent for an adopted run (the
+/// same rule as the guard: `<run dir>/../../run-trust`).
+pub fn trust_data_dir(data: &Path, run_dir: &Path) -> PathBuf {
+    let runs = folder::runs_dir(data).canonicalize().ok();
+    let parent = run_dir.parent();
+    if runs.is_some() && parent.map(Path::to_path_buf) == runs {
+        return data.to_path_buf();
+    }
+    parent
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| data.to_path_buf())
 }
 
 async fn blocking<T: Send + 'static>(
@@ -162,13 +183,58 @@ pub async fn run_overview(app: AppHandle) -> Result<RunOverview, String> {
     .await
 }
 
+/// repos.json's `setup` / `copyFiles` from the per-repo settings, keyed by
+/// the repo's real path.
+pub fn with_repo_setup(
+    found: Vec<repos::Repo>,
+    setup: &std::collections::BTreeMap<String, crate::store::RepoSetup>,
+) -> Vec<repos::Repo> {
+    found
+        .into_iter()
+        .map(|repo| {
+            let key = git::canonical(Path::new(&repo.path)).display().to_string();
+            let s = setup.get(&key).or_else(|| setup.get(&repo.path));
+            repo.with_setup(s)
+        })
+        .collect()
+}
+
 #[tauri::command]
-pub async fn detect_folder_repos(folder: String) -> Result<repos::FolderRepos, String> {
+pub async fn detect_folder_repos(
+    app: AppHandle,
+    folder: String,
+) -> Result<repos::FolderRepos, String> {
+    let setup = {
+        let settings = app.state::<Mutex<SettingsStore>>();
+        let settings = settings.lock().map_err(|e| e.to_string())?;
+        settings.data.worktree_setup.clone()
+    };
     blocking(move || {
         let folder = start_folder(&folder)?;
-        Ok(repos::detect(&folder))
+        let mut found = repos::detect(&folder);
+        // Each repo's real path: the key its worktree setup is saved under.
+        for repo in &mut found.repos {
+            repo.path = git::canonical(Path::new(&repo.path)).display().to_string();
+        }
+        found.repos = with_repo_setup(found.repos, &setup);
+        Ok(found)
     })
     .await
+}
+
+/// Saves the worktree setup of one repo (its real path).
+#[tauri::command]
+pub fn set_repo_setup(
+    app: AppHandle,
+    repo_path: String,
+    setup: crate::store::RepoSetup,
+) -> Result<crate::store::RepoSetup, String> {
+    let key = git::canonical(Path::new(repo_path.trim()))
+        .display()
+        .to_string();
+    let settings = app.state::<Mutex<SettingsStore>>();
+    let mut settings = settings.lock().map_err(|e| e.to_string())?;
+    settings.set_repo_setup(&key, setup)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -240,6 +306,7 @@ struct LaunchContext {
     account_id: String,
     account_name: String,
     run: crate::store::RunSettings,
+    worktree_setup: std::collections::BTreeMap<String, crate::store::RepoSetup>,
 }
 
 fn launch_context(app: &AppHandle, window_id: Option<&str>) -> Result<LaunchContext, String> {
@@ -257,6 +324,7 @@ fn launch_context(app: &AppHandle, window_id: Option<&str>) -> Result<LaunchCont
         provider: ClaudeProvider::for_account(claude, &account_id),
         account_name: account_display_name(claude, &account_id),
         run: settings.run().clone(),
+        worktree_setup: settings.data.worktree_setup.clone(),
         account_id,
     })
 }
@@ -332,6 +400,7 @@ pub async fn start_run(
     request: String,
     role: String,
     clickup: Option<ClickUpStart>,
+    review_mode: Option<String>,
 ) -> Result<StartedRun, String> {
     blocking(move || {
         let folder = start_folder(&folder)?;
@@ -351,7 +420,8 @@ pub async fn start_run(
             memory_prompt: None,
         };
         if role == "eagle-eye" {
-            let found = repos::detect(&folder);
+            let mut found = repos::detect(&folder);
+            found.repos = with_repo_setup(found.repos, &ctx.worktree_setup);
             if found.repos.is_empty() {
                 return Err(format!(
                     "{} is not a git repo or a folder of git repos.",
@@ -364,6 +434,7 @@ pub async fn start_run(
                 account_id: ctx.account_id.clone(),
                 account_name: ctx.account_name.clone(),
                 config_dir: ctx.provider.config.path.clone(),
+                review_mode: review_mode.filter(|m| folder::REVIEW_MODES.contains(&m.as_str())),
             };
             let snapshot = match clickup.as_ref().filter(|c| !c.ticket_ids.is_empty()) {
                 Some(c) => Some(crate::clickup::commands::start_snapshot(
@@ -448,12 +519,14 @@ pub async fn resume_run(
         let ctx = launch_context(&app, window_id.as_deref())?;
         let plugin = plugin_dir(&app).ok_or(NO_PLUGIN)?;
         let memory_dir = memory::memory_dir(&data);
-        let prompt_file = memory::compose(
-            &plugin,
-            &memory_dir,
-            &folder,
-            &run_dir.join("memory-prompt.md"),
-        );
+        // An adopted run's folder belongs to the dev app's data folder: its
+        // prompt file goes in this app's launch folder instead.
+        let prompt_out = if trust_data_dir(&data, &run_dir) == data {
+            run_dir.join("memory-prompt.md")
+        } else {
+            launch_prompts_dir(&data).join(format!("{}-memory-prompt.md", uuid::Uuid::new_v4()))
+        };
+        let prompt_file = memory::compose(&plugin, &memory_dir, &folder, &prompt_out);
         let spec = launch::launch_spec(&launch::LaunchInput {
             role: "eagle-eye-resume".into(),
             prompt: format!("/dcv2:eagle-eye resume run={}", run_dir.display()),
@@ -682,5 +755,20 @@ mod tests {
         );
         assert!(checked_run_dir(dir.path(), dir.join("runs/r-1/../..").to_str().unwrap()).is_err());
         assert!(checked_run_dir(dir.path(), dir.join("runs").to_str().unwrap()).is_err());
+        assert_eq!(
+            trust_data_dir(dir.path(), &run.canonicalize().unwrap()),
+            dir.path()
+        );
+
+        // A dev-app run is accepted once adopted, and its trust records are
+        // its own data folder's (`<run>/../../run-trust`).
+        let dev = dir.join("dev");
+        let adopted = dev.join("runs/r-2");
+        std::fs::create_dir_all(&adopted).unwrap();
+        assert!(checked_run_dir(dir.path(), adopted.to_str().unwrap()).is_err());
+        folder::adopt_runs(dir.path(), std::slice::from_ref(&adopted)).unwrap();
+        let ok = checked_run_dir(dir.path(), adopted.to_str().unwrap()).unwrap();
+        assert_eq!(trust_data_dir(dir.path(), &ok), dev.canonicalize().unwrap());
+        assert!(checked_run_dir(dir.path(), dev.join("runs").to_str().unwrap()).is_err());
     }
 }

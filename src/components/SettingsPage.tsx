@@ -283,7 +283,7 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
         </div>
       </section>
 
-      <ClickUpTokens accounts={view.claude.accounts} />
+      <ClickUpTokens accounts={view.claude.accounts} autoPost={view.clickup?.autoPost ?? {}} />
 
       <section className="settings-section" aria-label="Terminal">
         <h2>Terminal</h2>

@@ -17,6 +17,26 @@ pub struct Repo {
     pub path: String,
     /// `null`: none known.
     pub check: Option<String>,
+    /// Worktree setup command (app setting); `null`: the plugin detects it
+    /// from the lockfile.
+    #[serde(default)]
+    pub setup: Option<String>,
+    /// Git-ignored files copied from the main checkout into run worktrees
+    /// (app setting, relative paths); empty by default.
+    #[serde(default)]
+    pub copy_files: Vec<String>,
+}
+
+impl Repo {
+    /// Fills `setup` / `copyFiles` from the app's per-repo settings (keyed
+    /// by the repo's real path).
+    pub fn with_setup(mut self, setup: Option<&crate::store::RepoSetup>) -> Self {
+        if let Some(s) = setup {
+            self.setup = s.setup.clone();
+            self.copy_files = s.copy_files.clone();
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -69,6 +89,8 @@ fn repo_entry(path: &Path) -> Repo {
         name,
         path: path.display().to_string(),
         check: detect_check(path),
+        setup: None,
+        copy_files: Vec::new(),
     }
 }
 

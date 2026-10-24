@@ -61,6 +61,27 @@ export type RunClickUp = {
   /** writeback.json's version as shown; posting with another is refused. */
   draftsVersion: string | null;
   writebackProblem: string | null;
+  /** Comments posted on their own after the ship approval (per-account setting). */
+  autoPost?: AutoPostView | null;
+};
+
+export type AutoPostResult = {
+  ticketId: string;
+  /** `posted`, `failed` (retry), `maybe` (confirm in the ticks), `skipped`, `blocked` (looks like a secret). */
+  result: string;
+  message: string;
+  url: string | null;
+  at: string;
+  /** The comment as posted. */
+  text?: string | null;
+};
+export type AutoPostView = {
+  enabled: boolean;
+  running: boolean;
+  record: { schema: number; writebackSha: string; at: string; results: AutoPostResult[] } | null;
+  problem: string | null;
+  /** A dev-app run used in place: only the app that owns it posts on its own. */
+  adopted?: boolean;
 };
 
 export type ChangedTicket = {
@@ -96,3 +117,7 @@ export const clickupPullTickets = (runDir: string, ids: string[]) =>
   invoke<{ pulled: string[]; updateFile: string }>("clickup_pull_tickets", { runDir, ids });
 export const clickupPostWriteback = (runDir: string, draftsVersion: string, requests: PostRequest[]) =>
   invoke<PostReply>("clickup_post_writeback", { runDir, draftsVersion, requests });
+export const clickupAutoPostRetry = (runDir: string, ticketId: string) =>
+  invoke<NonNullable<AutoPostView["record"]>>("clickup_auto_post_retry", { runDir, ticketId });
+export const clickupSetAutoPost = (accountId: string, on: boolean) =>
+  invoke<void>("clickup_set_auto_post", { accountId, on });

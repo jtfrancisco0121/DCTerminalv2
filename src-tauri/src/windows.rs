@@ -47,6 +47,9 @@ const PAGE_ITEMS: [(&str, &str, &str); 3] = [
 ];
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const SETTINGS_ITEM: &str = "settings";
+/// File › Import from dev app… (release builds only), sent to the page.
+#[cfg_attr(any(not(target_os = "macos"), debug_assertions), allow(dead_code))]
+const IMPORT_DEV_ITEM: &str = "import-dev";
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const REOPEN_WINDOW_ITEM: &str = "reopen-closed-window";
 
@@ -287,7 +290,18 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
             true,
             Some(CLOSE_WINDOW_ACCELERATOR),
         )?;
+        // A release build only: a debug build is the dev app itself.
+        #[cfg(not(debug_assertions))]
+        let import_dev = MenuItem::with_id(
+            app,
+            IMPORT_DEV_ITEM,
+            "Import from dev app…",
+            true,
+            None::<&str>,
+        )?;
         file_items.push(&separator);
+        #[cfg(not(debug_assertions))]
+        file_items.push(&import_dev);
         file_items.push(&new_window);
         file_items.push(&reopen_window);
         file_items.push(&close_window);
@@ -338,7 +352,10 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
                     let _ = window.close();
                 }
             }
-            id if id == SETTINGS_ITEM || PAGE_ITEMS.iter().any(|(item, _, _)| *item == id) => {
+            id if id == SETTINGS_ITEM
+                || id == IMPORT_DEV_ITEM
+                || PAGE_ITEMS.iter().any(|(item, _, _)| *item == id) =>
+            {
                 send_to_focused(app, id);
             }
             QUIT_ITEM => {
@@ -614,7 +631,7 @@ fn has_archived_windows(app: &AppHandle) -> bool {
 
 /// Enable File > Reopen Closed Window only while a closed window is kept.
 /// Takes the state lock: never call it while holding that lock.
-fn refresh_reopen_window_item(app: &AppHandle) {
+pub(crate) fn refresh_reopen_window_item(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     if let Some(item) = app.try_state::<ReopenWindowItem>() {
         let _ = item.0.set_enabled(has_archived_windows(app));

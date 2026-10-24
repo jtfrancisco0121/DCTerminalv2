@@ -44,6 +44,8 @@ tauri-plugin-single-instance = "2"
 ureq = { version = "~3.5", default-features = false, features = ["rustls"] }
 keyring = "4"
 sha2 = "0.10"
+# The ClickUp auto-post secret scan (a port of memory.sh's rules).
+regex = "1"
 
 # Already built through tao; used for `applicationShouldTerminate:` (src/macos_terminate.rs).
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -6,9 +6,11 @@ import {
   runOverview,
   startRun,
   type FolderRepos,
+  type ReviewMode,
   type RunOverview,
   type StartedRun,
 } from "../run/api";
+import { WorktreeSetup } from "./WorktreeSetup";
 import { stageText } from "../run/words";
 import { errorText } from "./InlineNotice";
 import { MemoryPanel } from "./MemoryPanel";
@@ -37,6 +39,25 @@ function reposText(found: FolderRepos | null): string {
   }
 }
 
+const REVIEW_KEY = "dcv2.reviewOnGitHub.";
+
+/** The last "Review on GitHub" choice of this window; on by default. */
+export function rememberedReviewOnGitHub(windowId: string): boolean {
+  try {
+    return localStorage.getItem(REVIEW_KEY + windowId) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function rememberReviewOnGitHub(windowId: string, on: boolean): void {
+  try {
+    localStorage.setItem(REVIEW_KEY + windowId, on ? "on" : "off");
+  } catch {
+    // No storage: the default (on) next time.
+  }
+}
+
 /**
  * New run: a folder, what to do, and Start Eagle-Eye. One role on its own
  * is one tile. Earlier runs can be resumed.
@@ -49,6 +70,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [tickets, setTickets] = useState<ClickUpStart | null>(null);
+  const [reviewOnGitHub, setReviewOnGitHub] = useState(() => rememberedReviewOnGitHub(windowId));
 
   useEffect(() => {
     runOverview().then(setOverview, (err: unknown) => setError(errorText(err)));
@@ -94,7 +116,8 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
     setError(null);
     try {
       const said = request.trim() || (eagleTickets ? "Do the ClickUp tickets below." : request);
-      onStarted(await startRun(windowId, folder.trim(), said, role, eagleTickets));
+      const mode: ReviewMode | null = role === "eagle-eye" ? (reviewOnGitHub ? "github" : "local") : null;
+      onStarted(await startRun(windowId, folder.trim(), said, role, eagleTickets, mode));
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -146,6 +169,9 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
               ))}
             </ul>
           )}
+          {found.repos.length > 0 && (
+            <WorktreeSetup key={found.repos.map((r) => r.path).join("|")} repos={found.repos} />
+          )}
         </div>
       )}
       <label className="field-label">
@@ -159,6 +185,22 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
         />
       </label>
       <ClickUpIntake windowId={windowId} onChange={setTickets} disabled={busy} />
+      <label className="check-label">
+        <input
+          type="checkbox"
+          checked={reviewOnGitHub}
+          onChange={(event) => {
+            setReviewOnGitHub(event.target.checked);
+            rememberReviewOnGitHub(windowId, event.target.checked);
+          }}
+        />
+        Review on GitHub (draft PRs)
+      </label>
+      <p className="hint">
+        {reviewOnGitHub
+          ? "After the first build each PR opens as a draft on GitHub, every review round is posted as a PR comment, and the drafts are marked ready at the end. Teammates can see them."
+          : "Reviews stay in the run folder; PRs open only at the end."}
+      </p>
       {error && (
         <p className="error" role="alert">
           {error}
@@ -202,6 +244,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
             {runs.map((run) => (
               <li key={run.runDir}>
                 <span className="run-list-title">{run.title ?? run.runId}</span>
+                {run.adopted && <span className="hint"> (from the dev app)</span>}
                 <span className="hint">
                   {" "}
                   — {stageText(run.stage)}

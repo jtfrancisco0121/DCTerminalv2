@@ -259,6 +259,93 @@ pub struct SettingsFile {
     pub ui: UiSettings,
     #[serde(default)]
     pub run: RunSettings,
+    /// ClickUp: per-account switches (auto-post after ship approval).
+    #[serde(default)]
+    pub clickup: ClickUpSettings,
+    /// Worktree setup per repo, keyed by the repo's real path (repos.json
+    /// `setup` / `copyFiles`). Missing: auto-detect, copy nothing.
+    #[serde(default)]
+    pub worktree_setup: std::collections::BTreeMap<String, RepoSetup>,
+}
+
+/// Per-account ClickUp settings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickUpSettings {
+    /// "Post ClickUp comments automatically after ship approval", per
+    /// account id. Missing: on.
+    #[serde(default)]
+    pub auto_post: std::collections::BTreeMap<String, bool>,
+}
+
+impl ClickUpSettings {
+    pub fn auto_post_for(&self, account_id: &str) -> bool {
+        self.auto_post.get(account_id).copied().unwrap_or(true)
+    }
+}
+
+/// One repo's worktree setup (repos.json `setup` and `copyFiles`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoSetup {
+    /// The setup command; `None`: the plugin detects it from the lockfile.
+    #[serde(default)]
+    pub setup: Option<String>,
+    /// Git-ignored files copied from the main checkout, relative paths.
+    #[serde(default)]
+    pub copy_files: Vec<String>,
+}
+
+pub const MAX_COPY_FILES: usize = 20;
+const MAX_SETUP_CHARS: usize = 400;
+
+/// A relative path inside the repo: no `..`, not absolute, no control
+/// characters, no `.git` component anywhere.
+pub fn valid_copy_path(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    !path.is_empty()
+        && path.len() <= 300
+        && !path.chars().any(char::is_control)
+        && !p.is_absolute()
+        && !path.starts_with('~')
+        && p.components().next().is_some()
+        && p.components()
+            .all(|c| matches!(c, std::path::Component::Normal(n) if n != ".git"))
+}
+
+/// Trimmed and checked; an empty setup and no files is the default.
+pub fn clean_repo_setup(next: RepoSetup) -> Result<RepoSetup, String> {
+    let setup = next
+        .setup
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(cmd) = &setup {
+        if cmd.contains(['\n', '\r', '\0']) || cmd.chars().count() > MAX_SETUP_CHARS {
+            return Err("The setup command must be one line (at most 400 characters).".into());
+        }
+    }
+    let mut files: Vec<String> = Vec::new();
+    for raw in next.copy_files {
+        let path = raw.trim().trim_start_matches("./").to_string();
+        if path.is_empty() {
+            continue;
+        }
+        if !valid_copy_path(&path) {
+            return Err(format!(
+                "{path}: a file to copy must be a relative path inside the repo."
+            ));
+        }
+        if !files.contains(&path) {
+            files.push(path);
+        }
+    }
+    if files.len() > MAX_COPY_FILES {
+        return Err(format!("At most {MAX_COPY_FILES} files to copy."));
+    }
+    Ok(RepoSetup {
+        setup,
+        copy_files: files,
+    })
 }
 
 /// Eagle-Eye launch settings (docs/launch.md).
@@ -310,6 +397,8 @@ impl Default for SettingsFile {
             claude: ClaudeSettings::default(),
             ui: UiSettings::default(),
             run: RunSettings::default(),
+            clickup: ClickUpSettings::default(),
+            worktree_setup: Default::default(),
         }
     }
 }
@@ -385,6 +474,44 @@ impl SettingsStore {
         self.save()
     }
 
+    pub fn clickup(&self) -> &ClickUpSettings {
+        &self.data.clickup
+    }
+
+    pub fn set_auto_post(&mut self, account_id: &str, on: bool) -> Result<(), String> {
+        if !account_exists(&self.data.claude, account_id) {
+            return Err("No Claude account with that id.".into());
+        }
+        self.data
+            .clickup
+            .auto_post
+            .insert(account_id.to_string(), on);
+        self.save()
+    }
+
+    /// The setup of the repo at `repo` (its real path), if any.
+    #[cfg(test)]
+    pub fn repo_setup(&self, repo: &str) -> Option<&RepoSetup> {
+        self.data.worktree_setup.get(repo)
+    }
+
+    /// Saves (or, when empty, forgets) the setup of the repo at `repo`.
+    pub fn set_repo_setup(&mut self, repo: &str, next: RepoSetup) -> Result<RepoSetup, String> {
+        if repo.trim().is_empty() || repo.chars().any(char::is_control) {
+            return Err("not a repo path".into());
+        }
+        let clean = clean_repo_setup(next)?;
+        if clean == RepoSetup::default() {
+            self.data.worktree_setup.remove(repo);
+        } else {
+            self.data
+                .worktree_setup
+                .insert(repo.to_string(), clean.clone());
+        }
+        self.save()?;
+        Ok(clean)
+    }
+
     /// Unknown themes fall back to GitHub Dark.
     pub fn set_ui(&mut self, next: UiSettings) -> Result<(), String> {
         let theme = if UI_THEMES.contains(&next.theme.as_str()) {
@@ -401,6 +528,62 @@ impl SettingsStore {
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
+
+    #[test]
+    fn worktree_setup_is_checked_and_auto_post_defaults_on() {
+        let dir = TempDir::new("settings_setup");
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        assert!(store.clickup().auto_post_for(DEFAULT_ACCOUNT_ID));
+        store.set_auto_post(DEFAULT_ACCOUNT_ID, false).unwrap();
+        assert!(!store.clickup().auto_post_for(DEFAULT_ACCOUNT_ID));
+        assert!(store.set_auto_post("nope", false).is_err());
+        for bad in [
+            "/etc/passwd",
+            "../x",
+            "a/../../b",
+            ".git/config",
+            "sub/.git/hooks/x",
+            "~/x",
+            "a\nb",
+        ] {
+            let next = RepoSetup {
+                setup: None,
+                copy_files: vec![bad.into()],
+            };
+            assert!(store.set_repo_setup("/w/a", next).is_err(), "{bad}");
+        }
+        let saved = store
+            .set_repo_setup(
+                "/w/a",
+                RepoSetup {
+                    setup: Some("  pnpm i  ".into()),
+                    copy_files: vec![
+                        "./.env".into(),
+                        ".env".into(),
+                        " ".into(),
+                        "cfg/.env.local".into(),
+                    ],
+                },
+            )
+            .unwrap();
+        assert_eq!(saved.setup.as_deref(), Some("pnpm i"));
+        assert_eq!(saved.copy_files, [".env", "cfg/.env.local"]);
+        assert!(store
+            .set_repo_setup(
+                "/w/a",
+                RepoSetup {
+                    setup: Some("a\nb".into()),
+                    copy_files: vec![]
+                }
+            )
+            .is_err());
+        let again = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(again.repo_setup("/w/a"), Some(&saved));
+        assert!(!again.clickup().auto_post_for(DEFAULT_ACCOUNT_ID));
+        let mut again = again;
+        again.set_repo_setup("/w/a", RepoSetup::default()).unwrap();
+        assert_eq!(again.repo_setup("/w/a"), None);
+    }
 
     fn account(id: &str, name: &str, dir: Option<&str>) -> ClaudeAccount {
         ClaudeAccount {

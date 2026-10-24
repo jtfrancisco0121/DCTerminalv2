@@ -38,6 +38,7 @@ import { reportError, setErrorNotifier } from "./uiErrors";
 import { statusLimit } from "./usage/limits";
 import { keyAction, pageAction, type PageAction } from "./pageActions";
 import { ClaudeVersionBanner } from "./components/ClaudeVersionBanner";
+import { ImportDevDialog, useDevImport } from "./components/ImportDevDialog";
 import { observeTabs } from "./run/observe";
 import "./App.css";
 
@@ -72,6 +73,9 @@ function App() {
   const [dialog, setDialog] = useState<"new-tab" | "new-window" | "pick-account" | "settings" | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
   const [lastFolder, setLastFolder] = useState("");
+  const devImport = useDevImport(windowId);
+  const devImportRef = useRef(devImport);
+  devImportRef.current = devImport;
   // The new-tab screen shows the plain tab form instead of New run.
   const [plainTab, setPlainTab] = useState(false);
   // Re-render when a terminal starts or exits (the tab bar dims exited tabs).
@@ -253,6 +257,10 @@ function App() {
       keep(win.listen<string>("focus-tab", () => void reloadRef.current()));
       keep(
         win.listen<string>("menu", (event) => {
+          if (event.payload === "import-dev") {
+            devImportRef.current.open();
+            return;
+          }
           const action = pageAction(event.payload);
           if (action) runRef.current(action);
         }),
@@ -307,6 +315,7 @@ function App() {
       )}
       <section className="workspace-body">
         <ClaudeVersionBanner windowId={windowId} />
+        {devImport.status && <ImportDevDialog status={devImport.status} onClose={devImport.close} />}
         {accountMissing && !blocked && (
           <InlineNotice
             tone="warning"
