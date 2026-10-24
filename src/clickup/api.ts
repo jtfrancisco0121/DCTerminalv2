@@ -72,12 +72,16 @@ export type AutoPostResult = {
   message: string;
   url: string | null;
   at: string;
+  /** The comment as posted. */
+  text?: string | null;
 };
 export type AutoPostView = {
   enabled: boolean;
   running: boolean;
   record: { schema: number; writebackSha: string; at: string; results: AutoPostResult[] } | null;
   problem: string | null;
+  /** A dev-app run used in place: only the app that owns it posts on its own. */
+  adopted?: boolean;
 };
 
 export type ChangedTicket = {

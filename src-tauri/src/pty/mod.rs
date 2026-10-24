@@ -505,6 +505,11 @@ fn spawn_spec(
                 &current,
             );
             let start = claude_start(input.resume, resumable)?;
+            // An adopted (dev-app) run's conversation: never resumed while
+            // another process (the dev app) still runs it.
+            if start.resumed && adopted_run_tab(app, &tab) {
+                crate::import_dev::refuse_live_session(&start.session_id)?;
+            }
             let kind = if start.resumed {
                 TerminalKind::Resume {
                     session_id: start.session_id.clone(),
@@ -548,6 +553,16 @@ fn spawn_spec(
         rows: input.rows,
     };
     Ok((tab, spec))
+}
+
+/// The tab's launch names a run folder outside this app's own runs (adopted).
+fn adopted_run_tab(app: &AppHandle, tab: &crate::store::TabRecord) -> bool {
+    let Some(run) = tab.launch.as_ref().and_then(|l| l.run_dir.as_deref()) else {
+        return false;
+    };
+    let data = crate::data_dir::app_data_dir(app).path;
+    let run = crate::run::git::canonical(std::path::Path::new(run));
+    crate::run::trust_data_dir(&data, &run) != data
 }
 
 /// The session the Claude tab `tab_id` could resume now, if any: its saved

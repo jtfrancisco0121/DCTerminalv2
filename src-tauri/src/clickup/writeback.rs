@@ -194,6 +194,18 @@ pub fn read_drafts(run_dir: &Path) -> Result<Option<(Drafts, String)>, String> {
 /// Where a send saves the posted record, so tests can count saves and fail one.
 pub trait PostedStore {
     fn save(&mut self, posted: &Posted) -> Result<(), String>;
+
+    /// Saves one ticket's entry. A store shared with other processes
+    /// merges it into the record on disk instead of overwriting others'.
+    fn save_ticket(&mut self, posted: &Posted, _ticket_id: &str) -> Result<(), String> {
+        self.save(posted)
+    }
+
+    /// The record as it is on disk now (before each ticket), if the store
+    /// can tell; `None` keeps the one in hand.
+    fn reload(&mut self) -> Result<Option<Posted>, String> {
+        Ok(None)
+    }
 }
 
 /// An error after which ClickUp may still have acted on the call.
@@ -279,8 +291,8 @@ pub fn post(
     let mut lists = HashMap::new();
     posted.schema = 1;
     macro_rules! save {
-        () => {
-            if let Err(err) = store.save(posted) {
+        ($id:expr) => {
+            if let Err(err) = store.save_ticket(posted, $id) {
                 return Err((out, err));
             }
         };
@@ -289,6 +301,15 @@ pub fn post(
         let id = request.ticket_id.clone();
         if !seen.insert(id.clone()) {
             continue;
+        }
+        // Another window or app may have posted since: read it again.
+        match store.reload() {
+            Ok(Some(fresh)) => {
+                *posted = fresh;
+                posted.schema = 1;
+            }
+            Ok(None) => {}
+            Err(err) => return Err((out, err)),
         }
         let outcome = |result: &str, message: String| PostOutcome {
             ticket_id: id.clone(),
@@ -347,7 +368,7 @@ pub fn post(
                         failed.push(format!("Status not set: {message}"));
                     }
                 }
-                save!();
+                save!(&id);
             }
         }
         if let Some(text) = request.comment.as_deref() {
@@ -367,7 +388,7 @@ pub fn post(
                     value: text.into(),
                     error: None,
                 });
-                save!();
+                save!(&id);
                 let result = client.post_comment(&task, text);
                 let entry = posted.drafts.entry(id.clone()).or_default();
                 let at = now();
@@ -397,7 +418,7 @@ pub fn post(
                         failed.push(format!("Comment not posted: {message}"));
                     }
                 }
-                save!();
+                save!(&id);
             }
         }
         let mut message: Vec<String> = Vec::new();

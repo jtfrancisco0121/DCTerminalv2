@@ -179,7 +179,7 @@ describe("comments posted automatically", () => {
           writebackSha: "v1",
           at: "t",
           results: [
-            { ticketId: "86a1", result: "posted", message: "comment posted", url: "https://app.clickup.com/t/86a1", at: "t" },
+            { ticketId: "86a1", result: "posted", message: "comment posted", url: "https://app.clickup.com/t/86a1", at: "t", text: "Done: S1" },
             { ticketId: "86a2", result: "failed", message: "Token invalid", url: "https://app.clickup.com/t/86a2", at: "t" },
             { ticketId: "86a3", result: "blocked", message: "blocked: looks like a secret (a JWT).", url: null, at: "t" },
           ],
@@ -191,6 +191,7 @@ describe("comments posted automatically", () => {
     const list = await screen.findByTestId("autopost");
     expect(within(list).getByTestId("autopost-86a1").textContent).toContain("QA-86a1 posted");
     expect(within(list).getByTestId("autopost-86a1").textContent).toContain("open ticket");
+    expect(within(list).getByTestId("autopost-86a1").querySelector("details pre")?.textContent).toBe("Done: S1");
     const failed = within(list).getByTestId("autopost-86a2");
     expect(failed.textContent).toContain("failed");
     expect(within(list).getByTestId("autopost-86a3").textContent).toContain("blocked: looks like a secret");

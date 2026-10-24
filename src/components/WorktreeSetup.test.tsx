@@ -23,6 +23,6 @@ describe("start screen choices", () => {
   it("says what the dev import brought in", () => {
     expect(
       summaryText({ windows: ["win-2"], tabs: 1, closedTabs: 2, runs: 1, accountsAdded: ["Work"], memoryCopied: true, notes: [] }),
-    ).toBe("Imported 1 tab in 1 window, 2 recently closed, 1 run adopted in place, memory copied, accounts added: Work.");
+    ).toBe("Imported 1 tab in 1 window, 2 recently closed, 1 run adopted in place, memory copied, accounts added: Work. Reopen the windows from File › Reopen Closed Window.");
   });
 });

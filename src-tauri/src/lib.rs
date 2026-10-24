@@ -51,6 +51,9 @@ const STARTUP_ENV_STEPS: [(&str, fn()); 2] = [
     ("apply_login_path", shell_env::apply_login_path),
 ];
 
+/// `<app data>/app.lock`, flock'd for the app's whole life.
+static APP_LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Before anything else, on the main thread with no other thread yet.
@@ -76,6 +79,10 @@ pub fn run() {
                 eprintln!("DCTerminalv2: {warning}");
             }
             let data_dir = resolved.path;
+            // Held until exit: another build can tell this one is running.
+            if let Some(lock) = import_dev::hold_app_lock(&data_dir) {
+                let _ = APP_LOCK.set(lock);
+            }
             let state_store = StateStore::load_or_default(app.handle())?;
             let settings_store = SettingsStore::open(&data_dir)?;
             app.manage(Mutex::new(state_store));

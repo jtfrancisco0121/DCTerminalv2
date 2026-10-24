@@ -355,6 +355,9 @@ export function AutoPostList({
   onRetry: (ticketId: string) => void;
   onOpen: (url: string) => void;
 }) {
+  if (view.adopted && !view.record) {
+    return <p className="hint">This run came from the dev app: its comments are not posted automatically here. Tick them below.</p>;
+  }
   if (!view.enabled && !view.record) {
     return <p className="hint">Comments are not posted automatically for this account (Settings › ClickUp): tick them below.</p>;
   }
@@ -378,6 +381,12 @@ export function AutoPostList({
                   <button type="button" className="link-button" onClick={() => onOpen(url)}>
                     open ticket
                   </button>
+                )}
+                {r.text && (
+                  <details className="clickup-autopost-text">
+                    <summary>comment</summary>
+                    <pre>{r.text}</pre>
+                  </details>
                 )}
                 {r.result === "failed" && (
                   <button type="button" className="link-button" onClick={() => onRetry(r.ticketId)}>

@@ -37,6 +37,9 @@ pub struct AutoPostResult {
     pub url: Option<String>,
     #[serde(default)]
     pub at: String,
+    /// The comment as posted (shown collapsed in the panel).
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 /// `run-trust/<runId>/autopost.json` (signed).
@@ -98,6 +101,16 @@ fn refusal(text: &str, ticket: Option<&SnapshotTask>) -> Option<(&'static str, S
     None
 }
 
+/// The comment text, when the signed record says it was posted.
+fn posted_text(posted: &writeback::Posted, id: &str) -> Option<String> {
+    posted
+        .drafts
+        .get(id)
+        .and_then(|d| d.comment.as_ref())
+        .filter(|p| p.result == "posted")
+        .map(|p| p.value.clone())
+}
+
 /// What the signed posted record says about a ticket's comment now.
 fn result_of(
     posted: &writeback::Posted,
@@ -134,6 +147,7 @@ pub fn auto_post(
         return Err("The ship approval is not in status.json.".into());
     }
     let run = trust::load(key, data, run_dir)?.ok_or("This run has no app-side ticket record.")?;
+    let _lock = trust::lock_posts(data, run_dir)?;
     let (drafts, version) =
         writeback::read_drafts(run_dir)?.ok_or("This run has no writeback.json yet.")?;
     let tickets: HashMap<String, SnapshotTask> = run
@@ -144,12 +158,25 @@ pub fn auto_post(
         .collect();
     let mut results: Vec<AutoPostResult> = Vec::new();
     let mut requests: Vec<PostRequest> = Vec::new();
+    let mut posted = trust::read_posted(key, data, run_dir)?;
     for draft in &drafts.drafts {
         let Some(text) = draft.comment.as_deref().filter(|t| !t.trim().is_empty()) else {
             continue;
         };
         let ticket = tickets.get(&draft.ticket.id);
         let url = ticket.map(|t| t.url.clone());
+        // Already posted (ticked by hand, or an earlier version): say so.
+        if let Some(done) = posted_text(&posted, &draft.ticket.id) {
+            results.push(AutoPostResult {
+                ticket_id: draft.ticket.id.clone(),
+                result: "posted".into(),
+                message: "Comment already posted.".into(),
+                url,
+                at: now(),
+                text: Some(done),
+            });
+            continue;
+        }
         if let Some((result, message)) = refusal(text, ticket) {
             results.push(AutoPostResult {
                 ticket_id: draft.ticket.id.clone(),
@@ -157,6 +184,7 @@ pub fn auto_post(
                 message,
                 url,
                 at: now(),
+                text: None,
             });
             continue;
         }
@@ -167,7 +195,6 @@ pub fn auto_post(
             confirm_resend: false,
         });
     }
-    let mut posted = trust::read_posted(key, data, run_dir)?;
     let mut store = trust::TrustStore { key, data, run_dir };
     let outcomes = writeback::post(
         client,
@@ -186,6 +213,7 @@ pub fn auto_post(
         let (result, message) = result_of(&posted, &request.ticket_id, outcome);
         results.push(AutoPostResult {
             url: tickets.get(&request.ticket_id).map(|t| t.url.clone()),
+            text: posted_text(&posted, &request.ticket_id),
             ticket_id: request.ticket_id.clone(),
             result,
             message,
@@ -212,6 +240,7 @@ pub fn retry(
     now: &dyn Fn() -> String,
 ) -> Result<AutoPostRecord, String> {
     let run = trust::load(key, data, run_dir)?.ok_or("This run has no app-side ticket record.")?;
+    let _lock = trust::lock_posts(data, run_dir)?;
     let (drafts, version) =
         writeback::read_drafts(run_dir)?.ok_or("This run has no writeback.json yet.")?;
     let mut record =
@@ -261,6 +290,7 @@ pub fn retry(
         let (result, message) = result_of(&posted, ticket_id, outcomes.first());
         record.results[at].result = result;
         record.results[at].message = message;
+        record.results[at].text = posted_text(&posted, ticket_id);
     }
     record.results[at].at = now();
     trust::save_autopost(key, data, run_dir, &record)?;
@@ -361,6 +391,7 @@ mod tests {
         };
         assert_eq!(by("86a1").result, "posted");
         assert!(by("86a1").url.is_some());
+        assert_eq!(by("86a1").text.as_deref(), Some("Done: S1"));
         assert_eq!(by("86a2").result, "blocked");
         assert!(by("86a2").message.starts_with(BLOCKED_SECRET));
         assert!(
@@ -433,6 +464,37 @@ mod tests {
                 .result,
             "posted"
         );
+        // Another process posting for this run: refused, nothing sent.
+        let held = trust::lock_posts(&data, &run).unwrap();
+        assert_eq!(
+            retry(&client, &k(), &data, &run, "86a1", &|| "t".into()).unwrap_err(),
+            trust::POST_BUSY
+        );
+        drop(held);
+        // A comment posted by hand is "posted", even if it would be blocked now.
+        let mut posted = trust::read_posted(&k(), &data, &run).unwrap();
+        posted.drafts.entry("86a2".into()).or_default().comment = Some(writeback::PartResult {
+            result: "posted".into(),
+            at: "t".into(),
+            value: "by hand".into(),
+            error: None,
+        });
+        use crate::clickup::writeback::PostedStore;
+        trust::TrustStore {
+            key: &k(),
+            data: &data,
+            run_dir: &run,
+        }
+        .save(&posted)
+        .unwrap();
+        std::fs::write(
+            run.join("writeback.json"),
+            json!({"schema": 1, "drafts": [{"ticket": {"id": "86a2"}, "comment": "DB_PASSWORD=s3cr3tPass!"}]}).to_string(),
+        )
+        .unwrap();
+        let record = auto_post(&client, &k(), &data, &run, &|| "t".into()).unwrap();
+        assert_eq!(record.results[0].result, "posted");
+        assert_eq!(record.results[0].text.as_deref(), Some("by hand"));
         // A forged record is refused, never read as "not done yet".
         let path = trust::trust_dir(&data, &run).unwrap().join(AUTOPOST_FILE);
         let text = std::fs::read_to_string(&path).unwrap();

@@ -631,7 +631,7 @@ fn has_archived_windows(app: &AppHandle) -> bool {
 
 /// Enable File > Reopen Closed Window only while a closed window is kept.
 /// Takes the state lock: never call it while holding that lock.
-fn refresh_reopen_window_item(app: &AppHandle) {
+pub(crate) fn refresh_reopen_window_item(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     if let Some(item) = app.try_state::<ReopenWindowItem>() {
         let _ = item.0.set_enabled(has_archived_windows(app));

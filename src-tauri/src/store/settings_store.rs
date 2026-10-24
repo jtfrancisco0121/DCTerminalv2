@@ -300,7 +300,7 @@ pub const MAX_COPY_FILES: usize = 20;
 const MAX_SETUP_CHARS: usize = 400;
 
 /// A relative path inside the repo: no `..`, not absolute, no control
-/// characters, not inside `.git`.
+/// characters, no `.git` component anywhere.
 pub fn valid_copy_path(path: &str) -> bool {
     let p = std::path::Path::new(path);
     !path.is_empty()
@@ -308,11 +308,9 @@ pub fn valid_copy_path(path: &str) -> bool {
         && !path.chars().any(char::is_control)
         && !p.is_absolute()
         && !path.starts_with('~')
+        && p.components().next().is_some()
         && p.components()
-            .all(|c| matches!(c, std::path::Component::Normal(_)))
-        && p.components()
-            .next()
-            .is_some_and(|c| c.as_os_str() != ".git")
+            .all(|c| matches!(c, std::path::Component::Normal(n) if n != ".git"))
 }
 
 /// Trimmed and checked; an empty setup and no files is the default.
@@ -544,6 +542,7 @@ mod tests {
             "../x",
             "a/../../b",
             ".git/config",
+            "sub/.git/hooks/x",
             "~/x",
             "a\nb",
         ] {

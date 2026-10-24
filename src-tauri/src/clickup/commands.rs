@@ -233,6 +233,9 @@ pub struct AutoPostView {
     pub running: bool,
     pub record: Option<autopost::AutoPostRecord>,
     pub problem: Option<String>,
+    /// A dev-app run used in place: never auto-posted here (the app that
+    /// owns its data folder does that); ticked posts still work.
+    pub adopted: bool,
 }
 
 const UNTRUSTED: &str = "This run's tickets.json was not written by this app's Start, so the app checks and posts nothing for it.";
@@ -332,13 +335,15 @@ pub async fn clickup_run_state(app: AppHandle, run_dir: String) -> Result<RunCli
     blocking(move || {
         let data = data_dir(&app);
         let dir = checked_run_dir(&data, &run_dir)?;
+        let own = data.clone();
         // An adopted run's records are its own data folder's run-trust.
         let data = crate::run::trust_data_dir(&data, &dir);
         let key = trust::install_key();
         let mut view = run_clickup(&key, &data, &dir);
         if autopost::may_be_due(&dir) {
             if let Ok(key) = &key {
-                view.auto_post = Some(auto_post_view(&app, key, &data, &dir));
+                let adopted = data != own;
+                view.auto_post = Some(auto_post_view(&app, key, &data, &dir, adopted));
             }
         }
         Ok(view)
@@ -355,8 +360,17 @@ fn auto_post_on(app: &AppHandle, account_id: &str) -> bool {
 }
 
 /// The auto-post part of the panel; starts the post when it is due.
-fn auto_post_view(app: &AppHandle, key: &trust::Key, data: &Path, dir: &Path) -> AutoPostView {
-    let mut view = AutoPostView::default();
+fn auto_post_view(
+    app: &AppHandle,
+    key: &trust::Key,
+    data: &Path,
+    dir: &Path,
+    adopted: bool,
+) -> AutoPostView {
+    let mut view = AutoPostView {
+        adopted,
+        ..AutoPostView::default()
+    };
     let run = match trust::load(key, data, dir) {
         Ok(Some(run)) => run,
         Ok(None) => return view,
@@ -365,7 +379,8 @@ fn auto_post_view(app: &AppHandle, key: &trust::Key, data: &Path, dir: &Path) ->
             return view;
         }
     };
-    view.enabled = auto_post_on(app, &run.account_id);
+    // Only the app that owns the run's data folder posts on its own.
+    view.enabled = !adopted && auto_post_on(app, &run.account_id);
     match trust::read_autopost(key, data, dir) {
         Ok(record) => view.record = record,
         Err(problem) => view.problem = Some(problem),
@@ -471,6 +486,9 @@ pub fn spawn_auto_post_sweep(app: &AppHandle) {
                 break;
             };
             let tdata = crate::run::trust_data_dir(&data, &dir);
+            if tdata != data {
+                continue; // adopted: the owning app posts
+            }
             if let Ok(Some(t)) = trust::load(&key, &tdata, &dir) {
                 if auto_post_on(&app, &t.account_id)
                     && matches!(autopost::due(&key, &tdata, &dir), Ok(Some(_)))
@@ -571,6 +589,8 @@ pub fn post_checked(
     requests: &[PostRequest],
 ) -> Result<PostReply, String> {
     let run = trusted(key, data, dir)?;
+    // One post per run across processes (the dev and the built app).
+    let _lock = trust::lock_posts(data, dir)?;
     let (drafts, version) =
         writeback::read_drafts(dir)?.ok_or("This run has no writeback.json yet.")?;
     if version != drafts_version {

@@ -243,12 +243,20 @@ pub fn import(
         accounts.insert(account.id.clone(), id);
     }
     // A dev window that names no account used the first one.
+    // A dev window that names no known account used the first one; a
+    // window whose own account was not brought over is skipped.
     let first_dev = dev_settings.claude.accounts.first().map(|a| a.id.clone());
+    let dev_ids: HashSet<&str> = dev_settings
+        .claude
+        .accounts
+        .iter()
+        .map(|a| a.id.as_str())
+        .collect();
     let account_for = |id: &str| {
-        accounts
-            .get(id)
-            .or_else(|| first_dev.as_ref().and_then(|f| accounts.get(f)))
-            .cloned()
+        if dev_ids.contains(id) {
+            return accounts.get(id).cloned();
+        }
+        first_dev.as_ref().and_then(|f| accounts.get(f)).cloned()
     };
 
     // Tabs already here (an earlier import) are not added twice.
@@ -413,6 +421,111 @@ pub fn import(
     Ok(summary)
 }
 
+// ---- Is the dev app running? ---------------------------------------------------------------
+
+/// `<app data>/app.lock`: flock'd for the app's whole life (pid inside), so
+/// another build can tell this one is running.
+pub const APP_LOCK: &str = "app.lock";
+/// A session log written this recently counts as live.
+pub const LIVE_WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
+pub const QUIT_DEV_FIRST: &str = "Quit the dev app first";
+
+/// Takes this app's lock at startup; keep the file open until exit.
+pub fn hold_app_lock(data: &Path) -> Option<std::fs::File> {
+    use std::io::Write;
+    std::fs::create_dir_all(data).ok()?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(data.join(APP_LOCK))
+        .ok()?;
+    file.try_lock().ok()?;
+    let _ = file.set_len(0);
+    let _ = writeln!(file, "{}", std::process::id());
+    Some(file)
+}
+
+/// Another process holds `<dir>/app.lock`. Opened read-only: nothing in
+/// `dir` is changed.
+pub fn lock_held(dir: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(dir.join(APP_LOCK)) else {
+        return false;
+    };
+    matches!(
+        file.try_lock_shared(),
+        Err(std::fs::TryLockError::WouldBlock)
+    )
+}
+
+/// The command lines of every process (`ps`), or empty when ps fails.
+pub fn process_lines() -> String {
+    std::process::Command::new("ps")
+        .args(["-axww", "-o", "command="])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// A `claude` process runs session `id` (`--resume <id>` / `--session-id <id>`).
+pub fn session_in_use(ps: &str, id: &str) -> bool {
+    let id = id.trim();
+    !id.is_empty()
+        && ps.lines().any(|line| {
+            line.contains("claude")
+                && line
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .windows(2)
+                    .any(|w| (w[0] == "--resume" || w[0] == "--session-id") && w[1] == id)
+        })
+}
+
+/// Why the dev app looks live, if it does: its app lock is held, or a tab's
+/// session log was written in the last 2 min, or a `claude` runs its session.
+pub fn dev_live_reason(dev: &Path, ps: &str, now: std::time::SystemTime) -> Option<String> {
+    if lock_held(dev) {
+        return Some(format!("{QUIT_DEV_FIRST}: it is running."));
+    }
+    let state: AppStateFile = read_json(&dev.join("state.json")).ok().flatten()?;
+    for tab in state.tabs.iter().chain(state.closed_tabs.iter()) {
+        let Some(id) = tab.claude_session_id.as_deref() else {
+            continue;
+        };
+        if session_in_use(ps, id) {
+            return Some(format!(
+                "{QUIT_DEV_FIRST}: a Claude session of tab \"{}\" is still running.",
+                tab.label
+            ));
+        }
+        let fresh = tab
+            .claude_config_dir
+            .as_deref()
+            .and_then(|c| crate::claude_session_log::find_session_log(Path::new(c), id))
+            .and_then(|log| std::fs::metadata(log).and_then(|m| m.modified()).ok())
+            .and_then(|at| now.duration_since(at).ok())
+            .is_some_and(|age| age < LIVE_WINDOW);
+        if fresh {
+            return Some(format!(
+                "{QUIT_DEV_FIRST}: tab \"{}\" wrote to its conversation in the last 2 minutes.",
+                tab.label
+            ));
+        }
+    }
+    None
+}
+
+/// Before resuming an adopted run's tab: refused while another process runs
+/// that session (the dev app still has it open).
+pub fn refuse_live_session(session_id: &str) -> Result<(), String> {
+    if session_in_use(&process_lines(), session_id) {
+        return Err("Another Claude process is using this conversation (is the dev app still running it?). Quit it first, then reopen the tab.".into());
+    }
+    Ok(())
+}
+
 // ---- Commands ------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize)]
@@ -453,8 +566,9 @@ pub fn dev_import_dismiss(app: tauri::AppHandle) -> Result<(), String> {
     write_record(&data, &record)
 }
 
-/// Imports the dev app's tabs, windows, runs and memory, then reopens the
-/// imported windows.
+/// Imports the dev app's tabs, windows, runs and memory. The windows come
+/// in as closed windows (File › Reopen Closed Window); nothing reopens on
+/// its own. Refused while the dev app looks live.
 #[tauri::command]
 pub async fn import_from_dev_app(app: tauri::AppHandle) -> Result<ImportSummary, String> {
     use std::sync::Mutex;
@@ -467,6 +581,10 @@ pub async fn import_from_dev_app(app: tauri::AppHandle) -> Result<ImportSummary,
         let dev = dev_dir_for(&data);
         if !available(&dev) {
             return Err(format!("No dev app data at {}.", dev.display()));
+        }
+        if let Some(reason) = dev_live_reason(&dev, &process_lines(), std::time::SystemTime::now())
+        {
+            return Err(reason);
         }
         let plugin = crate::run::plugin_dir_for(&app)
             .ok_or("The dcv2 plugin folder was not found (reinstall the app).")?;
@@ -486,29 +604,35 @@ pub async fn import_from_dev_app(app: tauri::AppHandle) -> Result<ImportSummary,
             let settings = settings.lock().map_err(|e| e.to_string())?;
             settings.claude().clone()
         };
+        let before = {
+            let state = app.state::<Mutex<crate::store::StateStore>>();
+            let state = state.lock().map_err(|e| e.to_string())?;
+            state.data.clone()
+        };
         let home = crate::provider::claude_config::home_dir();
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        let summary = {
-            let state = app.state::<Mutex<crate::store::StateStore>>();
-            let mut state = state.lock().map_err(|e| e.to_string())?;
-            let mut data_copy = state.data.clone();
-            let summary = import(
-                &dev,
-                &data,
-                &mut data_copy,
-                &mut claude,
-                home.as_deref(),
-                &re,
-                &now,
-            )?;
-            state.data = data_copy;
-            state.save()?;
-            summary
-        };
+        // No lock held while this runs (memory.sh compose is slow).
+        let mut after = before.clone();
+        let summary = import(
+            &dev,
+            &data,
+            &mut after,
+            &mut claude,
+            home.as_deref(),
+            &re,
+            &now,
+        )?;
+        // Settings first: the imported windows name its accounts.
         {
             let settings = app.state::<Mutex<crate::store::SettingsStore>>();
             let mut settings = settings.lock().map_err(|e| e.to_string())?;
             settings.set_claude(claude)?;
+        }
+        {
+            let state = app.state::<Mutex<crate::store::StateStore>>();
+            let mut state = state.lock().map_err(|e| e.to_string())?;
+            apply_delta(&before, &after, &summary, &mut state.data)?;
+            state.save()?;
         }
         write_record(
             &data,
@@ -517,17 +641,59 @@ pub async fn import_from_dev_app(app: tauri::AppHandle) -> Result<ImportSummary,
                 imported_at: Some(now),
             },
         )?;
-        for _ in &summary.windows {
-            if let Err(err) = crate::windows::reopen_last_closed_window(&app) {
-                eprintln!("DCTerminalv2: reopen imported window: {err}");
-                break;
-            }
-        }
-        crate::windows::retitle_open_windows(&app);
+        crate::windows::refresh_reopen_window_item(&app);
         Ok(summary)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Adds what the import added to `before` (its windows and closed tabs) to
+/// the state as it is now, which may have moved on meanwhile.
+pub fn apply_delta(
+    before: &AppStateFile,
+    after: &AppStateFile,
+    summary: &ImportSummary,
+    now: &mut AppStateFile,
+) -> Result<(), String> {
+    let old_tabs: HashSet<&String> = before
+        .tabs
+        .iter()
+        .chain(before.closed_tabs.iter())
+        .map(|t| &t.id)
+        .collect();
+    let windows: Vec<&ArchivedWindow> = after
+        .archived_windows
+        .iter()
+        .filter(|a| summary.windows.contains(&a.window.id))
+        .collect();
+    let tabs: Vec<&TabRecord> = after
+        .closed_tabs
+        .iter()
+        .filter(|t| !old_tabs.contains(&t.id))
+        .collect();
+    let clash = windows.iter().any(|a| {
+        now.windows.iter().any(|w| w.id == a.window.id)
+            || now
+                .archived_windows
+                .iter()
+                .any(|w| w.window.id == a.window.id)
+    }) || tabs.iter().any(|t| {
+        now.tabs
+            .iter()
+            .chain(now.closed_tabs.iter())
+            .any(|n| n.id == t.id)
+    });
+    if clash {
+        return Err("Windows or tabs changed during the import. Import again.".into());
+    }
+    for (at, window) in windows.into_iter().enumerate() {
+        now.archived_windows.insert(at, window.clone());
+    }
+    for (at, tab) in tabs.into_iter().enumerate() {
+        now.closed_tabs.insert(at, tab.clone());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -860,6 +1026,103 @@ mod tests {
         assert!(again.windows.is_empty() && again.accounts_added.is_empty());
         assert!(!again.memory_copied);
         assert_eq!(snapshot(&dev), before);
+    }
+
+    #[test]
+    fn a_live_dev_app_is_detected_and_nothing_in_it_changes() {
+        let root = TempDir::new("import_live");
+        let (dev, _run, config, _ws) = fixture(root.path());
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(600);
+        // Nothing live: logs old (as seen 10 min later), no process, no lock.
+        assert_eq!(dev_live_reason(&dev, "", later), None);
+        // The session log was just written.
+        let fresh = dev_live_reason(&dev, "", std::time::SystemTime::now()).unwrap();
+        assert!(fresh.starts_with(QUIT_DEV_FIRST), "{fresh}");
+        // A claude process runs that session.
+        let ps = format!("/usr/bin/zsh\nnode /opt/claude/cli.js --settings {{}} --resume {SID} --plugin-dir /p\n");
+        assert!(session_in_use(&ps, SID));
+        assert!(!session_in_use(&ps, SID2));
+        assert!(!session_in_use(&format!("vim {SID}.jsonl"), SID));
+        assert!(dev_live_reason(&dev, &ps, later)
+            .unwrap()
+            .contains("still running"));
+        let before = snapshot(&dev);
+        // The app lock of a running build (another open file holds it).
+        let held = hold_app_lock(&root.join("other-app")).unwrap();
+        assert!(lock_held(&root.join("other-app")));
+        drop(held);
+        assert!(!lock_held(&root.join("other-app")));
+        assert!(!lock_held(&dev), "no lock file in an old dev build");
+        assert_eq!(snapshot(&dev), before);
+        let _ = config;
+    }
+
+    #[test]
+    fn the_delta_lands_on_a_state_that_moved_on_and_a_clash_is_refused() {
+        let mut before = AppStateFile::default();
+        let mut after = before.clone();
+        after.archived_windows.push(ArchivedWindow {
+            window: WindowRecord {
+                id: "win-2".into(),
+                account_id: "work".into(),
+                active_tab_id: None,
+            },
+            tab_ids: vec!["tab_9".into()],
+            closed_at: "t".into(),
+        });
+        let mut t: TabRecord = serde_json::from_value(json!({"id": "tab_9", "label": "x", "cwd": "/w", "order": 1, "createdAt": "t", "windowId": "win-2"})).unwrap();
+        t.closed_at = Some("t".into());
+        after.closed_tabs.push(t.clone());
+        let summary = ImportSummary {
+            windows: vec!["win-2".into()],
+            ..ImportSummary::default()
+        };
+        let mut now = before.clone();
+        let mut other = t.clone();
+        other.id = "tab_new".into();
+        now.closed_tabs.push(other);
+        apply_delta(&before, &after, &summary, &mut now).unwrap();
+        assert_eq!(now.archived_windows[0].window.id, "win-2");
+        assert_eq!(now.closed_tabs.len(), 2);
+        before.windows.clear();
+        let mut clash = AppStateFile::default();
+        clash.windows.push(WindowRecord {
+            id: "win-2".into(),
+            account_id: "a".into(),
+            active_tab_id: None,
+        });
+        assert!(apply_delta(&before, &after, &summary, &mut clash).is_err());
+    }
+
+    #[test]
+    fn a_window_whose_account_did_not_come_over_is_skipped() {
+        let root = TempDir::new("import_full");
+        let (dev, _run, _config, _ws) = fixture(root.path());
+        let built = root.join("app");
+        let mut state = AppStateFile::default();
+        let mut claude = ClaudeSettings {
+            claude_path: None,
+            accounts: (0..8)
+                .map(|n| crate::store::settings_store::ClaudeAccount {
+                    id: format!("a{n}"),
+                    name: format!("A{n}"),
+                    config_dir: Some(format!("/nowhere/{n}")),
+                })
+                .collect(),
+        };
+        let compose = |_: &Path, _: &Path| None;
+        let re = Relaunch {
+            plugin_dir: "/p".into(),
+            settings_file: None,
+            memory_dir: built.join("memory"),
+            launch_dir: built.join("launch"),
+            compose: &compose,
+        };
+        let summary = import(&dev, &built, &mut state, &mut claude, None, &re, "t").unwrap();
+        assert!(summary.windows.is_empty(), "never on another account");
+        assert_eq!(summary.tabs, 0);
+        assert_eq!(summary.notes.len(), 2);
+        assert!(state.archived_windows.is_empty() && state.closed_tabs.is_empty());
     }
 
     #[test]

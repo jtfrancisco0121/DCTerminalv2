@@ -314,6 +314,49 @@ impl PostedStore for TrustStore<'_> {
         let _ = write_json_atomic(&self.run_dir.join(POSTED_FILE), posted);
         Ok(())
     }
+
+    /// Merge-save: the record on disk, with only this ticket's entry ours.
+    fn save_ticket(&mut self, posted: &Posted, ticket_id: &str) -> Result<(), String> {
+        let mut disk = read_posted(self.key, self.data, self.run_dir)?;
+        disk.schema = 1;
+        match posted.drafts.get(ticket_id) {
+            Some(entry) => disk.drafts.insert(ticket_id.to_string(), entry.clone()),
+            None => disk.drafts.remove(ticket_id),
+        };
+        self.save(&disk)
+    }
+
+    fn reload(&mut self) -> Result<Option<Posted>, String> {
+        read_posted(self.key, self.data, self.run_dir).map(Some)
+    }
+}
+
+pub const POST_LOCK: &str = "post.lock";
+pub const POST_BUSY: &str =
+    "ClickUp is already being updated for this run (in another window or app). Try again in a moment.";
+
+/// An exclusive `flock` on `run-trust/<runId>/post.lock`, held for a whole
+/// post (auto or ticked), so two processes (the dev and the built app)
+/// never post for one run at once. Released when dropped.
+pub struct PostLock(#[allow(dead_code)] std::fs::File);
+
+pub fn lock_posts(data: &Path, run_dir: &Path) -> Result<PostLock, String> {
+    let dir = trust_dir(data, run_dir)?;
+    // Never made here: a missing folder must keep reading as "no record".
+    if !dir.is_dir() {
+        return Err(TAMPERED.into());
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(POST_LOCK))
+        .map_err(|e| format!("{POST_LOCK}: {e}"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(PostLock(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Err(POST_BUSY.into()),
+        Err(std::fs::TryLockError::Error(e)) => Err(format!("{POST_LOCK}: {e}")),
+    }
 }
 
 #[cfg(test)]
@@ -356,6 +399,39 @@ pub(crate) mod tests {
         assert_eq!(Key::parse("zz"), None);
         assert_eq!(format!("{k:?}"), "Key(***)");
         assert_eq!(KEY_SERVICE, "com.jtfrancisco.dcterminalv2.trust");
+    }
+
+    #[test]
+    fn one_post_per_run_across_processes_and_saves_merge() {
+        let dir = TempDir::new("trust_lock");
+        let data = dir.join("data");
+        let run = data.join("runs/r-1");
+        std::fs::create_dir_all(&run).unwrap();
+        let k = key();
+        write_start(&k, &data, &run, "personal", &snap()).unwrap();
+        let held = lock_posts(&data, &run).unwrap();
+        // A second open file (as another process would have) is refused.
+        assert_eq!(lock_posts(&data, &run).err().as_deref(), Some(POST_BUSY));
+        drop(held);
+        assert!(lock_posts(&data, &run).is_ok());
+        // Another process saved ticket B; our stale copy saving A keeps B.
+        let mut theirs = read_posted(&k, &data, &run).unwrap();
+        theirs.drafts.insert("B".into(), Default::default());
+        let mut store = TrustStore {
+            key: &k,
+            data: &data,
+            run_dir: &run,
+        };
+        store.save(&theirs).unwrap();
+        let mut ours = Posted {
+            schema: 1,
+            ..Posted::default()
+        };
+        ours.drafts.insert("A".into(), Default::default());
+        store.save_ticket(&ours, "A").unwrap();
+        let now = read_posted(&k, &data, &run).unwrap();
+        assert!(now.drafts.contains_key("A") && now.drafts.contains_key("B"));
+        assert_eq!(store.reload().unwrap(), Some(now));
     }
 
     #[test]

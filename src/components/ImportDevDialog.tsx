@@ -26,7 +26,8 @@ export function summaryText(s: ImportSummary): string {
   ];
   if (s.memoryCopied) parts.push("memory copied");
   if (s.accountsAdded.length > 0) parts.push(`accounts added: ${s.accountsAdded.join(", ")}`);
-  return `Imported ${parts.join(", ")}.`;
+  const reopen = s.windows.length > 0 ? " Reopen the windows from File › Reopen Closed Window." : "";
+  return `Imported ${parts.join(", ")}.${reopen}`;
 }
 
 /**
@@ -63,6 +64,7 @@ export function ImportDevDialog({ status, onClose }: { status: ImportStatus; onC
             Bring the dev app&apos;s tabs, windows, Eagle-Eye runs and memory into this app. Each tab resumes its Claude
             conversation in the same folder and account; runs keep working from their folders in the dev app&apos;s data.
           </p>
+          <p className="hint warn">Quit the dev app first: the import is refused while it runs.</p>
           <p className="hint">
             Nothing in {status.devDir} is changed. macOS may ask once to let this app use the keychain items (ClickUp
             tokens, the signing key) the dev app saved.
