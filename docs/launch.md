@@ -47,6 +47,7 @@ The guard blocks Edit/Write into `DCV2_MEMORY_DIR` (agents use `memory.sh write`
 ## Run folder additions (P2b)
 
 - `meta.json` gains `"reviewMode": "github" | "local"` (app-written at Start from the start-screen toggle "Review on GitHub (draft PRs)"; guard-protected; missing = `local`). The plugin reads it only through `state.sh mode` / `preflight` and branches on it (run-folder.md, Review mode).
+- `meta.json` gains `"bmad": {"mode": "auto" | "on" | "off", "version": "<plugin/bmad/VERSION line>"}` (app-written at Start from the start-screen control "BMAD planning (BMAD-METHOD skills)"; guard-protected; missing = `off`). `state.sh preflight` prints `bmad=auto|on|off` and `node=<version>|missing` (BMAD's runtime is Node 18+; auto/off runs never need it). The plugin reads the mode only through `state.sh` (run-folder.md, BMAD mode).
 - `repos.json` repos gain `"setup": "<command>" | null` and `"copyFiles": ["relative/path", …]` (app-written; run-folder.md, repos.json): `state.sh worktree` copies the git-ignored files and runs the setup in newly made worktrees, output in `logs/<PR>-setup.txt`.
 - status.json PRs gain `draft` (bool) and `comments` (`[{"round", "url"}]`) and the state `drafted` (github mode); `opened` means ready for review. Schema stays 1 (optional fields).
 - `pr-comments/<PR>-round<n>.md`: what was posted (github mode).

@@ -21,10 +21,11 @@ The contract between the `dcv2:eagle-eye` skill and the app. The app creates the
   gates/            skill   PR<n>.yml (A1: the PR Reviewer step's gate, written by state.sh gate)
   report.md         skill   the run report (R10), written by state.sh at done / failed
   memory-update.md  skill   what the end-of-run memory update changed (or why nothing)
+  bmad/             skill   BMAD planning workspace (only when BMAD applies; see "BMAD mode"): _bmad/config.toml, output/<runId>/{spec,architecture,prd,ux}-<slug>/
   logs/PR<n>-stop-check.txt, logs/.stop-check.json   the Stop hook's last failing check output, and its per-PR timing cache
 ```
 
-`runId` is the folder's name. Every JSON file the skill writes is written atomically: the whole document to a temp file made with `mkstemp` in the same folder (`.<name>.<random>.tmp`), then renamed over `<name>`. Readers never see a half-written file; readers ignore dot-files and `*.tmp`. The skill writes only through `plugin/scripts/state.sh` (`put`, `approve`, `worktree`, `ship-pr`, `writeback`, `log`, `gate`, `report`, and in github review mode `draft-pr`, `push`, `post-review`, `comment`, `ready`), which refuses invalid documents (the old file stays in place). All times are UTC ISO-8601 (`2026-10-22T13:04:05Z`).
+`runId` is the folder's name. Every JSON file the skill writes is written atomically: the whole document to a temp file made with `mkstemp` in the same folder (`.<name>.<random>.tmp`), then renamed over `<name>`. Readers never see a half-written file; readers ignore dot-files and `*.tmp`. The skill writes only through `plugin/scripts/state.sh` (`put`, `approve`, `worktree`, `ship-pr`, `writeback`, `log`, `gate`, `report`, in BMAD mode `bmad-size`, `bmad-init`, `bmad-check`, and in github review mode `draft-pr`, `push`, `post-review`, `comment`, `ready`), which refuses invalid documents (the old file stays in place). All times are UTC ISO-8601 (`2026-10-22T13:04:05Z`).
 
 ## Launch environment
 
@@ -216,6 +217,62 @@ PR `state`:
 
 Safety of the GitHub writes: `prUrl` is set only by state.sh (`put` always keeps the recorded value). Before commenting on, editing or readying a PR, state.sh checks with `gh pr view <url> -R <repo> --json url,headRefName,headRepository,headRepositoryOwner,isCrossRepository` that the URL is a PR of the recorded repo whose head is the run's own `dcv2/` branch in that repo (not a fork); otherwise it refuses (`ready`: needs-attention). Everything posted (review rounds, fixes comments, PR title and bodies) has @mentions and `owner/repo#n` references neutralised (a zero-width joiner after `@` / `#`), is capped (title 256, bodies and comments 60 000 characters) and secret-scanned (a hit: nothing sent, needs-attention). `draft-pr`, `push` and `ready` refuse (needs-attention) when any commit since the base recorded in `.guard.json` `bases` (not status.json's) touches a copied file, even if a later commit deletes it. PR URLs must be on github.com or the recorded remote's host. A round counts as already posted only when a comment ends with its exact footer. A worktree recorded before 0.3.0 (no `remotes` entry) gets its remote recorded at the first GitHub command; only github-mode runs (always 0.3.0+, whose worktrees are recorded when made) reach that. Before posting a round, `post-review` / `comment` look for the round's footer (`_Eagle-Eye run <id>, review round <n>._` / `…, round <n> fixes._`) among the PR's comments and record that comment instead of posting again.
 
+### BMAD mode (meta.json `bmad`, status.json `bmad`)
+
+BMAD planning (BMAD-METHOD skills, vendored in `plugin/bmad/`) adds a spec, an architecture spine and, when they apply, a PRD and UX documents before the plan. Design: `docs/plans/2026-10-27-bmad-plan.md`.
+
+**Mode.** `meta.json` (app-written, guard-protected) has `"bmad": {"mode": "auto" | "on" | "off", "version": "<plugin/bmad/VERSION first line>"}`. **A run with no `bmad` field, or an unknown mode, is `off`** (the run keeps the flow it started with; nothing below applies). `state.sh preflight` prints `bmad=auto|on|off` and `node=<version>|missing`.
+
+- `off`: the flow is unchanged.
+- `on`: BMAD always applies, whatever the size.
+- `auto`: the Planner sizes the work (`pass=size`); BMAD applies when the size is Large.
+
+**Sizing.** Large when: more than one repo; a new API, data model or migration; a new user-facing feature or screen; more than about five stories; or the ticket is a feature/epic. Otherwise Small or Medium. The Planner also says which optional documents apply (`docs`: `prd` for a new user-facing feature, `ux` for UI changes). The spec and the architecture spine are always produced when BMAD applies.
+
+**`status.json` `bmad`** (an added optional field: schema stays 1; missing = no BMAD). Written **only** by `state.sh bmad-size`, `bmad-init` and `bmad-check`; `put` keeps the recorded value (with a note if the document tried to change it), the same way it keeps `plan.approval`.
+
+```json
+"bmad": {
+  "mode": "auto",
+  "size": "Large",
+  "reasons": ["more than one repo", "new data model"],
+  "docs": ["prd"],
+  "applied": true,
+  "check": {"result": "pass", "at": "2026-10-27T10:00:00Z", "digest": "<sha256 hex>", "documents": ["bmad/output/r-.../spec-x/spec-x.md", "..."], "reasons": []}
+}
+```
+
+`size`, `reasons`, `docs` and `check` are absent until recorded. `check.reasons` lists why a check failed (empty on pass). The recorded `size` only goes up (Small < Medium < Large), whoever calls. `applied` never goes back to false once true. `docs` only gains entries.
+
+**Workspace.** `<run>/bmad/` is the only place BMAD writes. The runtime's project root is `<run>/bmad` (its state is `<run>/bmad/_bmad/`, written by `state.sh bmad-init`: `config.toml` with `[core] project_name`, `output_folder = "<run>/bmad/output"`, `active_initiative = "<runId>"`). Documents land in `<run>/bmad/output/<runId>/`:
+
+| Document | Path | Needed |
+|---|---|---|
+| Spec | `spec-<slug>/spec-<slug>.md` (frontmatter `id: SPEC-…`), `.memlog.md` | always |
+| Architecture spine | `architecture-<slug>/architecture-<slug>.md` | always |
+| PRD | `prd-<slug>/prd-<slug>.md` (`status: final`), `validation-report.md` + `.html` | when `docs` has `prd` |
+| UX | `ux-<slug>/DESIGN.md` + `EXPERIENCE.md` (`status: final`), `validation-report.md` + `.html` | when `docs` has `ux` |
+
+Who writes what: the Planner writes only inside `<run>/bmad/`, through the runtime (`node <plugin>/bmad/runtime.mjs <command>`, which refuses writes outside `<run>/bmad` and allows only `memlog`, `resolve_config`, `resolve_customization`, `knowledge`, `lint_spine`) and the Write tool. Never a repo. Only the Planner may run the runtime (guard); `bmad/_bmad/config.toml` is written only by `state.sh bmad-init`. Run paths may contain spaces (`Application Support`): every command quotes them.
+
+**Commands** (`state.sh`; exit 1 = refused, nothing written):
+
+| Command | What it does |
+|---|---|
+| `bmad-size <run> Small\|Medium\|Large [--docs prd,ux] [--by planner\|plan-reviewer]` | Reasons on stdin, one per line (at most 10 lines of 200 characters). Refused when the mode is off or the stage is not `planning`. A lower size than the recorded one: `NOT WRITTEN: BMAD size can only go up (recorded <size>)`. `--by` is only logged. Sets `applied` = already applied, or mode `on`, or size Large. |
+| `bmad-init <run>` | Refused when BMAD is not applied, or when `node` is missing or older than 18 (`BMAD needs Node 18+`). Creates `bmad/_bmad/config.toml` (TOML-escaped values) and `bmad/output/`. Idempotent: an existing config is left alone. |
+| `bmad-check <run>` | Prints `bmad-check=pass\|fail <reasons>` and records `bmad.check`. Needs the spec, the architecture spine (and `lint_spine` ok), and the PRD / UX named in `docs` (`status: final`, and the Validate intent's `validation-report.md` and `.html`, non-empty and not older than the document). Every file is non-empty and free of unfilled template placeholders. `digest` is the sha-256 over all the documents found. Re-run it after any document change. |
+
+"Applied" is: mode `on` → always; mode `auto` → `status.json` `bmad.applied`; `off` → never.
+
+**Refusal.** With the stage `plan-approval` (so for `state.sh put` and `state.sh approve <run> plan`) and the mode not off, the write is refused:
+
+- `auto` with no recorded size: `NOT WRITTEN: BMAD auto: run the sizing pass and state.sh bmad-size first`;
+- applied (mode `on` needs no size) and the check is not `pass`: `NOT WRITTEN: BMAD mode: state.sh bmad-check <run> must pass first`;
+- applied and the digest no longer matches the documents: the same, saying `documents changed since the last bmad-check`.
+
+Small and Medium runs in `auto` skip BMAD entirely and approve as before.
+
 ### Readers and schema changes
 
 - Readers (the app) ignore fields they do not know, and treat a missing optional field as null.
@@ -310,7 +367,7 @@ The app creates the folder and writes, besides the inputs above:
 
 | File | Use |
 |---|---|
-| `meta.json` | `{"schema":1,"runId","createdAt","folder","pluginVersion","claudeVersion","account":{"id","name","configDir"},"app","reviewMode":"github"\|"local"}`: what the run was started with (launch.md). `reviewMode` missing = `local` (see Review mode above). |
+| `meta.json` | `{"schema":1,"runId","createdAt","folder","pluginVersion","claudeVersion","account":{"id","name","configDir"},"app","reviewMode":"github"\|"local","bmad":{"mode":"auto"\|"on"\|"off","version":"<VERSION line>"}}`: what the run was started with (launch.md). `reviewMode` missing = `local` (see Review mode above). `bmad` missing or unknown = off (see BMAD mode above). |
 | `memory-prompt.md` | The `--append-system-prompt-file` of the launch, from `memory.sh compose` (absent when the plugin has no `memory.sh`). Rewritten on every resume. |
 | `app-checks.json` | R1: the app's own re-run of each PR's check, `{"schema":1,"checks":{"PR1":{"result":"pass|fail|timeout|error|none|running","command","skillCommand","head","clean","cwd","exitCode","finishedAt","log","detail"}}}`. `command` is always repos.json's check for the PR's repo (status.json's `check.command` is never run; `skillCommand` records it when it differs). It runs only in a worktree at `<repo parent>/<repo>-worktrees/dcv2-<runId>-<pr>` on branch `dcv2/<runId>-<pr>`, with `check.cwd` inside it. The skill never reads it. |
 | `logs/<PR>-app-check.txt` | The full output of that re-run. |
@@ -332,6 +389,7 @@ The skill never writes these. The progress panel reads `status.json`, `gates/*.y
 Plan: `docs/plans/2026-10-23-draft-pr-review-plan.md`. All fields optional; old runs read as before.
 
 - **`meta.json` `reviewMode`**: `"github"` (draft PRs + one review comment per round) or `"local"`. Written by the app from the start screen's "Review on GitHub (draft PRs)" box (default on; the last choice is remembered per window). Missing or unknown reads as `local`.
+- **`meta.json` `bmad`** (2026-10-27): `{"mode": "auto"|"on"|"off", "version": "<plugin/bmad/VERSION line>"}`, written by the app from the start screen's "BMAD planning (BMAD-METHOD skills)" control (default Auto; remembered per start folder). Missing or unknown reads as `off`. The run panel shows the size and reasons (from `status.json` `bmad`) and one link per BMAD document.
 - **`repos.json` repos** gain `"setup": <command> | null` (null: the plugin detects it from the lockfile) and `"copyFiles": [<relative paths>]` (git-ignored files copied from the main checkout into run worktrees; empty by default). Both come from the app's per-repo settings (`settings.json` `worktreeSetup`, keyed by the repo's real path), edited on the start screen under "Worktree setup". The app refuses absolute paths, `..`, `~` and `.git/…`; the plugin copies only git-ignored files.
 - **`status.json`**: `prs[].draft` (bool), `prs[].comments` (`[{"round": <n>, "url": <comment url>}]`), PR state `drafted` (draft open; `opened` = ready for review). The panel shows a `draft` / `ready` badge, the PR link from the first draft, and a link per review-round comment (http(s) links only).
 - **ClickUp auto-post** (per account: Settings › ClickUp › "post ClickUp comments automatically after ship approval", default on): when `status.json` has a `shipApproval` object and `writeback.json` exists, the app posts every **comment** draft (never a status: those stay ticks) through the P4 path: only tickets of the signed snapshot, the run's own account's token, each comment once (signed `posted.json`; a `maybe`/`sending` one waits for the tick-and-confirm), the text secret-scanned with memory.sh's rules (a hit is "blocked: looks like a secret", never posted) and capped at 10 000 characters. It runs once per `writeback.json` version: `run-trust/<runId>/autopost.json` (signed) records the sha-256 and each ticket's result (`posted`, `failed` → Retry, `maybe`, `skipped`, `blocked`). The panel triggers it when it reads the run, and a background sweep every minute covers runs whose panel is not open. Adopted runs are never auto-posted (only the app owning the run's data folder does; ticked posts still work). Every post, auto or ticked, holds an exclusive `flock` on `run-trust/<runId>/post.lock`, re-reads the signed `posted.json` before each ticket and merge-saves only that ticket's entry, so two apps never post one comment twice.
