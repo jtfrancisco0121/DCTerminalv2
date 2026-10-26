@@ -104,10 +104,43 @@ pub struct RunMeta {
     /// `github` (draft PRs + review comments) or `local`; `None` is not
     /// recorded (the skill then runs the local flow).
     pub review_mode: Option<String>,
+    /// `auto`, `on` or `off` (BMAD planning); `None` is not recorded (the
+    /// skill reads a missing `bmad` as off).
+    pub bmad_mode: Option<String>,
+    /// First line of `plugin/bmad/VERSION`, recorded with the mode.
+    pub bmad_version: Option<String>,
 }
 
 /// The review modes meta.json can record.
 pub const REVIEW_MODES: &[&str] = &["github", "local"];
+
+/// The BMAD planning modes meta.json can record.
+pub const BMAD_MODES: &[&str] = &["auto", "on", "off"];
+
+/// meta.json's `bmad.mode`: `auto`, `on` or `off`; missing or unknown → `off`.
+pub fn bmad_mode_of(run_dir: &Path) -> String {
+    read_json_value(&run_dir.join("meta.json"))
+        .and_then(|m| {
+            m.get("bmad")
+                .and_then(|b| b.get("mode"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .filter(|m| BMAD_MODES.contains(&m.as_str()))
+        .unwrap_or_else(|| "off".into())
+}
+
+/// meta.json's `bmad.version` (the vendored BMAD pin the run started with).
+pub fn bmad_version_of(run_dir: &Path) -> Option<String> {
+    read_json_value(&run_dir.join("meta.json"))
+        .and_then(|m| {
+            m.get("bmad")
+                .and_then(|b| b.get("version"))
+                .and_then(Value::as_str)
+                .map(|v| v.chars().take(80).collect::<String>())
+        })
+        .filter(|v| !v.is_empty())
+}
 
 /// meta.json's `reviewMode`: `github` or `local`; missing or unknown → `local`.
 pub fn review_mode_of(run_dir: &Path) -> String {
@@ -172,6 +205,9 @@ pub fn create_run(
         .filter(|m| REVIEW_MODES.contains(m))
     {
         meta_json["reviewMode"] = json!(mode);
+    }
+    if let Some(mode) = meta.bmad_mode.as_deref().filter(|m| BMAD_MODES.contains(m)) {
+        meta_json["bmad"] = json!({"mode": mode, "version": meta.bmad_version});
     }
     write_json_atomic(&dir.join("meta.json"), &meta_json)?;
     Ok(CreatedRun {
@@ -379,6 +415,8 @@ mod tests {
             account_name: "Personal".into(),
             config_dir: "/tmp/acct".into(),
             review_mode: None,
+            bmad_mode: None,
+            bmad_version: None,
         };
         assert!(create_run(dir.path(), Path::new("/w"), &repos, &[], "  ", &meta).is_err());
         let one = create_run(
@@ -405,6 +443,9 @@ mod tests {
         assert!(repos_json["repos"][0]["setup"].is_null());
         assert!(meta_json.get("reviewMode").is_none(), "not recorded");
         assert_eq!(review_mode_of(run), "local");
+        assert!(meta_json.get("bmad").is_none(), "no mode, nothing recorded");
+        assert_eq!(bmad_mode_of(run), "off", "an old run reads as off");
+        assert_eq!(bmad_version_of(run), None);
         assert_eq!(meta_json["account"]["name"], "Personal");
         assert!(meta_json["claudeVersion"].is_null());
         std::fs::write(
@@ -439,6 +480,54 @@ mod tests {
             "github"
         );
 
+        // BMAD: a valid mode is recorded with the version; an invalid one is not.
+        let bm = create_run(
+            dir.path(),
+            Path::new("/w"),
+            &repos,
+            &[],
+            "Fourth",
+            &RunMeta {
+                bmad_mode: Some("auto".into()),
+                bmad_version: Some("bda3c59 6.13.0-next".into()),
+                ..meta.clone()
+            },
+        )
+        .unwrap();
+        let bm_dir = Path::new(&bm.run_dir);
+        let bm_meta = read_json_value(&bm_dir.join("meta.json")).unwrap();
+        assert_eq!(bm_meta["bmad"]["mode"], "auto");
+        assert_eq!(bm_meta["bmad"]["version"], "bda3c59 6.13.0-next");
+        assert_eq!(bmad_mode_of(bm_dir), "auto");
+        assert_eq!(
+            bmad_version_of(bm_dir).as_deref(),
+            Some("bda3c59 6.13.0-next")
+        );
+        let bad = create_run(
+            dir.path(),
+            Path::new("/w"),
+            &repos,
+            &[],
+            "Fifth",
+            &RunMeta {
+                bmad_mode: Some("maybe".into()),
+                bmad_version: Some("x".into()),
+                ..meta.clone()
+            },
+        )
+        .unwrap();
+        let bad_dir = Path::new(&bad.run_dir);
+        assert!(read_json_value(&bad_dir.join("meta.json"))
+            .unwrap()
+            .get("bmad")
+            .is_none());
+        assert_eq!(bmad_mode_of(bad_dir), "off");
+        // A meta.json with an unknown or malformed bmad reads as off.
+        std::fs::write(bad_dir.join("meta.json"), r#"{"bmad": {"mode": "ON"}}"#).unwrap();
+        assert_eq!(bmad_mode_of(bad_dir), "off");
+        std::fs::write(bad_dir.join("meta.json"), r#"{"bmad": "on"}"#).unwrap();
+        assert_eq!(bmad_mode_of(bad_dir), "off");
+
         // An adopted run elsewhere is listed too, once; a missing one is not.
         let other = dir.join("dev/runs/r-20260101-000000-abcd");
         std::fs::create_dir_all(&other).unwrap();
@@ -457,7 +546,7 @@ mod tests {
             0
         );
         let list = list_runs(dir.path());
-        assert_eq!(list.len(), 4);
+        assert_eq!(list.len(), 6);
         let adopted: Vec<_> = list.iter().filter(|r| r.adopted).collect();
         assert_eq!(adopted.len(), 1);
         assert_eq!(adopted[0].title.as_deref(), Some("Old"));
