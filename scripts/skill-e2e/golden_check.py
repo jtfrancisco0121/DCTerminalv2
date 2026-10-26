@@ -21,6 +21,7 @@ CASES = {
     "dep": {"repos": {"pricing": ["npm", "run", "-s", "check"], "shop": ["npm", "test", "-s"]}, "prs": 2},
     "fix": {"repos": {"textkit": ["npm", "run", "-s", "check"]}, "prs": 1},
     "github": {"repos": {"greet": ["npm", "run", "-s", "check"]}, "prs": 1, "state": "opened"},
+    "bmad": {"repos": {"pct": ["npm", "run", "-s", "check"]}, "prs": 1},
 }
 
 
@@ -165,9 +166,58 @@ def main():
             ran = subprocess.run(["node", "-e", "const t=require('./text'); process.exit(t.capitalize('') === '' ? 0 : 1)"],
                                  cwd=p["worktree"], capture_output=True)
             check(ran.returncode == 0, "the pre-existing capitalize('') failure was fixed too")
+        check("bmad" not in st, "mode off: no bmad object in status.json (the unchanged flow)")
+        check(not os.path.exists(os.path.join(run, "bmad")), "mode off: no <run>/bmad folder")
     elif case == "github":
         check_github(run, prs, events, origin, lines)
+    elif case == "bmad":
+        check_bmad(run, ws, prs, st)
     cr.report()
+
+
+def bmad_digest(run, docs):
+    """The same digest state.sh bmad-check records: sha-256 over path (relative to the run) + bytes of every document."""
+    import hashlib
+    h = hashlib.sha256()
+    for rel in sorted(docs):
+        h.update(rel.encode() + b"\0")
+        h.update(open(os.path.join(run, rel), "rb").read())
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def check_bmad(run, ws, prs, st):
+    bm = st.get("bmad") or {}
+    check(" " in run, f"the run folder path has a space ({run})")
+    check(bm.get("mode") == "on" and bm.get("applied") is True, f"status.json bmad applied in mode on ({bm.get('mode')}, {bm.get('applied')})")
+    chk = bm.get("check") or {}
+    check(chk.get("result") == "pass", f"bmad.check.result pass (got {chk.get('result')}: {chk.get('reasons')})")
+    out = os.path.join(run, "bmad", "output")
+    found = {k: [] for k in ("spec", "architecture")}
+    for root, dirs, files in os.walk(out):
+        for f in files:
+            for k in found:
+                if f.startswith(k + "-") and f.endswith(".md") and os.path.basename(root) == f[:-3]:
+                    found[k].append(os.path.join(root, f))
+    for k, v in found.items():
+        check(len(v) >= 1, f"a {k} document under <run>/bmad/output ({v})")
+    spec = open(found["spec"][0]).read() if found["spec"] else ""
+    check(re.search(r"^id:\s*SPEC-", spec, re.M) is not None, "the spec has an id: SPEC- frontmatter")
+    docs = chk.get("documents") or []
+    check(bool(docs) and all(os.path.isfile(os.path.join(run, d)) for d in docs), f"check.documents exist ({docs})")
+    if docs:
+        check(chk.get("digest") == bmad_digest(run, docs), "the last bmad-check digest matches the documents (unchanged since stop #1)")
+    plan = open(os.path.join(run, "plan.md")).read()
+    check(re.search(r"\bCAP-\d+", plan) is not None, "plan.md stories cite spec items (CAP-n)")
+    check(os.path.isfile(os.path.join(run, "bmad", "_bmad", "config.toml")), "bmad-init made config.toml")
+    leftovers = []
+    for pr in prs:
+        for base in (os.path.join(ws, pr["repo"]), pr.get("worktree") or ""):
+            if base and os.path.isdir(base):
+                for name in ("_bmad", "_bmad-output", "bmad"):
+                    if os.path.exists(os.path.join(base, name)):
+                        leftovers.append(os.path.join(base, name))
+    check(not leftovers, f"no BMAD files in the repo or its worktree ({leftovers})")
 
 
 def check_github(run, prs, events, origin, lines):
