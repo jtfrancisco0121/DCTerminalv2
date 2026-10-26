@@ -33,6 +33,11 @@
 # (.guard.json "copied", from repos.json copyFiles) is blocked (best effort).
 # Everyone in a run: no `security dump-keychain|find-generic-password|find-internet-password|export`.
 # Sub-agents never run state.sh's GitHub commands; the Implementer never changes git remotes/config.
+# BMAD (bmad/ in the plugin, <run>/bmad in the run): in a bound run only the planner may run
+# `node .../bmad/runtime.mjs` (the wrapper itself refuses writes outside <run>/bmad); any command
+# naming ade-runtime.mjs (the bundle behind the wrapper) is blocked for everyone; <run>/bmad/_bmad/
+# config*.toml and _bmad/custom/ are written only by `state.sh bmad-init`, never with Edit/Write or
+# a shell write. Repo and worktree rules are unchanged.
 # Everyone: status.json, writeback.json and .guard.json in a run folder are written only by
 # state.sh. When DCV2_MEMORY_DIR is set (every dcv2 launch), nobody writes into it with
 # Edit/Write or a shell redirect/copy: agents use memory.sh write (the app's editor writes as the
@@ -130,6 +135,19 @@ def protected(p):
     return d == run or os.path.isfile(os.path.join(d, "request.md"))
 
 
+def bmad_config(p):
+    """<run>/bmad/_bmad/config*.toml and _bmad/custom/: BMAD's config is made only by `state.sh bmad-init`."""
+    if not run:
+        return False
+    b = os.path.join(run, "bmad", "_bmad")
+    if os.path.dirname(p) == b and re.fullmatch(r"config[\w.-]*\.toml", os.path.basename(p)):
+        return True
+    return inside(p, os.path.join(b, "custom"))
+
+
+BMAD_CFG_MSG = "BMAD's config under <run>/bmad/_bmad is written only by `state.sh bmad-init`, never with Edit, Write or a shell write."
+
+
 def write_allowed(p):
     if role == "memory-updater" and not run:
         return False
@@ -171,6 +189,8 @@ if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
         block(TRUST_MSG)
     if protected(p):
         block("write run-folder state only with scripts/state.sh (put / approve / writeback / worktree), never with Edit or Write.")
+    if bmad_config(p):
+        block(BMAD_CFG_MSG)
     if inside(p, mem):
         block("codebase memory is written only with `bash <plugin>/scripts/memory.sh write <repo id> <file> <<'EOF'` "
               "(it checks size caps, secrets and pinned lines), never with Edit or Write.")
@@ -253,6 +273,8 @@ def check_write(t, cwd):
         return
     if protected(p):
         block("write run-folder state only with scripts/state.sh, never with a shell redirect or copy.")
+    if bmad_config(p):
+        block(BMAD_CFG_MSG)
     if not pipeline and main_checkout(p):
         block(f"the orchestrator never writes into a repo's main checkout ({p}).")
     if pipeline and not write_allowed(p) and in_checkout(p):
@@ -477,6 +499,18 @@ def check_state_sh(args):
         block("`state.sh ready` needs the ship approval first (stop #2).")
 
 
+def check_node(args):
+    """BMAD's runtime: only the planner runs the wrapper (bmad/runtime.mjs); nobody runs the bundle behind it."""
+    for a in args:
+        if a.startswith("-"):
+            continue
+        d, b = os.path.split(a)
+        if b == "runtime.mjs" and os.path.basename(d) in ("bmad", ""):
+            if role != "planner":
+                block(f"{who} never runs the BMAD runtime: only the planner does, for its bmad pass "
+                      "(the orchestrator checks the documents with `state.sh bmad-check`).")
+
+
 def check_security(args):
     """No reading the app's keychain items (ClickUp token, trust key) from inside a run."""
     sub = next((a for a in args if not a.startswith("-")), "")
@@ -541,6 +575,8 @@ def analyze(cmd, cwd, depth=0):
         if not words:
             continue
         name, args = os.path.basename(words[0]), words[1:]
+        if bound and any("ade-runtime.mjs" in w for w in words):
+            block("ade-runtime.mjs is the bundle behind the BMAD wrapper and bypasses its write checks; run `node <plugin>/bmad/runtime.mjs <command>` (planner only).")
         if name in ("cd", "pushd"):
             d = next((a for a in args if not a.startswith("-")), "~")
             if mem and re.search(r"\$\{?DCV2_MEMORY_DIR\b", d):
@@ -553,6 +589,8 @@ def analyze(cmd, cwd, depth=0):
             check_gh(args)
         elif name == "security" and bound:
             check_security(args)
+        elif name in ("node", "nodejs") and bound:
+            check_node(args)
         elif name == "state.sh" and bound:  # run directly by path
             check_state_sh([words[0]] + args)
         elif name in ("bash", "sh", "zsh", "dash", "ksh") and args and os.path.basename(args[0]) == "state.sh" and bound:
