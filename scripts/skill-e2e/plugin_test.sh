@@ -22,6 +22,15 @@ else
   bad "plugin/VERSION missing"
 fi
 
+echo "# vendored BMAD (plugin/bmad)"
+ls "$P"/skills | grep -qiE '^(bmad|bmod)' && bad "a BMAD skill is registered under plugin/skills (they are read by path, never registered)" || ok "no BMAD skill is registered in sessions"
+for f in VERSION LICENSE NOTICE.md ade-runtime.mjs runtime.mjs; do
+  [[ -s "$P/bmad/$f" ]] && ok "bmad/$f exists" || bad "bmad/$f missing"
+done
+[[ "$(ls "$P/bmad/skills" | wc -l | tr -d ' ')" == 7 ]] && ok "bmad/skills holds 7 skills" || bad "bmad/skills must hold exactly the 7 allowlisted skills"
+[[ -z "$(find "$P/bmad/skills" -name '*.py' | head -1)" ]] && ok "no .py file under bmad/skills" || bad "a .py file under bmad/skills"
+node --check "$P/bmad/runtime.mjs" 2>/dev/null && ok "node --check runtime.mjs" || bad "runtime.mjs does not parse"
+
 echo "# roles are the single source (A5, D8)"
 for f in "$P"/skills/*/SKILL.md; do
   name="$(basename "$(dirname "$f")")"
