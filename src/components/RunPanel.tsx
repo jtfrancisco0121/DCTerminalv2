@@ -6,6 +6,7 @@ import {
   removeRunWorktrees,
   rerunChecks,
   runWorktrees,
+  type BmadView,
   type PrView,
   type RemoveResult,
   type RunView,
@@ -119,6 +120,65 @@ function PrRow({ pr, onOpenFile, onOpenUrl }: { pr: PrView } & Pick<ViewProps, "
   );
 }
 
+/** The BMAD documents are openable once the plan is being approved, and after. */
+const BMAD_DOCS_FROM = ["plan-approval", "building", "ship-approval", "shipping", "done"];
+
+/** A short title for a BMAD document path (`bmad/output/<id>/spec-x/spec-x.md`). */
+function bmadDocTitle(path: string): string {
+  const parts = path.split("/");
+  const file = parts[parts.length - 1] ?? path;
+  if (file === "DESIGN.md") return "UX design";
+  if (file === "EXPERIENCE.md") return "UX experience";
+  const kind = file.split("-")[0];
+  const names: Record<string, string> = { spec: "Spec", architecture: "Architecture", prd: "PRD", ux: "UX" };
+  return names[kind] ?? file;
+}
+
+function BmadSection({
+  bmad,
+  stage,
+  onOpenFile,
+}: {
+  bmad: BmadView;
+  stage: string | null;
+  onOpenFile: ViewProps["onOpenFile"];
+}) {
+  const showDocs = stage !== null && BMAD_DOCS_FROM.includes(stage) && bmad.documents.length > 0;
+  return (
+    <section className="run-bmad" aria-label="BMAD planning" data-testid="bmad">
+      <p>
+        <span className="run-pr-badge" data-testid="bmad-badge">
+          {bmad.version ? `BMAD ${bmad.version}` : "BMAD"}
+        </span>{" "}
+        <span data-testid="bmad-size">
+          {bmad.size
+            ? `size ${bmad.size}${bmad.applied ? "" : ", not used"}`
+            : bmad.mode === "on"
+              ? "on"
+              : "sizing the work"}
+        </span>
+      </p>
+      {bmad.reasons.length > 0 && (
+        <ul className="hint" data-testid="bmad-reasons">
+          {bmad.reasons.map((reason) => (
+            <li key={reason}>{reason}</li>
+          ))}
+        </ul>
+      )}
+      {showDocs && (
+        <div className="run-bmad-docs" data-testid="bmad-docs">
+          Documents:
+          {bmad.documents.map((path) => (
+            <button key={path} type="button" className="link-button" onClick={() => onOpenFile(path, bmadDocTitle(path))}>
+              {bmadDocTitle(path)}
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 /** The progress panel for one run, drawn from a read of its folder. */
 export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra }: ViewProps) {
   const timeline = view.timeline.slice(-30).reverse();
@@ -147,6 +207,9 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
             read
           </button>
         </p>
+      )}
+      {view.bmad && view.bmad.mode !== "off" && (
+        <BmadSection bmad={view.bmad} stage={view.stage} onOpenFile={onOpenFile} />
       )}
       {view.prs.length > 0 && (
         <ul className="run-prs">

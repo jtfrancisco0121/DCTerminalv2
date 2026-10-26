@@ -1397,6 +1397,37 @@ body,
   color: var(--success);
 }
 
+/* BMAD planning: the start-screen control and the run panel section. */
+.bmad-mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 1rem;
+  margin: 0.4rem 0;
+  padding: 0;
+  border: 0;
+  font-size: var(--text-md);
+}
+
+.bmad-mode legend {
+  padding: 0;
+}
+
+.bmad-choice {
+  margin: 0;
+}
+
+.run-bmad ul {
+  margin: 0.2rem 0;
+  padding-left: 1.1rem;
+}
+
+.run-bmad-docs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+
 .run-pr-comments {
   display: flex;
   flex-wrap: wrap;
