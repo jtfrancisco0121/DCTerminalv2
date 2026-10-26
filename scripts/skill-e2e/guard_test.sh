@@ -262,6 +262,50 @@ b 2 "" "git -C $WT push -u origin dcv2/r-x-pr1"                         # still 
 b 2 "" "gh pr create --base main --head dcv2/r-x-pr1 --title x --body-file /dev/null"
 b 2 "" "gh pr ready 1"
 echo '{"schema": 1}' > "$RUN/meta.json"
+
+echo "# BMAD runtime (run folder and plugin path contain spaces)"
+SRUN="$d/App Support/runs/r-s"; PLUG="$d/Plugin Dir/plugin"
+mkdir -p "$SRUN/bmad/output" "$SRUN/bmad/_bmad" "$PLUG/bmad"
+printf 'folder: %s/ws\n' "$d" > "$SRUN/request.md"; echo '{}' > "$SRUN/status.json"
+bx() { local want="$1" who="$2" cmd="$3"                                                      # <exit> <agent> <cmd>, bound to the spaced run
+  expect "$want" "$who Bash: ${cmd//$d/}" "$(payload "$who" Bash command "$cmd" "$SRUN")" DCV2_RUN_DIR="$SRUN"; }
+bw() { expect "$1" "$2 Write ${3//$d/}" "$(payload "$2" Write file_path "$3" "$SRUN")" DCV2_RUN_DIR="$SRUN"; }  # <exit> <agent> <path>
+RT="$PLUG/bmad/runtime.mjs"
+CMDQ="DCV2_RUN_DIR=\"$SRUN\" node \"$RT\" resolve_config --project-root \"$SRUN/bmad\" --key core.project_name"
+bx 0 dcv2:planner "node \"$RT\" resolve_config --project-root \"$SRUN/bmad\""
+bx 0 planner "$CMDQ"
+bx 0 dcv2:planner "node '$RT' memlog init --workspace '$SRUN/bmad/output/r-s/spec-x'"
+bx 0 dcv2:planner 'node "${CLAUDE_PLUGIN_ROOT}/bmad/runtime.mjs" resolve_config --project-root "$DCV2_RUN_DIR/bmad"'
+for who in dcv2:implementer dcv2:pr-reviewer dcv2:plan-reviewer dcv2:memory-updater ""; do
+  bx 2 "$who" "node \"$RT\" resolve_config --project-root \"$SRUN/bmad\""
+done
+bx 2 "" 'node "${CLAUDE_PLUGIN_ROOT}/bmad/runtime.mjs" lint_spine --workspace x'
+bx 2 dcv2:implementer "cd \"$PLUG/bmad\" && node runtime.mjs memlog init --workspace x"
+bx 2 dcv2:implementer "bash -c 'node \"$RT\" knowledge --root /x'"
+bx 2 dcv2:implementer "env DCV2_RUN_DIR=x node \"$RT\" knowledge --root /x"
+bx 0 dcv2:implementer "node --version"
+bx 0 "" "node script.mjs"
+for who in dcv2:planner dcv2:implementer ""; do                                               # the bundle behind the wrapper: nobody
+  bx 2 "$who" "node \"$PLUG/bmad/ade-runtime.mjs\" resolve_config --project-root x"
+  bx 2 "$who" "cd \"$PLUG/bmad\" && node ade-runtime.mjs memlog init"
+  bx 2 "$who" "cat \"$PLUG/bmad/ade-runtime.mjs\""
+done
+bw 0 dcv2:planner "$SRUN/bmad/output/r-s/spec-x/spec-x.md"
+bw 0 dcv2:planner "$SRUN/bmad/output/x.md"
+bw 2 dcv2:planner "$R/x.md"                                                                  # a repo is still not writable
+bw 2 dcv2:planner "$d/ws/x.md"
+bw 2 dcv2:planner "$SRUN/bmad/_bmad/config.toml"                                              # only state.sh bmad-init writes it
+bw 2 dcv2:planner "$SRUN/bmad/_bmad/config.user.toml"
+bw 2 dcv2:planner "$SRUN/bmad/_bmad/custom/bmad-spec.toml"
+bw 2 "" "$SRUN/bmad/_bmad/config.toml"
+bw 2 dcv2:implementer "$SRUN/bmad/_bmad/config.toml"
+bw 0 dcv2:planner "$SRUN/bmad/_bmad/notes.md"
+bx 2 dcv2:planner "echo x > \"$SRUN/bmad/_bmad/config.toml\""
+bx 2 dcv2:planner "cp /tmp/x.toml \"$SRUN/bmad/_bmad/config.toml\""
+bx 0 dcv2:planner "echo x > \"$SRUN/bmad/output/x.md\""
+bx 2 dcv2:planner "echo x > \"$R/x.md\""
+bx 0 "" "bash \"$PLUG/scripts/state.sh\" bmad-check \"$SRUN\""
+
 b 2 "" "bash $STATE draft-pr $RUN PR1"                                 # local mode: no drafts
 b 0 "" "git -C $WT push -u origin dcv2/r-x-pr1"                         # local mode: today's ship rule
 

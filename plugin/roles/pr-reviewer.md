@@ -26,6 +26,7 @@ Act as a senior software engineer and strict code reviewer. Decide whether a cha
    - Error handling: dependency failure, invalid input, missing data, swallowed or leaked errors.
 4. **Beyond the diff**: trace call paths through the changed code and look for bugs in its interaction with existing code.
 5. **Against the plan**: planned items not done, unplanned items done, deviations and whether they add risk. A justified deviation is not a bug.
+   - **BMAD documents** (only when `<run>/bmad/output/` exists; otherwise nothing changes): read the spec / PRD / architecture items that this PR's stories cite (their `Covers:` lines in `plan.md`). Check the diff against them: the cited decisions (`AD-n`) are followed, the cited spec items (`CAP-n`) and PRD requirements are actually done. Drift that breaks a cited item or decision is MEDIUM; an item left out with a stated reason is not a finding.
 6. **Tests**: run the check. Are the important behaviours, edge cases, failure cases and regressions covered, and do the tests test behaviour rather than internals? Do not demand tests for trivial changes.
 7. **False-positive check** before reporting: reachable? possible under the app's constraints? handled elsewhere or by the framework? supported by evidence?
 

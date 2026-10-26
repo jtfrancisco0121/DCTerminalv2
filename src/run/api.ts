@@ -23,6 +23,8 @@ export type RepoSetup = { setup: string | null; copyFiles: string[] };
 
 /** `github`: draft PRs + one review comment per round; `local`: the quiet local loop. */
 export type ReviewMode = "github" | "local";
+/** BMAD planning (BMAD-METHOD skills): when the Planner writes a spec and an architecture before the plan. */
+export type BmadMode = "auto" | "on" | "off";
 
 export type FolderRepos = {
   /** `repo`, `workspace`, `inside-repo` or `none`. */
@@ -111,6 +113,20 @@ export type PrView = {
   comments?: { round: number | null; url: string }[];
 };
 
+/** BMAD planning of a run (auto or on); absent for older runs and runs with it off. */
+export type BmadView = {
+  mode: string;
+  /** The vendored BMAD pin the run started with. */
+  version: string | null;
+  size: string | null;
+  reasons: string[];
+  applied: boolean;
+  /** `pass` or `fail`, from the last bmad-check. */
+  checkResult: string | null;
+  /** Run-relative paths of the documents (open with readRunFile). */
+  documents: string[];
+};
+
 export type LogLine = { time: string | null; stage: string | null; text: string };
 
 export type RunView = {
@@ -133,6 +149,8 @@ export type RunView = {
   reviewMode?: string;
   /** status.json has `shipApproval`. */
   shipApproved?: boolean;
+  /** BMAD planning; missing or null when the run has it off (or is older). */
+  bmad?: BmadView | null;
 };
 
 export type WorktreeItem = {
@@ -184,7 +202,8 @@ export const startRun = (
   role: string,
   clickup: ClickUpStart | null = null,
   reviewMode: ReviewMode | null = null,
-) => invoke<StartedRun>("start_run", { windowId, folder, request, role, clickup, reviewMode });
+  bmadMode: BmadMode | null = null,
+) => invoke<StartedRun>("start_run", { windowId, folder, request, role, clickup, reviewMode, bmadMode });
 export const setRepoSetup = (repoPath: string, setup: RepoSetup) =>
   invoke<RepoSetup>("set_repo_setup", { repoPath, setup });
 export const resumeRun = (windowId: string, runDir: string) => invoke<StartedRun>("resume_run", { windowId, runDir });

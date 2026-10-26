@@ -868,7 +868,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             run.join("status.json"),
-            r#"{"schema":1,"runId":"r-1","stage":"shipping","prs":[{"id":"PR1","repo":"r","branch":"dcv2/r-1-pr1","prUrl":"https://github.com/o/r/pull/1","stories":{"ids":["S1"]},"check":{"command":"x","result":"pass"},"review":{"verdict":"APPROVED","round":1}}]}"#,
+            r#"{"schema":1,"runId":"r-1","stage":"shipping","prs":[{"id":"PR1","repo":"r","branch":"dcv2/r-1-pr1","state":"opened","prUrl":"https://github.com/o/r/pull/1","stories":{"ids":["S1"]},"check":{"command":"x","result":"pass"},"review":{"verdict":"APPROVED","round":1}}]}"#,
         )
         .unwrap();
         let state =

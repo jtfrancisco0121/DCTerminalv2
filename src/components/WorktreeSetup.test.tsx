@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { ensureWebStorage } from "../storage/webStorage";
 import { parseCopyFiles } from "./WorktreeSetup";
-import { rememberedReviewOnGitHub } from "./StartScreen";
+import { rememberedBmadMode, rememberedReviewOnGitHub } from "./StartScreen";
 import { summaryText } from "./ImportDevDialog";
 
 ensureWebStorage();
@@ -13,6 +13,17 @@ describe("start screen choices", () => {
     localStorage.setItem("dcv2.reviewOnGitHub.win-9", "off");
     expect(rememberedReviewOnGitHub("win-9")).toBe(false);
     expect(rememberedReviewOnGitHub("main")).toBe(true);
+  });
+
+  it("remembers the BMAD mode per start folder, Auto by default and for an unknown value", () => {
+    expect(rememberedBmadMode("/w/a")).toBe("auto");
+    localStorage.setItem("dcv2.bmadMode./w/a", "on");
+    localStorage.setItem("dcv2.bmadMode./w/b", "banana");
+    expect(rememberedBmadMode("/w/a")).toBe("on");
+    expect(rememberedBmadMode("/w/b")).toBe("auto");
+    expect(rememberedBmadMode("/w/c")).toBe("auto");
+    localStorage.removeItem("dcv2.bmadMode./w/a");
+    localStorage.removeItem("dcv2.bmadMode./w/b");
   });
 
   it("reads the files to copy one per line or comma-separated", () => {

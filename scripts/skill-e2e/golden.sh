@@ -17,6 +17,11 @@
 #           build, each review round posted as a comment, marked ready at stop #2; repos.json
 #           copyFiles brings a git-ignored .env into the worktree and it is never committed.
 #           Not in the default set: `golden.sh github`.
+#   bmad  : BMAD planning (meta.json bmad.mode "on") on one repo, in a run folder whose path has
+#           a space (like Application Support): the Planner writes the spec and the architecture
+#           under <run>/bmad/output, state.sh bmad-check passes, plan.md cites the spec items, and
+#           the repo gets no BMAD files. Not in the default set: `golden.sh bmad`.
+#   fix also writes meta.json bmad.mode "off" (the unchanged flow).
 #
 # Env as run.sh (DCV2_E2E_MODEL default haiku, DCV2_E2E_TIMEOUT, DCV2_E2E_TMP). Uses the current
 # Claude account (CLAUDE_CONFIG_DIR). No remotes (github: a local bare one): nothing reaches GitHub.
@@ -163,6 +168,7 @@ EOF
 
 textkit: add `slugify(s)` to text.js: lowercase, words joined by single hyphens, anything that is not a letter or digit dropped, no leading or trailing hyphen (`"  Tea & Cake  "` → `"tea-cake"`). One story, one PR. `npm run check` must pass as a whole (it fails today).
 EOF
+  printf '{"schema": 1, "runId": "r-golden-fix", "bmad": {"mode": "off", "version": "bda3c59 6.13.0-next"}}\n' > "$run/meta.json"
   launch fix "$ws" "$run"
   python3 "$E2E_DIR/golden_check.py" fix "$run" "$ws" "$TMP/fix.jsonl" "$TMP/memory"
 }
@@ -200,10 +206,38 @@ EOF
   GH_SHIM_DIR="$shimdir" python3 "$E2E_DIR/golden_check.py" github "$run" "$ws" "$TMP/github.jsonl" "$TMP/memory" "$TMP/greet-origin.git"
 }
 
+case_bmad() {
+  local ws="$TMP/ws-bmad" run="$TMP/App Support/runs/r-golden-bmad"
+  node_repo "$ws/pct" '{"check": "node test.js"}'
+  cat > "$ws/pct/pct.js" <<'EOF'
+// Percentages for the report screen.
+function percent(part, whole) { return part / whole; }
+module.exports = { percent };
+EOF
+  cat > "$ws/pct/test.js" <<'EOF'
+const assert = require("assert");
+const { percent } = require("./pct");
+assert.strictEqual(percent(1, 4), 25);
+assert.strictEqual(percent(1, 3), 33.3);
+assert.strictEqual(percent(0, 5), 0);
+assert.strictEqual(percent(1, 0), null);
+console.log("pct: ok");
+EOF
+  git_init_repo "$ws/pct"
+  request "$run" "$ws" <<'EOF'
+# Request
+
+pct: `percent(part, whole)` must return the percentage rounded to one decimal (`percent(1, 3)` is `33.3`), and `null` when `whole` is 0. One story, one PR. `npm run check` must pass.
+EOF
+  printf '{"schema": 1, "runId": "r-golden-bmad", "bmad": {"mode": "on", "version": "bda3c59 6.13.0-next"}}\n' > "$run/meta.json"
+  launch bmad "$ws" "$run"
+  python3 "$E2E_DIR/golden_check.py" bmad "$run" "$ws" "$TMP/bmad.jsonl" "$TMP/memory"
+}
+
 status=0
 pids=()
 for c in "${CASES[@]}"; do
-  declare -F "case_$c" >/dev/null || fail "unknown case $c (multi, dep, fix, github)"
+  declare -F "case_$c" >/dev/null || fail "unknown case $c (multi, dep, fix, github, bmad)"
   ( "case_$c" > "$TMP/$c.out" 2>&1 ) &
   pids+=("$!")
   note "started case $c (output $TMP/$c.out)"

@@ -12,6 +12,7 @@ You are the Plan Reviewer sub-agent of an Eagle-Eye run, with a fresh context. F
 - `round`: the review round number, and the previous round's findings when there are some (check each first).
 
 ## Work
+- When `<run>/bmad/output/` exists, read its documents too (spec, architecture, PRD, UX) and review for drift (role, step 8). In `bmad=auto` with no documents, apply the size check (role, step 9). Read `<run>/meta.json` for the mode (a missing `bmad` is off).
 - Verify the plan in the repos read-only. Never edit, commit or switch branches in them.
 - Write your review, in the role's review format, to `<run>/reviews/plan-round<round>.md` (create the folder). Write nothing else.
 
@@ -23,3 +24,4 @@ At most 15 lines in total. Put anything long (reasoning, test output, diffs, the
 ```json
 {"verdict": "APPROVED WITH CHANGES", "review": "<run>/reviews/plan-round1.md", "findings": [{"severity": "MEDIUM", "where": "S2", "summary": "No test covers the empty-list case."}]}
 ```
+The JSON gains an optional `"size": "Large"` (only with the `SIZE: Large` finding of step 9; leave it out otherwise).

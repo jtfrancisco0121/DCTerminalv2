@@ -134,6 +134,26 @@ pub struct LogLine {
     pub text: String,
 }
 
+/// BMAD planning (meta.json `bmad` for the mode and pin, status.json `bmad`
+/// for the rest). None for a run whose mode is off or missing.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BmadView {
+    /// `auto` or `on`.
+    pub mode: String,
+    /// The vendored BMAD pin the run started with (meta.json).
+    pub version: Option<String>,
+    /// `Small`, `Medium` or `Large`, once the sizing is recorded.
+    pub size: Option<String>,
+    pub reasons: Vec<String>,
+    pub applied: bool,
+    /// `pass` or `fail`, from the last `bmad-check`.
+    pub check_result: Option<String>,
+    /// Documents of the last check, relative to the run folder (openable
+    /// with `read_run_file`).
+    pub documents: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RunView {
@@ -158,6 +178,8 @@ pub struct RunView {
     pub review_mode: String,
     /// status.json has `shipApproval` (the yes at stop #2).
     pub ship_approved: bool,
+    /// BMAD planning, when the run's mode is auto or on.
+    pub bmad: Option<BmadView>,
 }
 
 fn s(v: &Value, key: &str) -> Option<String> {
@@ -238,7 +260,52 @@ pub fn parse_status(value: &Value) -> Result<RunView, String> {
         prs,
         ship_note: s(ship, "note"),
         ship_approved: value.get("shipApproval").is_some_and(Value::is_object),
+        bmad: parse_bmad(value),
         ..RunView::default()
+    })
+}
+
+/// status.json's `bmad` object, tolerant of missing, partial or malformed
+/// values (the mode and pin are filled in from meta.json by `read_run`).
+fn parse_bmad(value: &Value) -> Option<BmadView> {
+    let b = value.get("bmad").filter(|b| b.is_object())?;
+    let check = obj(b, "check");
+    // Only run-relative document paths the run panel can open: no absolute
+    // paths, no `..`, no hidden parts.
+    let documents = check
+        .get("documents")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .filter(|p| {
+                    !p.is_empty()
+                        && Path::new(p).components().all(|c| {
+                            matches!(c, std::path::Component::Normal(n) if !n.to_string_lossy().starts_with('.'))
+                        })
+                })
+                .map(str::to_string)
+                .take(20)
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(BmadView {
+        size: s(b, "size").filter(|z| matches!(z.as_str(), "Small" | "Medium" | "Large")),
+        reasons: b
+            .get("reasons")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .map(|r| r.chars().take(200).collect())
+                    .take(10)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        applied: b.get("applied").and_then(Value::as_bool).unwrap_or(false),
+        check_result: s(check, "result").filter(|r| matches!(r.as_str(), "pass" | "fail")),
+        documents,
+        ..BmadView::default()
     })
 }
 
@@ -530,6 +597,17 @@ pub fn read_run(run_dir: &Path, checks_running: bool) -> RunView {
     view.run_id = run_id;
     view.run_dir = run_dir.display().to_string();
     view.review_mode = super::folder::review_mode_of(run_dir);
+    // BMAD: shown only for a run started with auto or on; an old run (no
+    // `bmad` in meta.json) shows nothing.
+    let bmad_mode = super::folder::bmad_mode_of(run_dir);
+    view.bmad = if bmad_mode == "off" {
+        None
+    } else {
+        let mut b = view.bmad.take().unwrap_or_default();
+        b.mode = bmad_mode;
+        b.version = super::folder::bmad_version_of(run_dir);
+        Some(b)
+    };
     if view.folder.is_none() {
         view.folder = super::folder::run_folder_of(run_dir);
     }
@@ -857,6 +935,81 @@ mod draft_pr_tests {
             read_run(Path::new("/nonexistent/r-1"), false).review_mode,
             "local"
         );
+    }
+
+    #[test]
+    fn a_bmad_object_is_read_and_a_missing_or_malformed_one_is_survived() {
+        let view = parse_status(&json!({"bmad": {
+            "mode": "auto", "size": "Large", "applied": true,
+            "reasons": ["more than one repo", 7, "new data model"],
+            "docs": ["prd"],
+            "check": {"result": "pass", "digest": "x", "documents": [
+                "bmad/output/r-1/spec-a/spec-a.md", "/etc/passwd", "../x.md", "bmad/.hidden/a.md", 3
+            ]}
+        }}))
+        .unwrap();
+        let b = view.bmad.expect("bmad read");
+        assert_eq!(b.size.as_deref(), Some("Large"));
+        assert!(b.applied);
+        assert_eq!(b.reasons, vec!["more than one repo", "new data model"]);
+        assert_eq!(b.check_result.as_deref(), Some("pass"));
+        assert_eq!(b.documents, vec!["bmad/output/r-1/spec-a/spec-a.md"]);
+        // Missing, null, a string, or odd field types: no panic, no error.
+        for v in [
+            json!({}),
+            json!({"bmad": null}),
+            json!({"bmad": "on"}),
+            json!({"bmad": []}),
+        ] {
+            assert!(parse_status(&v).unwrap().bmad.is_none(), "{v}");
+        }
+        let odd = parse_status(
+            &json!({"bmad": {"size": "Huge", "applied": "yes", "reasons": "x",
+            "check": {"result": 5, "documents": "no"}}}),
+        )
+        .unwrap()
+        .bmad
+        .unwrap();
+        assert_eq!(odd, BmadView::default());
+    }
+
+    #[test]
+    fn the_run_view_shows_bmad_only_for_auto_and_on() {
+        let dir = std::env::temp_dir().join(format!("dcv2-bmad-{}", std::process::id()));
+        let run = dir.join("r-20261027-000000-abcd");
+        std::fs::create_dir_all(&run).unwrap();
+        // No meta.json (an old run): nothing, even when status.json has a bmad object.
+        std::fs::write(
+            run.join("status.json"),
+            r#"{"schema":1,"stage":"planning","bmad":{"size":"Large","applied":true}}"#,
+        )
+        .unwrap();
+        assert!(read_run(&run, false).bmad.is_none());
+        std::fs::write(
+            run.join("meta.json"),
+            r#"{"bmad":{"mode":"off","version":"v"}}"#,
+        )
+        .unwrap();
+        assert!(read_run(&run, false).bmad.is_none());
+        std::fs::write(
+            run.join("meta.json"),
+            r#"{"bmad":{"mode":"auto","version":"bda3c59 6.13.0-next"}}"#,
+        )
+        .unwrap();
+        let b = read_run(&run, false).bmad.expect("shown");
+        assert_eq!(b.mode, "auto");
+        assert_eq!(b.version.as_deref(), Some("bda3c59 6.13.0-next"));
+        assert_eq!(b.size.as_deref(), Some("Large"));
+        // Mode on with no status.json bmad yet: the badge still shows.
+        std::fs::write(run.join("meta.json"), r#"{"bmad":{"mode":"on"}}"#).unwrap();
+        std::fs::write(
+            run.join("status.json"),
+            r#"{"schema":1,"stage":"planning"}"#,
+        )
+        .unwrap();
+        let b = read_run(&run, false).bmad.expect("shown");
+        assert_eq!((b.mode.as_str(), b.size), ("on", None));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

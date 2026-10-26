@@ -6,6 +6,7 @@ import {
   runOverview,
   startRun,
   type FolderRepos,
+  type BmadMode,
   type ReviewMode,
   type RunOverview,
   type StartedRun,
@@ -58,6 +59,28 @@ function rememberReviewOnGitHub(windowId: string, on: boolean): void {
   }
 }
 
+const BMAD_KEY = "dcv2.bmadMode.";
+const BMAD_MODES: BmadMode[] = ["auto", "on", "off"];
+const BMAD_LABELS: Record<BmadMode, string> = { auto: "Auto", on: "On", off: "Off" };
+
+/** The last BMAD choice for this start folder; Auto by default (also with no storage or an unknown value). */
+export function rememberedBmadMode(folder: string): BmadMode {
+  try {
+    const stored = localStorage.getItem(BMAD_KEY + folder);
+    return BMAD_MODES.find((m) => m === stored) ?? "auto";
+  } catch {
+    return "auto";
+  }
+}
+
+function rememberBmadMode(folder: string, mode: BmadMode): void {
+  try {
+    localStorage.setItem(BMAD_KEY + folder, mode);
+  } catch {
+    // No storage: Auto next time.
+  }
+}
+
 /**
  * New run: a folder, what to do, and Start Eagle-Eye. One role on its own
  * is one tile. Earlier runs can be resumed.
@@ -71,6 +94,13 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
   const [busy, setBusy] = useState(false);
   const [tickets, setTickets] = useState<ClickUpStart | null>(null);
   const [reviewOnGitHub, setReviewOnGitHub] = useState(() => rememberedReviewOnGitHub(windowId));
+  const [bmadMode, setBmadMode] = useState<BmadMode>(() => rememberedBmadMode(initialFolder.trim()));
+
+  // BMAD is remembered per start folder (the design says per repo), unlike the
+  // review box, which is per window.
+  useEffect(() => {
+    setBmadMode(rememberedBmadMode(folder.trim()));
+  }, [folder]);
 
   useEffect(() => {
     runOverview().then(setOverview, (err: unknown) => setError(errorText(err)));
@@ -117,7 +147,8 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
     try {
       const said = request.trim() || (eagleTickets ? "Do the ClickUp tickets below." : request);
       const mode: ReviewMode | null = role === "eagle-eye" ? (reviewOnGitHub ? "github" : "local") : null;
-      onStarted(await startRun(windowId, folder.trim(), said, role, eagleTickets, mode));
+      const bmad: BmadMode | null = role === "eagle-eye" ? bmadMode : null;
+      onStarted(await startRun(windowId, folder.trim(), said, role, eagleTickets, mode, bmad));
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -200,6 +231,31 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
         {reviewOnGitHub
           ? "After the first build each PR opens as a draft on GitHub, every review round is posted as a PR comment, and the drafts are marked ready at the end. Teammates can see them."
           : "Reviews stay in the run folder; PRs open only at the end."}
+      </p>
+      <fieldset className="bmad-mode" aria-label="BMAD planning">
+        <legend>BMAD planning (BMAD-METHOD skills)</legend>
+        {BMAD_MODES.map((mode) => (
+          <label key={mode} className="check-label bmad-choice">
+            <input
+              type="radio"
+              name="bmad-mode"
+              value={mode}
+              checked={bmadMode === mode}
+              onChange={() => {
+                setBmadMode(mode);
+                rememberBmadMode(folder.trim(), mode);
+              }}
+            />
+            {BMAD_LABELS[mode]}
+          </label>
+        ))}
+      </fieldset>
+      <p className="hint">
+        {bmadMode === "auto"
+          ? "Large work (several repos, a new API or screen, many stories) gets a spec and an architecture written before the plan. Small work skips it."
+          : bmadMode === "on"
+            ? "Every run gets a spec and an architecture written before the plan. Needs Node 18 or newer."
+            : "No BMAD documents; the plan is written straight from the request."}
       </p>
       {error && (
         <p className="error" role="alert">

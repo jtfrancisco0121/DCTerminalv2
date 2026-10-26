@@ -391,8 +391,10 @@ pub fn save_tickets(
 
 /// Starts Eagle-Eye (`role: "eagle-eye"`) or one role tile in `folder`.
 /// `clickup` (Eagle-Eye only): the snapshot is read before the run folder
-/// is made, so a ClickUp failure starts nothing.
+/// is made, so a ClickUp failure starts nothing. `bmad_mode` (Eagle-Eye only):
+/// `auto`, `on` or `off`, recorded in meta.json with the vendored BMAD pin.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // one argument per start-screen choice; the page calls it by name
 pub async fn start_run(
     app: AppHandle,
     window_id: Option<String>,
@@ -401,6 +403,7 @@ pub async fn start_run(
     role: String,
     clickup: Option<ClickUpStart>,
     review_mode: Option<String>,
+    bmad_mode: Option<String>,
 ) -> Result<StartedRun, String> {
     blocking(move || {
         let folder = start_folder(&folder)?;
@@ -435,6 +438,8 @@ pub async fn start_run(
                 account_name: ctx.account_name.clone(),
                 config_dir: ctx.provider.config.path.clone(),
                 review_mode: review_mode.filter(|m| folder::REVIEW_MODES.contains(&m.as_str())),
+                bmad_mode: bmad_mode.filter(|m| folder::BMAD_MODES.contains(&m.as_str())),
+                bmad_version: launch::plugin_version(&plugin.join("bmad")),
             };
             let snapshot = match clickup.as_ref().filter(|c| !c.ticket_ids.is_empty()) {
                 Some(c) => Some(crate::clickup::commands::start_snapshot(

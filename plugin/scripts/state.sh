@@ -5,7 +5,7 @@
 #   state.sh preflight <run> [resume]         check python3, git, DCV2_RUN_DIR and request.md;
 #                                             with resume, also log "resumed at stage <stage>";
 #                                             print folder= / repos= / tickets= / reposJson= / testmode= /
-#                                             maxImplementers= / memory=
+#                                             maxImplementers= / memory= / reviewMode= / bmad= / node=
 #   state.sh testmode                         print the test mode, from the env DCV2_TEST_MODE only
 #   state.sh put <run>/status.json  < json    validate the whole document, then write it
 #   state.sh log <run> [<stage>]    < text    append "<UTC time> <stage> <text>" to log.md (text on stdin;
@@ -24,6 +24,13 @@
 #                                             (git-ignored files only) and its setup (or the lockfile's
 #                                             install), printing "setup=ok|failed|none log=<path>"
 #   state.sh mode <run>                       print "reviewMode=github|local" (meta.json; missing = local)
+#   state.sh bmad-size <run> Small|Medium|Large [--docs prd,ux] [--by planner|plan-reviewer]
+#                                             BMAD mode (meta.json bmad auto|on): record the sizing in status.json
+#                                             "bmad" (reasons on stdin). Planning stage only; the size only goes up
+#   state.sh bmad-init <run>                  make <run>/bmad/_bmad/config.toml and output/ (BMAD applied; Node 18+)
+#   state.sh bmad-check <run>                 check the BMAD documents; prints "bmad-check=pass|fail <reasons>"
+#                                             (exit 0 pass, 3 fail). plan-approval is refused until it passes on
+#                                             the current documents (put and approve)
 #   state.sh ship-check <run>                 per PR: remote, and whether its base is on the remote
 #   state.sh ship-pr <run> <pr id>            local mode: push the PR's branch and open its GitHub PR
 #                                             (stage shipping + ship approval only); updates status.json
@@ -164,6 +171,115 @@ def review_mode(run):
     return "github" if isinstance(m, dict) and m.get("reviewMode") == "github" else "local"
 
 
+BMAD_MODES = ("auto", "on", "off")
+BMAD_SIZES = ("Small", "Medium", "Large")
+BMAD_DOCS = ("prd", "ux")
+
+
+def bmad_mode(run):
+    """meta.json's bmad.mode (written by the app at Start). Missing or unknown = off (old runs keep their flow)."""
+    m = load_json(os.path.join(run, "meta.json"))
+    b = m.get("bmad") if isinstance(m, dict) else None
+    mode = b.get("mode") if isinstance(b, dict) else None
+    return mode if mode in BMAD_MODES else "off"
+
+
+def bmad_obj(doc):
+    b = doc.get("bmad") if isinstance(doc, dict) else None
+    return b if isinstance(b, dict) else {}
+
+
+def bmad_applied(run, doc=None):
+    """on: always. auto: status.json bmad.applied (set by bmad-size, never cleared). off: never."""
+    mode = bmad_mode(run)
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    if not isinstance(doc, dict):
+        doc = load_json(os.path.join(run, "status.json"))
+    return bmad_obj(doc).get("applied") is True
+
+
+def bmad_find(run):
+    """BMAD documents under <run>/bmad/output/<initiative>/: kind -> sorted absolute paths."""
+    found = {"spec": [], "architecture": [], "prd": [], "ux": []}
+    base = os.path.join(run, "bmad", "output")
+    if not os.path.isdir(base):
+        return found
+    for init in sorted(os.listdir(base)):
+        ip = os.path.join(base, init)
+        if not os.path.isdir(ip) or os.path.islink(ip):
+            continue
+        for d in sorted(os.listdir(ip)):
+            dp = os.path.join(ip, d)
+            if not os.path.isdir(dp) or os.path.islink(dp):
+                continue
+            for kind in ("spec", "architecture", "prd"):
+                if d.startswith(kind + "-") and os.path.isfile(os.path.join(dp, d + ".md")):
+                    found[kind].append(os.path.join(dp, d + ".md"))
+            if d.startswith("ux-"):
+                for name in ("DESIGN.md", "EXPERIENCE.md"):
+                    if os.path.isfile(os.path.join(dp, name)):
+                        found["ux"].append(os.path.join(dp, name))
+    return found
+
+
+def bmad_digest(run, found):
+    """sha-256 over every document found (path relative to the run, then bytes), in path order."""
+    import hashlib
+    h = hashlib.sha256()
+    for f in sorted(f for fs in found.values() for f in fs):
+        h.update(os.path.relpath(f, run).encode() + b"\0")
+        try:
+            with open(f, "rb") as fh:
+                h.update(fh.read())
+        except OSError:
+            h.update(b"?")
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def bmad_frontmatter(text):
+    m = re.match(r"\A---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", text, re.S)
+    d = {}
+    for line in (m.group(1).splitlines() if m else []):
+        mm = re.match(r"^([A-Za-z_][\w-]*):\s*(.*?)\s*$", line)
+        if mm:
+            d[mm.group(1)] = re.sub(r"\s+#.*$", "", mm.group(2)).strip().strip("'\"")
+    return d
+
+
+def bmad_placeholders(text):
+    """Unfilled template leftovers outside code: {name} tokens and template guide comments."""
+    t = re.sub(r"(```|~~~).*?\1", "", text, flags=re.S)
+    guide = bool(re.search(r"<!--\s*TEMPLATE GUIDE", t))
+    t = re.sub(r"<!--.*?-->", "", t, flags=re.S)
+    t = re.sub(r"`[^`\n]*`", "", t)
+    hits = re.findall(r"\{[A-Za-z][^{}\n]*\}", t)
+    return (["<!-- TEMPLATE GUIDE -->"] if guide else []) + hits[:3]
+
+
+def toml_str(v):
+    out = []
+    for ch in str(v):
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ord(ch) < 0x20 or ord(ch) == 0x7f:
+            out.append("\\u%04x" % ord(ch))
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
+
+
+def node_major():
+    r = run_cmd(["node", "--version"], timeout=20)
+    m = re.match(r"v?(\d+)\.", (r.stdout or "").strip()) if r.returncode == 0 else None
+    return (int(m.group(1)), (r.stdout or "").strip().lstrip("v")) if m else (None, None)
+
+
 def remote_of(repo):
     remotes = git("-C", repo, "remote").stdout.split()
     return "origin" if "origin" in remotes else (remotes[0] if remotes else None)
@@ -200,6 +316,8 @@ def validate_status(doc, run):
         plan = None
     check_approval((plan or {}).get("approval"), "plan.approval", p)
     check_approval(doc.get("shipApproval"), "shipApproval", p)
+    if doc.get("bmad") is not None and not isinstance(doc.get("bmad"), dict):
+        p.append("bmad must be an object (written only by state.sh bmad-size / bmad-init / bmad-check)")
     paused = doc.get("paused")
     if paused is not None and not (isinstance(paused, dict) and isinstance(paused.get("reason"), str) and paused["reason"]):
         p.append("paused must be null or {reason: <one line>, at: <UTC>}")
@@ -292,6 +410,12 @@ def prepare_status(doc, old, trusted, run_dir=None):
         if doc.get("shipApproval") and doc.get("shipApproval") != old.get("shipApproval"):
             notes.append("note: the ship approval is set only by `state.sh approve`; kept the recorded value")
         doc["shipApproval"] = old.get("shipApproval")
+        if doc.get("bmad") is not None and doc.get("bmad") != old.get("bmad"):
+            notes.append("note: status.json bmad is set only by `state.sh bmad-size|bmad-init|bmad-check`; kept the recorded value")
+        if old.get("bmad") is not None:
+            doc["bmad"] = old["bmad"]
+        else:
+            doc.pop("bmad", None)
     if isinstance(doc.get("plan"), dict):
         doc["plan"]["approved"] = bool(doc["plan"].get("approval"))
     doc.setdefault("shipApproval", None)
@@ -376,6 +500,16 @@ def gates(doc, run, old=None):
     if len(busy) > cap and (len(busy) > len(was) or set(busy) - set(was)):
         return (f"NOT WRITTEN: {len(busy)} PRs building/fixing ({', '.join(busy)}), over the cap of {cap} Implementers at once "
                 f"(DCV2_MAX_IMPLEMENTERS). Keep the others pending and start them when one finishes."), out
+    if stage == "plan-approval" and bmad_mode(run) != "off":
+        b = bmad_obj(doc)
+        if bmad_mode(run) == "auto" and not b.get("size"):
+            return "NOT WRITTEN: BMAD auto: run the sizing pass and state.sh bmad-size first", out
+        if bmad_applied(run, doc):
+            chk = b.get("check") if isinstance(b.get("check"), dict) else {}
+            if chk.get("result") != "pass":
+                return f"NOT WRITTEN: BMAD mode: state.sh bmad-check {run} must pass first", out
+            if chk.get("digest") != bmad_digest(run, bmad_find(run)):
+                return f"NOT WRITTEN: BMAD mode: documents changed since the last bmad-check; run state.sh bmad-check {run} again and make it pass", out
     if tm["halt"] and not resumed(run):
         pid = tm["halt"]
         prs = {p.get("id"): p for p in doc.get("prs") or [] if isinstance(p, dict)}
@@ -494,6 +628,8 @@ def cmd_preflight(run, resume=False):
     mem = os.environ.get("DCV2_MEMORY_DIR", "")
     print(f"memory={os.path.realpath(mem) if mem else 'none'}")
     print(f"reviewMode={review_mode(run)}")
+    print(f"bmad={bmad_mode(run)}")
+    print(f"node={node_major()[1] or 'missing'}")
     if resume:
         st = load_json(os.path.join(run, "status.json"))
         if isinstance(st, dict) and st.get("stage") in STAGES:
@@ -529,6 +665,168 @@ def cmd_approve(run, what, by):
         print(m)
     append_log(run, st["stage"], line)
     print(f"approved: {line}")
+
+
+def cmd_bmad_size(run, size, rest):
+    run = os.path.abspath(run)
+    docs, by, i = [], "none", 0
+    while i < len(rest):
+        if rest[i] == "--docs" and i + 1 < len(rest):
+            docs = [d for d in rest[i + 1].split(",") if d]
+            i += 2
+        elif rest[i] == "--by" and i + 1 < len(rest):
+            by = rest[i + 1]
+            i += 2
+        else:
+            die("usage: state.sh bmad-size <run> Small|Medium|Large [--docs prd,ux] [--by planner|plan-reviewer]", 2)
+    if size not in BMAD_SIZES:
+        die(f"NOT WRITTEN: size must be one of {', '.join(BMAD_SIZES)} (got {size!r})")
+    if any(d not in BMAD_DOCS for d in docs):
+        die(f"NOT WRITTEN: --docs takes {', '.join(BMAD_DOCS)}")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", by):
+        die("NOT WRITTEN: --by must be a short word (planner, plan-reviewer)")
+    mode = bmad_mode(run)
+    if mode == "off":
+        die("NOT WRITTEN: BMAD mode is off for this run (meta.json bmad.mode); nothing to size")
+    st = load_status(run)
+    if st.get("stage") != "planning":
+        die(f"NOT WRITTEN: bmad-size runs at stage planning (stage {st.get('stage')})")
+    reasons = [" ".join(l.split())[:200] for l in sys.stdin.read().splitlines() if l.strip()][:10]
+    b = dict(bmad_obj(st))
+    old = b.get("size")
+    if old in BMAD_SIZES and BMAD_SIZES.index(size) < BMAD_SIZES.index(old):
+        die(f"NOT WRITTEN: BMAD size can only go up (recorded {old})")
+    b["mode"] = mode
+    b["size"] = size
+    b["reasons"] = reasons if reasons else (b.get("reasons") or [])
+    b["docs"] = sorted(set(b.get("docs") or []) | set(docs))
+    b["applied"] = bool(b.get("applied")) or mode == "on" or size == "Large"
+    st["bmad"] = b
+    for m in write_status(run, st, trusted=True):
+        print(m)
+    append_log(run, "planning", f"BMAD size {size} recorded by {by}; applied={'yes' if b['applied'] else 'no'}; docs={','.join(b['docs']) or 'none'}")
+    print(f"bmad-size={size} applied={'yes' if b['applied'] else 'no'} docs={','.join(b['docs']) or 'none'}")
+
+
+def cmd_bmad_init(run):
+    run = os.path.abspath(run)
+    if not bmad_applied(run):
+        die("NOT INITIALISED: BMAD is not applied to this run (mode off, or auto without a Large size)")
+    major, _ = node_major()
+    if major is None or major < 18:
+        die("NOT INITIALISED: BMAD needs Node 18+ (node is missing or too old)")
+    out = os.path.join(run, "bmad", "output")
+    cfg_dir = os.path.join(run, "bmad", "_bmad")
+    os.makedirs(out, exist_ok=True)
+    os.makedirs(cfg_dir, exist_ok=True)
+    cfg = os.path.join(cfg_dir, "config.toml")
+    if os.path.exists(cfg):
+        print(f"bmad-init=exists {cfg}")
+        return
+    repos = load_json(os.path.join(run, "repos.json"))
+    names = [r.get("name") for r in (repos.get("repos") if isinstance(repos, dict) else None) or [] if isinstance(r, dict) and r.get("name")]
+    if not names:
+        m = re.search(r"^folder:\s*(\S.*?)\s*$", read(os.path.join(run, "request.md")), re.M)
+        names = [os.path.basename(m.group(1).rstrip("/"))] if m else []
+    text = ("[core]\n"
+            f"project_name = {toml_str(', '.join(names) or 'project')}\n"
+            f"output_folder = {toml_str(os.path.realpath(out))}\n"
+            f"active_initiative = {toml_str(os.path.basename(os.path.realpath(run)))}\n")
+    atomic_write(cfg, text)
+    append_log(run, (load_json(os.path.join(run, "status.json")) or {}).get("stage") or "planning", "BMAD workspace initialised")
+    print(f"bmad-init=ok {cfg}")
+
+
+def bmad_check_docs(run, docs):
+    """(reasons, found): why the BMAD documents are not ready."""
+    found = bmad_find(run)
+    reasons = []
+    texts = {}
+
+    def body(f, why):
+        if f not in texts:
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    texts[f] = fh.read()
+            except (OSError, UnicodeDecodeError):
+                texts[f] = ""
+        rel = os.path.relpath(f, run)
+        if not texts[f].strip():
+            reasons.append(f"{rel} is empty or unreadable")
+            return None
+        left = bmad_placeholders(texts[f])
+        if left:
+            reasons.append(f"{rel} has unfilled template text: {', '.join(left)[:120]}")
+        return texts[f]
+
+    def reports(f):
+        d = os.path.dirname(f)
+        for name in ("validation-report.md", "validation-report.html"):
+            rp = os.path.join(d, name)
+            if not os.path.isfile(rp) or os.path.getsize(rp) == 0:
+                reasons.append(f"{os.path.relpath(rp, run)} is missing or empty: run the skill's Validate intent after the last edit")
+            elif os.path.getmtime(rp) < os.path.getmtime(f):
+                reasons.append(f"{os.path.relpath(rp, run)} is older than {os.path.basename(f)}: run Validate again")
+
+    if not found["spec"]:
+        reasons.append("no spec: bmad/output/<initiative>/spec-<slug>/spec-<slug>.md")
+    for f in found["spec"]:
+        t = body(f, "spec")
+        if t is not None and not bmad_frontmatter(t).get("id", "").startswith("SPEC-"):
+            reasons.append(f"{os.path.relpath(f, run)} frontmatter has no id: SPEC-…")
+    if not found["architecture"]:
+        reasons.append("no architecture spine: bmad/output/<initiative>/architecture-<slug>/architecture-<slug>.md")
+    for f in found["architecture"]:
+        if body(f, "architecture") is None:
+            continue
+        env = dict(os.environ, DCV2_RUN_DIR=os.path.realpath(run))
+        rt = os.path.join(PLUGIN_ROOT, "bmad", "runtime.mjs")
+        skill = os.path.join(PLUGIN_ROOT, "bmad", "skills", "bmad-architecture")
+        try:
+            r = subprocess.run(["node", rt, "lint_spine", "--skill-root", skill, "--workspace", os.path.realpath(os.path.dirname(f))],
+                               capture_output=True, text=True, timeout=60, env=env)
+            res = json.loads(r.stdout) if r.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            res = None
+        if not isinstance(res, dict) or res.get("ok") is not True:
+            why = "lint_spine did not run" if not isinstance(res, dict) else (res.get("error") or "; ".join(
+                str(x.get("detail")) for x in (res.get("findings") or [])[:3] if isinstance(x, dict)) or "findings")
+            reasons.append(f"{os.path.relpath(f, run)} fails lint_spine: {why}"[:300])
+    for kind, label in (("prd", "PRD"), ("ux", "UX")):
+        if kind in docs and not found[kind]:
+            reasons.append(f"docs names {kind} but there is no {label} document")
+        for f in found[kind]:
+            t = body(f, kind)
+            if t is not None and bmad_frontmatter(t).get("status") != "final":
+                reasons.append(f"{os.path.relpath(f, run)} frontmatter status is not final")
+            reports(f)
+    if "ux" in docs and found["ux"]:
+        names = {os.path.basename(f) for f in found["ux"]}
+        for need in ("DESIGN.md", "EXPERIENCE.md"):
+            if need not in names:
+                reasons.append(f"UX is missing {need}")
+    return reasons, found
+
+
+def cmd_bmad_check(run):
+    run = os.path.abspath(run)
+    st = load_status(run)
+    if bmad_mode(run) == "off" or not bmad_applied(run, st):
+        die("NOT CHECKED: BMAD is not applied to this run")
+    b = dict(bmad_obj(st))
+    reasons, found = bmad_check_docs(run, b.get("docs") or [])
+    chk = {"result": "fail" if reasons else "pass", "at": now(), "digest": bmad_digest(run, found),
+           "documents": sorted(os.path.relpath(f, run) for fs in found.values() for f in fs), "reasons": reasons}
+    b["mode"] = bmad_mode(run)
+    b["check"] = chk
+    st["bmad"] = b
+    for m in write_status(run, st, trusted=True):
+        print(m)
+    append_log(run, st.get("stage") or "planning", f"bmad-check {chk['result']}: {len(chk['documents'])} document(s)" + (f"; {len(reasons)} problem(s)" if reasons else ""))
+    if reasons:
+        print("bmad-check=fail " + "; ".join(reasons))
+        sys.exit(3)
+    print("bmad-check=pass")
 
 
 def cmd_plan(run, what):
@@ -1515,7 +1813,7 @@ def cmd_report(run):
 def main(argv):
     cmd, args = (argv[0] if argv else ""), argv[1:]
     need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0,
-            "gate": 4, "report": 1, "mode": 1, "draft-pr": 2, "push": 2, "post-review": 3, "comment": 4, "ready": 2}
+            "gate": 4, "report": 1, "mode": 1, "draft-pr": 2, "push": 2, "post-review": 3, "comment": 4, "ready": 2, "bmad-size": 2, "bmad-init": 1, "bmad-check": 1}
     if cmd not in need or len(args) < need[cmd]:
         die("usage: see the header of state.sh", 2)
     if cmd == "preflight": cmd_preflight(args[0], "resume" in args[1:])
@@ -1538,6 +1836,9 @@ def main(argv):
     elif cmd == "post-review": cmd_post_review(args[0], args[1], args[2])
     elif cmd == "comment": cmd_comment(args[0], args[1], args[2], args[3])
     elif cmd == "ready": cmd_ready(args[0], args[1])
+    elif cmd == "bmad-size": cmd_bmad_size(args[0], args[1], args[2:])
+    elif cmd == "bmad-init": cmd_bmad_init(args[0])
+    elif cmd == "bmad-check": cmd_bmad_check(args[0])
 
 
 main(sys.argv[1:])

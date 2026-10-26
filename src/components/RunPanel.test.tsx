@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import fixture from "../../fixtures/run/run-view.json";
 import type { RunView } from "../run/api";
@@ -44,6 +44,49 @@ describe("RunPanelView", () => {
     expect(screen.queryByTestId("comments-PR1")).toBeNull();
     fireEvent.click(pr1.getByText("Open draft PR"));
     expect(handlers.onOpenUrl).toHaveBeenCalledWith("https://github.com/o/mathlib/pull/9");
+  });
+
+  it("shows the BMAD badge, size, reasons and a link per document", () => {
+    const bmad = {
+      mode: "auto",
+      version: "bda3c59 6.13.0-next",
+      size: "Large",
+      reasons: ["more than one repo", "new data model"],
+      applied: true,
+      checkResult: "pass",
+      documents: ["bmad/output/r-1/spec-a/spec-a.md", "bmad/output/r-1/architecture-a/architecture-a.md", "bmad/output/r-1/ux-a/DESIGN.md"],
+    };
+    const handlers = renderPanel({ bmad });
+    expect(screen.getByTestId("bmad-badge").textContent).toBe("BMAD bda3c59 6.13.0-next");
+    expect(screen.getByTestId("bmad-size").textContent).toBe("size Large");
+    expect(within(screen.getByTestId("bmad-reasons")).getByText("new data model")).toBeTruthy();
+    const docs = within(screen.getByTestId("bmad-docs"));
+    fireEvent.click(docs.getByText("Spec"));
+    expect(handlers.onOpenFile).toHaveBeenCalledWith("bmad/output/r-1/spec-a/spec-a.md", "Spec");
+    fireEvent.click(docs.getByText("Architecture"));
+    expect(handlers.onOpenFile).toHaveBeenCalledWith("bmad/output/r-1/architecture-a/architecture-a.md", "Architecture");
+    expect(docs.getByText("UX design")).toBeTruthy();
+  });
+
+  it("shows no document links while planning, and the sizing before a size exists", () => {
+    renderPanel({
+      stage: "planning",
+      bmad: { mode: "on", version: null, size: null, reasons: [], applied: false, checkResult: null, documents: ["bmad/output/r-1/spec-a/spec-a.md"] },
+    });
+    expect(screen.getByTestId("bmad-badge").textContent).toBe("BMAD");
+    expect(screen.getByTestId("bmad-size").textContent).toBe("on");
+    expect(screen.queryByTestId("bmad-docs")).toBeNull();
+  });
+
+  it("shows nothing about BMAD for an old run or one with it off", () => {
+    renderPanel();
+    expect(screen.queryByTestId("bmad")).toBeNull();
+    cleanup();
+    renderPanel({ bmad: null });
+    expect(screen.queryByTestId("bmad")).toBeNull();
+    cleanup();
+    renderPanel({ bmad: { mode: "off", version: null, size: null, reasons: [], applied: false, checkResult: null, documents: [] } });
+    expect(screen.queryByTestId("bmad")).toBeNull();
   });
 
   it("shows the stage, that Claude is asking in the tab, and the plan", () => {

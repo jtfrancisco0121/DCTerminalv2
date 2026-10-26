@@ -157,12 +157,35 @@ describe("App", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
     });
-    // Review on GitHub is on by default.
-    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null, "github");
+    // Review on GitHub is on by default, and so is BMAD Auto.
+    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null, "github", "auto");
     expect((await screen.findByTestId("terminal")).textContent).toBe("Eagle-Eye · ws");
     expect(await screen.findByTestId("run-stage")).toBeTruthy();
     expect(screen.getByTestId("run-stage").textContent).toBe("Planning");
     state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
+
+  it("the BMAD choice defaults to Auto, is remembered per folder and goes to startRun", async () => {
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+    startRun.mockClear();
+    render(<App />);
+    const folder = await screen.findByPlaceholderText("/path/to/repo or folder of repos");
+    fireEvent.change(folder, { target: { value: "/w/ws" } });
+    const radio = (name: string) => screen.getByRole("radio", { name }) as HTMLInputElement;
+    expect(radio("Auto").checked).toBe(true);
+    fireEvent.click(radio("On"));
+    fireEvent.change(folder, { target: { value: "/w/other" } });
+    expect(radio("Auto").checked).toBe(true); // another folder: its own choice
+    fireEvent.change(folder, { target: { value: "/w/ws" } });
+    expect(radio("On").checked).toBe(true); // this folder remembers
+    expect(await screen.findByText("A git repo.")).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Add multiply()" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
+    });
+    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null, "github", "on");
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+    localStorage.removeItem("dcv2.bmadMode./w/ws");
   });
 
   // Review: a window whose account was removed ran its Claude tabs on the

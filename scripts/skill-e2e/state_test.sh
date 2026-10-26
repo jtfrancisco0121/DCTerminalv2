@@ -361,4 +361,210 @@ rm -f "$RUN2/report.md"; mkdir "$RUN2/report.md"
 expect 0 "a report that cannot be written does not fail the status write (LOW 9)" bash "$STATE" put "$RUN2/status.json" < "$d/failed.json"
 has "  says so" "report.md not written"
 
+echo "# BMAD mode: size, init, check, and the plan-approval refusal (run folder path has a space)"
+B="$d/App Support/runs/r-b"; mkdir -p "$B"
+printf 'folder: %s\n' "$WS" > "$B/request.md"
+printf '# Plan\n## Stories\n### S1: x\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n' > "$B/plan.md"
+printf '{"schema":1,"repos":[{"name":"toy \\"quoted\\" repo","path":"%s","check":null}]}\n' "$R" > "$B/repos.json"
+# bstatus <stage>: a minimal status.json document for the BMAD run (no PRs yet)
+bstatus() {
+  python3 - "$B" "$1" <<'PY'
+import json, os, sys
+run, stage = sys.argv[1:3]
+print(json.dumps({"schema": 1, "runId": os.path.basename(run), "stage": stage, "waitingFor": "plan-approval" if stage == "plan-approval" else None,
+                  "folder": "/x", "plan": {"path": "plan.md", "reviewRound": 1, "verdict": "APPROVED", "openFindings": 0, "approved": False},
+                  "prs": [], "ship": None, "writeback": None, "error": None}))
+PY
+}
+bput() { bash "$STATE" put "$B/status.json"; }
+bmeta() { printf '{"schema":1,"bmad":{"mode":"%s","version":"bda3c59 6.13.0-next"}}\n' "$1" > "$B/meta.json"; }
+bsize() { local sz="$1"; shift; bash "$STATE" bmad-size "$B" "$sz" "$@" <<<"reason one"; }
+# mkdocs [prd] [ux]: valid spec + architecture (and PRD / UX with reports) under the spaced run path
+mkdocs() {
+  local w="$B/bmad/output/r-b"
+  mkdir -p "$w/spec-toy" "$w/architecture-toy"
+  printf -- '---\nid: SPEC-toy\n---\n\n# Toy spec\n\n## Capabilities\n\n- **CAP-1** users can add\n' > "$w/spec-toy/spec-toy.md"
+  printf -- '---\nname: toy\nstatus: draft\n---\n\n# Spine\n\n## Invariants & Rules\n\n### AD-1 - Layers\n\n- **Binds:** all\n- **Prevents:** drift\n- **Rule:** UI never calls the DB\n' > "$w/architecture-toy/architecture-toy.md"
+  local k
+  for k in "$@"; do
+    mkdir -p "$w/$k-toy"
+    if [[ $k == prd ]]; then printf -- '---\nstatus: final\n---\n\n# PRD\n\nUsers add numbers.\n' > "$w/prd-toy/prd-toy.md"; touch -t 202601010000 "$w/prd-toy/prd-toy.md"
+    else printf -- '---\nstatus: final\n---\n\n# Design\n\nCalm.\n' > "$w/ux-toy/DESIGN.md"; printf -- '---\nstatus: final\n---\n\n# Experience\n\nOne screen.\n' > "$w/ux-toy/EXPERIENCE.md"; touch -t 202601010000 "$w/ux-toy/DESIGN.md" "$w/ux-toy/EXPERIENCE.md"; fi
+    printf '# Validation\nok\n' > "$w/$k-toy/validation-report.md"; printf '<html>ok</html>\n' > "$w/$k-toy/validation-report.html"
+  done
+}
+export DCV2_RUN_DIR="$B"
+
+# an old run: no bmad in meta.json (or no meta.json at all) behaves as before
+expect 0 "bmad: put planning (no meta.json)" bput < <(bstatus planning)
+expect 0 "bmad: preflight prints bmad=off and a node line" bash "$STATE" preflight "$B"
+has "  bmad=off" "bmad=off"; has "  node line" "node="
+expect 1 "bmad-size refused when the mode is off" bsize Large
+has "  says off" "BMAD mode is off"
+expect 1 "bmad-check refused when not applied" bash "$STATE" bmad-check "$B"
+expect 0 "bmad: plan-approval puts as today (old run)" bput < <(bstatus plan-approval)
+expect 0 "bmad: old run approves" bash "$STATE" approve "$B" plan user
+bmeta nonsense
+expect 1 "unknown mode reads as off" bsize Large
+bmeta off
+expect 1 "mode off: bmad-init refused" bash "$STATE" bmad-init "$B"
+
+echo "# BMAD auto: size rules, init, the refusal"
+rm -f "$B/status.json" "$B/log.md"; bmeta auto
+expect 0 "auto: put planning" bput < <(bstatus planning)
+expect 0 "auto: preflight" bash "$STATE" preflight "$B"
+has "  bmad=auto" "bmad=auto"
+expect 1 "auto, no size: plan-approval put refused" bput < <(bstatus plan-approval)
+has "  says to size first" "BMAD auto: run the sizing pass"
+expect 1 "auto, no size: approve refused" bash "$STATE" approve "$B" plan user
+has "  same message" "state.sh bmad-size first"
+expect 1 "bmad-init refused before a size" bash "$STATE" bmad-init "$B"
+expect 1 "bmad-size refuses an unknown size" bsize Huge
+expect 1 "bmad-size refuses unknown docs" bsize Medium --docs prd,bogus
+expect 0 "size Medium" bsize Medium --by planner
+is "  size" "$B/status.json" bmad.size '"Medium"'
+is "  not applied" "$B/status.json" bmad.applied false
+is "  mode recorded" "$B/status.json" bmad.mode '"auto"'
+expect 1 "bmad-init refused when not applied" bash "$STATE" bmad-init "$B"
+expect 1 "bmad-check refused when not applied" bash "$STATE" bmad-check "$B"
+expect 1 "size cannot go down (Small)" bsize Small --by planner
+has "  says only up" "BMAD size can only go up (recorded Medium)"
+expect 0 "Small in auto skips BMAD: plan-approval put" bput < <(bstatus plan-approval)
+expect 0 "Small/Medium in auto approves normally" bash "$STATE" approve "$B" plan user
+expect 1 "bmad-size refused outside planning" bsize Large
+has "  says planning" "stage planning"
+# back to planning: Medium -> Large works, then nothing lowers it
+rm -f "$B/status.json"; expect 0 "put planning again" bput < <(bstatus planning)
+expect 0 "Medium" bsize Medium --docs prd
+expect 0 "Medium -> Large" bsize Large --by plan-reviewer --docs ux
+is "  Large" "$B/status.json" bmad.size '"Large"'
+is "  applied" "$B/status.json" bmad.applied true
+is "  docs only gain" "$B/status.json" bmad.docs '["prd", "ux"]'
+for by in planner plan-reviewer none; do
+  expect 1 "a recorded Large cannot be lowered (--by $by)" bash "$STATE" bmad-size "$B" Small --by "$by" <<<"x"
+  expect 1 "  nor Medium (--by $by)" bash "$STATE" bmad-size "$B" Medium --by "$by" <<<"x"
+done
+expect 0 "Large again keeps applied" bsize Large --by planner
+is "  applied stays true" "$B/status.json" bmad.applied true
+# bforge <stage> <bmad json>: the recorded status.json with its bmad replaced (what a model's put could try)
+bforge() {
+  python3 - "$B" "$1" "$2" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/status.json"))
+d["bmad"] = json.loads(sys.argv[3])
+d["stage"] = sys.argv[2]
+print(json.dumps(d))
+PY
+}
+expect 1 "put cannot lower or overwrite bmad (at plan-approval the recorded Large still gates)" bput < <(bforge plan-approval '{"mode":"auto","size":"Small","applied":false}')
+has "  refused by the gate (the recorded Large kept)" "BMAD mode: state.sh bmad-check"
+is "  bmad unchanged after a put" "$B/status.json" bmad.size '"Large"'
+expect 0 "put planning with a forged bmad is accepted but bmad is kept" bput < <(bforge planning '{"mode":"auto","size":"Small","applied":false}')
+has "  note about the kept value" "bmad is set only by"
+is "  size still Large" "$B/status.json" bmad.size '"Large"'
+is "  applied still true" "$B/status.json" bmad.applied true
+expect 1 "applied, no check: plan-approval put refused" bput < <(bstatus plan-approval)
+has "  says to run bmad-check" "state.sh bmad-check $B must pass first"
+expect 1 "applied, no check: approve refused" bash "$STATE" approve "$B" plan user
+
+echo "# BMAD init and config.toml"
+expect 0 "bmad-init" bash "$STATE" bmad-init "$B"
+[[ -d "$B/bmad/output" && -f "$B/bmad/_bmad/config.toml" ]] && ok "  config.toml and output/ made" || bad "  bmad-init made nothing"
+python3 - "$B" <<'PY' && ok "  config.toml parses back with the spaced path and the quoted repo name" || bad "  config.toml did not parse back"
+import sys
+try:
+    import tomllib
+except ImportError:  # python < 3.11: nothing to parse with
+    sys.exit(0)
+c = tomllib.load(open(sys.argv[1] + "/bmad/_bmad/config.toml", "rb"))["core"]
+import os
+assert " " in c["output_folder"] and c["output_folder"].endswith("App Support/runs/r-b/bmad/output"), c
+assert c["project_name"] == 'toy "quoted" repo', c
+assert c["active_initiative"] == "r-b", c
+PY
+cp "$B/bmad/_bmad/config.toml" "$d/config.before"; echo '# kept' >> "$B/bmad/_bmad/config.toml"
+expect 0 "bmad-init is idempotent" bash "$STATE" bmad-init "$B"
+grep -q '^# kept' "$B/bmad/_bmad/config.toml" && ok "  an existing config is left alone" || bad "  config was rewritten"
+nonode="$d/nonode"; mkdir -p "$nonode"; ln -sf "$(command -v python3)" "$nonode/python3"; ln -sf "$(command -v git)" "$nonode/git"
+rm -rf "$B/bmad/_bmad"
+expect 1 "bmad-init refuses without node" env PATH="$nonode:/usr/bin:/bin" bash "$STATE" bmad-init "$B"
+has "  says Node 18+" "BMAD needs Node 18+"
+expect 0 "bmad-init again" bash "$STATE" bmad-init "$B"
+
+echo "# BMAD check"
+expect 3 "bmad-check fails with no documents" bash "$STATE" bmad-check "$B"
+has "  names the missing spec" "no spec"
+has "  names the missing architecture" "no architecture spine"
+is "  check.result fail" "$B/status.json" bmad.check.result '"fail"'
+mkdocs; : > "$B/bmad/output/r-b/spec-toy/spec-toy.md"
+expect 3 "bmad-check fails on an empty spec" bash "$STATE" bmad-check "$B"
+has "  says empty" "is empty or unreadable"
+mkdocs; printf -- '---\nid: SPEC-toy\n---\n\n# Spec {Spec Title}\n' > "$B/bmad/output/r-b/spec-toy/spec-toy.md"
+expect 3 "bmad-check fails on template text" bash "$STATE" bmad-check "$B"
+has "  says unfilled" "unfilled template text"
+mkdocs; printf -- '---\nname: toy\n---\n\n# Spine\n\n### AD-1 - x\n\n- **Binds:** all\n' > "$B/bmad/output/r-b/architecture-toy/architecture-toy.md"
+expect 3 "bmad-check fails on a bad spine (lint_spine)" bash "$STATE" bmad-check "$B"
+has "  says lint_spine" "fails lint_spine"
+mkdocs; printf -- '# no frontmatter\n\ntext\n' > "$B/bmad/output/r-b/spec-toy/spec-toy.md"
+expect 3 "bmad-check fails without id: SPEC-" bash "$STATE" bmad-check "$B"
+mkdocs
+expect 3 "docs names prd and ux: check fails without them" bash "$STATE" bmad-check "$B"
+has "  names prd" "docs names prd"
+mkdocs prd ux
+rm "$B/bmad/output/r-b/prd-toy/validation-report.html"
+expect 3 "PRD without validation-report.html fails" bash "$STATE" bmad-check "$B"
+has "  names the report" "validation-report.html is missing or empty"
+printf '<html>ok</html>\n' > "$B/bmad/output/r-b/prd-toy/validation-report.html"
+touch -t 202501010000 "$B/bmad/output/r-b/prd-toy/validation-report.html"
+expect 3 "a report older than the PRD fails" bash "$STATE" bmad-check "$B"
+has "  says run Validate again" "run Validate again"
+printf -- '---\nstatus: draft\n---\n\n# PRD\n\nx\n' > "$B/bmad/output/r-b/prd-toy/prd-toy.md"; touch -t 202601010000 "$B/bmad/output/r-b/prd-toy/prd-toy.md"
+printf '<html>ok</html>\n' > "$B/bmad/output/r-b/prd-toy/validation-report.html"
+expect 3 "a PRD that is not final fails" bash "$STATE" bmad-check "$B"
+has "  says not final" "status is not final"
+mkdocs prd ux
+expect 0 "bmad-check passes on fixture documents (PRD + UX with reports)" bash "$STATE" bmad-check "$B"
+has "  prints pass" "bmad-check=pass"
+is "  check.result" "$B/status.json" bmad.check.result '"pass"'
+python3 - "$B" <<'PY' && ok "  check records documents and a digest" || bad "  check record is wrong"
+import json, sys
+c = json.load(open(sys.argv[1] + "/status.json"))["bmad"]["check"]
+assert len(c["digest"]) == 64 and c["reasons"] == [] and c["at"].endswith("Z")
+assert "bmad/output/r-b/spec-toy/spec-toy.md" in c["documents"] and "bmad/output/r-b/ux-toy/EXPERIENCE.md" in c["documents"], c["documents"]
+PY
+
+echo "# BMAD: plan-approval is allowed with a passing check, refused after a document edit, and recovers"
+expect 0 "plan-approval put with a passing check" bput < <(bstatus plan-approval)
+echo "A new line." >> "$B/bmad/output/r-b/spec-toy/spec-toy.md"
+expect 1 "put plan-approval refused after a document edit (stale digest)" bput < <(bstatus plan-approval)
+has "  says documents changed" "documents changed since the last bmad-check"
+expect 1 "approve refused after a document edit" bash "$STATE" approve "$B" plan user
+expect 0 "bmad-check again" bash "$STATE" bmad-check "$B"
+expect 0 "recovered: put plan-approval" bput < <(bstatus plan-approval)
+expect 0 "recovered: approve plan" bash "$STATE" approve "$B" plan user
+is "  approved" "$B/status.json" plan.approval.by '"user"'
+is "  bmad still recorded" "$B/status.json" bmad.check.result '"pass"'
+mkdir -p "$B/bmad/output/r-b/prd-late"; printf -- '---\nstatus: final\n---\n\n# late\n\nx\n' > "$B/bmad/output/r-b/prd-late/prd-late.md"
+rm -f "$B/status.json"; expect 0 "back to planning" bput < <(bstatus planning)
+expect 1 "a document added after the check also makes it stale" bput < <(bstatus plan-approval)
+
+echo "# BMAD on: always applied, even with no size"
+rm -rf "$B/bmad" "$B/status.json" "$B/log.md"; bmeta on
+expect 0 "on: put planning" bput < <(bstatus planning)
+expect 1 "on, no size: plan-approval refused until a check passes" bput < <(bstatus plan-approval)
+has "  says bmad-check" "state.sh bmad-check $B must pass first"
+expect 0 "on: bmad-init allowed with no size" bash "$STATE" bmad-init "$B"
+expect 0 "on: Small is recorded and applied" bsize Small --by planner
+is "  applied (mode on)" "$B/status.json" bmad.applied true
+mkdocs
+expect 0 "on: check passes" bash "$STATE" bmad-check "$B"
+expect 0 "on: plan-approval allowed after the check" bput < <(bstatus plan-approval)
+# an app mode change cannot be undone by status.json: on stays on
+rm -f "$B/status.json"; bash "$STATE" put "$B/status.json" < <(bstatus planning) >/dev/null
+bash "$STATE" put "$B/status.json" < <(bforge planning '{"mode":"on","size":"Small","applied":false}') >/dev/null
+expect 1 "on: applied=false in status.json does not skip the gate" bput < <(bstatus plan-approval)
+rm -rf "$B/bmad" "$B/status.json"; bmeta off
+expect 0 "off again: plan-approval puts as before" bput < <(bstatus plan-approval)
+
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }
