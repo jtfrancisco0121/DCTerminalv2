@@ -1213,9 +1213,75 @@ body,
   gap: var(--space-2);
 }
 
-.run-panel {
-  width: 20rem;
+.run-panel-frame {
+  position: relative;
+  display: flex;
   flex-shrink: 0;
+  min-width: 0;
+}
+
+.run-panel-handle {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.run-panel-handle:hover,
+.run-panel-handle:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+
+.run-panel-collapse {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  z-index: 6;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.run-rail {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  width: 1.75rem;
+  border-left: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+
+.run-rail-button {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  padding: var(--space-1) 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.run-rail-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.run-rail-attention .run-rail-dot {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px var(--warning-subtle);
+}
+
+.run-panel {
+  flex: 1;
+  min-width: 0;
   overflow-y: auto;
   padding: var(--space-2) var(--space-3);
   border-left: 1px solid var(--border);

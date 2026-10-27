@@ -100,6 +100,8 @@ One backend thread, `observe/attention.rs`, started at app setup (never from a c
 
 - **PR card actions** (`run/actions.rs`). Copy branch (the page), and Reveal, Open in editor and Shell here on a PR's worktree. The backend resolves the worktree from the run and PR id and acts only when `janitor::verify_worktree` accepts it (where the contract puts it, a linked worktree of the PR's repo, on the run's branch); otherwise the buttons are disabled with the reason. The editor is `ui.editorCommand` (empty: `code`), split into program and arguments and started without a shell with the worktree last. Shell here opens a Shell tab in the calling window.
 
+- **Run panel layout** (`RunPanelShell.tsx`). The panel beside a run tab is 16 to 40 rem wide (default 20): drag the 6px handle, or focus it and press Left (wider) or Right (narrower) for 1 rem; double-click resets. The button at its top edge collapses it to a narrow rail with the stage dot, which turns to the attention colour while the run waits for you; clicking the rail expands it. Width and state are kept per window in localStorage (`dcv2.runPanel.<windowId>`); the terminal beside it refits after each change.
+
 ## Import from the dev app (release builds)
 
 Debug builds keep their data in `<identifier>.dev`, release builds in `<identifier>`. On first launch (offered once; `dev-import.json` records it) and from File › "Import from dev app…" (hidden in debug builds) the built app imports the dev app's session, reading `.dev` only:

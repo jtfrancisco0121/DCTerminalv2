@@ -71,6 +71,7 @@ vi.mock("./components/TerminalView", () => ({
 }));
 vi.mock("./terminal/park", () => ({
   focusParkedTerminal: vi.fn(),
+  refitTerminal: vi.fn(),
   requestTerminalSearch: vi.fn(),
   setCopyOnSelect: vi.fn(),
   setOptionAsMeta: vi.fn(),

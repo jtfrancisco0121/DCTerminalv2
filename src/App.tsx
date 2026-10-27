@@ -34,7 +34,7 @@ import { newTabDefaults, type NewTabDraft } from "./newTab";
 import { detectPlatform } from "./terminal/keys";
 import { ACCOUNT_REMOVED, accountProblem } from "./terminal/openPlan";
 import { dropLivePty, ptyExitCode, ptyRunning, subscribeLivePty, subscribePtyExit } from "./terminal/live";
-import { focusParkedTerminal, requestTerminalSearch, setCopyOnSelect, setOptionAsMeta, setTerminalTheme } from "./terminal/park";
+import { focusParkedTerminal, refitTerminal, requestTerminalSearch, setCopyOnSelect, setOptionAsMeta, setTerminalTheme } from "./terminal/park";
 import { applyTheme, watchSystemTheme } from "./theme";
 import { reportError, setErrorNotifier } from "./uiErrors";
 import { statusLimit } from "./usage/limits";
@@ -383,6 +383,7 @@ function App() {
               onGoToPrompt={() => focusParkedTerminal(active.id)}
               windowId={windowId}
               onTabsChanged={() => void reload()}
+              onLayoutChange={() => refitTerminal(active.id)}
             />
           </div>
         )}

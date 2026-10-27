@@ -31,6 +31,7 @@ import {
 import { ClickUpRunSection } from "../clickup/ClickUpRunSection";
 import { checkLogPr, readCheckLog } from "../run/observe";
 import { Dialog } from "./Dialog";
+import { RunPanelShell } from "./RunPanelShell";
 import { ApprovalCard } from "./ApprovalCard";
 import { ObserveSection } from "./ObserveSection";
 import { errorText } from "./InlineNotice";
@@ -410,6 +411,7 @@ export function RunPanel({
   onGoToPrompt,
   windowId,
   onTabsChanged,
+  onLayoutChange,
 }: {
   runDir: string;
   tabId?: string;
@@ -420,6 +422,8 @@ export function RunPanel({
   windowId?: string;
   /** A tab was added (Shell here): the window reads its tabs again. */
   onTabsChanged?: () => void;
+  /** The panel was resized or collapsed: refit the terminal beside it. */
+  onLayoutChange?: () => void;
 }) {
   const [view, setView] = useState<RunView | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -537,13 +541,21 @@ export function RunPanel({
 
   if (!view) {
     return (
-      <aside className="run-panel" aria-label="Run progress">
-        <p className="hint">{problem ?? "Reading the run…"}</p>
-      </aside>
+      <RunPanelShell windowId={windowId ?? "main"} stageLabel="Reading the run" attention={false} onLayoutChange={onLayoutChange}>
+        <aside className="run-panel" aria-label="Run progress">
+          <p className="hint">{problem ?? "Reading the run…"}</p>
+        </aside>
+      </RunPanelShell>
     );
   }
   return (
     <>
+      <RunPanelShell
+        windowId={windowId ?? "main"}
+        stageLabel={stageText(view.stage)}
+        attention={Boolean(view.waitingFor)}
+        onLayoutChange={onLayoutChange}
+      >
       <RunPanelView
         view={view}
         checking={checking}
@@ -558,6 +570,7 @@ export function RunPanel({
         session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} /> : undefined}
         extra={<ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} />}
       />
+      </RunPanelShell>
       {problem && <p className="error run-problem">{problem}</p>}
       {file && <TextDialog title={file.title} text={file.text} onClose={() => setFile(null)} />}
       {janitor && (

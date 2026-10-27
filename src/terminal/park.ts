@@ -250,6 +250,11 @@ export function setTerminalSearchOpener(id: string, open: () => void): () => voi
   };
 }
 
+/** Fits the terminal to its slot now (the slot's size changed without a window resize). */
+export function refitTerminal(id: string): void {
+  refitters.get(id)?.();
+}
+
 /** The mounted view registers how to refit its xterm to the slot. */
 export function setTerminalRefitter(id: string, refit: () => void): () => void {
   refitters.set(id, refit);
