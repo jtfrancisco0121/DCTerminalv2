@@ -229,5 +229,10 @@ expect 0 "compose of the single repo" bash "$MEM" compose "$API" "$d/p1.md"
 grep -q "Workspace" "$d/p1.md" && bad "  a single repo has no workspace section" || ok "  no workspace section for a single repo"
 expect 0 "--root overrides the env" env -u DCV2_MEMORY_DIR bash "$MEM" status "$API" --root "$DCV2_MEMORY_DIR"
 is "  present via --root" repos.0.present true
+expect 1 "--root refused while DCV2_MEMORY_DIR is set" bash "$MEM" write --root "$d/other" repoa topics/x.md <<<"# x"
+has "  says why" "--root is refused"
+[[ ! -e "$d/other" ]] && ok "  nothing written" || bad "  $d/other was made"
+expect 1 "--root refused for status too" bash "$MEM" status "$API" --root "$d/other"
+expect 0 "--root without DCV2_MEMORY_DIR still works (tests, hand use)" env -u DCV2_MEMORY_DIR bash "$MEM" status "$API" --root "$d/mem"
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

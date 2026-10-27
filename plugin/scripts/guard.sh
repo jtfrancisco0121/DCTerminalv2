@@ -809,6 +809,67 @@ RUNNERS = {"nohup": (), "caffeinate": (), "stdbuf": (), "command": (), "exec": (
            "bunx": (), "unbuffer": (), "chronic": ()}
 
 
+ASSIGN_ANY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
+PROTECTED_ENV_RE = re.compile(r"^(DCV2_\w*|CLAUDE_PLUGIN_ROOT|CLAUDE_CONFIG_DIR)\+?=(.*)$", re.S)
+DECLARERS = ("export", "declare", "typeset", "readonly", "local")
+
+
+def prefix_assignments(words, depth=0):
+    """The NAME=value words that set the environment for what a segment runs: bare prefixes, after env / sudo / nice …,
+    and the arguments of export / declare / typeset / readonly / local."""
+    out, i = [], 0
+    while i < len(words):
+        w, b = words[i], os.path.basename(words[i])
+        if ASSIGN_ANY.match(w):
+            out.append(w)
+            i += 1
+        elif b in DECLARERS:
+            out += [x for x in words[i + 1:] if ASSIGN_ANY.match(x) or re.match(r"^[^=\s]*\$[^=\s]*=", x)]
+            break
+        elif b in RUNNERS or w in WRAPPERS:
+            i += 1
+            while i < len(words) and words[i].startswith("-"):
+                opt, i = words[i], i + 1
+                if b == "env" and (opt in ("-S", "--split-string") or opt.startswith("--split-string=")) and depth < 3:
+                    text = opt.split("=", 1)[1] if "=" in opt else (words[i] if i < len(words) else "")
+                    i += 0 if "=" in opt else 1
+                    try:
+                        out += prefix_assignments(shlex.split(text), depth + 1)
+                    except ValueError:
+                        pass
+                elif opt in RUNNERS.get(b, ()) and i < len(words):
+                    i += 1
+            if b == "timeout" and i < len(words):
+                i += 1
+        else:
+            break
+    return out
+
+
+def check_env(w):
+    """DCV2_*, CLAUDE_PLUGIN_ROOT and CLAUDE_CONFIG_DIR decide what the guard, state.sh, memory.sh and the BMAD runtime
+    trust, so nothing in a dcv2 session (a bound run, or any tab with DCV2_MEMORY_DIR) sets them. Allowed: DCV2_E2E_*
+    (live-suite knobs) and DCV2_RUN_DIR / DCV2_MEMORY_DIR given the session's own value (the planner prefixes runtime
+    calls with its own run folder). `env -u NAME` and `unset` are not assignments."""
+    m = PROTECTED_ENV_RE.match(w)
+    if not m:
+        if re.match(r"^[^=\s]*\$[^=\s]*=", w):
+            block(f"cannot tell which variable `{w.split('=', 1)[0]}=…` sets in a dcv2 session; name it literally.")
+        return
+    name, val = m.group(1), m.group(2)
+    if name.startswith("DCV2_E2E_"):
+        return
+    own = {"DCV2_RUN_DIR": run, "DCV2_MEMORY_DIR": mem}.get(name)
+    if own and not w.startswith(name + "+="):
+        if val in ("$" + name, "${" + name + "}"):
+            return
+        v = os.path.expanduser(val)
+        if os.path.isabs(v) and "$" not in v and same(v, own):
+            return
+    block(f"setting {name} is not allowed in a dcv2 session: it redirects what the guard, state.sh, memory.sh and the plugin trust "
+          f"(use `env -u {name} …` to unset it for one command; a plain terminal is unaffected).")
+
+
 def unwrap(words):
     """The command a segment really runs: assignments, `then`/`do`/…, and runners (timeout, nice, env, npx, …) with
     their options dropped."""
@@ -946,6 +1007,9 @@ def analyze(cmd, cwd, depth=0):
                 if GIT_ENV_RE.match(w):
                     block(f"setting {w.split('=', 1)[0]} is not allowed in a dcv2 run: it changes which repo git works on "
                           "or which programs it runs.")
+        if run or mem:
+            for w in prefix_assignments(words):
+                check_env(w)
         words = unwrap(words)
         if not words:
             continue

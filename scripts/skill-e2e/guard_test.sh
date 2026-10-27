@@ -425,6 +425,47 @@ bx 0 dcv2:planner "echo x > \"$SRUN/bmad/output/x.md\""
 bx 2 dcv2:planner "echo x > \"$R/x.md\""
 bx 0 "" "bash \"$PLUG/scripts/state.sh\" bmad-check \"$SRUN\""
 
+echo "# the confinement roots cannot be redirected (CAP-6)"
+bx 2 dcv2:planner "DCV2_RUN_DIR=\"$R\" node \"$RT\" memlog init --workspace x"
+bx 2 dcv2:planner "env DCV2_RUN_DIR=$R node \"$RT\" memlog init --workspace x"
+bx 2 dcv2:planner "sudo -u nobody env CLAUDE_CONFIG_DIR=/x ls"
+bx 2 dcv2:planner "env -S 'DCV2_RUN_DIR=$R ls'"
+bx 2 dcv2:planner "env -S \"DCV2_RUN_DIR=$R node \\\"$RT\\\" memlog init\""
+bx 2 dcv2:memory-updater "DCV2_MEMORY_DIR=$R bash \"$PLUG/scripts/memory.sh\" write src index.md"
+bx 2 "" "DCV2_MEMORY_DIR=$R bash \"$PLUG/scripts/memory.sh\" write src index.md"
+bx 2 "" "export CLAUDE_PLUGIN_ROOT=/tmp/x"
+bx 2 "" "export -n CLAUDE_CONFIG_DIR=/tmp/x"
+bx 2 "" "declare -x DCV2_MAX_IMPLEMENTERS=99"
+bx 2 "" "readonly DCV2_RUN_DIR=$R"
+bx 2 "" "typeset -x DCV2_TEST_MODE=auto-approve"
+bx 2 "" "local DCV2_RUN_DIR=$R"
+bx 2 "" 'n=DCV2_RUN_DIR; export "$n=/tmp/x"'
+bx 2 "" "DCV2_RUN_DIR+=x ls"
+bx 2 "" "DCV2_TEST_MODE=auto-approve bash \"$PLUG/scripts/state.sh\" approve \"$SRUN\" plan test"
+bx 2 "" "CLAUDE_CONFIG_DIR=/tmp/x claude -p hi"
+bx 2 dcv2:implementer "cd $WT && DCV2_RUN_DIR=$R npm test"
+bx 2 "" "ls && DCV2_TEST_MODE=x true"
+bx 2 "" "bash -c 'DCV2_RUN_DIR=$R ls'"
+bx 2 "" "timeout 5 DCV2_RUN_DIR=$R ls"
+bx 0 dcv2:planner "DCV2_RUN_DIR=\"$SRUN\" node \"$RT\" memlog init --workspace x"           # the planner prefixes its own run folder
+bx 0 dcv2:planner "DCV2_RUN_DIR=\"$(UP "$SRUN")\" node \"$RT\" memlog init --workspace x"    # the same folder, in capitals
+bx 0 dcv2:planner 'DCV2_RUN_DIR="$DCV2_RUN_DIR" node "'"$RT"'" memlog init --workspace x'
+bx 0 dcv2:planner "env DCV2_RUN_DIR=\"$SRUN\" node \"$RT\" memlog init --workspace x"
+bx 0 dcv2:implementer "env -u DCV2_RUN_DIR ls"
+bx 0 "" "unset DCV2_TEST_MODE; ls"
+bx 0 "" "echo DCV2_RUN_DIR=x documents the variable"
+bx 0 "" "git -C $WT commit -m 'DCV2_TEST_MODE=x is refused' --allow-empty"
+bx 0 dcv2:implementer "FOO=1 BAR=2 ls"
+expect 2 "implementer: a live-suite knob does not make golden.sh allowed" "$(payload dcv2:implementer Bash command "cd $WT && DCV2_E2E_MODEL=haiku bash scripts/skill-e2e/golden.sh")"
+expect 2 "implementer: golden.sh without the knob is judged the same" "$(payload dcv2:implementer Bash command "cd $WT && bash scripts/skill-e2e/golden.sh")"
+expect 0 "implementer: a live-suite knob alone is fine" "$(payload dcv2:implementer Bash command "DCV2_E2E_MODEL=haiku true")"
+# a normal tab: only DCV2_MEMORY_DIR is set
+expect 2 "normal tab: DCV2_TEST_MODE=… refused" "$(payload "" Bash command "DCV2_TEST_MODE=auto-approve bash $STATE approve $RUN plan test")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$APPD/memory"
+expect 2 "normal tab: DCV2_RUN_DIR=… refused" "$(payload "" Bash command "DCV2_RUN_DIR=$RUN bash $STATE preflight $RUN")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$APPD/memory"
+expect 0 "normal tab: env -u DCV2_MEMORY_DIR … allowed" "$(payload "" Bash command "env -u DCV2_MEMORY_DIR bash $STATE now")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$APPD/memory"
+expect 0 "normal tab: its own DCV2_MEMORY_DIR allowed" "$(payload "" Bash command "DCV2_MEMORY_DIR=$APPD/memory bash $STATE now")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$APPD/memory"
+expect 0 "plain terminal (nothing bound): not judged" "$(payload "" Bash command "DCV2_TEST_MODE=x bash $STATE now")" -u DCV2_RUN_DIR -u DCV2_MEMORY_DIR
+
 b 2 "" "bash $STATE draft-pr $RUN PR1"                                 # local mode: no drafts
 b 0 "" "git -C $WT push -u origin dcv2/r-x-pr1"                         # local mode: today's ship rule
 

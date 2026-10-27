@@ -218,6 +218,8 @@ def in_play(folder):
 
 
 def root_dir(required=True):
+    if ROOT and os.environ.get("DCV2_MEMORY_DIR"):  # a launched session's memory root is fixed; --root is for tests and hand use
+        die("--root is refused while DCV2_MEMORY_DIR is set: the memory root of a dcv2 session cannot be redirected")
     r = ROOT or os.environ.get("DCV2_MEMORY_DIR") or ""
     if not r:
         if required:
