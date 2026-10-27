@@ -262,8 +262,35 @@ fn open_session(
     open_session_as(registry, id, token, spec, on_output, || true, || Ok(()))
 }
 
+/// [`open_session_with`] with nothing to save after the spawn.
+#[cfg(test)]
+fn open_session_as(
+    registry: &Mutex<PtyRegistry>,
+    id: &str,
+    token: u64,
+    spec: SpawnSpec,
+    on_output: Channel<PtyPacket>,
+    still_wanted: impl FnOnce() -> bool,
+    before_spawn: impl FnOnce() -> Result<(), String>,
+) -> Result<Option<u32>, String> {
+    open_session_with(
+        registry,
+        id,
+        token,
+        spec,
+        on_output,
+        still_wanted,
+        before_spawn,
+        || Ok(()),
+    )
+}
+
 /// Start the terminal `id` for the open `token` ([`begin_open`]),
-/// replacing the one running under that id.
+/// replacing the one running under that id. `after_spawn` runs under the
+/// registry lock right after the program started for the current open (and
+/// never for a superseded, closed or failed one): it saves what the open
+/// changes in the tab record (lock order: `PtyRegistry` before
+/// `StateStore`). Its failure is logged and does not stop the terminal.
 ///
 /// Blocking: runs on a `spawn_blocking` thread, never the UI thread or a
 /// Tokio worker. A replaced (or just closed) program is stopped first, and
@@ -276,7 +303,8 @@ fn open_session(
 /// before the spawn (the tab and its window still exist); false cancels
 /// the open. It may take the `StateStore` lock (lock order: `PtyRegistry`
 /// before `StateStore`), so nobody takes the registry while holding that.
-fn open_session_as(
+#[allow(clippy::too_many_arguments)]
+fn open_session_with(
     registry: &Mutex<PtyRegistry>,
     id: &str,
     token: u64,
@@ -284,6 +312,7 @@ fn open_session_as(
     on_output: Channel<PtyPacket>,
     still_wanted: impl FnOnce() -> bool,
     before_spawn: impl FnOnce() -> Result<(), String>,
+    after_spawn: impl FnOnce() -> Result<(), String>,
 ) -> Result<Option<u32>, String> {
     let stopping = {
         let mut registry = registry.lock().map_err(|err| err.to_string())?;
@@ -325,6 +354,9 @@ fn open_session_as(
     registry.stopping.remove(id);
     let mut session = PtySession::spawn(spec).map_err(|err| err.to_string())?;
     let pid = session.pid();
+    if let Err(err) = after_spawn() {
+        eprintln!("DCTerminalv2: could not save the terminal's session: {err}");
+    }
     if let Some(rx) = session.take_output() {
         thread::Builder::new()
             .name(format!("pty-fwd-{id}"))
@@ -450,7 +482,7 @@ fn pty_open_blocking(
 ) -> Result<u32, String> {
     // First, so a close of the tab (or its window) from here on cancels it.
     let token = begin_open(&registry, &input.id)?;
-    let (tab, spec) = match spawn_spec(app, &input, &settings, &store) {
+    let (tab, spec, remember) = match spawn_spec(app, &input, &settings, &store) {
         Ok(found) => found,
         Err(err) => {
             end_open(&registry, &input.id, token);
@@ -474,7 +506,17 @@ fn pty_open_blocking(
         Some(id) => crate::import_dev::refuse_live_session(id),
         None => Ok(()),
     };
-    let pid = open_session_as(
+    let after_spawn = || match remember {
+        Some((session_id, config_dir)) => {
+            let mut state = store.lock().map_err(|err| err.to_string())?;
+            if state.tab_by_id(&tab.id).is_some() {
+                state.remember_claude_session(&tab.id, &session_id, &config_dir)?;
+            }
+            Ok(())
+        }
+        None => Ok(()),
+    };
+    let pid = open_session_with(
         &registry,
         &tab.id,
         token,
@@ -482,19 +524,26 @@ fn pty_open_blocking(
         on_output,
         still_wanted,
         before_spawn,
+        after_spawn,
     )?;
     // The frontend does not use the pid; 0 means a newer open replaced this one.
     Ok(pid.unwrap_or(0))
 }
 
-/// The tab `input.id` and what its terminal runs. Takes the store locks
-/// one at a time, briefly (StateStore before SettingsStore).
+/// A tab, what its terminal runs, and the `(session id, account folder)` to save.
+type SpawnPlan = (crate::store::TabRecord, SpawnSpec, Option<(String, String)>);
+
+/// The tab `input.id`, what its terminal runs, and for a Claude tab the
+/// `(session id, account folder)` to save once the open wins (it is not
+/// saved here: a superseded or failed open must not change the tab).
+/// Takes the store locks one at a time, briefly (StateStore before
+/// SettingsStore).
 fn spawn_spec(
     app: &AppHandle,
     input: &PtyOpenInput,
     settings: &Mutex<SettingsStore>,
     store: &Mutex<StateStore>,
-) -> Result<(crate::store::TabRecord, SpawnSpec), String> {
+) -> Result<SpawnPlan, String> {
     let (tab, account) = {
         let state = store.lock().map_err(|err| err.to_string())?;
         let tab = state
@@ -511,6 +560,7 @@ fn spawn_spec(
     let cwd = validate_working_folder(&tab.cwd).map_err(|err| err.message())?;
     // `None` once the window's account was removed from Settings.
     let account_config = known_account_config(&claude, &account);
+    let mut remember = None;
     let (program, args, env, env_remove) = match tab.kind {
         TabKind::Shell => {
             let resolved = resolve_shell_for_host(&shell);
@@ -558,10 +608,7 @@ fn spawn_spec(
             if let Some((_, env)) = hooks {
                 command.env.extend(env);
             }
-            let mut state = store.lock().map_err(|err| err.to_string())?;
-            if state.tab_by_id(&tab.id).is_some() {
-                state.remember_claude_session(&tab.id, &start.session_id, &current)?;
-            }
+            remember = Some((start.session_id.clone(), current));
             (command.program, command.args, command.env, env_remove)
         }
     };
@@ -574,7 +621,7 @@ fn spawn_spec(
         cols: input.cols,
         rows: input.rows,
     };
-    Ok((tab, spec))
+    Ok((tab, spec, remember))
 }
 
 /// The id after `--resume` in a Claude command line.
@@ -1029,6 +1076,70 @@ mod tests {
         let token = begin_open(&registry, "u").unwrap();
         end_open(&registry, "u", token);
         assert!(registry.lock().unwrap().opening.is_empty());
+    }
+
+    // Ticket 14yq6g30jet: the saved session changed before the open knew it
+    // had won, so a superseded, closed or failed open still changed the tab.
+    #[cfg(unix)]
+    #[test]
+    fn the_session_is_saved_only_after_the_current_open_spawned() {
+        let dir = crate::test_support::TempDir::new("pty_after_spawn");
+        let registry = Mutex::new(PtyRegistry::new());
+        let calls = std::cell::Cell::new(0);
+        let saved = || {
+            calls.set(calls.get() + 1);
+            Ok(())
+        };
+        let idle = |dir: &std::path::Path| sh_spec(dir, "sleep 30");
+        let go = |token, spec, saved: &dyn Fn() -> Result<(), String>| {
+            open_session_with(
+                &registry,
+                "t",
+                token,
+                spec,
+                Channel::new(|_| Ok(())),
+                || true,
+                || Ok(()),
+                saved,
+            )
+        };
+        // Superseded by a newer open of the same id.
+        let old = begin_open(&registry, "t").unwrap();
+        let _newer = begin_open(&registry, "t").unwrap();
+        assert_eq!(go(old, idle(dir.path()), &saved), Ok(None));
+        // Closed before the spawn.
+        let token = begin_open(&registry, "t").unwrap();
+        registry.lock().unwrap().kill("t");
+        assert!(go(token, idle(dir.path()), &saved).is_err());
+        // The program does not exist.
+        let token = begin_open(&registry, "t").unwrap();
+        let mut missing = idle(dir.path());
+        missing.program = "/nonexistent/dcv2-no-such-program".into();
+        assert!(go(token, missing, &saved).is_err());
+        assert_eq!(calls.get(), 0, "no losing open saved its session");
+        // The tab went away (still_wanted false): nothing started, nothing saved.
+        let token = begin_open(&registry, "t").unwrap();
+        let gone = open_session_with(
+            &registry,
+            "t",
+            token,
+            idle(dir.path()),
+            Channel::new(|_| Ok(())),
+            || false,
+            || Ok(()),
+            saved,
+        );
+        assert!(gone.is_err());
+        assert_eq!(calls.get(), 0);
+        // The winning open saves once, and a failed save does not stop it.
+        let token = begin_open(&registry, "t").unwrap();
+        let won = go(token, idle(dir.path()), &saved);
+        assert!(matches!(won, Ok(Some(_))), "{won:?}");
+        assert_eq!(calls.get(), 1);
+        let token = begin_open(&registry, "t").unwrap();
+        let failing = go(token, idle(dir.path()), &|| Err("disk full".into()));
+        assert!(matches!(failing, Ok(Some(_))), "{failing:?}");
+        registry.lock().unwrap().kill("t");
     }
 
     // Review: the live-session check of an adopted run's tab ran before the
