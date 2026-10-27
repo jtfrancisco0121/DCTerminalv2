@@ -744,6 +744,9 @@ b 0 "" "python3 -c \"print(open('repos.json').read())\"" "$WT"
 b 2 dcv2:implementer "python3 -c \"print(open('repos.json').read())\"" "$RUN"                # the same text, cwd = the run folder
 b 2 "" "python3 -c \"print(open('status.json').read())\"" "$RUN"
 # the orchestrator's inline code never writes (whatever the path); an implementer's may
+b 0 "" "python3 -c \"import json; print(json.load(open('/tmp/plan.json')))\"" "$WT"
+b 0 "" "python3 -c \"print(open(p, 'r').read())\"" "$WT"
+b 2 "" "python3 -c \"open(p, mode='w').write('x')\"" "$WT"
 b 2 "" "python3 -c \"open('$EL/a.txt','w').write('x')\"" "$WT"
 b 2 "" "python3 -c \"import pathlib; pathlib.Path('$EL/a.txt').write_text('x')\"" "$WT"
 b 2 "" "node -e \"require('fs').writeFileSync('$EL/a.txt','x')\"" "$WT"

@@ -985,10 +985,10 @@ INTERP_FAMILY = ((re.compile(r"^python[\d.]*$"), "python"), (re.compile(r"^node(
                  (re.compile(r"^ruby[\d.]*$"), "ruby"))
 STDIN_INTERPRETERS = ("python", "node", "perl", "ruby", "deno", "bun", "osascript", "php", "lua", "Rscript")
 WRITE_PRIM_RE = re.compile(
-    r"\bopen\s*\([^)]*['\"][^'\"]*[wax+][^'\"]*['\"]|\.write_text\b|\.write_bytes\b|\bwriteFile(Sync)?\b|\bappendFile(Sync)?\b|"
+    r"\bopen\s*\([^,)]*,\s*(?:mode\s*=\s*)?['\"][^'\"]*[wax+]|\bopen\s*\([^)]*\bmode\s*=\s*['\"][^'\"]*[wax+]|\.write_text\b|\.write_bytes\b|\bwriteFile(Sync)?\b|\bappendFile(Sync)?\b|"
     r"\bfs\.(write|rm|unlink|rename|copy|mkdir|rmdir)|\bcreateWriteStream\b|\bos\.(system|popen|remove|unlink|rename|replace|rmdir|"
     r"removedirs|exec\w*|spawn\w*)\b|\bsubprocess\b|\bPopen\b|\bshutil\.|\bchild_process\b|\bsystem\s*\(|\bexec\s*\(|"
-    r"\bFile\.(write|open|delete|rename)|\bFileUtils\b|\bIO\.(write|popen)|`", re.I)
+    r"\bFile\.(write|open|delete|rename)|\bFileUtils\b|\bIO\.(write|popen)", re.I)
 WRITTEN = set()  # real paths this command has already written (redirects, tee, cp, mv, ...)
 
 

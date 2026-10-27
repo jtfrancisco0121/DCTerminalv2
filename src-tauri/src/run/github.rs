@@ -163,7 +163,10 @@ fn settled(rec: &PrGithub) -> bool {
 /// One PR's new record: from `gh`, or `unknown` with the reason.
 fn ask(run_dir: &Path, pr: &PrView, old: Option<&PrGithub>, lookup: &dyn CiLookup) -> PrGithub {
     let failed = |why: String| PrGithub {
-        ci: "unknown".into(),
+        // A lookup error keeps the last known CI, so fail -> error -> fail is not a new edge.
+        ci: old
+            .map(|o| o.ci.clone())
+            .unwrap_or_else(|| "unknown".into()),
         pr_state: old.map(|o| o.pr_state.clone()).unwrap_or_default(),
         at: now_text(),
         error: Some(why),
@@ -531,6 +534,22 @@ mod tests {
         assert!(rec.error.is_none());
         let log = std::fs::read_to_string(run_dir.join("log.md")).unwrap();
         assert_eq!(log.matches("github PR1: could not read").count(), 1);
+    }
+
+    #[test]
+    fn a_gh_error_keeps_the_last_known_ci() {
+        let (_dir, data, run_dir) = setup("building", 1);
+        let mut fake = Fake::default();
+        fake.prs.insert(
+            url(1),
+            gh("OPEN", 1, Some(vec![check("COMPLETED", "FAILURE")])),
+        );
+        sweep(&data, &fake, &mut HashMap::new(), Duration::ZERO);
+        fake.prs.insert(url(1), Err("gh pr view: offline".into()));
+        sweep(&data, &fake, &mut HashMap::new(), Duration::ZERO);
+        let rec = read_github(&run_dir).prs["PR1"].clone();
+        assert_eq!(rec.ci, "fail");
+        assert!(rec.error.is_some());
     }
 
     #[test]

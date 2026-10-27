@@ -14,6 +14,9 @@ export function ErrorsPopover({ errors, onClose }: Props) {
 
   useEffect(() => {
     ref.current?.focus();
+  }, []);
+
+  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };

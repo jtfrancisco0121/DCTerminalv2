@@ -290,9 +290,9 @@ pub fn prune(run_dir: &Path, now: SystemTime) -> usize {
         if *rank <= KEEP_PER_KIND && !old {
             continue;
         }
-        // The answer first: a request left without its answer would be run again.
-        let gone = std::fs::remove_file(result_path(run_dir, &id)).is_ok();
-        let _ = std::fs::remove_file(dir.join(format!("{id}.json")));
+        // The request first: an orphan answer is inert, a request without its answer would be run again.
+        let gone = std::fs::remove_file(dir.join(format!("{id}.json"))).is_ok();
+        let _ = std::fs::remove_file(result_path(run_dir, &id));
         if gone {
             removed += 1;
         }
