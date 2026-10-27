@@ -13,6 +13,7 @@ export type PageAction =
   | { kind: "settings" }
   | { kind: "new-window" }
   | { kind: "find" }
+  | { kind: "palette" }
   | { kind: "next-tab" }
   | { kind: "prev-tab" }
   | { kind: "zoom-in" }

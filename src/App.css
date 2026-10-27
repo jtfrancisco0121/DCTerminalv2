@@ -666,6 +666,56 @@ body,
   box-shadow: var(--elev-3);
 }
 
+/* The command palette: no header, 15% from the top, 36 rem wide, at most 60% high. */
+.palette-backdrop {
+  padding-top: 15vh;
+}
+
+.palette-dialog {
+  width: min(36rem, 92vw);
+  max-height: 60vh;
+  border-radius: 8px;
+}
+
+.palette-input {
+  margin: 0;
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
+
+.palette-list {
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.palette-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+}
+
+.palette-row-active {
+  background: var(--bg-hover);
+}
+
+.palette-group {
+  flex: 0 0 4.5rem;
+  color: var(--fg-muted);
+  font-size: var(--text-2xs);
+}
+
+.palette-detail {
+  margin-left: auto;
+}
+
+.palette-empty {
+  padding: var(--space-3);
+}
+
 .dialog:focus {
   outline: none;
 }

@@ -427,4 +427,32 @@ describe("App split panes", () => {
     expect(await screen.findByTestId("error-count")).toBeTruthy();
     vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
   });
+
+  it("Ctrl+Shift+K opens the command palette over the window, a second press closes it, and a tab row selects", async () => {
+    state = { windowId: "main", activeTabId: "tab_1", tabs: [tab], closedTabs: [] };
+    render(<App />);
+    await screen.findByTestId("terminal");
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "K", ctrlKey: true, shiftKey: true });
+    });
+    expect(screen.getByRole("dialog", { name: "Command palette" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Claude · app/ })).toBeTruthy();
+    // Roles come from the overview; Settings sections are listed too.
+    expect(await screen.findByRole("option", { name: /Start Planner/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Settings: Phone push/ })).toBeTruthy();
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "K", ctrlKey: true, shiftKey: true });
+    });
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+    // Open again over a dialog (New window): it still opens.
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "N", ctrlKey: true, shiftKey: true });
+    });
+    expect(await screen.findByRole("dialog", { name: "New window" })).toBeTruthy();
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "K", ctrlKey: true, shiftKey: true });
+    });
+    expect(screen.getByRole("dialog", { name: "Command palette" })).toBeTruthy();
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
 });

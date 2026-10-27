@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   claudeAccountLogins,
@@ -37,6 +37,8 @@ type Props = {
   /** Saved: the parent applies it (window title, terminal options, theme). */
   onSaved: (view: SettingsView) => void;
   onClose: () => void;
+  /** Scroll to this section (its heading, e.g. "Phone push") when the page opens. */
+  section?: string;
 };
 
 /** A folder from the native picker, or null when cancelled. */
@@ -99,7 +101,7 @@ function sectionList(names: string[]): string {
  * each), where `claude` is, the terminal, and the theme. Escape or Close goes
  * back to the tabs.
  */
-export function SettingsPage({ view, onSaved, onClose }: Props) {
+export function SettingsPage({ view, onSaved, onClose, section }: Props) {
   const [accounts, setAccounts] = useState<ClaudeAccount[]>(view.claude.accounts);
   const [claudePath, setClaudePath] = useState(view.claude.claudePath ?? "");
   const [newName, setNewName] = useState("");
@@ -135,6 +137,15 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
       current = false;
     };
   }, []);
+
+  const pageRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!section) return;
+    const target = [...(pageRef.current?.querySelectorAll("section.settings-section") ?? [])].find(
+      (el) => el.getAttribute("aria-label") === section,
+    );
+    target?.scrollIntoView?.({ block: "start" });
+  }, [section]);
 
   const resolved = (id: string) => view.accounts.find((account) => account.id === id);
   const edit = (index: number, patch: Partial<ClaudeAccount>) =>
@@ -315,6 +326,7 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
 
   return (
     <div
+      ref={pageRef}
       className="settings-page"
       role="dialog"
       aria-label="Settings"

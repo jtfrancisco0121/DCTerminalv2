@@ -56,6 +56,8 @@ export function lookupShortcut(event: KeyEvent, platform: Platform): Binding | n
   const key = event.key.toLowerCase();
   const plain = !event.shiftKey;
   if (key === "f") return { action: { kind: "find" }, menu: false };
+  // The command palette: Cmd+K (Ctrl+Shift+K elsewhere). Not a menu item, so the page handles it on every platform.
+  if (key === "k" && (plain || !mac)) return { action: { kind: "palette" }, menu: false };
   if (/^[1-9]$/.test(key)) return { action: { kind: "select", index: Number(key) - 1 }, menu: false };
   if (event.shiftKey && (key === "]" || key === "}")) return { action: { kind: "next-tab" }, menu: mac };
   if (event.shiftKey && (key === "[" || key === "{")) return { action: { kind: "prev-tab" }, menu: mac };
@@ -117,6 +119,7 @@ export const SHORTCUT_SAMPLES: ReadonlyArray<{
   const cs = (key: string, over: Partial<KeyEvent> = {}) => ev(key, { ctrlKey: true, shiftKey: true, ...over });
   return [
     { name: "find", action: { kind: "find" }, mac: cmd("f"), other: cs("F"), macMenu: false },
+    { name: "command palette", action: { kind: "palette" }, mac: cmd("k"), other: cs("K"), macMenu: false },
     { name: "select 3", action: { kind: "select", index: 2 }, mac: cmd("3"), other: cs("3"), macMenu: false },
     { name: "new tab", action: { kind: "new-tab" }, mac: cmd("t"), other: cs("T"), macMenu: true },
     { name: "close tab", action: { kind: "close-tab" }, mac: cmd("w"), other: cs("W"), macMenu: true },
