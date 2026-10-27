@@ -1047,7 +1047,12 @@ def run_setup(run, wt, pr_id, cmd):
         return "none", None
     os.makedirs(os.path.dirname(log), exist_ok=True)
     timeout = int(os.environ.get("DCV2_SETUP_TIMEOUT", "") or 600)
-    with open(log, "w") as out:
+    try:  # never through a link planted at the log's name
+        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    except OSError as e:
+        print(f"note: the setup log {log} could not be opened ({e.strerror}); the setup did not run", file=sys.stderr)
+        return "failed", log
+    with os.fdopen(fd, "w") as out:
         out.write(f"$ {cmd}\n(in {wt})\n")
         out.flush()
         try:

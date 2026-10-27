@@ -62,7 +62,9 @@ pub fn ship_approved(run_dir: &Path) -> bool {
 
 /// Cheap file checks before any keychain read: approved and drafts written.
 pub fn may_be_due(run_dir: &Path) -> bool {
-    run_dir.join(writeback::DRAFTS_FILE).is_file() && ship_approved(run_dir)
+    std::fs::symlink_metadata(run_dir.join(writeback::DRAFTS_FILE))
+        .is_ok_and(|meta| meta.file_type().is_file())
+        && ship_approved(run_dir)
 }
 
 /// The writeback.json version to auto-post now, if any: approved, drafts
@@ -503,5 +505,16 @@ mod tests {
         // An untrusted run (no app record) is never due.
         trust::remove(&data, &run);
         assert_eq!(due(&k(), &data, &run).unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_writeback_json_is_not_due() {
+        let (_dir, _data, run) = setup("ap_link", true);
+        assert!(may_be_due(&run));
+        let real = run.join("real-writeback.json");
+        std::fs::rename(run.join("writeback.json"), &real).unwrap();
+        std::os::unix::fs::symlink(&real, run.join("writeback.json")).unwrap();
+        assert!(!may_be_due(&run));
     }
 }

@@ -96,7 +96,7 @@ pub fn run_one(
     if let Some(parent) = log.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let file = match std::fs::File::create(log) {
+    let file = match crate::store::create_run_log(log) {
         Ok(file) => file,
         Err(err) => return ("error".into(), None, Some(format!("log file: {err}"))),
     };
@@ -387,5 +387,20 @@ mod tests {
         );
         assert_eq!(result, "timeout");
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_log_planted_as_a_link_is_not_followed() {
+        let dir = TempDir::new("app_check_log_link");
+        let outside = dir.join("outside.txt");
+        std::fs::write(&outside, "outside").unwrap();
+        let log = dir.join("logs/PR1-app-check.txt");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, &log).unwrap();
+        let (result, _, detail) = run_one("echo hi", dir.path(), &log, Duration::from_secs(5));
+        assert_eq!(result, "error");
+        assert!(detail.unwrap().contains("log file"));
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside");
     }
 }

@@ -135,8 +135,11 @@ if proc.returncode == 0:
 text = out.decode("utf-8", "replace")
 os.makedirs(logs, exist_ok=True)
 full = os.path.join(logs, f"{pid}-stop-check.txt")
-with open(full, "w") as f:
-    f.write(text)
+try:  # never through a link planted at the log's name
+    with os.fdopen(os.open(full, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o644), "w") as f:
+        f.write(text)
+except OSError as e:
+    full = f"(not written: {e.strerror})"
 # Trim: strip ANSI and progress redraws, keep the head, error-looking lines and the tail.
 text = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text)
 lines = [l.rsplit("\r", 1)[-1].rstrip() for l in text.splitlines()]

@@ -152,6 +152,18 @@ PY
 rm -rf "$WT1"; git -C "$R" worktree prune
 expect 0 "a failing setup does not fail the worktree" S worktree "$RUN" "$R" PR1 "$BASE"
 has "  setup failed" "setup=failed"
+# a link planted at the setup log's name is not written through (CAP-8): the setup does not run, the outside file stays as it was
+python3 - "$RUN/repos.json" <<'PY'
+import json, sys
+j = json.load(open(sys.argv[1])); j["repos"][0]["setup"] = "echo ran > .setup-marker"; json.dump(j, open(sys.argv[1], "w"))
+PY
+echo outside > "$d/outside-setup.txt"; rm -f "$RUN/logs/PR1-setup.txt"; ln -s "$d/outside-setup.txt" "$RUN/logs/PR1-setup.txt"
+rm -rf "$WT1"; git -C "$R" worktree prune
+expect 0 "a setup log that is a link: the worktree still comes" S worktree "$RUN" "$R" PR1 "$BASE"
+has "  setup failed" "setup=failed"
+[[ "$(cat "$d/outside-setup.txt")" == outside ]] && ok "  the outside file is unchanged" || bad "  outside file: $(cat "$d/outside-setup.txt")"
+[[ ! -e "$WT1/.setup-marker" ]] && ok "  the setup did not run" || bad "  the setup ran"
+rm -f "$RUN/logs/PR1-setup.txt"
 python3 - "$RUN/repos.json" <<'PY'
 import json, sys
 j = json.load(open(sys.argv[1])); j["repos"][0]["setup"] = ""; json.dump(j, open(sys.argv[1], "w"))

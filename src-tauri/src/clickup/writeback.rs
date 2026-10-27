@@ -23,6 +23,7 @@ use super::client::{ClickUp, ClickUpError, TaskRef};
 use super::intake::{SnapshotTask, MAX_TICKETS};
 use super::transport::NoReply;
 use super::valid_id;
+use crate::store::CappedError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -152,14 +153,19 @@ pub struct PostOutcome {
 /// writeback.json and its version (sha-256 of the bytes), checked: schema
 /// 1, at most [`MAX_DRAFTS_BYTES`] and [`MAX_TICKETS`] drafts, one draft per ticket.
 pub fn read_drafts(run_dir: &Path) -> Result<Option<(Drafts, String)>, String> {
-    let bytes = match std::fs::read(run_dir.join(DRAFTS_FILE)) {
+    // Never more than the cap is read, and a link or special file is refused.
+    let bytes = match crate::store::read_capped(&run_dir.join(DRAFTS_FILE), MAX_DRAFTS_BYTES as u64)
+    {
         Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(format!("writeback.json: {err}")),
+        Err(CappedError::Missing) => return Ok(None),
+        Err(CappedError::TooLarge) => {
+            return Err("writeback.json is larger than 2 MB; the app does not read it.".into())
+        }
+        Err(CappedError::NotRegular) => {
+            return Err("writeback.json is not a regular file; the app does not read it.".into())
+        }
+        Err(CappedError::Io(err)) => return Err(format!("writeback.json: {err}")),
     };
-    if bytes.len() > MAX_DRAFTS_BYTES {
-        return Err("writeback.json is larger than 2 MB; the app does not read it.".into());
-    }
     let drafts: Drafts = serde_json::from_slice(&bytes)
         .map_err(|_| "writeback.json could not be read.".to_string())?;
     if drafts.schema != 1 {
@@ -894,5 +900,28 @@ mod tests {
             Some("https://github.com/o/r/pull/1")
         );
         assert!(d.drafts[1].status.is_none());
+    }
+
+    #[test]
+    fn writeback_json_is_read_capped_and_never_through_a_link() {
+        let dir = crate::test_support::TempDir::new("wb_read_cap");
+        // 3 MB sparse: refused from its length, nothing past the cap is read.
+        std::fs::File::create(dir.join(DRAFTS_FILE))
+            .unwrap()
+            .set_len(3 * 1024 * 1024)
+            .unwrap();
+        assert!(read_drafts(dir.path()).unwrap_err().contains("2 MB"));
+        #[cfg(unix)]
+        {
+            let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../fixtures/clickup/writeback-skill.json");
+            let real = dir.join("real.json");
+            std::fs::copy(&fixture, &real).unwrap();
+            std::fs::remove_file(dir.join(DRAFTS_FILE)).unwrap();
+            std::os::unix::fs::symlink(&real, dir.join(DRAFTS_FILE)).unwrap();
+            assert!(read_drafts(dir.path())
+                .unwrap_err()
+                .contains("not a regular file"));
+        }
     }
 }

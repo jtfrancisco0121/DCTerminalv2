@@ -199,4 +199,25 @@ mod tests {
             .contains("too long"));
         assert!(started.elapsed() < Duration::from_secs(10));
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_prompt_file_is_replaced_not_written_through_a_planted_link() {
+        let dir = TempDir::new("memory_prompt_link");
+        let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugin");
+        let outside = dir.join("outside.txt");
+        std::fs::write(&outside, "outside").unwrap();
+        let out = dir.join("run/memory-prompt.md");
+        std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, &out).unwrap();
+        let folder = dir.join("folder");
+        std::fs::create_dir_all(&folder).unwrap();
+        let made = compose(&plugin, &dir.join("memory"), &folder, &out);
+        assert!(made.is_some(), "the real memory.sh writes the prompt");
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside");
+        assert!(!std::fs::symlink_metadata(&out)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
 }

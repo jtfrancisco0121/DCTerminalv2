@@ -803,9 +803,8 @@ pub fn pull_in(
     }
     pulls.schema = 1;
     let md = update_md(snapshot, pulls, &changes);
-    let tmp = run_dir.join(format!(".{UPDATE_FILE}.tmp"));
-    std::fs::write(&tmp, md).map_err(|e| format!("{UPDATE_FILE}: {e}"))?;
-    std::fs::rename(&tmp, run_dir.join(UPDATE_FILE)).map_err(|e| format!("{UPDATE_FILE}: {e}"))?;
+    // A fresh temp file beside it, then a rename; a link planted at either name is never followed.
+    crate::store::write_run_file(&run_dir.join(UPDATE_FILE), md.as_bytes())?;
     Ok(pulled)
 }
 
