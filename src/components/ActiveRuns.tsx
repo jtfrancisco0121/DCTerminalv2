@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { activeRuns, focusTab, type ActiveRun } from "../bridge";
 import { stageText } from "../run/words";
 import { reportError } from "../uiErrors";
+import { RUN_STATE_EVENT, TAB_STATE_EVENT, usePushRefresh } from "../run/events";
 
 /** The list is read again this often while the popover is open (at most). */
 export const POLL_MS = 3000;
@@ -16,25 +17,11 @@ type Props = {
 export function ActiveRuns({ onClose, onAllRuns }: Props) {
   const [runs, setRuns] = useState<ActiveRun[] | null>(null);
 
-  useEffect(() => {
-    let live = true;
-    let timer: number | undefined;
-    const tick = () => {
-      activeRuns()
-        .then(
-          (list) => live && setRuns(list),
-          (err: unknown) => reportError("Active runs", err, { once: true }),
-        )
-        .finally(() => {
-          if (live) timer = window.setTimeout(tick, POLL_MS);
-        });
-    };
-    tick();
-    return () => {
-      live = false;
-      window.clearTimeout(timer);
-    };
-  }, []);
+  // Events from the detector; polls at POLL_MS when none arrive.
+  usePushRefresh([RUN_STATE_EVENT, TAB_STATE_EVENT], () =>
+    activeRuns().then(setRuns, (err: unknown) => reportError("Active runs", err, { once: true })),
+    { fastMs: POLL_MS },
+  );
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

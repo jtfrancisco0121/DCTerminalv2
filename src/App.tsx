@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
@@ -56,6 +55,7 @@ import { zoomedFontSize } from "./keyTable";
 import { ClaudeVersionBanner } from "./components/ClaudeVersionBanner";
 import { ImportDevDialog, useDevImport } from "./components/ImportDevDialog";
 import { observeTabs, pollsActivity } from "./run/observe";
+import { RUN_STATE_EVENT, TAB_STATE_EVENT, usePushRefresh } from "./run/events";
 import "./App.css";
 
 /** How often the usage line is read again while nothing else asks. */
@@ -160,25 +160,12 @@ function App() {
   }, []);
 
   // The detector runs in the backend whatever this window does; the summary
-  // is read now, every few seconds, when the window gets focus, and when
-  // the detector announces something.
-  useEffect(() => {
-    refreshAttention();
-    const timer = window.setInterval(refreshAttention, ATTENTION_POLL_MS);
-    window.addEventListener("focus", refreshAttention);
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    listen("attention", refreshAttention).then(
-      (fn) => (disposed ? fn() : (unlisten = fn)),
-      () => undefined,
-    );
-    return () => {
-      disposed = true;
-      unlisten?.();
-      window.clearInterval(timer);
-      window.removeEventListener("focus", refreshAttention);
-    };
-  }, [refreshAttention]);
+  // is read now, when the window gets focus, and when the detector announces
+  // something (a push event or an attention notice); it polls every few
+  // seconds only while no event arrives.
+  usePushRefresh(["attention", TAB_STATE_EVENT, RUN_STATE_EVENT], refreshAttention, {
+    fastMs: ATTENTION_POLL_MS,
+  });
 
   useEffect(() => subscribeLivePty(() => setLiveVersion((n) => n + 1)), []);
   useEffect(() => subscribePtyExit(() => refreshUsage()), [refreshUsage]);
@@ -213,16 +200,15 @@ function App() {
   const [usageTab, setUsageTab] = useState<string | null>(null);
   // Any Claude tab has hook state while "Track activity in every Claude tab" is on.
   const hasClaudeTab = pollsActivity(state?.tabs ?? []);
-  useEffect(() => {
-    if (!hasClaudeTab) return;
-    const timer = window.setInterval(() => {
+  const refreshActivity = useCallback(
+    () =>
       observeTabs().then(
         (states) => setActivity(Object.fromEntries(Object.entries(states).map(([id, s]) => [id, s.activity]))),
         (err: unknown) => reportError("Tab activity", err, { once: "observe-tabs" }),
-      );
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [hasClaudeTab]);
+      ),
+    [],
+  );
+  usePushRefresh(TAB_STATE_EVENT, () => (hasClaudeTab ? refreshActivity() : undefined), { fastMs: 3000 });
 
   const resumeActiveRun = (runDir: string) => {
     resumeRun(windowId, runDir).then(

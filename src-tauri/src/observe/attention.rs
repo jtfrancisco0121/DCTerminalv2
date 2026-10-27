@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// How often the open tabs are looked at.
 pub const FAST_TICK: Duration = Duration::from_secs(2);
@@ -158,6 +158,10 @@ pub struct TabFacts {
     pub stalled: bool,
     /// The wait is past the watchdog minutes: when it began (the episode).
     pub waiting_since_ms: Option<u64>,
+    /// A tool runs (hook state); part of the `tab-state` push.
+    pub tool_running: bool,
+    /// Sub-agents running (hook state); part of the `tab-state` push.
+    pub subagents_running: u32,
 }
 
 /// What the detector sees of one run at one tick.
@@ -319,6 +323,137 @@ impl Detector {
             self.fired.insert(key, now_ms);
             true
         });
+        out
+    }
+}
+
+// ---- push events (tab-state, run-state, stall) ---------------------------
+
+/// What the page is told when a tab's hook state changes.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabStatePush {
+    pub tab_id: String,
+    pub activity: TabActivity,
+    pub tool_running: bool,
+    pub subagents_running: u32,
+}
+
+/// What the page is told when a tab's stall flag flips.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StallPush {
+    pub tab_id: String,
+    pub run_id: Option<String>,
+    pub stalled: bool,
+}
+
+/// What the page is told when a run's state changes: ids and state fields
+/// only (no ticket or log text, no paths but the run folder).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunStatePush {
+    pub run_id: String,
+    pub run_dir: String,
+    pub stage: Option<String>,
+    pub waiting_for: Option<String>,
+    pub prs_done: u32,
+    pub prs_total: u32,
+    /// PR ids whose app check failed, timed out or errored.
+    pub failed_checks: Vec<String>,
+}
+
+impl RunStatePush {
+    fn of(run: &RunFacts) -> Self {
+        RunStatePush {
+            run_id: run.run_id.clone(),
+            run_dir: run.run_dir.clone(),
+            stage: run.stage.clone(),
+            waiting_for: run.waiting_for.clone(),
+            prs_done: run.prs_done,
+            prs_total: run.prs_total,
+            failed_checks: run.failed_checks.iter().cloned().collect(),
+        }
+    }
+}
+
+/// One event for the page.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Push {
+    TabState(TabStatePush),
+    RunState(RunStatePush),
+    Stall(StallPush),
+}
+
+/// What the last tick told the page about one tab.
+#[derive(Debug, Clone, PartialEq)]
+struct TabPushed {
+    state: (TabActivity, bool, u32),
+    stalled: bool,
+}
+
+/// Which events a tick's reading makes: only changes since the last one.
+/// Pure like [`Detector`]: no files, no clock. The first tick is silent
+/// (the page reads once on its own). A tab closed is forgotten at once
+/// (every tick lists every open tab). A run missing from a tick that is not
+/// `complete_runs` (a fast tick skips runs with no open tab) keeps its
+/// memory and emits nothing; it is forgotten only on a `complete_runs` tick
+/// that does not list it, exactly like [`Detector::diff`].
+#[derive(Debug, Default)]
+pub struct PushDiff {
+    started: bool,
+    tabs: HashMap<String, TabPushed>,
+    runs: HashMap<String, RunStatePush>,
+}
+
+impl PushDiff {
+    pub fn diff(&mut self, now: &Observed) -> Vec<Push> {
+        let silent = !self.started;
+        self.started = true;
+        let mut out = Vec::new();
+
+        let mut tabs = HashMap::new();
+        for tab in &now.tabs {
+            let pushed = TabPushed {
+                state: (tab.activity, tab.tool_running, tab.subagents_running),
+                stalled: tab.stalled,
+            };
+            let prev = self.tabs.get(&tab.tab_id);
+            if !silent {
+                if prev.map(|p| p.state) != Some(pushed.state) {
+                    out.push(Push::TabState(TabStatePush {
+                        tab_id: tab.tab_id.clone(),
+                        activity: tab.activity,
+                        tool_running: tab.tool_running,
+                        subagents_running: tab.subagents_running,
+                    }));
+                }
+                if prev.is_some_and(|p| p.stalled != pushed.stalled)
+                    || (prev.is_none() && pushed.stalled)
+                {
+                    out.push(Push::Stall(StallPush {
+                        tab_id: tab.tab_id.clone(),
+                        run_id: tab.run_id.clone(),
+                        stalled: tab.stalled,
+                    }));
+                }
+            }
+            tabs.insert(tab.tab_id.clone(), pushed);
+        }
+        self.tabs = tabs;
+
+        for run in &now.runs {
+            let pushed = RunStatePush::of(run);
+            // A run first seen after the first tick is a new run for the page.
+            if !silent && self.runs.get(&run.run_id) != Some(&pushed) {
+                out.push(Push::RunState(pushed.clone()));
+            }
+            self.runs.insert(run.run_id.clone(), pushed);
+        }
+        if now.complete_runs {
+            let seen: HashSet<&str> = now.runs.iter().map(|r| r.run_id.as_str()).collect();
+            self.runs.retain(|id, _| seen.contains(id.as_str()));
+        }
         out
     }
 }
@@ -805,6 +940,8 @@ fn tab_facts(
         )
     };
     TabFacts {
+        tool_running: hook.is_some_and(|h| h.tool_running),
+        subagents_running: hook.map_or(0, |h| h.subagents_running),
         tab_id: tab.id.clone(),
         window_label: crate::store::window_label(&tab.window_id).to_string(),
         label: tab.label.clone(),
@@ -883,6 +1020,17 @@ fn collect(
     }
 }
 
+/// Sends one change to every window. A failed emit is dropped: the page
+/// polls on its own and catches up.
+fn emit_push(app: &AppHandle, push: Push) {
+    use super::notify::{RUN_STATE_EVENT, STALL_EVENT, TAB_STATE_EVENT};
+    let _ = match &push {
+        Push::TabState(p) => app.emit(TAB_STATE_EVENT, p),
+        Push::RunState(p) => app.emit(RUN_STATE_EVENT, p),
+        Push::Stall(p) => app.emit(STALL_EVENT, p),
+    };
+}
+
 /// Starts the detector thread (app setup, beside `spawn_afk_sweeps`).
 pub fn spawn(app: &AppHandle, notifier: Box<dyn Notifier>) {
     let app = app.clone();
@@ -890,6 +1038,7 @@ pub fn spawn(app: &AppHandle, notifier: Box<dyn Notifier>) {
         .name("dcv2-attention".into())
         .spawn(move || {
             let mut detector = Detector::default();
+            let mut push_diff = PushDiff::default();
             let mut reader = Reader::default();
             let mut tick: u64 = 0;
             loop {
@@ -908,6 +1057,9 @@ pub fn spawn(app: &AppHandle, notifier: Box<dyn Notifier>) {
                         .map(|r| (r.run_id.clone(), r.clone()))
                         .collect(),
                 );
+                for push in push_diff.diff(&observed) {
+                    emit_push(&app, push);
+                }
                 let events = detector.diff(observed, now_ms());
                 if let Some(state) = app.try_state::<AttentionState>() {
                     state.set_snapshot(snapshot.clone());
@@ -943,6 +1095,8 @@ mod tests {
             activity: TabActivity::Working,
             stalled: false,
             waiting_since_ms: None,
+            tool_running: false,
+            subagents_running: 0,
         }
     }
 
@@ -987,6 +1141,122 @@ mod tests {
     }
 
     const T: u64 = 1_000_000;
+
+    fn push_kinds(pushes: &[Push]) -> Vec<&'static str> {
+        pushes
+            .iter()
+            .map(|p| match p {
+                Push::TabState(_) => "tab-state",
+                Push::RunState(_) => "run-state",
+                Push::Stall(_) => "stall",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn push_diff_is_silent_first_and_when_nothing_changed() {
+        let mut p = PushDiff::default();
+        let now = observed(vec![run_tab("t1", "r-1")], vec![run("r-1")]);
+        assert!(p.diff(&now).is_empty(), "the first tick is silent");
+        assert!(
+            p.diff(&now).is_empty(),
+            "unchanged observation emits nothing"
+        );
+        assert!(p.diff(&now).is_empty());
+    }
+
+    #[test]
+    fn a_hook_state_change_is_one_tab_state_and_a_stall_flip_is_one_stall() {
+        let mut p = PushDiff::default();
+        p.diff(&observed(vec![tab("a")], vec![]));
+        for change in [
+            |t: &mut TabFacts| t.activity = TabActivity::NeedsYou,
+            |t: &mut TabFacts| t.tool_running = true,
+            |t: &mut TabFacts| t.subagents_running = 2,
+        ] {
+            let mut next = tab("a");
+            change(&mut next);
+            let first = p.diff(&observed(vec![next.clone()], vec![]));
+            assert_eq!(push_kinds(&first), ["tab-state"]);
+            assert!(p.diff(&observed(vec![next.clone()], vec![])).is_empty());
+            p.diff(&observed(vec![tab("a")], vec![]));
+        }
+        let mut stalled = tab("a");
+        stalled.stalled = true;
+        let pushes = p.diff(&observed(vec![stalled.clone()], vec![]));
+        assert_eq!(push_kinds(&pushes), ["stall"]);
+        assert!(matches!(&pushes[0], Push::Stall(s) if s.stalled && s.tab_id == "a"));
+        assert!(p.diff(&observed(vec![stalled], vec![])).is_empty());
+        let back = p.diff(&observed(vec![tab("a")], vec![]));
+        assert!(matches!(&back[0], Push::Stall(s) if !s.stalled));
+    }
+
+    #[test]
+    fn a_closed_tab_is_forgotten_at_once() {
+        let mut p = PushDiff::default();
+        let mut busy = tab("a");
+        busy.tool_running = true;
+        p.diff(&observed(vec![busy.clone()], vec![]));
+        p.diff(&observed(vec![], vec![]));
+        // The same tab id opening again is news, not a repeat.
+        assert_eq!(
+            push_kinds(&p.diff(&observed(vec![busy], vec![]))),
+            ["tab-state"]
+        );
+    }
+
+    #[test]
+    fn fast_ticks_that_skip_a_tabless_run_keep_its_memory_and_emit_nothing() {
+        let mut p = PushDiff::default();
+        let complete = |tabs, runs| Observed {
+            tabs,
+            runs,
+            complete_runs: true,
+        };
+        // Background tick: the run (no open tab) is read.
+        p.diff(&complete(vec![], vec![run("r-9")]));
+        // Fast ticks omit it: nothing emitted, memory kept.
+        assert!(p.diff(&observed(vec![], vec![])).is_empty());
+        assert!(p.diff(&observed(vec![], vec![])).is_empty());
+        // The next background tick with the same state emits nothing.
+        assert!(p.diff(&complete(vec![], vec![run("r-9")])).is_empty());
+        // A background tick with a changed stage emits exactly one run-state.
+        let mut done = run("r-9");
+        done.stage = Some("done".into());
+        let pushes = p.diff(&complete(vec![], vec![done.clone()]));
+        assert_eq!(push_kinds(&pushes), ["run-state"]);
+        assert!(matches!(&pushes[0], Push::RunState(r) if r.stage.as_deref() == Some("done")));
+        // A background tick without the run forgets it: it is new when it returns.
+        assert!(p.diff(&complete(vec![], vec![])).is_empty());
+        assert_eq!(
+            push_kinds(&p.diff(&complete(vec![], vec![done]))),
+            ["run-state"]
+        );
+    }
+
+    #[test]
+    fn a_run_first_seen_after_the_first_tick_and_a_stage_change_are_one_run_state() {
+        let mut p = PushDiff::default();
+        p.diff(&observed(vec![], vec![]));
+        let tabs = vec![run_tab("t1", "r-1")];
+        assert_eq!(
+            push_kinds(&p.diff(&observed(tabs.clone(), vec![run("r-1")]))),
+            ["tab-state", "run-state"],
+            "a new tab and a new run appear"
+        );
+        assert!(p.diff(&observed(tabs.clone(), vec![run("r-1")])).is_empty());
+        let mut next = run("r-1");
+        next.waiting_for = Some("plan-approval".into());
+        let pushes = p.diff(&observed(tabs, vec![next]));
+        assert_eq!(push_kinds(&pushes), ["run-state"]);
+        // Ids and state only: nothing of the run's text.
+        let text = serde_json::to_string(&match &pushes[0] {
+            Push::RunState(r) => r.clone(),
+            _ => unreachable!(),
+        })
+        .unwrap();
+        assert!(text.contains("\"runId\":\"r-1\"") && !text.contains("title"));
+    }
 
     #[test]
     fn the_first_tick_is_silent_and_a_steady_state_stays_silent() {

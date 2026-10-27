@@ -31,6 +31,7 @@ import {
 } from "../run/words";
 import { ClickUpRunSection } from "../clickup/ClickUpRunSection";
 import { checkLogPr, readCheckLog } from "../run/observe";
+import { RUN_STATE_EVENT, usePushRefresh } from "../run/events";
 import { Dialog } from "./Dialog";
 import { RunPanelShell } from "./RunPanelShell";
 import { ApprovalCard } from "./ApprovalCard";
@@ -461,21 +462,9 @@ export function RunPanel({
     [runDir],
   );
 
-  // The next read starts only after the last one answered.
-  useEffect(() => {
-    let stopped = false;
-    let timer: number | undefined;
-    const tick = () => {
-      void load().finally(() => {
-        if (!stopped) timer = window.setTimeout(tick, POLL_MS);
-      });
-    };
-    tick();
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-    };
-  }, [load]);
+  // The next read starts only after the last one answered; `run-state`
+  // events refresh it at once and slow the polling down.
+  usePushRefresh(RUN_STATE_EVENT, load, { fastMs: POLL_MS });
 
   const rerun = useCallback(() => {
     setChecking(true);

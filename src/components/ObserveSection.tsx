@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   activityText,
   costText,
@@ -7,6 +7,7 @@ import {
   tokensText,
   type TabObservation,
 } from "../run/observe";
+import { TAB_STATE_EVENT, usePushRefresh } from "../run/events";
 import { errorText } from "./InlineNotice";
 
 const POLL_MS = 3000;
@@ -148,28 +149,18 @@ export function ObserveSection({ tabId, onResume }: { tabId: string; onResume: (
   const [problem, setProblem] = useState<string | null>(null);
   const [nudging, setNudging] = useState(false);
 
-  useEffect(() => {
-    let stopped = false;
-    let timer: number | undefined;
-    const tick = () => {
-      observeTab(tabId)
-        .then(
-          (next) => {
-            setSeen(next);
-            setProblem(null);
-          },
-          (err: unknown) => setProblem(errorText(err)),
-        )
-        .finally(() => {
-          if (!stopped) timer = window.setTimeout(tick, POLL_MS);
-        });
-    };
-    tick();
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-    };
-  }, [tabId]);
+  usePushRefresh(
+    TAB_STATE_EVENT,
+    () =>
+      observeTab(tabId).then(
+        (next) => {
+          setSeen(next);
+          setProblem(null);
+        },
+        (err: unknown) => setProblem(errorText(err)),
+      ),
+    { fastMs: POLL_MS },
+  );
 
   const nudge = () => {
     setNudging(true);
