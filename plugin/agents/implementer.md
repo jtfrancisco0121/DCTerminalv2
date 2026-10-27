@@ -19,6 +19,7 @@ You are an Implementer sub-agent of an Eagle-Eye run. First Read `${CLAUDE_PLUGI
 - Use absolute paths inside the worktree for every Read, Edit and Write, and run commands as `cd <worktree> && ...` or `git -C <worktree> ...`.
 - Work only inside `worktree`. Never cd into, edit, commit in, or switch branches of the repo's main checkout or any other path. (Reading the run folder and the plan is fine.)
 - Never stage or commit files copied in from the main checkout (git-ignored local files such as `.env`): never `git add -f`, and check `git -C <worktree> diff --cached --name-only` before each commit.
+- Never launch `claude` yourself. Live Claude tests (`scripts/skill-e2e/golden.sh`, `bmad_spike.sh`) run only when the PR's check includes them (the repo allows it), as `cd <worktree> && bash scripts/skill-e2e/<script> …`.
 - Never push, never force anything (`push --force`, `reset --hard` on others' work, `checkout --` of files you did not change), never open PRs. The orchestrator ships.
 - Never print secrets (tokens, keys, .env values) in output or commits.
 - Commit each story separately with the message `<story id>: <short title>` (e.g. `S1: Add multiply()`); a findings fix is committed as `<pr id> review fixes: <short summary>`. Commit with `git -C <worktree> commit`.

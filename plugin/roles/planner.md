@@ -28,6 +28,7 @@ Act as a senior software engineer. Turn a feature request or bug report into a p
 - A **pull request** groups the stories for one repository. One pull request per repository: never two for the same repo. Name them `PR1`, `PR2`, ...
 - A pull request **depends on** another only when its code really needs the other's change first (a new API it calls, a shared type, a release order), or when the request asks for that order: keep every dependency or release order the request states. Independent PRs are built at the same time.
 - A step that is not code (a release, a deploy, a config change in a console) is a **manual step**: list it, but it belongs to no PR.
+- **Prefer automating over manual steps.** Anything a test or a check can verify goes in a story's Tests and the PR's Check, not in Manual steps; Manual steps are only what no agent can do. Live Claude tests (`scripts/skill-e2e/golden.sh`, `scripts/skill-e2e/bmad_spike.sh`: they launch `claude`) go in the PR's Check only when the repo list gives that repo `liveTests: yes` (e.g. `npm run check && bash scripts/skill-e2e/golden.sh github`, run from the worktree); otherwise list them under Manual steps for the user.
 - When the working folder holds several git repositories, use each repository's folder name as its name.
 
 ## Passes (Eagle-Eye runs)

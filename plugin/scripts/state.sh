@@ -1829,6 +1829,10 @@ def write_report(run):
                   ""]
     mu = read(os.path.join(run, "memory-update.md")).strip()
     L += ["## Memory update", "", "\n".join(mu.splitlines()[:15]) if mu else "No memory-update.md.", ""]
+    # What the run could not do itself (the skill logs "not done: <what> (<why>)" instead of handing the user a command).
+    nd = [l.split(" ", 2)[2] for l in log if len(l.split(" ", 2)) == 3 and l.split(" ", 2)[2].lower().startswith("not done:")]
+    if nd:
+        L += ["## Not done by the run", ""] + [f"- {x[len('not done:'):].strip()}" for x in nd] + [""]
     L += ["## Events", "", f"{len(log)} log lines; retries {sum(1 for l in log if 'retried' in l)}; "
           f"needs-attention {sum(1 for p in prs if p.get('state') == 'needs-attention')}. Full timeline: `log.md`.", ""]
     atomic_write(os.path.join(run, "report.md"), "\n".join(L))

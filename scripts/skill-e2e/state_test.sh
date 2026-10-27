@@ -678,4 +678,9 @@ has "  the result line" "result=done ok=yes message=no ticket changed in ClickUp
 expect 1 "request-wait: not an id" bash "$STATE" request-wait "$CRUN" "../../etc/passwd"
 expect 1 "request-wait: no such request" bash "$STATE" request-wait "$CRUN" "20261027T000000Z-recheck"
 
+echo "# report: what the run could not do"
+bash "$STATE" log "$CRUN" <<<'not done: re-run the checks (the app did not answer: is DCTerminalv2 running?)' >/dev/null
+expect 0 "report" bash "$STATE" report "$CRUN"
+grep -q '^## Not done by the run' "$CRUN/report.md" && grep -qF -- '- re-run the checks (the app did not answer' "$CRUN/report.md" && ok "  listed in report.md" || bad "  report: $(cat "$CRUN/report.md")"
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }
