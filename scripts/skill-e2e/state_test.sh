@@ -630,7 +630,7 @@ json.dump({"schema": 1, "runId": "r-c", "stage": stage, "prs": prs}, open(f, "w"
 PY
 }
 cstatus shipping
-export GH_SHIM_DIR="$d/cgh" DCV2_RUN_DIR="$CRUN"
+export GH_SHIM_DIR="$d/cgh" DCV2_RUN_DIR="$CRUN" DCV2_TEST_LOCAL_REMOTES=1
 expect 1 "cleanup refused before done" env PATH="$ROOT/scripts/skill-e2e/gh-shim:$PATH" bash "$STATE" cleanup "$CRUN"
 [[ -d "$CW/cr-worktrees/dcv2-r-c-pr1" ]] && ok "  nothing removed" || bad "  PR1 worktree gone"
 cstatus done
@@ -654,6 +654,29 @@ grep -q "pr view https://github.com/shim/repo/pull/1 --json state,mergeCommit,he
 tail -1 "$CRUN/log.md" | grep -q ' done cleanup: PR1: worktree removed' && ok "  logged once" || bad "  log: $(tail -1 "$CRUN/log.md")"
 expect 0 "cleanup again: nothing left to do" env PATH="$ROOT/scripts/skill-e2e/gh-shim:$PATH" bash "$STATE" cleanup "$CRUN"
 has "  PR1 already gone" "PR1: worktree already gone; remote branch already deleted"
+echo "# cleanup: local folders only in the suites; the system git config (credential helper) is kept"
+expect 0 "cleanup without DCV2_TEST_LOCAL_REMOTES" env -u DCV2_TEST_LOCAL_REMOTES PATH="$ROOT/scripts/skill-e2e/gh-shim:$PATH" bash "$STATE" cleanup "$CRUN"
+grep -q 'refused: not a safe remote URL (only https / ssh GitHub-style remotes)' <<<"$out" && ok "  a local folder remote is refused in production" || bad "  out: $out"
+export DCV2_TEST_LOCAL_REMOTES=1
+mkdir -p "$d/credgit"; REALGIT0="$(command -v git)"
+printf '[credential]\n\thelper = dcv2-test-helper\n' > "$d/system.gitconfig"
+cat > "$d/credgit/git" <<EOF
+#!/usr/bin/env bash
+if [[ " \$* " == *" ls-remote "* ]]; then
+  echo "nosystem=\${GIT_CONFIG_NOSYSTEM:-} helper=\$("$REALGIT0" config --get credential.helper)" >> "$d/cred.log"
+fi
+exec "$REALGIT0" "\$@"
+EOF
+chmod +x "$d/credgit/git"
+expect 0 "cleanup with a system credential helper" env PATH="$d/credgit:$ROOT/scripts/skill-e2e/gh-shim:$PATH" GIT_CONFIG_SYSTEM="$d/system.gitconfig" bash "$STATE" cleanup "$CRUN"
+grep -q '^nosystem= helper=dcv2-test-helper$' "$d/cred.log" && ok "  network git sees the system credential helper" || bad "  cred.log: $(cat "$d/cred.log" 2>/dev/null)"
+python3 - "$CRUN/.guard.json" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1])); g["remotes"]["PR4"]["url"] = "http://github.com/o/r.git"; json.dump(g, open(sys.argv[1], "w"))
+PY
+expect 0 "an http:// remote" env PATH="$ROOT/scripts/skill-e2e/gh-shim:$PATH" bash "$STATE" cleanup "$CRUN"
+grep -q 'refused: http:// remotes are not used (use https://)' <<<"$out" && ok "  refused with a clear message" || bad "  out: $out"
+
 echo "# cleanup: a remote URL is never an option, and the delete is a lease"
 mkdir -p "$d/fakegit"; REALGIT="$(command -v git)"
 cat > "$d/fakegit/git" <<EOF

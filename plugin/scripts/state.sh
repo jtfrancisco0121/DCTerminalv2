@@ -1206,24 +1206,37 @@ def neutral(text):
     return re.sub(r"(?<![\w/])([A-Za-z0-9][\w.-]*/[\w.-]+)#(?=\d)", r"\1#" + ZWJ, text)
 
 
-# Network git: only https / ssh (and local folders, for tests and mirrors) transports, no system config, no hooks,
-# and the URL after --end-of-options, so a recorded URL can never be an option (`--upload-pack=…`) or an ext:: helper.
+# Network git: only https / ssh (and local folders in the test suites only) transports, no hooks, and the URL after
+# --end-of-options, so a recorded URL can never be an option (`--upload-pack=…`) or an ext:: helper. The system git
+# config is kept: it is where e.g. Homebrew git keeps the credential helper (osxkeychain) https pushes need.
 NET = ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always",
        "-c", "protocol.file.allow=always", "-c", "core.hooksPath=/dev/null"]
 
 
-def safe_url(url):
-    """A remote URL the run may talk to: an owner/name https or ssh URL (SLUG), or an existing absolute folder."""
+def url_problem(url):
+    """None when the run may talk to this remote URL: an owner/name https or ssh URL (SLUG); an existing absolute
+    folder only in the test suites (DCV2_TEST_LOCAL_REMOTES=1: a local bare repo runs its own hooks on a push)."""
     url = str(url or "")
     if not url or url.startswith("-") or any(c in url for c in "\n\r\0 ") or "::" in url:
-        return False
-    return bool(SLUG.match(url)) or (url.startswith("/") and os.path.isdir(url))
+        return "refused: not a safe remote URL"
+    if url.startswith("http://"):
+        return "refused: http:// remotes are not used (use https://)"
+    if SLUG.match(url):
+        return None
+    if url.startswith("/") and os.path.isdir(url) and os.environ.get("DCV2_TEST_LOCAL_REMOTES") == "1":
+        return None
+    return "refused: not a safe remote URL (only https / ssh GitHub-style remotes)"
+
+
+def net_env():
+    return dict(os.environ, GIT_TERMINAL_PROMPT="0")
 
 
 def net_git(url, args, cwd=None):
-    if not safe_url(url):
-        return subprocess.CompletedProcess(args, 128, "", "refused: not a safe remote URL")
-    env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0")
+    why = url_problem(url)
+    if why:
+        return subprocess.CompletedProcess(args, 128, "", why)
+    env = net_env()
     neutral = cwd or tempfile.mkdtemp(prefix="dcv2-net-")
     try:
         return subprocess.run(["git", *NET, *args], capture_output=True, text=True, cwd=neutral, env=env, timeout=120)

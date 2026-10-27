@@ -180,14 +180,47 @@ pub fn safe_remote_url(url: &str) -> bool {
     {
         return false;
     }
-    slug.is_match(url) || (url.starts_with('/') && Path::new(url).is_dir())
+    // A local bare repo runs its own hooks on a push: only the tests use one.
+    slug.is_match(url) || (cfg!(test) && url.starts_with('/') && Path::new(url).is_dir())
+}
+
+/// The git command for a network call: only the https / ssh (and, in tests,
+/// local) transports, no hooks, no prompts. The system config stays: it is
+/// where e.g. Homebrew git keeps the credential helper (osxkeychain) that
+/// https remotes need.
+fn net_command(args: &[&str], dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.args([
+        "-c",
+        "protocol.allow=never",
+        "-c",
+        "protocol.https.allow=always",
+        "-c",
+        "protocol.ssh.allow=always",
+        "-c",
+        "protocol.file.allow=always",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+    ])
+    .args(args)
+    .current_dir(dir)
+    .env("GIT_TERMINAL_PROMPT", "0");
+    if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    }
+    cmd
 }
 
 /// A network git call to `url`, from a fresh temp folder (an empty repo when
-/// `in_repo`) so no repo's config applies, with no system config, only the
-/// https / ssh / local transports, no hooks, no prompts, a timeout. The URL
+/// `in_repo`) so no repo's config applies, with [`net_command`]'s
+/// transports and a timeout. The URL
 /// goes after `--end-of-options` in `args`.
 fn net_git(url: &str, args: &[&str], in_repo: bool) -> Result<String, String> {
+    if url.starts_with("http://") {
+        return Err("refused: http:// remotes are not used (use https://)".into());
+    }
     if !safe_remote_url(url) {
         return Err(REFUSED_URL.into());
     }
@@ -197,28 +230,7 @@ fn net_git(url: &str, args: &[&str], in_repo: bool) -> Result<String, String> {
         if in_repo {
             git(&tmp, &["init", "-q"])?;
         }
-        let mut cmd = Command::new("git");
-        cmd.args([
-            "-c",
-            "protocol.allow=never",
-            "-c",
-            "protocol.https.allow=always",
-            "-c",
-            "protocol.ssh.allow=always",
-            "-c",
-            "protocol.file.allow=always",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-        ])
-        .args(args)
-        .current_dir(&tmp)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_TERMINAL_PROMPT", "0");
-        if std::env::var_os("GIT_SSH_COMMAND").is_none() {
-            cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
-        }
+        let cmd = net_command(args, &tmp);
         run_with_timeout(cmd, CALL_TIMEOUT)
     })();
     let _ = std::fs::remove_dir_all(&tmp);
@@ -490,7 +502,7 @@ fn clean_pr(run_dir: &Path, pr: &PrView, lookup: &dyn PrLookup) -> Option<Cleanu
         "remote branch kept (GitHub gave no head commit)".into()
     } else {
         match remote_tip(&remote_url, &branch) {
-            Err(err) if err == REFUSED_URL => format!("remote branch kept ({err})"),
+            Err(err) if err.starts_with("refused:") => format!("remote branch kept ({err})"),
             Err(err) => {
                 rec.retry = true;
                 format!("remote branch kept for now (ls-remote: {err})")
@@ -916,6 +928,9 @@ mod tests {
         ] {
             assert!(!safe_remote_url(bad), "{bad}");
         }
+        assert!(remote_tip("http://github.com/o/r.git", "x")
+            .unwrap_err()
+            .contains("http:// remotes are not used"));
         for good in [
             "https://github.com/o/r.git",
             "git@github.com:o/r.git",
@@ -923,6 +938,32 @@ mod tests {
         ] {
             assert!(safe_remote_url(good), "{good}");
         }
+    }
+
+    #[test]
+    fn network_git_keeps_the_system_config_and_allows_only_safe_transports() {
+        // The system config holds Homebrew git's credential helper
+        // (osxkeychain): https pushes fail without it.
+        let cmd = net_command(
+            &["ls-remote", "--end-of-options", "https://github.com/o/r"],
+            Path::new("/"),
+        );
+        let envs: Vec<String> = cmd
+            .get_envs()
+            .map(|(k, _)| k.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            !envs.iter().any(|k| k.starts_with("GIT_CONFIG")),
+            "{envs:?}"
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.contains(&"protocol.allow=never".to_string()));
+        assert!(!args
+            .iter()
+            .any(|a| a.contains("protocol.http.allow") || a.contains("protocol.ext")));
     }
 
     #[test]
