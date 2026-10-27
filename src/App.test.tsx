@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { AppStateSnapshot, TabSummary } from "./bridge";
+import { attentionSummary, type AppStateSnapshot, type TabSummary } from "./bridge";
+import { clearUiErrors, uiErrors } from "./uiErrors";
 
 const tab: TabSummary = {
   id: "tab_1",
@@ -187,7 +188,7 @@ describe("App", () => {
       fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
     });
     // Review on GitHub is on by default, and so is BMAD Auto.
-    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null, "github", "auto", false);
+    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null, "github", "auto", false, null, null);
     expect((await screen.findByTestId("terminal")).textContent).toBe("Eagle-Eye · ws");
     expect(await screen.findByTestId("run-stage")).toBeTruthy();
     expect(screen.getByTestId("run-stage").textContent).toBe("Planning");
@@ -212,7 +213,7 @@ describe("App", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
     });
-    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null, "github", "on", false);
+    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null, "github", "on", false, null, null);
     state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
     localStorage.removeItem("dcv2.bmadMode./w/ws");
   });
@@ -414,5 +415,44 @@ describe("App split panes", () => {
       fireEvent.keyDown(window, { key: "W", ctrlKey: true, shiftKey: true });
     });
     await waitFor(() => expect(closeTabMock).toHaveBeenCalledWith("main", "tab_1"));
+  });
+
+  it("a rejected attention summary lands in the recent errors once", async () => {
+    clearUiErrors();
+    vi.mocked(attentionSummary).mockRejectedValue(new Error("summary down"));
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+    render(<App />);
+    await waitFor(() => expect(uiErrors().length).toBe(1));
+    expect(uiErrors()[0].source).toBe("Attention summary");
+    expect(await screen.findByTestId("error-count")).toBeTruthy();
+    vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
+  });
+
+  it("Ctrl+Shift+K opens the command palette over the window, a second press closes it, and a tab row selects", async () => {
+    state = { windowId: "main", activeTabId: "tab_1", tabs: [tab], closedTabs: [] };
+    render(<App />);
+    await screen.findByTestId("terminal");
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "K", ctrlKey: true, shiftKey: true });
+    });
+    expect(screen.getByRole("dialog", { name: "Command palette" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Claude · app/ })).toBeTruthy();
+    // Roles come from the overview; Settings sections are listed too.
+    expect(await screen.findByRole("option", { name: /Start Planner/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Settings: Phone push/ })).toBeTruthy();
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "K", ctrlKey: true, shiftKey: true });
+    });
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+    // Open again over a dialog (New window): it still opens.
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "N", ctrlKey: true, shiftKey: true });
+    });
+    expect(await screen.findByRole("dialog", { name: "New window" })).toBeTruthy();
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "K", ctrlKey: true, shiftKey: true });
+    });
+    expect(screen.getByRole("dialog", { name: "Command palette" })).toBeTruthy();
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
   });
 });

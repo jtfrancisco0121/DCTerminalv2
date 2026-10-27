@@ -102,3 +102,25 @@ describe("tab cycling and font zoom keys", () => {
     expect(isAppShortcut({ type: "keyup", ...key("Tab", { ctrlKey: true }) }, "mac")).toBe(false);
   });
 });
+
+describe("command palette key", () => {
+  it("Cmd+K on macOS and Ctrl+Shift+K elsewhere open it, and the terminal leaves the key alone", () => {
+    expect(keyAction(key("k", { metaKey: true }), "mac")).toEqual({ kind: "palette" });
+    expect(keyAction(key("K", { ctrlKey: true, shiftKey: true }), "linux")).toEqual({ kind: "palette" });
+    expect(keyAction(key("K", { ctrlKey: true, shiftKey: true }), "windows")).toEqual({ kind: "palette" });
+    expect(isAppShortcut({ type: "keydown", ...key("k", { metaKey: true }) }, "mac")).toBe(true);
+    // Not a palette key: plain K, Ctrl+K (readline's kill-line), Cmd+Shift+K on macOS.
+    expect(keyAction(key("k"), "mac")).toBeNull();
+    expect(keyAction(key("k", { ctrlKey: true }), "linux")).toBeNull();
+    expect(keyAction(key("K", { metaKey: true, shiftKey: true }), "mac")).toBeNull();
+  });
+
+  it("clashes with no other binding", () => {
+    const palette = SHORTCUT_SAMPLES.filter((s) => s.action.kind === "palette");
+    expect(palette).toHaveLength(1);
+    for (const sample of SHORTCUT_SAMPLES.filter((s) => s.action.kind !== "palette")) {
+      expect(keyAction(sample.mac, "mac")?.kind).not.toBe("palette");
+      if (sample.other) expect(keyAction(sample.other, "linux")?.kind).not.toBe("palette");
+    }
+  });
+});

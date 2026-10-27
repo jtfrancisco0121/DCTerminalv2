@@ -203,3 +203,46 @@ describe("SettingsPage", () => {
     expect(loginText({ ...base, state: "unknown", detail: "timeout" })).toBe("Unknown: timeout");
   });
 });
+
+describe("SettingsPage unsaved changes", () => {
+  it("marks each section exactly when it differs from the saved values", async () => {
+    render(<SettingsPage view={view()} onSaved={() => {}} onClose={() => {}} />);
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Account name"), { target: { value: "Work" } });
+    const accounts = screen.getByRole("region", { name: "Claude accounts" });
+    expect(accounts.textContent).toContain("Unsaved changes");
+    expect(screen.getByRole("region", { name: "Terminal" }).textContent).not.toContain("Unsaved changes");
+    fireEvent.change(screen.getByLabelText("Account name"), { target: { value: "Personal" } });
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
+
+    fireEvent.change(screen.getByRole("spinbutton", { name: /Font size/ }), { target: { value: "18" } });
+    expect(screen.getByRole("region", { name: "Terminal" }).textContent).toContain("Unsaved changes");
+    fireEvent.click(screen.getByRole("button", { name: "Save terminal settings" }));
+    await waitFor(() => expect(screen.queryByText("Unsaved changes")).toBeNull());
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /stop hooks/ }));
+    expect(screen.getByRole("region", { name: "Runs" }).textContent).toContain("Unsaved changes");
+  });
+
+  it("closes directly without changes; with changes asks, Keep editing stays, Discard closes", () => {
+    const onClose = vi.fn();
+    render(<SettingsPage view={view()} onSaved={() => {}} onClose={onClose} />);
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Settings" }), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(screen.getByLabelText("Account name"), { target: { value: "Work" } });
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    const ask = screen.getByRole("dialog", { name: "Discard unsaved changes?" });
+    expect(ask.textContent).toContain("Accounts has unsaved changes.");
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(document.activeElement?.textContent).toBe("Keep editing");
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(screen.queryByRole("dialog", { name: "Discard unsaved changes?" })).toBeNull();
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Settings" }), { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Discard unsaved changes?" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+});

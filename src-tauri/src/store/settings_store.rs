@@ -314,7 +314,7 @@ pub struct PushSettings {
     #[serde(default = "default_ntfy_server")]
     pub ntfy_server: String,
     /// App-only event kinds → on (missing: on): stall, check-failed,
-    /// merged-cleaned, autopost-failed.
+    /// ci-failed, merged-cleaned, autopost-failed.
     #[serde(default)]
     pub events: std::collections::BTreeMap<String, bool>,
 }
@@ -372,6 +372,10 @@ pub struct ClickUpSettings {
     /// run panel", per account id. Missing: off (a stored `true` is kept).
     #[serde(default)]
     pub auto_post: std::collections::BTreeMap<String, bool>,
+    /// The status a ticket moves to when its PRs merge, per ClickUp list id.
+    /// Missing: the list's first `closed`-type status. No editor yet.
+    #[serde(default)]
+    pub done_status: std::collections::BTreeMap<String, String>,
 }
 
 impl ClickUpSettings {

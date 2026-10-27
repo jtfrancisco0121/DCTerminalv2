@@ -44,4 +44,80 @@ describe("MemoryPanelView", () => {
     expect(screen.getByText(/memory.sh is not in this plugin yet/)).toBeTruthy();
     expect(memoryLine({ present: true })).toBe("present");
   });
+
+  const repo = {
+    name: "backend",
+    id: "github.com__o__backend",
+    present: true,
+    topics: [
+      { name: "api", stale: true, checkedAt: "abc123" },
+      { name: "db-schema", stale: false },
+      { name: "../evil", stale: false },
+    ],
+  };
+
+  it("lists topics with stale badges and opens a valid one; invalid names are not clickable", () => {
+    const onOpenTopic = vi.fn();
+    render(
+      <MemoryPanelView
+        status={{ available: true, repos: [repo] }}
+        onOnboard={() => {}}
+        onRefresh={() => {}}
+        onOpen={() => {}}
+        onOpenTopic={onOpenTopic}
+      />,
+    );
+    // Stale topics: expanded by default.
+    expect(screen.getByText("api").closest("li")?.textContent).toContain("stale");
+    expect(screen.getByText("api").closest("li")?.querySelector(".stale-badge")?.getAttribute("title")).toBe("checked at abc123");
+    expect(screen.getByText("db-schema").closest("li")?.querySelector(".stale-badge")).toBeNull();
+    fireEvent.click(screen.getByText("db-schema"));
+    expect(onOpenTopic).toHaveBeenCalledWith(expect.objectContaining({ id: "github.com__o__backend" }), "db-schema");
+    expect(screen.getByText("../evil").tagName).toBe("SPAN");
+  });
+
+  it("is collapsed when nothing is stale, and says when there are no topics", () => {
+    render(
+      <MemoryPanelView
+        status={{ available: true, repos: [{ ...repo, topics: [{ name: "db-schema", stale: false }] }, { name: "web", id: "w", present: true, topics: [] }] }}
+        onOnboard={() => {}}
+        onRefresh={() => {}}
+        onOpen={() => {}}
+      />,
+    );
+    expect(screen.queryByText("db-schema")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show topics of backend" }));
+    expect(screen.getByText("db-schema")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Show topics of web" }));
+    expect(screen.getByText("No topics yet.")).toBeTruthy();
+  });
+
+  it("offers Refresh stale only with stale topics and passes the repo", () => {
+    const onRefreshStale = vi.fn();
+    const { rerender } = render(
+      <MemoryPanelView
+        status={{ available: true, repos: [repo, { name: "web", id: "w", present: true, topics: [{ name: "a", stale: false }] }] }}
+        onOnboard={() => {}}
+        onRefresh={() => {}}
+        onOpen={() => {}}
+        onRefreshStale={onRefreshStale}
+      />,
+    );
+    const buttons = screen.getAllByRole("button", { name: /Refresh stale/ });
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].textContent).toBe("Refresh stale (1)");
+    fireEvent.click(buttons[0]);
+    expect(onRefreshStale).toHaveBeenCalledWith(expect.objectContaining({ name: "backend" }));
+    rerender(
+      <MemoryPanelView
+        status={{ available: true, repos: [repo] }}
+        onOnboard={() => {}}
+        onRefresh={() => {}}
+        onOpen={() => {}}
+        onRefreshStale={onRefreshStale}
+        busy
+      />,
+    );
+    expect((screen.getByRole("button", { name: /Refresh stale/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
 });

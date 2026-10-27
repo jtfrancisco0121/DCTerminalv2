@@ -3,6 +3,7 @@
 //! never writes a `test-mode:` line and never sets `DCV2_TEST_MODE`.
 
 use super::repos::Repo;
+use crate::store::settings_store::MAX_IMPLEMENTERS_LIMIT;
 use crate::store::write_json_atomic;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -114,6 +115,9 @@ pub struct RunMeta {
     pub bmad_mode: Option<String>,
     /// First line of `plugin/bmad/VERSION`, recorded with the mode.
     pub bmad_version: Option<String>,
+    /// This run's `DCV2_MAX_IMPLEMENTERS` override (1..=8), set on the start
+    /// screen; `None` is not recorded (the setting applies).
+    pub max_implementers: Option<u32>,
 }
 
 /// The review modes meta.json can record.
@@ -121,6 +125,44 @@ pub const REVIEW_MODES: &[&str] = &["github", "local"];
 
 /// The BMAD planning modes meta.json can record.
 pub const BMAD_MODES: &[&str] = &["auto", "on", "off"];
+
+/// meta.json's `maxImplementers` (the start screen's override), when it is an
+/// integer in 1..=8; anything else is `None` and the setting applies.
+pub fn max_implementers_of(run_dir: &Path) -> Option<u32> {
+    read_json_value(&run_dir.join("meta.json"))?
+        .get("maxImplementers")
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| (1..=MAX_IMPLEMENTERS_LIMIT).contains(n))
+}
+
+/// The repos a run is limited to, from the ticked names. `None` or every
+/// detected repo ticked → no limit (an empty list, so request.md gets no
+/// `repos:` line). A name that was not detected, or none ticked, is refused.
+pub fn repos_limit_for(
+    detected: &[String],
+    ticked: Option<&[String]>,
+) -> Result<Vec<String>, String> {
+    let Some(ticked) = ticked else {
+        return Ok(Vec::new());
+    };
+    if ticked.is_empty() {
+        return Err("Tick at least one repo.".into());
+    }
+    if let Some(unknown) = ticked.iter().find(|name| !detected.contains(name)) {
+        return Err(format!("{unknown} is not a repo of this folder."));
+    }
+    let picked: Vec<String> = detected
+        .iter()
+        .filter(|name| ticked.contains(name))
+        .cloned()
+        .collect();
+    if picked.len() == detected.len() {
+        Ok(Vec::new())
+    } else {
+        Ok(picked)
+    }
+}
 
 /// meta.json's `bmad.mode`: `auto`, `on` or `off`; missing or unknown → `off`.
 pub fn bmad_mode_of(run_dir: &Path) -> String {
@@ -212,6 +254,9 @@ pub fn create_run(
     }
     if let Some(mode) = meta.bmad_mode.as_deref().filter(|m| BMAD_MODES.contains(m)) {
         meta_json["bmad"] = json!({"mode": mode, "version": meta.bmad_version});
+    }
+    if let Some(n) = meta.max_implementers {
+        meta_json["maxImplementers"] = json!(n.clamp(1, MAX_IMPLEMENTERS_LIMIT));
     }
     write_json_atomic(&dir.join("meta.json"), &meta_json)?;
     Ok(CreatedRun {
@@ -346,6 +391,46 @@ pub struct RunListItem {
     /// report.md exists.
     #[serde(default)]
     pub has_report: bool,
+    /// How many repos the run works on: request.md's `repos:` limit when it
+    /// has one, else repos.json's count (None when neither is readable).
+    #[serde(default)]
+    pub repo_count: Option<u32>,
+    /// Whether BMAD planning was applied: status.json `bmad.applied`; else
+    /// mode `on` is true and `off` is false (None for `auto` not yet decided).
+    #[serde(default)]
+    pub bmad_applied: Option<bool>,
+}
+
+/// The repos of a run: request.md's `repos:` names, else repos.json's.
+fn repo_count_of(run_dir: &Path) -> Option<u32> {
+    let limited = std::fs::read_to_string(run_dir.join("request.md"))
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .take_while(|line| !line.starts_with("## "))
+                .find_map(|line| line.strip_prefix("repos:").map(str::to_string))
+        })
+        .map(|names| names.split(',').filter(|n| !n.trim().is_empty()).count() as u32)
+        .filter(|n| *n > 0);
+    limited.or_else(|| {
+        read_json_value(&run_dir.join("repos.json"))?
+            .get("repos")?
+            .as_array()
+            .map(|repos| repos.len() as u32)
+    })
+}
+
+fn bmad_applied_of(run_dir: &Path, status: &Option<Value>) -> Option<bool> {
+    let recorded = status
+        .as_ref()
+        .and_then(|v| v.get("bmad"))
+        .and_then(|b| b.get("applied"))
+        .and_then(Value::as_bool);
+    recorded.or_else(|| match bmad_mode_of(run_dir).as_str() {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    })
 }
 
 /// What the Runs view shows from the run record.
@@ -450,6 +535,8 @@ pub fn list_runs(data_dir: &Path) -> Vec<RunListItem> {
                         .map(|prs| prs.len() as u32),
                     ticket_ids: ticket_ids(&dir),
                     has_report: dir.join("report.md").is_file(),
+                    repo_count: repo_count_of(&dir),
+                    bmad_applied: bmad_applied_of(&dir, &status),
                     run_id,
                     run_dir: dir.display().to_string(),
                     adopted,
@@ -509,6 +596,140 @@ mod tests {
     }
 
     #[test]
+    fn list_runs_fills_repo_count_and_bmad_applied() {
+        let dir = TempDir::new("run_list_estimate");
+        let repo = |name: &str| Repo {
+            name: name.into(),
+            path: format!("/w/{name}"),
+            check: None,
+            setup: None,
+            copy_files: vec![],
+            live_tests: false,
+        };
+        let repos = vec![repo("a"), repo("b"), repo("c")];
+        let meta = |mode: Option<&str>| RunMeta {
+            account_id: "default".into(),
+            bmad_mode: mode.map(String::from),
+            ..Default::default()
+        };
+        let all = create_run(
+            dir.path(),
+            Path::new("/w"),
+            &repos,
+            &[],
+            "all",
+            &meta(Some("on")),
+        )
+        .unwrap();
+        let some = create_run(
+            dir.path(),
+            Path::new("/w"),
+            &repos,
+            &["a".to_string(), "b".to_string()],
+            "some",
+            &meta(Some("auto")),
+        )
+        .unwrap();
+        std::fs::write(
+            Path::new(&some.run_dir).join("status.json"),
+            r#"{"schema":1,"bmad":{"applied":true}}"#,
+        )
+        .unwrap();
+        let list = list_runs(dir.path());
+        let of = |id: &str| list.iter().find(|r| r.run_id == id).unwrap();
+        assert_eq!(of(&all.run_id).repo_count, Some(3));
+        assert_eq!(of(&all.run_id).bmad_applied, Some(true), "mode on");
+        assert_eq!(of(&some.run_id).repo_count, Some(2));
+        assert_eq!(
+            of(&some.run_id).bmad_applied,
+            Some(true),
+            "status.json says applied"
+        );
+    }
+
+    #[test]
+    fn ticked_repos_become_a_limit_only_for_a_strict_subset() {
+        let detected: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
+        let ticked = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert!(repos_limit_for(&detected, None).unwrap().is_empty());
+        assert!(repos_limit_for(&detected, Some(&ticked(&["c", "a", "b"])))
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            repos_limit_for(&detected, Some(&ticked(&["c", "a"]))).unwrap(),
+            ["a", "c"]
+        );
+        assert!(repos_limit_for(&detected, Some(&ticked(&["a", "zzz"]))).is_err());
+        assert!(repos_limit_for(&detected, Some(&[])).is_err());
+    }
+
+    #[test]
+    fn a_subset_limits_request_md_but_repos_json_keeps_every_repo() {
+        let dir = TempDir::new("run_subset");
+        let repo = |name: &str| Repo {
+            name: name.into(),
+            path: format!("/w/{name}"),
+            check: None,
+            setup: None,
+            copy_files: vec![],
+            live_tests: false,
+        };
+        let repos = vec![repo("a"), repo("b")];
+        let limit = repos_limit_for(&["a".into(), "b".into()], Some(&["b".to_string()])).unwrap();
+        let meta = RunMeta {
+            account_id: "default".into(),
+            ..Default::default()
+        };
+        let created =
+            create_run(dir.path(), Path::new("/w"), &repos, &limit, "Do it", &meta).unwrap();
+        let run = Path::new(&created.run_dir);
+        let request = std::fs::read_to_string(run.join("request.md")).unwrap();
+        assert!(request.contains("repos: b\n"));
+        assert_eq!(
+            read_json_value(&run.join("repos.json")).unwrap()["repos"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn the_implementer_override_is_recorded_clamped_and_read_back() {
+        let dir = TempDir::new("run_max_impl");
+        let repos = vec![Repo {
+            name: "a".into(),
+            path: "/w/a".into(),
+            check: None,
+            setup: None,
+            copy_files: vec![],
+            live_tests: false,
+        }];
+        let make = |n: Option<u32>, request: &str| {
+            let meta = RunMeta {
+                account_id: "default".into(),
+                max_implementers: n,
+                ..Default::default()
+            };
+            let created =
+                create_run(dir.path(), Path::new("/w"), &repos, &[], request, &meta).unwrap();
+            PathBuf::from(created.run_dir)
+        };
+        let none = make(None, "one");
+        assert_eq!(max_implementers_of(&none), None);
+        assert!(read_json_value(&none.join("meta.json"))
+            .unwrap()
+            .get("maxImplementers")
+            .is_none());
+        assert_eq!(max_implementers_of(&make(Some(5), "two")), Some(5));
+        assert_eq!(max_implementers_of(&make(Some(50), "three")), Some(8));
+        assert_eq!(max_implementers_of(&make(Some(0), "four")), Some(1));
+        // A hand-edited value outside 1..=8 is ignored.
+        std::fs::write(none.join("meta.json"), r#"{"maxImplementers": 99}"#).unwrap();
+        assert_eq!(max_implementers_of(&none), None);
+    }
+
+    #[test]
     fn a_run_folder_has_its_inputs_and_lists_newest_first() {
         let dir = TempDir::new("run_create");
         let repos = vec![Repo {
@@ -528,6 +749,7 @@ mod tests {
             review_mode: None,
             bmad_mode: None,
             bmad_version: None,
+            max_implementers: None,
         };
         assert!(create_run(dir.path(), Path::new("/w"), &repos, &[], "  ", &meta).is_err());
         let one = create_run(

@@ -40,10 +40,15 @@
 # a shell write. Repo and worktree rules are unchanged.
 # Cleanup (0.5.0): the orchestrator never runs `git worktree <anything but list>` or a changing `git branch`
 # anywhere in a bound run (and never `git push --delete`): `state.sh cleanup` does it, at done / failed only.
-# <run>/requests/ is written only by `state.sh request` and the app; app-cleanup.json only by the app.
+# <run>/requests/ is written only by `state.sh request` and the app; app-cleanup.json and app-github.json only by the app.
 # Live tests: a pipeline sub-agent never runs `claude`; `scripts/skill-e2e/golden.sh` / `bmad_spike.sh` (which
 # launch claude) only the implementer or pr-reviewer runs, inside its recorded worktree, when repos.json gives
 # that repo `liveTests: true` (the app setting "Allow live Claude tests in checks"). Best effort, like the rest.
+# Interpreters (python/node/perl/ruby `-c`/`-e`/`-p` code, a heredoc or here-string fed to one): in a bound run the code may not
+# name a protected run file (path-aware, like Edit/Write and shell writes) or the run's signed records; the orchestrator's inline
+# code may not contain a write primitive (open(..,'w'), write_text, writeFile, os.system, subprocess, ...). A shell or interpreter
+# never reads its program from a pipe (`| bash`, `| sh -s`, `| python3`, `| python3 -`), /dev/stdin or `<(...)`, and never runs a
+# file the same command wrote. `... | python3 -c '<code that reads stdin as data>'` stays allowed. Best effort, as above.
 # Everyone: status.json, writeback.json and .guard.json in a run folder are written only by
 # state.sh. When DCV2_MEMORY_DIR is set (every dcv2 launch), nobody writes into it with
 # Edit/Write or a shell redirect/copy: agents use memory.sh write (the app's editor writes as the
@@ -138,7 +143,7 @@ if run:
 # (the ClickUp snapshot and records, meta.json, the app's own check results).
 PROTECTED = ("status.json", "writeback.json", ".guard.json",
              "tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json", "app-usage.json",
-             "app-cleanup.json")
+             "app-cleanup.json", "app-github.json")
 who = agent or "the orchestrator"
 where = "your worktree or the run folder" if role == "implementer" else "the run folder"
 
@@ -320,18 +325,28 @@ WRAPPERS = {"sudo", "env", "command", "nohup", "time", "exec", "builtin", "nice"
 SAFE_DEV = ("/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty")
 
 
-def strip_heredocs(cmd):
-    out, skip = [], None
+def split_heredocs(cmd):
+    """(the command text without heredoc bodies, [(the line that opened the heredoc, its body)])."""
+    out, docs, skip, header, body = [], [], None, "", []
     for line in cmd.split("\n"):
         if skip is not None:
             if line.strip() == skip:
-                skip = None
+                docs.append((header, "\n".join(body)))
+                skip, body = None, []
+            else:
+                body.append(line)
             continue
         out.append(line)
         m = re.search(r"(?<!<)<<(?!<)-?\s*['\"]?(\w+)['\"]?", line)
         if m:
-            skip = m.group(1)
-    return "\n".join(out)
+            skip, header = m.group(1), line
+    if skip is not None:  # an unterminated heredoc still counts
+        docs.append((header, "\n".join(body)))
+    return "\n".join(out), docs
+
+
+def strip_heredocs(cmd):
+    return split_heredocs(cmd)[0]
 
 
 def lex(text):
@@ -643,6 +658,7 @@ def check_git(args, cwd):
         ship_gate("git push")
         return
     shared_refs(sub, rest, target)
+    check_orchestrator_destructive(sub, rest, target)
     if not pipeline:
         if run and sub in ("remote", "config") and not git_readonly(sub, rest):
             block(f"the orchestrator never changes git remotes or config (`git {sub} ...`): they are shared by the repo and "
@@ -961,12 +977,248 @@ def check_security(args):
         block("the app's keychain items are never read from inside a run.")
 
 
+# ---- interpreters, stdin scripts, files a command wrote itself (CAP-12) -------------------------------------------
+# An interpreter's inline code (python3 -c, node -e, perl -e, ruby -e, a heredoc or here-string fed to it) is a program
+# the guard cannot read like a shell command, so a bound run's rules look at what it NAMES. This is best effort (a
+# string-built path evades it); the PROTECTED checks of Edit/Write and shell writes remain.
+INTERP_FAMILY = ((re.compile(r"^python[\d.]*$"), "python"), (re.compile(r"^node(js)?$"), "node"), (re.compile(r"^perl[\d.]*$"), "perl"),
+                 (re.compile(r"^ruby[\d.]*$"), "ruby"))
+STDIN_INTERPRETERS = ("python", "node", "perl", "ruby", "deno", "bun", "osascript", "php", "lua", "Rscript")
+WRITE_PRIM_RE = re.compile(
+    r"\bopen\s*\([^,)]*,\s*(?:mode\s*=\s*)?['\"][^'\"]*[wax+]|\bopen\s*\([^)]*\bmode\s*=\s*['\"][^'\"]*[wax+]|\.write_text\b|\.write_bytes\b|\bwriteFile(Sync)?\b|\bappendFile(Sync)?\b|"
+    r"\bfs\.(write|rm|unlink|rename|copy|mkdir|rmdir)|\bcreateWriteStream\b|\bos\.(system|popen|remove|unlink|rename|replace|rmdir|"
+    r"removedirs|exec\w*|spawn\w*)\b|\bsubprocess\b|\bPopen\b|\bshutil\.|\bchild_process\b|\bsystem\s*\(|\bexec\s*\(|"
+    r"\bFile\.(write|open|delete|rename)|\bFileUtils\b|\bIO\.(write|popen)", re.I)
+WRITTEN = set()  # real paths this command has already written (redirects, tee, cp, mv, ...)
+
+
+def interp_family(name):
+    for rx, fam in INTERP_FAMILY:
+        if rx.match(name):
+            return fam
+    return None
+
+
+def interp_parse(fam, args):
+    """(inline code strings, script operand) of an interpreter's args: `-c`/`-e`/`--eval`/`-p` code, and the first
+    non-option operand (the script, `-` for stdin, or the module of `python -m`)."""
+    code, script, i = [], None, 0
+    while i < len(args):
+        a = args[i]
+        nxt = args[i + 1] if i + 1 < len(args) else None
+        if a == "--":
+            script = nxt
+            break
+        if a == "-":
+            script = "-"
+            break
+        if a.startswith("--"):
+            flag, eq, val = a.partition("=")
+            if fam == "node" and flag in ("--eval", "--print"):
+                if eq:
+                    code.append(val)
+                elif nxt is not None:
+                    code.append(nxt)
+                    i += 1
+            i += 1
+            continue
+        if a.startswith("-"):
+            cl = a[1:]
+            if fam == "python" and "c" in cl:
+                at = cl.index("c")
+                if at == len(cl) - 1 and nxt is not None:
+                    code.append(nxt)
+                    i += 2
+                else:
+                    code.append(cl[at + 1:])
+                    i += 1
+                continue
+            if fam == "python" and cl.endswith("m") and nxt is not None:
+                script = nxt
+                break
+            if fam == "node" and cl and cl[-1] in "ep" and nxt is not None:
+                code.append(nxt)
+                i += 2
+                continue
+            if fam == "node" and a in ("-r", "--require", "--import", "--loader") and nxt is not None:
+                i += 2
+                continue
+            if fam in ("perl", "ruby") and cl and cl[-1] in ("eE" if fam == "perl" else "e") and nxt is not None:
+                code.append(nxt)
+                i += 2
+                continue
+            i += 1
+            continue
+        script = a
+        break
+    return code, script
+
+
+def check_code(name, texts, cwd):
+    """Inline code (or a heredoc / here-string fed to an interpreter) in a bound run: it may not name a protected run file
+    (path-aware, as `protected()`), the run's signed records, or, with a write primitive, the memory or plugin folders; the
+    orchestrator may not run inline code with a write primitive at all (its writes go through state.sh and Edit/Write).
+
+    The protected-name match is PATH-AWARE, like `protected()`: a name such as status.json counts only when it resolves to a
+    run folder (the run itself, or a folder holding a request.md), not as a casefolded substring anywhere in the code. This
+    departs from the architecture's AD-9 wording (a casefolded substring match) on purpose: the repo tracks
+    fixtures/run/<run>/status.json and repos.json, which an Implementer legitimately reads from its worktree
+    (`python3 -c "...open('fixtures/run/r-x/status.json')..."`), and a substring rule would block that (SM-C1, no false
+    positives). Code that names DCV2_RUN_DIR or the run folder's path together with a protected name is still matched as
+    a casefolded substring, since the path is then the run folder whatever the code joins it with."""
+    if not bound:
+        return
+    text = "\n".join(texts)
+    low = text.casefold()
+    writes = bool(WRITE_PRIM_RE.search(text))
+    if run and not pipeline and writes:
+        block(f"the orchestrator never runs inline {name} code that writes or runs programs (open(...,'w'), write_text, writeFile, "
+              "os.system, subprocess, ...): it cannot be checked; write run files with state.sh and edit with Edit/Write.")
+    if "run-trust" in low:
+        block(TRUST_MSG)
+    if run and ("dcv2_run_dir" in low or norm(run) in low) and any(n in low for n in PROTECTED_CF):
+        block(f"inline {name} code that names the run folder and a protected run file (status.json, writeback.json, .guard.json, "
+              "meta.json, repos.json, ...) is not allowed: write run-folder state only with scripts/state.sh.")
+    for piece in re.split(r"""[\s'"`(),=\[\]{}<>;:|&+*]+""", text):
+        if not piece or "$" in piece:
+            continue
+        looks_like_path = "/" in piece or piece.startswith("~")
+        if os.path.basename(piece).casefold() in PROTECTED_CF:
+            if os.path.isabs(os.path.expanduser(piece)) or cwd is not None:
+                p = real(piece, cwd or "/")
+                if protected(p):
+                    block(f"inline {name} code names {piece!r}, a run file only state.sh (or the app) writes: use state.sh.")
+            else:
+                block(f"inline {name} code names {piece!r} and the working folder is not known: it may be a run file; use state.sh.")
+        if looks_like_path and (os.path.isabs(os.path.expanduser(piece)) or cwd is not None):
+            p = real(piece, cwd or "/")
+            if inside(p, trust_root):
+                block(TRUST_MSG)
+            if writes and (inside(p, mem) or any(inside(p, r) for r in
+                                                  [r for r in (os.environ.get("CLAUDE_PLUGIN_ROOT") or "", GUARD_PLUGIN) if r])):
+                block(f"inline {name} code with a write names {piece!r}: codebase memory is written only with memory.sh write, "
+                      "and the plugin is never written from a run.")
+
+
+def note_written(t, cwd):
+    """Remember a file the command wrote (a redirect target or a write operand) for the `runs what it wrote` rule."""
+    if not t or re.search(r"[$`*?]", t) or t in SAFE_DEV or t.startswith("/dev/"):
+        return
+    if os.path.isabs(os.path.expanduser(t)) or cwd is not None:
+        WRITTEN.add(norm(real(t, cwd or "/")))
+
+
+def check_runs_written(path, cwd, what):
+    if bound and path and "$" not in path and (os.path.isabs(os.path.expanduser(path)) or cwd is not None) \
+            and norm(real(path, cwd or "/")) in WRITTEN:
+        block(f"this command writes {path} and then runs it ({what}): the code is never seen by the guard. Write the file in one "
+              "command (Edit/Write) and run it in the next.")
+
+
+def worktree_hit(p):
+    return bool(p) and any(inside(p, w) for w in worktrees)
+
+
+def check_orchestrator_destructive(sub, rest, target):
+    """The orchestrator (no agent type) in a bound run never runs git commands that discard files in a run worktree
+    (git clean, reset --hard, checkout -- <path> / checkout ., restore, stash drop|clear): the Implementer's work lives
+    there. Implementers keep these commands inside their own worktree."""
+    if not run or pipeline or not worktrees:
+        return
+    kind = None
+    if sub == "clean":
+        kind = "git clean"
+    elif sub == "reset" and any(a == "--hard" or a == "--merge" or a == "--keep" for a in rest):
+        kind = "git reset --hard"
+    elif sub == "checkout" and ("--" in rest or "." in rest or any(a in ("-f", "--force") for a in rest)):
+        kind = "git checkout -- <path>"
+    elif sub == "restore":
+        kind = "git restore"
+    elif sub == "stash" and rest[:1] in (["drop"], ["clear"]):
+        kind = f"git stash {rest[0]}"
+    if not kind:
+        return
+    if target is None or worktree_hit(target):
+        block(f"the orchestrator never runs `{kind}` in a run worktree (or where the folder cannot be told): it discards the "
+              "Implementer's files. The Implementer cleans up inside its own worktree.")
+
+
+def check_orchestrator_rm(args, cwd):
+    """`rm -r` (any recursive flag) by the orchestrator with the cwd or a target inside a run worktree."""
+    if not run or pipeline or not worktrees:
+        return
+    recursive = any(a in ("--recursive",) or (re.match(r"^-[A-Za-z]+$", a) and ("r" in a or "R" in a)) for a in args)
+    if not recursive:
+        return
+    targets = [a for a in args if a and not a.startswith("-")]
+    unknown = cwd is None and any(not os.path.isabs(os.path.expanduser(t)) for t in targets)
+    if worktree_hit(cwd) or unknown or any(
+            "$" in t or re.search(r"[*?]", t) or worktree_hit(real(t, cwd or "/")) for t in targets):
+        block("the orchestrator never runs `rm -r` in a run worktree, or on a path that cannot be told apart from one: it deletes "
+              "the Implementer's files. Worktrees are removed with `state.sh cleanup` (or by the app).")
+
+
+PROC_SUBST_RE = re.compile(r"(?:^|[\s;&|(])(?:source|\.|bash|sh|zsh|dash|ksh|python[\d.]*|nodejs?|perl[\d.]*|ruby[\d.]*)\s+(?:-[\w-]+\s+)*<\(")
+
+
+def check_program_source(name, words, args, script, piped, docs, stdin_text, stdin_files, cwd, depth):
+    """Where a shell or an interpreter gets the program it runs (bound runs): not from a pipe or /dev/stdin, not from a file the
+    command itself wrote; inline code and heredocs are checked by what they name (`check_code`)."""
+    fam = interp_family(name)
+    shell = name in SHELLS or name in ("source", ".")
+    is_interp = fam is not None or name in STDIN_INTERPRETERS
+    if not (shell or is_interp):
+        if "/" in words[0] and "$" not in words[0]:
+            check_runs_written(words[0], cwd, "run as a program")
+        return
+    here = [body for header, body in docs if re.search(r"(?<![\w./-])" + re.escape(name) + r"(?![\w-])", header)] + list(stdin_text)
+    if shell:
+        code = shell_c(args) if name in SHELLS else None
+        operand = script
+        if operand is not None and name in SHELLS:  # `sh -s -- <args>`: the operands are arguments, the program is stdin
+            lead = args[:args.index(operand)] if operand in args else []
+            if any(re.match(r"^-[a-zA-Z]*s[a-zA-Z]*$", a) for a in lead):
+                operand = None
+        if code is not None:
+            return  # `bash -c '<text>'` is analysed by the caller
+        if operand is None and name in SHELLS:
+            if piped:
+                block(f"`| {name}` runs a program that comes from a pipe: it cannot be checked. Save it with Edit/Write, read it, "
+                      "then run the file in a later command.")
+            for body in here:  # a heredoc / here-string fed to a shell is a command text: look at it as one
+                if depth < 4:
+                    analyze(body, cwd, depth + 1)
+            for f in stdin_files:
+                check_runs_written(f, cwd, f"fed to {name}")
+        elif operand in ("/dev/stdin", "-") or (operand or "").startswith("/dev/fd/"):
+            block(f"`{name} {operand}` runs a program from stdin: it cannot be checked.")
+        elif operand:
+            check_runs_written(operand, cwd, f"run with {name}")
+        return
+    code, operand = interp_parse(fam, args) if fam else ([], next((a for a in args if not a.startswith("-")), None))
+    if operand in ("/dev/stdin",) or (operand or "").startswith("/dev/fd/"):
+        block(f"`{name} {operand}` runs a program from stdin: it cannot be checked.")
+    if not code and operand in (None, "-"):
+        if piped:
+            block(f"`| {name}` runs a program that comes from a pipe: it cannot be checked. (Reading piped JSON is fine with "
+                  f"`| {name} -c '<code>'`.)")
+        code = list(here)  # a heredoc / here-string is the program
+        for f in stdin_files:
+            check_runs_written(f, cwd, f"fed to {name}")
+    elif operand and "$" not in operand and fam:
+        check_runs_written(operand, cwd, f"run with {name}")
+    if fam and code:
+        check_code(name, code + here, cwd)
+
+
 def analyze(cmd, cwd, depth=0):
     if depth > 4:
         if pipeline:
             block("command nesting too deep to check")
         return cwd
-    text = strip_heredocs(cmd)
+    text, docs = split_heredocs(cmd)
+    if bound and PROC_SUBST_RE.search(text):
+        block("a shell or interpreter reading its program from <(...) is never run in a dcv2 run: the program cannot be checked.")
     try:
         toks = lex(text)
     except ValueError:
@@ -975,7 +1227,7 @@ def analyze(cmd, cwd, depth=0):
         if bound and re.search(r"\bgit\b.*\bpush\b|\bgh\b.*\bpr\b", text):
             block("could not parse this push / PR command")
         return cwd
-    segs, seg = [], []
+    segs, seg, flags, after_pipe = [], [], [], False
     for t in toks:
         if not is_punct(t):
             seg.append(t)
@@ -985,15 +1237,21 @@ def analyze(cmd, cwd, depth=0):
                 seg.append(op)
             else:
                 segs.append(seg)
+                flags.append(after_pipe)
                 seg = []
+                after_pipe = op in ("|", "|&")
     segs.append(seg)
-    for seg in segs:
+    flags.append(after_pipe)
+    for seg, piped in zip(segs, flags):
         words, targets, i = [], [], 0
+        stdin_text, stdin_files = [], []  # a here-string / a `< file` the segment's program reads as its stdin
         while i < len(seg):
             t = seg[i]
             if is_punct(t):
                 nxt = seg[i + 1] if i + 1 < len(seg) and not is_punct(seg[i + 1]) else None
                 if "<" in t and ">" not in t:
+                    if nxt is not None:
+                        (stdin_text if t == "<<<" else stdin_files if t == "<" else []).append(nxt)
                     i += 2 if nxt is not None else 1
                     continue
                 if t.endswith("&") and nxt is not None and (nxt.isdigit() or nxt == "-"):
@@ -1013,6 +1271,8 @@ def analyze(cmd, cwd, depth=0):
                 analyze(a or b, cwd, depth + 1)
         for t in targets:
             check_write(t, cwd)
+            if bound:
+                note_written(t, cwd)
         if bound:
             for w in words:
                 if GIT_ENV_RE.match(w):
@@ -1026,6 +1286,8 @@ def analyze(cmd, cwd, depth=0):
             continue
         name, args = os.path.basename(words[0]), words[1:]
         script = shell_script(args) if name in SHELLS else (args[0] if name in ("source", ".") and args else None)
+        if bound:
+            check_program_source(name, words, args, script, piped, docs, stdin_text, stdin_files, cwd, depth)
         if pipeline:
             if "$" in words[0] and "claude" in CMD:
                 block(f"cannot tell which program `{words[0]}` is, and the command mentions claude: {who} never launches claude.")
@@ -1043,6 +1305,10 @@ def analyze(cmd, cwd, depth=0):
                 cwd = mem
                 continue
             cwd = None if ("$" in d or cwd is None and not os.path.isabs(os.path.expanduser(d))) else real(d, cwd or "/")
+        elif name == "rm" and run and not pipeline:
+            check_orchestrator_rm(args, cwd)
+            for t in write_targets(name, args, cwd):
+                check_write(t, cwd)
         elif name == "git":
             check_git(args, cwd)
         elif name == "gh":
@@ -1073,6 +1339,8 @@ def analyze(cmd, cwd, depth=0):
         else:
             for t in write_targets(name, args, cwd):
                 check_write(t, cwd)
+                if bound:
+                    note_written(t, cwd)
     return cwd
 
 

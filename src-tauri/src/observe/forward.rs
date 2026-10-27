@@ -39,6 +39,7 @@ pub fn reduce(payload: &Value) -> Value {
         "agent_type",
         "notification_type",
         "tool_name",
+        "tool_use_id",
         "source",
         "reason",
     ] {
@@ -67,6 +68,7 @@ pub fn prefix_fields(raw: &[u8]) -> Value {
         "agent_id",
         "agent_type",
         "tool_name",
+        "tool_use_id",
         "notification_type",
     ] {
         let needle = format!("\"{key}\"");

@@ -14,7 +14,7 @@ use crate::store::write_json_atomic;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 pub const REQUESTS_DIR: &str = "requests";
 pub const KINDS: &[&str] = &["recheck", "cleanup", "tickets", "selftest"];
@@ -22,6 +22,10 @@ pub const KINDS: &[&str] = &["recheck", "cleanup", "tickets", "selftest"];
 pub const RATE: Duration = Duration::from_secs(60);
 /// A request file larger than this is not read.
 const MAX_REQUEST_BYTES: u64 = 4096;
+/// A final answered pair older than this is pruned.
+pub const PRUNE_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
+/// Of each kind, the newest this many final pairs are kept whatever their age.
+pub const KEEP_PER_KIND: usize = 20;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -231,6 +235,71 @@ pub fn fail_interrupted(run_dir: &Path) -> usize {
     n
 }
 
+/// Deletes old answered request pairs (`<id>.json` and `<id>.result.json`).
+/// Only a pair whose result parses and is final (`done`, `refused`,
+/// `ignored`) is a candidate, and only when its answer is older than
+/// [`PRUNE_AGE`] or falls outside the newest [`KEEP_PER_KIND`] final pairs of
+/// its kind. A `running` answer, a request with no answer and a result that
+/// does not parse are never touched. Links are never followed: a pair with a
+/// symlink in it is left alone. Returns how many pairs were removed.
+pub fn prune(run_dir: &Path, now: SystemTime) -> usize {
+    let dir = run_dir.join(REQUESTS_DIR);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    // (kind, answered at, id) of every final pair.
+    let mut finals: Vec<(String, SystemTime, String)> = Vec::new();
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let Some(id) = name.strip_suffix(".result.json") else {
+            continue;
+        };
+        if !safe_id(id) {
+            continue;
+        }
+        let result = dir.join(&name);
+        let request = dir.join(format!("{id}.json"));
+        let plain_file = |p: &Path| {
+            std::fs::symlink_metadata(p)
+                .ok()
+                .filter(|m| m.is_file())
+                .and_then(|m| m.modified().ok())
+        };
+        let (Some(answered), Some(_)) = (plain_file(&result), plain_file(&request)) else {
+            continue;
+        };
+        let Some(answer) =
+            read_json_value(&result).and_then(|v| serde_json::from_value::<RequestResult>(v).ok())
+        else {
+            continue;
+        };
+        if matches!(answer.state.as_str(), "done" | "refused" | "ignored") {
+            finals.push((answer.kind, answered, id.to_string()));
+        }
+    }
+    // Newest first within a kind, so the first KEEP_PER_KIND of each stay.
+    finals.sort_by(|a, b| (&a.0, b.1, &b.2).cmp(&(&b.0, a.1, &a.2)));
+    let mut kept: HashMap<String, usize> = HashMap::new();
+    let mut removed = 0;
+    for (kind, answered, id) in finals {
+        let rank = kept.entry(kind).or_insert(0);
+        *rank += 1;
+        let old = now
+            .duration_since(answered)
+            .is_ok_and(|age| age > PRUNE_AGE);
+        if *rank <= KEEP_PER_KIND && !old {
+            continue;
+        }
+        // The request first: an orphan answer is inert, a request without its answer would be run again.
+        let gone = std::fs::remove_file(dir.join(format!("{id}.json"))).is_ok();
+        let _ = std::fs::remove_file(result_path(run_dir, &id));
+        if gone {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Accepts and performs the run's pending requests in turn (the tests'
 /// path; the app performs each on its own thread).
 #[cfg(test)]
@@ -422,5 +491,124 @@ mod tests {
         )
         .unwrap();
         assert_eq!(pending(&run)[0].kind, None);
+    }
+
+    fn answered(run: &Path, id: &str, kind: &str, state: &str) {
+        request(run, id, json!({"schema": 1, "kind": kind}));
+        std::fs::write(
+            result_path(run, id),
+            json!({"schema": 1, "id": id, "kind": kind, "state": state, "ok": true, "message": "m", "at": "2026-10-27T10:00:00Z"})
+                .to_string(),
+        )
+        .unwrap();
+    }
+
+    fn exists(run: &Path, id: &str) -> (bool, bool) {
+        let dir = run.join(REQUESTS_DIR);
+        (
+            dir.join(format!("{id}.json")).exists(),
+            result_path(run, id).exists(),
+        )
+    }
+
+    #[test]
+    fn prune_removes_old_final_pairs_and_keeps_recent_pending_and_running_ones() {
+        let dir = TempDir::new("requests_prune");
+        let run = dir.join("runs/r-1");
+        std::fs::create_dir_all(&run).unwrap();
+        answered(&run, "20261001T100000Z-recheck", "recheck", "done");
+        answered(&run, "20261001T100001Z-cleanup", "cleanup", "refused");
+        answered(&run, "20261001T100002Z-merge", "", "ignored");
+        answered(&run, "20261001T100003Z-selftest", "selftest", "running");
+        request(&run, "20261001T100004Z-tickets", json!({"kind": "tickets"}));
+        // A malformed answer is kept.
+        request(&run, "20261001T100005Z-recheck", json!({"kind": "recheck"}));
+        std::fs::write(result_path(&run, "20261001T100005Z-recheck"), "not json").unwrap();
+
+        // Just made: nothing is old, and there are few of each kind.
+        assert_eq!(prune(&run, SystemTime::now()), 0);
+        assert_eq!(exists(&run, "20261001T100000Z-recheck"), (true, true));
+
+        // Eight days later: the final pairs go; running, unanswered and malformed stay.
+        let later = SystemTime::now() + Duration::from_secs(8 * 24 * 3600);
+        assert_eq!(prune(&run, later), 3);
+        assert_eq!(exists(&run, "20261001T100000Z-recheck"), (false, false));
+        assert_eq!(exists(&run, "20261001T100001Z-cleanup"), (false, false));
+        assert_eq!(exists(&run, "20261001T100002Z-merge"), (false, false));
+        assert_eq!(
+            exists(&run, "20261001T100003Z-selftest"),
+            (true, true),
+            "running"
+        );
+        assert_eq!(
+            exists(&run, "20261001T100004Z-tickets"),
+            (true, false),
+            "unanswered"
+        );
+        assert_eq!(
+            exists(&run, "20261001T100005Z-recheck"),
+            (true, true),
+            "malformed"
+        );
+    }
+
+    #[test]
+    fn prune_keeps_only_the_newest_twenty_final_pairs_of_a_kind() {
+        let dir = TempDir::new("requests_prune_cap");
+        let run = dir.join("runs/r-1");
+        std::fs::create_dir_all(&run).unwrap();
+        for n in 0..25 {
+            answered(
+                &run,
+                &format!("20261027T1000{n:02}Z-recheck"),
+                "recheck",
+                "done",
+            );
+            // The mtime decides "newest": spread them a second apart.
+            let when = SystemTime::now() - Duration::from_secs(100 - n);
+            std::fs::File::options()
+                .write(true)
+                .open(result_path(&run, &format!("20261027T1000{n:02}Z-recheck")))
+                .unwrap()
+                .set_modified(when)
+                .unwrap();
+        }
+        answered(&run, "20261027T100099Z-cleanup", "cleanup", "done");
+        assert_eq!(prune(&run, SystemTime::now()), 5);
+        for n in 0..5 {
+            assert_eq!(
+                exists(&run, &format!("20261027T1000{n:02}Z-recheck")),
+                (false, false),
+                "{n}"
+            );
+        }
+        assert_eq!(exists(&run, "20261027T100005Z-recheck"), (true, true));
+        assert_eq!(exists(&run, "20261027T100024Z-recheck"), (true, true));
+        assert_eq!(
+            exists(&run, "20261027T100099Z-cleanup"),
+            (true, true),
+            "another kind"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prune_never_follows_a_symlink() {
+        let dir = TempDir::new("requests_prune_link");
+        let run = dir.join("runs/r-1");
+        std::fs::create_dir_all(run.join(REQUESTS_DIR)).unwrap();
+        let outside = dir.join("outside.json");
+        std::fs::write(
+            &outside,
+            json!({"schema": 1, "id": "x", "kind": "recheck", "state": "done", "ok": true, "message": "", "at": ""}).to_string(),
+        )
+        .unwrap();
+        request(&run, "20261001T100000Z-recheck", json!({"kind": "recheck"}));
+        std::os::unix::fs::symlink(&outside, result_path(&run, "20261001T100000Z-recheck"))
+            .unwrap();
+        let later = SystemTime::now() + Duration::from_secs(8 * 24 * 3600);
+        assert_eq!(prune(&run, later), 0);
+        assert!(outside.exists());
+        assert!(std::fs::symlink_metadata(result_path(&run, "20261001T100000Z-recheck")).is_ok());
     }
 }

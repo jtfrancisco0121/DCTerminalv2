@@ -666,6 +666,56 @@ body,
   box-shadow: var(--elev-3);
 }
 
+/* The command palette: no header, 15% from the top, 36 rem wide, at most 60% high. */
+.palette-backdrop {
+  padding-top: 15vh;
+}
+
+.palette-dialog {
+  width: min(36rem, 92vw);
+  max-height: 60vh;
+  border-radius: 8px;
+}
+
+.palette-input {
+  margin: 0;
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
+
+.palette-list {
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.palette-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+}
+
+.palette-row-active {
+  background: var(--bg-hover);
+}
+
+.palette-group {
+  flex: 0 0 4.5rem;
+  color: var(--fg-muted);
+  font-size: var(--text-2xs);
+}
+
+.palette-detail {
+  margin-left: auto;
+}
+
+.palette-empty {
+  padding: var(--space-3);
+}
+
 .dialog:focus {
   outline: none;
 }
@@ -706,6 +756,12 @@ body,
 .settings-header h1 {
   font-size: var(--text-xl);
   margin: 0;
+}
+
+.unsaved-marker {
+  color: var(--warning);
+  font-size: 0.75rem;
+  align-self: center;
 }
 
 .settings-section {
@@ -1168,6 +1224,35 @@ body,
   font-family: inherit;
 }
 
+.memory-topics {
+  margin: var(--space-1) 0 var(--space-1) 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.memory-disclosure {
+  margin-right: 0.25rem;
+}
+
+.stale-badge {
+  margin-left: 0.4rem;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  background: var(--warning-subtle);
+  color: var(--warning);
+  font-size: 0.75rem;
+}
+
+.run-repo-pick {
+  display: inline-block;
+  margin: 0;
+}
+
+.run-implementers-input {
+  display: inline-block;
+  width: 4rem;
+}
+
 .run-repos ul,
 .run-list ul,
 .memory-repos,
@@ -1343,6 +1428,42 @@ body,
 
 .run-pr-repo,
 .run-pr-title,
+.away-notice {
+  margin-bottom: var(--space-3);
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-subtle);
+}
+
+.away-notice h3 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-md);
+}
+
+.away-notice ul {
+  margin: 0 0 var(--space-1);
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+}
+
+.ci-chip {
+  font-weight: 600;
+}
+
+.ci-chip-success {
+  color: var(--success);
+}
+
+.ci-chip-danger {
+  color: var(--danger);
+}
+
+.ci-chip-muted {
+  color: var(--fg-muted);
+}
+
 .run-time {
   color: var(--fg-muted);
 }
@@ -1591,6 +1712,62 @@ body,
   color: inherit;
   font: inherit;
   cursor: pointer;
+}
+
+.error-count {
+  border: 0;
+  background: transparent;
+  color: var(--danger);
+  font: inherit;
+  cursor: pointer;
+}
+
+.errors-popover {
+  /* Fixed: the status bar clips its overflow. Sits just above the bar. */
+  position: fixed;
+  bottom: 2.2rem;
+  left: var(--space-3);
+  z-index: 30;
+  width: 28rem;
+  max-width: calc(100% - 2 * var(--space-3));
+  max-height: 18rem;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 30%);
+  font-size: var(--text-sm);
+  line-height: 1.3;
+}
+
+.errors-popover-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.errors-list {
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.errors-list li {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1) 0;
+  border-top: 1px solid var(--border);
+}
+
+.errors-source {
+  color: var(--fg-muted);
+  font-size: var(--text-2xs);
+}
+
+.errors-message {
+  overflow-wrap: anywhere;
 }
 
 .status-attention-needs {

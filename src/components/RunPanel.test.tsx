@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import fixture from "../../fixtures/run/run-view.json";
 import type { RunView } from "../run/api";
 import { checkSignature, wantsAppChecks } from "../run/words";
-import { JanitorDialog, RunPanelView } from "./RunPanel";
+import { JanitorDialog, mergeKey, RunPanelView } from "./RunPanel";
 
 // The view Rust reads from fixtures/run/r-20261022-1304 (status.rs fixture test).
 const view = fixture as unknown as RunView;
@@ -279,6 +279,96 @@ describe("RunPanelView", () => {
     const items = screen.getByLabelText("Timeline").querySelectorAll("li");
     expect(items.length).toBe(3);
     expect(items[0].textContent).toContain("waiting for ship approval");
+  });
+
+  it("lists the lines since you were away with local times, at most 10, a count of the rest and Dismiss", () => {
+    vi.stubEnv("TZ", "Asia/Manila");
+    try {
+      const lines = Array.from({ length: 13 }, (_, i) => ({
+        time: `2026-10-27T14:${String(i).padStart(2, "0")}:00Z`,
+        stage: "building",
+        text: `step ${i}`,
+      }));
+      const dismiss = vi.fn();
+      render(
+        <RunPanelView
+          view={view}
+          checking={false}
+          onRerunChecks={vi.fn()}
+          onOpenFile={vi.fn()}
+          onOpenUrl={vi.fn()}
+          onCleanUp={vi.fn()}
+          away={{ lines, dismiss }}
+        />,
+      );
+      const notice = screen.getByTestId("away-notice");
+      expect(within(notice).getByText("While you were away")).toBeTruthy();
+      const rows = notice.querySelectorAll("li");
+      expect(rows).toHaveLength(10);
+      expect(rows[9].textContent).toContain("step 12");
+      expect(rows[9].querySelector(".run-time")?.textContent).toBe("22:12");
+      expect(rows[9].querySelector(".run-time")?.getAttribute("title")).toContain("(UTC 2026-10-27T14:12:00Z)");
+      expect(within(notice).getByText("+3 more")).toBeTruthy();
+      fireEvent.click(within(notice).getByText("Dismiss"));
+      expect(dismiss).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("shows no notice when nothing changed", () => {
+    renderPanel();
+    expect(screen.queryByTestId("away-notice")).toBeNull();
+  });
+
+  it("shows a CI chip beside the app check only with a PR URL and a reading", () => {
+    const prs = view.prs.map((pr, i) => ({
+      ...pr,
+      prUrl: i === 0 ? "https://github.com/o/r/pull/1" : pr.prUrl,
+      ci: i === 0 ? "fail" : null,
+      ciAt: "2026-10-27T14:04:27Z",
+    }));
+    renderPanel({ prs });
+    expect(screen.getByTestId(`ci-${prs[0].id}`).textContent).toBe("CI failed");
+    expect(screen.getByTestId(`ci-${prs[0].id}`).className).toContain("ci-chip-danger");
+    expect(screen.queryByTestId(`ci-${prs[1].id}`)).toBeNull();
+  });
+
+  it("builds a new merge key when a PR flips to MERGED or is cleaned, with the stage unchanged", () => {
+    const open: RunView = { ...view, prs: view.prs.map((pr) => ({ ...pr, prState: "OPEN" })), cleanup: [] };
+    const merged: RunView = { ...open, prs: open.prs.map((pr, i) => (i === 0 ? { ...pr, prState: "MERGED" } : pr)) };
+    expect(merged.stage).toBe(open.stage);
+    expect(merged.updatedAt).toBe(open.updatedAt);
+    expect(mergeKey(merged)).not.toBe(mergeKey(open));
+    expect(mergeKey(open)).toBe(mergeKey({ ...open }));
+    const first = open.prs[0].id;
+    expect(mergeKey(merged)).toContain(`${first}:MERGED:`);
+    const cleaned: RunView = {
+      ...open,
+      cleanup: [{ prId: first, prUrl: "u", outcome: "cleaned", worktree: "", branch: "", remote: "", at: "t" }],
+    };
+    expect(mergeKey(cleaned)).toContain(`${first}:OPEN:cleaned`);
+  });
+
+  it("shows timeline times in the local zone with the UTC time on hover", () => {
+    vi.stubEnv("TZ", "Asia/Manila");
+    try {
+      renderPanel({
+        timeline: [
+          { time: "2026-10-27T14:04:27Z", stage: null, text: "built" },
+          { time: null, stage: null, text: "no time" },
+          { time: "garbage-time-value", stage: null, text: "bad time" },
+        ],
+      });
+      const items = screen.getByLabelText("Timeline").querySelectorAll("li");
+      // Newest first: the last line comes first.
+      expect(items[2].querySelector(".run-time")?.textContent).toBe("22:04");
+      expect(items[2].querySelector(".run-time")?.getAttribute("title")).toContain("(UTC 2026-10-27T14:04:27Z)");
+      expect(items[1].querySelector(".run-time")).toBeNull();
+      expect(items[0].querySelector(".run-time")?.textContent).toBe("garbage-time-value".slice(11, 16));
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("tolerates a run with no status yet and unknown values", () => {

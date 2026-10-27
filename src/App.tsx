@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
@@ -36,7 +35,9 @@ import { NewTabForm } from "./components/NewTabForm";
 import { RunPanel } from "./components/RunPanel";
 import { RunsView } from "./components/RunsView";
 import { StartScreen } from "./components/StartScreen";
-import { resumeRun, type StartedRun } from "./run/api";
+import { resumeRun, runOverview, startRun, type RunOverview, type StartedRun } from "./run/api";
+import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
+import { stageText } from "./run/words";
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
 import { TabBar } from "./components/TabBar";
@@ -56,12 +57,25 @@ import { zoomedFontSize } from "./keyTable";
 import { ClaudeVersionBanner } from "./components/ClaudeVersionBanner";
 import { ImportDevDialog, useDevImport } from "./components/ImportDevDialog";
 import { observeTabs, pollsActivity } from "./run/observe";
+import { RUN_STATE_EVENT, TAB_STATE_EVENT, usePushRefresh } from "./run/events";
 import "./App.css";
 
 /** How often the usage line is read again while nothing else asks. */
 const USAGE_POLL_MS = 60_000;
 /** How often the status bar reads the attention summary (an in-memory read). */
 const ATTENTION_POLL_MS = 4_000;
+
+/** The Settings sections (their `aria-label`s) the command palette opens. */
+const SETTINGS_SECTIONS = [
+  "Claude accounts",
+  "ClickUp",
+  "Terminal",
+  "Runs",
+  "Activity",
+  "Notifications",
+  "Phone push",
+  "Appearance",
+];
 
 /** This window's label: the id every window-scoped command names. */
 function currentWindowId(): string {
@@ -94,6 +108,10 @@ function App() {
   const [activeRunsOpen, setActiveRunsOpen] = useState(false);
   const [dialog, setDialog] = useState<"new-tab" | "new-window" | "pick-account" | "settings" | "runs" | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
+  // The command palette (Cmd+K), the run list it offers, and the Settings section it opens.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteRuns, setPaletteRuns] = useState<RunOverview | null>(null);
+  const [settingsSection, setSettingsSection] = useState<string | undefined>(undefined);
   const [lastFolder, setLastFolder] = useState("");
   const devImport = useDevImport(windowId);
   const devImportRef = useRef(devImport);
@@ -154,29 +172,18 @@ function App() {
   }, [refreshUsage]);
 
   const refreshAttention = useCallback(() => {
-    attentionSummary().then(setAttention, () => undefined);
+    attentionSummary().then(setAttention, (err: unknown) =>
+      reportError("Attention summary", err, { once: "attention-summary" }),
+    );
   }, []);
 
   // The detector runs in the backend whatever this window does; the summary
-  // is read now, every few seconds, when the window gets focus, and when
-  // the detector announces something.
-  useEffect(() => {
-    refreshAttention();
-    const timer = window.setInterval(refreshAttention, ATTENTION_POLL_MS);
-    window.addEventListener("focus", refreshAttention);
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    listen("attention", refreshAttention).then(
-      (fn) => (disposed ? fn() : (unlisten = fn)),
-      () => undefined,
-    );
-    return () => {
-      disposed = true;
-      unlisten?.();
-      window.clearInterval(timer);
-      window.removeEventListener("focus", refreshAttention);
-    };
-  }, [refreshAttention]);
+  // is read now, when the window gets focus, and when the detector announces
+  // something (a push event or an attention notice); it polls every few
+  // seconds only while no event arrives.
+  usePushRefresh(["attention", TAB_STATE_EVENT, RUN_STATE_EVENT], refreshAttention, {
+    fastMs: ATTENTION_POLL_MS,
+  });
 
   useEffect(() => subscribeLivePty(() => setLiveVersion((n) => n + 1)), []);
   useEffect(() => subscribePtyExit(() => refreshUsage()), [refreshUsage]);
@@ -211,16 +218,15 @@ function App() {
   const [usageTab, setUsageTab] = useState<string | null>(null);
   // Any Claude tab has hook state while "Track activity in every Claude tab" is on.
   const hasClaudeTab = pollsActivity(state?.tabs ?? []);
-  useEffect(() => {
-    if (!hasClaudeTab) return;
-    const timer = window.setInterval(() => {
+  const refreshActivity = useCallback(
+    () =>
       observeTabs().then(
         (states) => setActivity(Object.fromEntries(Object.entries(states).map(([id, s]) => [id, s.activity]))),
-        () => undefined,
-      );
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [hasClaudeTab]);
+        (err: unknown) => reportError("Tab activity", err, { once: "observe-tabs" }),
+      ),
+    [],
+  );
+  usePushRefresh(TAB_STATE_EVENT, () => (hasClaudeTab ? refreshActivity() : undefined), { fastMs: 3000 });
 
   const resumeActiveRun = (runDir: string) => {
     resumeRun(windowId, runDir).then(
@@ -454,6 +460,9 @@ function App() {
       case "find":
         if (active) requestTerminalSearch(active.id);
         break;
+      case "palette":
+        setPaletteOpen((open) => !open);
+        break;
       case "select": {
         const tab = state?.tabs[action.index];
         if (tab) select(tab.id);
@@ -518,15 +527,75 @@ function App() {
   useEffect(() => {
     const platform = detectPlatform(navigator.platform);
     const onKey = (event: KeyboardEvent) => {
-      if (dialog) return;
       const action = keyAction(event, platform);
       if (!action) return;
+      // The palette opens over any screen, a dialog included, and a second press closes it;
+      // every other shortcut waits while a dialog or the palette is open.
+      if (action.kind !== "palette" && (dialog || paletteOpen)) return;
       event.preventDefault();
       runRef.current(action);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dialog]);
+  }, [dialog, paletteOpen]);
+
+  // The palette offers unfinished runs and the role tiles: read them when it opens.
+  useEffect(() => {
+    if (!paletteOpen) return;
+    runOverview().then(setPaletteRuns, (err: unknown) => reportError("Command palette", err, { once: true }));
+  }, [paletteOpen]);
+
+  const paletteItems = (): PaletteItem[] => {
+    const items: PaletteItem[] = (state?.tabs ?? []).map((tab) => ({
+      id: `tab:${tab.id}`,
+      group: "Tabs",
+      label: tab.label,
+      detail: tab.cwd,
+      run: () => select(tab.id),
+    }));
+    for (const item of paletteRuns?.runs ?? []) {
+      if (item.stage === "done" || item.stage === "failed") continue;
+      items.push({
+        id: `run:${item.runDir}`,
+        group: "Runs",
+        label: `Resume: ${item.title ?? item.runId}`,
+        detail: stageText(item.stage),
+        run: () =>
+          resumeRun(windowId, item.runDir).then((started_) => {
+            void started(started_);
+          }),
+      });
+    }
+    for (const role of paletteRuns?.roles ?? []) {
+      items.push({
+        id: `role:${role.id}`,
+        group: "Roles",
+        label: `Start ${role.label}`,
+        detail: active ? active.cwd : "in the start screen",
+        run: () => {
+          if (!active) {
+            // No tab to take a folder from: the start screen picks it.
+            setPlainTab(false);
+            setDialog("new-tab");
+            return;
+          }
+          return startRun(windowId, active.cwd, "", role.id).then((run) => started(run));
+        },
+      });
+    }
+    for (const section of SETTINGS_SECTIONS) {
+      items.push({
+        id: `settings:${section}`,
+        group: "Settings",
+        label: `Settings: ${section}`,
+        run: () => {
+          setSettingsSection(section);
+          setDialog("settings");
+        },
+      });
+    }
+    return items;
+  };
 
   const accountMissing = ctx?.accountMissing ?? false;
   // A Claude tab of a removed account shows the notice, never a terminal.
@@ -701,13 +770,17 @@ function App() {
       {dialog === "settings" && settings && (
         <SettingsPage
           view={settings}
+          section={settingsSection}
           onSaved={(view) => {
             setSettings(view);
             applySettings(view);
             // An account rename or a new folder retitles this window.
             windowContext().then(setCtx, (err: unknown) => fail("Window", err));
           }}
-          onClose={() => setDialog(null)}
+          onClose={() => {
+            setDialog(null);
+            setSettingsSection(undefined);
+          }}
         />
       )}
       {dialog === "runs" && (
@@ -717,6 +790,7 @@ function App() {
           onStarted={(run) => void started(run)}
         />
       )}
+      {paletteOpen && <CommandPalette items={paletteItems()} onClose={() => setPaletteOpen(false)} />}
       {confirmCloseMany && (
         <Dialog
           title="Close tabs?"

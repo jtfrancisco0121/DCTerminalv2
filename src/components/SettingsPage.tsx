@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   claudeAccountLogins,
@@ -28,6 +28,7 @@ import {
 import { accountsProblem, addAccount, MAX_ACCOUNTS } from "../settings/accounts";
 import { ATTENTION_KINDS, PUSH_KINDS } from "../run/words";
 import { THEME_CHOICES } from "../theme";
+import { Dialog } from "./Dialog";
 import { errorText, InlineNotice } from "./InlineNotice";
 import { ClickUpTokens } from "../clickup/ClickUpTokens";
 
@@ -36,6 +37,8 @@ type Props = {
   /** Saved: the parent applies it (window title, terminal options, theme). */
   onSaved: (view: SettingsView) => void;
   onClose: () => void;
+  /** Scroll to this section (its heading, e.g. "Phone push") when the page opens. */
+  section?: string;
 };
 
 /** A folder from the native picker, or null when cancelled. */
@@ -62,18 +65,64 @@ export function loginText(login: LoginStatus): string {
   }
 }
 
+const DEFAULT_RUN: RunSettings = { maxImplementers: 3, stopHooks: true };
+
+/** The comparable form of each section's values: defaults filled in, so an untouched field is never "changed". */
+const accountsKey = (claudePath: string, accounts: ClaudeAccount[]) =>
+  JSON.stringify({
+    claudePath: claudePath.trim() || null,
+    accounts: accounts.map((a) => ({ id: a.id, name: a.name, configDir: a.configDir || null })),
+  });
+const terminalKey = (t: TerminalSettings) => JSON.stringify(t, Object.keys(t).sort());
+const runKey = (r: RunSettings) =>
+  JSON.stringify({
+    maxImplementers: r.maxImplementers,
+    stopHooks: r.stopHooks,
+    autoCleanup: r.autoCleanup ?? true,
+    watchdogMinutes: r.watchdogMinutes ?? 10,
+  });
+
+/** "Unsaved changes" beside a section's Save button. */
+function UnsavedMarker({ show }: { show: boolean }) {
+  return show ? (
+    <span className="unsaved-marker" role="status">
+      Unsaved changes
+    </span>
+  ) : null;
+}
+
+/** "Accounts and Runs", "Accounts, Terminal and Runs". */
+function sectionList(names: string[]): string {
+  return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 /**
  * Settings, over the window: the Claude accounts (a name and a config folder
  * each), where `claude` is, the terminal, and the theme. Escape or Close goes
  * back to the tabs.
  */
-export function SettingsPage({ view, onSaved, onClose }: Props) {
+export function SettingsPage({ view, onSaved, onClose, section }: Props) {
   const [accounts, setAccounts] = useState<ClaudeAccount[]>(view.claude.accounts);
   const [claudePath, setClaudePath] = useState(view.claude.claudePath ?? "");
   const [newName, setNewName] = useState("");
   const [newDir, setNewDir] = useState("");
   const [terminal, setTerminal] = useState<TerminalSettings>(view.terminal);
-  const [runSettings, setRun] = useState<RunSettings>(view.run ?? { maxImplementers: 3, stopHooks: true });
+  const [runSettings, setRun] = useState<RunSettings>(view.run ?? DEFAULT_RUN);
+  // The last saved values of the three Save sections, for the unsaved marker and the discard dialog.
+  const [savedAccounts, setSavedAccounts] = useState(() => accountsKey(view.claude.claudePath ?? "", view.claude.accounts));
+  const [savedTerminal, setSavedTerminal] = useState(() => terminalKey(view.terminal));
+  const [savedRun, setSavedRun] = useState(() => runKey(view.run ?? DEFAULT_RUN));
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const accountsDirty = accountsKey(claudePath, accounts) !== savedAccounts;
+  const terminalDirty = terminalKey(terminal) !== savedTerminal;
+  const runDirty = runKey(runSettings) !== savedRun;
+  const unsaved = [
+    accountsDirty && "Accounts",
+    terminalDirty && "Terminal",
+    runDirty && "Runs",
+  ].filter((name): name is string => Boolean(name));
+  // Escape and Close never lose edits silently.
+  const requestClose = () => (unsaved.length > 0 ? setConfirmDiscard(true) : onClose());
   const [logins, setLogins] = useState<ClaudeAccountLogin[] | null>(null);
   const [checking, setChecking] = useState(false);
   const [cli, setCli] = useState<ClaudeStatus | null>(null);
@@ -89,6 +138,15 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
     };
   }, []);
 
+  const pageRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!section) return;
+    const target = [...(pageRef.current?.querySelectorAll("section.settings-section") ?? [])].find(
+      (el) => el.getAttribute("aria-label") === section,
+    );
+    target?.scrollIntoView?.({ block: "start" });
+  }, [section]);
+
   const resolved = (id: string) => view.accounts.find((account) => account.id === id);
   const edit = (index: number, patch: Partial<ClaudeAccount>) =>
     setAccounts((list) => list.map((account, at) => (at === index ? { ...account, ...patch } : account)));
@@ -102,6 +160,7 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
     try {
       const next = await setClaudeSettings({ claudePath: claudePath.trim() || null, accounts });
       setAccounts(next.claude.accounts);
+      setSavedAccounts(accountsKey(claudePath, next.claude.accounts));
       setLogins(null);
       setNotice({ tone: "info", text: "Accounts saved." });
       onSaved(next);
@@ -114,6 +173,7 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
     try {
       const saved = await setRunSettings(runSettings);
       setRun(saved);
+      setSavedRun(runKey(saved));
       setNotice({ tone: "info", text: "Run settings saved." });
       onSaved({ ...view, run: saved });
     } catch (err) {
@@ -125,6 +185,7 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
     try {
       const saved = await setTerminalSettings(terminal);
       setTerminal(saved);
+      setSavedTerminal(terminalKey(saved));
       setNotice({ tone: "info", text: "Terminal settings saved." });
       onSaved({ ...view, terminal: saved });
     } catch (err) {
@@ -265,21 +326,42 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
 
   return (
     <div
+      ref={pageRef}
       className="settings-page"
       role="dialog"
       aria-label="Settings"
       onKeyDown={(event) => {
         if (event.key !== "Escape") return;
         event.preventDefault();
-        onClose();
+        requestClose();
       }}
     >
       <header className="settings-header">
         <h1>Settings</h1>
-        <button type="button" className="secondary-button" onClick={onClose}>
+        <button type="button" className="secondary-button" onClick={requestClose}>
           Close
         </button>
       </header>
+      {confirmDiscard && (
+        <Dialog
+          title="Discard unsaved changes?"
+          onClose={() => setConfirmDiscard(false)}
+          footer={
+            <>
+              <button type="button" className="primary-button" onClick={() => setConfirmDiscard(false)}>
+                Keep editing
+              </button>
+              <button type="button" className="secondary-button" onClick={onClose}>
+                Discard
+              </button>
+            </>
+          }
+        >
+          <p>
+            {sectionList(unsaved)} {unsaved.length === 1 ? "has" : "have"} unsaved changes.
+          </p>
+        </Dialog>
+      )}
       {notice && <InlineNotice tone={notice.tone}>{notice.text}</InlineNotice>}
 
       <section className="settings-section" aria-label="Claude accounts">
@@ -399,6 +481,7 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
           <button type="button" className="primary-button" onClick={() => void saveAccounts()}>
             Save accounts
           </button>
+          <UnsavedMarker show={accountsDirty} />
           <button type="button" className="secondary-button" disabled={checking} onClick={() => void checkLogins()}>
             {checking ? "Checking…" : "Check logins"}
           </button>
@@ -448,6 +531,7 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
           <button type="button" className="primary-button" onClick={() => void saveTerminal()}>
             Save terminal settings
           </button>
+          <UnsavedMarker show={terminalDirty} />
         </div>
       </section>
 
@@ -498,6 +582,7 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
           <button type="button" className="primary-button" onClick={() => void saveRun()}>
             Save run settings
           </button>
+          <UnsavedMarker show={runDirty} />
         </div>
         <label className="field-label">
           Editor for “Open in editor” on a PR (program and arguments; empty: code)

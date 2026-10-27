@@ -16,11 +16,13 @@ import {
   type StartedRun,
 } from "../run/api";
 import { WorktreeSetup } from "./WorktreeSetup";
+import { estimate, estimateText } from "../run/estimate";
 import { relativeDate, stageText } from "../run/words";
 import { TextDialog } from "./RunPanel";
 import { Dialog } from "./Dialog";
 import { RecentFolderOptions, useRecentFolders } from "./RecentFolders";
 import { nearLimitWarning, type RateWindow } from "../usage/limits";
+import { getSettings } from "../bridge";
 import { errorText } from "./InlineNotice";
 import { MemoryPanel } from "./MemoryPanel";
 import { ClickUpIntake } from "../clickup/ClickUpIntake";
@@ -53,6 +55,37 @@ function reposText(found: FolderRepos | null): string {
     default:
       return "No git repo here. Eagle-Eye needs a git repo or a folder of git repos.";
   }
+}
+
+/**
+ * Why Start Eagle-Eye is disabled, or null when it can start: the first
+ * matching reason, in the order of the UX voice table.
+ */
+export function disabledReason(input: {
+  folder: string;
+  found: FolderRepos | null;
+  hasRequest: boolean;
+  hasTickets: boolean;
+  noRepoTicked?: boolean;
+  tooMany: string | null;
+  busy: boolean;
+}): string | null {
+  if (!input.folder.trim()) return "Choose a folder first.";
+  if (!input.found) return "Looking at the folder…";
+  if (input.found.kind === "inside-repo") return "Pick the repo's top folder.";
+  if (input.found.repos.length === 0) return "This folder has no git repo. Pick a repo or a folder of repos.";
+  if (!input.hasRequest && !input.hasTickets) return "Say what should be done, or fetch ClickUp tickets.";
+  if (input.noRepoTicked) return "Tick at least one repo.";
+  if (input.tooMany) return input.tooMany;
+  if (input.busy) return "Starting…";
+  return null;
+}
+
+/** The implementer count field's value as 1..=8; an empty or unreadable one is `fallback`. */
+export function clampImplementers(text: string, fallback: number): number {
+  const n = Math.round(Number(text));
+  if (!text.trim() || !Number.isFinite(n)) return Math.min(8, Math.max(1, fallback));
+  return Math.min(8, Math.max(1, n));
 }
 
 const REVIEW_KEY = "dcv2.reviewOnGitHub.";
@@ -112,6 +145,11 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   // The same unfinished request is already running: ask before starting it again.
   const [duplicate, setDuplicate] = useState<{ run: DuplicateRun; role: string } | null>(null);
   const [tickets, setTickets] = useState<ClickUpStart | null>(null);
+  const [tooMany, setTooMany] = useState<string | null>(null);
+  // The repos ticked for this run (all, until you untick; reset with the folder), and the implementer count.
+  const [unticked, setUnticked] = useState<ReadonlySet<string>>(new Set());
+  const [defaultImplementers, setDefaultImplementers] = useState(3);
+  const [implementers, setImplementers] = useState<string | null>(null);
   const [reviewOnGitHub, setReviewOnGitHub] = useState(() => rememberedReviewOnGitHub(windowId));
   const [bmadMode, setBmadMode] = useState<BmadMode>(() => rememberedBmadMode(initialFolder.trim()));
 
@@ -120,6 +158,17 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   useEffect(() => {
     setBmadMode(rememberedBmadMode(folder.trim()));
   }, [folder]);
+
+  useEffect(() => {
+    getSettings().then(
+      (settings) => setDefaultImplementers(settings.run?.maxImplementers ?? 3),
+      () => undefined, // The default stays 3; Settings reports its own failures.
+    );
+  }, []);
+
+  useEffect(() => {
+    setUnticked(new Set());
+  }, [folder, found]);
 
   useEffect(() => {
     runOverview().then(setOverview, (err: unknown) => setError(errorText(err)));
@@ -151,7 +200,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
     }
   };
 
-  const launch = async (role: string, force = false) => {
+  const launch = async (role: string, force = false, requestOverride?: string) => {
     if (!folder.trim()) {
       setError("Choose a folder.");
       return;
@@ -164,10 +213,24 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
     setBusy(true);
     setError(null);
     try {
-      const said = request.trim() || (eagleTickets ? "Do the ClickUp tickets below." : request);
+      const said = requestOverride ?? (request.trim() || (eagleTickets ? "Do the ClickUp tickets below." : request));
       const mode: ReviewMode | null = role === "eagle-eye" ? (reviewOnGitHub ? "github" : "local") : null;
       const bmad: BmadMode | null = role === "eagle-eye" ? bmadMode : null;
-      onStarted(await startRun(windowId, folder.trim(), said, role, eagleTickets, mode, bmad, force));
+      const eagle = role === "eagle-eye";
+      onStarted(
+        await startRun(
+          windowId,
+          folder.trim(),
+          said,
+          role,
+          eagleTickets,
+          mode,
+          bmad,
+          force,
+          eagle ? tickedRepos : null,
+          eagle && implementers !== null ? implementersValue : null,
+        ),
+      );
     } catch (err) {
       const same = duplicateOf(err);
       if (same) setDuplicate({ run: same, role });
@@ -195,7 +258,27 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
       (err: unknown) => setError(errorText(err)),
     );
 
-  const canEagle = found !== null && found.repos.length > 0;
+  const choosable = (found?.repos.length ?? 0) > 1;
+  const tickedRepos = choosable ? (found?.repos ?? []).filter((r) => !unticked.has(r.name)).map((r) => r.name) : null;
+  const implementersValue = clampImplementers(implementers ?? String(defaultImplementers), defaultImplementers);
+  // The estimate never affects `disabled`: it only informs.
+  const costEstimate =
+    overview && found && found.repos.length > 0
+      ? estimate(
+          overview.runs,
+          tickedRepos ? tickedRepos.length : found.repos.length,
+          bmadMode === "auto" ? null : bmadMode === "on",
+        )
+      : undefined;
+  const startReason = disabledReason({
+    folder,
+    found,
+    hasRequest: Boolean(request.trim()),
+    hasTickets: Boolean(tickets),
+    noRepoTicked: tickedRepos !== null && tickedRepos.length === 0,
+    tooMany,
+    busy,
+  });
   const runs = (overview?.runs ?? []).slice(0, EARLIER_RUNS);
 
   return (
@@ -223,11 +306,47 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
             <ul>
               {found.repos.map((repo) => (
                 <li key={repo.path}>
-                  <strong>{repo.name}</strong>
+                  {choosable ? (
+                    <label className="check-label run-repo-pick">
+                      <input
+                        type="checkbox"
+                        checked={!unticked.has(repo.name)}
+                        disabled={busy}
+                        onChange={(event) =>
+                          setUnticked((current) => {
+                            const next = new Set(current);
+                            if (event.target.checked) next.delete(repo.name);
+                            else next.add(repo.name);
+                            return next;
+                          })
+                        }
+                      />
+                      <strong>{repo.name}</strong>
+                    </label>
+                  ) : (
+                    <strong>{repo.name}</strong>
+                  )}
                   <span className="hint"> — check: {repo.check ?? "none known"}</span>
                 </li>
               ))}
             </ul>
+          )}
+          {found.repos.length > 0 && (
+            <label className="field-label run-implementers">
+              Implementers
+              <input
+                className="text-input run-implementers-input"
+                type="number"
+                min={1}
+                max={8}
+                value={implementers ?? String(defaultImplementers)}
+                disabled={busy}
+                aria-label="Implementers"
+                onChange={(event) => setImplementers(event.target.value)}
+                onBlur={() => implementers !== null && setImplementers(String(implementersValue))}
+              />
+              <span className="hint"> at most this many PRs build at once in this run (Settings has the default)</span>
+            </label>
           )}
           {found.repos.length > 0 && (
             <WorktreeSetup key={found.repos.map((r) => r.path).join("|")} repos={found.repos} />
@@ -244,7 +363,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           onChange={(event) => setRequest(event.target.value)}
         />
       </label>
-      <ClickUpIntake windowId={windowId} onChange={setTickets} disabled={busy} />
+      <ClickUpIntake windowId={windowId} onChange={setTickets} onTooMany={setTooMany} disabled={busy} />
       <label className="check-label">
         <input
           type="checkbox"
@@ -297,11 +416,17 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
         </p>
       )}
       {overview && !overview.pluginDir && <p className="hint warn">The dcv2 plugin was not found.</p>}
+      {costEstimate !== undefined && (
+        <p className="hint estimate-line" data-testid="estimate-line">
+          {estimateText(costEstimate)}
+        </p>
+      )}
       <div className="button-row">
         <button
           type="button"
           className="primary-button"
-          disabled={busy || !canEagle}
+          disabled={startReason !== null}
+          aria-describedby={startReason ? "start-reason" : undefined}
           onClick={() => void launch("eagle-eye")}
         >
           Start Eagle-Eye
@@ -310,6 +435,11 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           Plain terminal tab instead
         </button>
       </div>
+      {startReason && (
+        <p className="hint" id="start-reason" data-testid="start-reason">
+          {startReason}
+        </p>
+      )}
       <p className="hint run-tiles-hint">Or one role on its own, in this folder:</p>
       <div className="role-tiles">
         {(overview?.roles ?? []).map((role) => (
@@ -325,7 +455,12 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
         ))}
       </div>
       {folder.trim() && found && found.repos.length > 0 && (
-        <MemoryPanel folder={folder.trim()} onOnboard={() => void launch("onboard")} />
+        <MemoryPanel
+          folder={folder.trim()}
+          onOnboard={() => void launch("onboard")}
+          onRefreshStale={(stale) => void launch("onboard", false, stale)}
+          busy={busy}
+        />
       )}
       {runs.length > 0 && (
         <section className="run-list" aria-label="Earlier runs">

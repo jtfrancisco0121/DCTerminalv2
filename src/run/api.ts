@@ -65,6 +65,10 @@ export type RunListItem = {
   /** ClickUp ticket ids and custom ids of the run. */
   ticketIds?: string[];
   hasReport?: boolean;
+  /** Repos the run works on (request.md `repos:` or repos.json). */
+  repoCount?: number | null;
+  /** BMAD planning was applied (null: not decided yet). */
+  bmadApplied?: boolean | null;
 };
 
 export type RunOverview = {
@@ -132,6 +136,14 @@ export type PrView = {
   draft?: boolean | null;
   /** One PR comment per review round. */
   comments?: { round: number | null; url: string }[];
+  /** GitHub CI (app-github.json): `pass`, `fail`, `pending`, `none`, `unknown`; null until read. */
+  ci?: string | null;
+  /** When the app read the PR on GitHub (UTC ISO). */
+  ciAt?: string | null;
+  /** Why the last `gh` call failed. */
+  ciError?: string | null;
+  /** The PR's state on GitHub: `OPEN`, `MERGED`, `CLOSED`; null until read. */
+  prState?: string | null;
 };
 
 /** BMAD planning of a run (auto or on); absent for older runs and runs with it off. */
@@ -241,7 +253,23 @@ export const startRun = (
   reviewMode: ReviewMode | null = null,
   bmadMode: BmadMode | null = null,
   force = false,
-) => invoke<StartedRun>("start_run", { windowId, folder, request, role, clickup, reviewMode, bmadMode, force });
+  /** The repo names ticked on the start screen (null: every repo). */
+  repos: string[] | null = null,
+  /** This run's implementer count (null: the setting). */
+  maxImplementers: number | null = null,
+) =>
+  invoke<StartedRun>("start_run", {
+    windowId,
+    folder,
+    request,
+    role,
+    clickup,
+    reviewMode,
+    bmadMode,
+    force,
+    repos,
+    maxImplementers,
+  });
 
 /** An unfinished run with the same request, folder and tickets (what `start_run` answers instead of starting). */
 export type DuplicateRun = { runId: string; runDir: string };

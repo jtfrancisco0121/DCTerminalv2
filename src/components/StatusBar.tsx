@@ -1,5 +1,8 @@
+import { useRef, useState, useSyncExternalStore } from "react";
 import type { ConfigDirInfo } from "../bridge";
+import { subscribeUiErrors, uiErrors } from "../uiErrors";
 import type { LimitLine } from "../usage/limits";
+import { ErrorsPopover } from "./ErrorsPopover";
 
 type Props = {
   /** This window's Claude account. Null until the window context loads. */
@@ -54,6 +57,13 @@ export function StatusBar({
   onNewWindow,
   onSettings,
 }: Props) {
+  const errors = useSyncExternalStore(subscribeUiErrors, uiErrors);
+  const [errorsOpen, setErrorsOpen] = useState(false);
+  const countRef = useRef<HTMLButtonElement>(null);
+  const closeErrors = () => {
+    setErrorsOpen(false);
+    countRef.current?.focus();
+  };
   const attentionLabel = attention ? attentionText(attention) : null;
   const warning = account ? accountFolderWarning(account.config) : null;
   return (
@@ -106,6 +116,20 @@ export function StatusBar({
           {attentionLabel}
         </button>
       )}
+      {errors.length > 0 && (
+        <button
+          ref={countRef}
+          type="button"
+          className="status-bar-item error-count"
+          data-testid="error-count"
+          aria-expanded={errorsOpen}
+          title="Recent errors in this window"
+          onClick={() => (errorsOpen ? closeErrors() : setErrorsOpen(true))}
+        >
+          {errors.length} {errors.length === 1 ? "error" : "errors"}
+        </button>
+      )}
+      {errorsOpen && errors.length > 0 && <ErrorsPopover errors={errors} onClose={closeErrors} />}
       <span className="status-bar-spacer" />
       <button type="button" className="status-bar-button" onClick={onNewWindow} title="New window (⌘⇧N)">
         New window…

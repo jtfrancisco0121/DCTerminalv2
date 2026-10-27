@@ -18,6 +18,12 @@ use tauri_plugin_notification::NotificationExt;
 
 /// The app-wide event every window listens to.
 pub const ATTENTION_EVENT: &str = "attention";
+/// A tab's hook state changed (activity, tool running, sub-agents): the page reads again.
+pub const TAB_STATE_EVENT: &str = "tab-state";
+/// A run's state changed (stage, approval stop, PR progress, checks).
+pub const RUN_STATE_EVENT: &str = "run-state";
+/// A tab's stall flag flipped.
+pub const STALL_EVENT: &str = "stall";
 
 /// Which sinks get an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

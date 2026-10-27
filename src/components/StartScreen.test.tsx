@@ -28,17 +28,26 @@ vi.mock("../run/api", async () => ({
   resumeRun: vi.fn(),
   readRunFile: (dir: string, path: string) => readRunFile(dir, path),
 }));
-vi.mock("../bridge", () => ({ recentFolders: vi.fn(async () => ["/w/app", "/w/web"]) }));
+vi.mock("../bridge", () => ({
+  recentFolders: vi.fn(async () => ["/w/app", "/w/web"]),
+  getSettings: vi.fn(async () => ({ run: { maxImplementers: 3, stopHooks: true } })),
+}));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
 vi.mock("@tauri-apps/plugin-opener", () => ({
   revealItemInDir: (path: string) => revealItemInDir(path),
   openUrl: vi.fn(),
 }));
 vi.mock("./WorktreeSetup", () => ({ WorktreeSetup: () => null }));
-vi.mock("./MemoryPanel", () => ({ MemoryPanel: () => null }));
+vi.mock("./MemoryPanel", () => ({
+  MemoryPanel: ({ onRefreshStale }: { onRefreshStale?: (request: string) => void }) => (
+    <button type="button" onClick={() => onRefreshStale?.("stale backend")}>
+      mock refresh stale
+    </button>
+  ),
+}));
 vi.mock("../clickup/ClickUpIntake", () => ({ ClickUpIntake: () => null }));
 
-const { StartScreen } = await import("./StartScreen");
+const { StartScreen, disabledReason } = await import("./StartScreen");
 
 describe("StartScreen earlier runs", () => {
   afterEach(cleanup);
@@ -135,6 +144,7 @@ describe("StartScreen near-limit warning", () => {
       <StartScreen windowId="main" initialFolder="/w/app" onStarted={() => {}} onPlainTab={() => {}} usageWindows={[five(83)]} />,
     );
     expect((await screen.findByTestId("near-limit")).textContent).toContain("5-hour limit is at 83%");
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Add multiply()" } });
     const start = screen.getByRole("button", { name: "Start Eagle-Eye" }) as HTMLButtonElement;
     await vi.waitFor(() => expect(start.disabled).toBe(false));
   });
@@ -158,5 +168,166 @@ describe("StartScreen recent folders", () => {
     const input = screen.getByPlaceholderText("/path/to/repo or folder of repos");
     const list = input.getAttribute("list")!;
     await vi.waitFor(() => expect(container.querySelectorAll(`datalist#${list} option`)).toHaveLength(2));
+  });
+});
+
+describe("StartScreen disabled Start", () => {
+  afterEach(cleanup);
+
+  const ready = {
+    folder: "/w/app",
+    found: { kind: "repo", repos: [{ name: "app", path: "/w/app", check: null }] } as never,
+    hasRequest: true,
+    hasTickets: false,
+    tooMany: null,
+    busy: false,
+  };
+
+  it("gives the first matching reason, in order", () => {
+    expect(disabledReason({ ...ready, folder: " " })).toBe("Choose a folder first.");
+    expect(disabledReason({ ...ready, found: { kind: "none", repos: [] } })).toBe(
+      "This folder has no git repo. Pick a repo or a folder of repos.",
+    );
+    expect(disabledReason({ ...ready, found: { kind: "inside-repo", repos: [] } })).toBe("Pick the repo's top folder.");
+    expect(disabledReason({ ...ready, hasRequest: false })).toBe("Say what should be done, or fetch ClickUp tickets.");
+    expect(disabledReason({ ...ready, hasRequest: false, hasTickets: true })).toBeNull();
+    expect(disabledReason({ ...ready, noRepoTicked: true })).toBe("Tick at least one repo.");
+    expect(disabledReason({ ...ready, tooMany: "150 tickets, remove some" })).toBe("150 tickets, remove some");
+    expect(disabledReason({ ...ready, busy: true })).toBe("Starting…");
+    expect(disabledReason(ready)).toBeNull();
+  });
+
+  it("shows the reason on screen and as the button's description, none when enabled", async () => {
+    const api = await import("../run/api");
+    (api.detectFolderRepos as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: "repo",
+      repos: [{ name: "app", path: "/w/app", check: null }],
+    });
+    render(<StartScreen windowId="main" initialFolder="/w/app" onStarted={() => {}} onPlainTab={() => {}} />);
+    const start = screen.getByRole("button", { name: "Start Eagle-Eye" }) as HTMLButtonElement;
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("start-reason").textContent).toBe("Say what should be done, or fetch ClickUp tickets."),
+    );
+    expect(start.disabled).toBe(true);
+    expect(start.getAttribute("aria-describedby")).toBe("start-reason");
+    expect(document.getElementById("start-reason")?.textContent).toContain("Say what should be done");
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Add multiply()" } });
+    expect(start.disabled).toBe(false);
+    expect(screen.queryByTestId("start-reason")).toBeNull();
+    expect(start.getAttribute("aria-describedby")).toBeNull();
+  });
+});
+
+describe("StartScreen repos and implementers", () => {
+  afterEach(cleanup);
+
+  const workspace = {
+    kind: "workspace",
+    repos: [
+      { name: "api", path: "/w/api", check: null },
+      { name: "web", path: "/w/web", check: null },
+    ],
+  };
+
+  it("offers tick boxes only for a folder of several repos; none ticked disables Start", async () => {
+    const api = await import("../run/api");
+    const detect = api.detectFolderRepos as unknown as ReturnType<typeof vi.fn>;
+    detect.mockResolvedValue({ kind: "repo", repos: [{ name: "app", path: "/w/app", check: null }] });
+    const { unmount } = render(<StartScreen windowId="main" initialFolder="/w/app" onStarted={() => {}} onPlainTab={() => {}} />);
+    await screen.findByLabelText("Implementers");
+    expect(screen.queryByRole("checkbox", { name: "api" })).toBeNull();
+    unmount();
+
+    detect.mockResolvedValue(workspace);
+    render(<StartScreen windowId="main" initialFolder="/w" onStarted={() => {}} onPlainTab={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Do it" } });
+    const api1 = (await screen.findByRole("checkbox", { name: "api" })) as HTMLInputElement;
+    const web = screen.getByRole("checkbox", { name: "web" }) as HTMLInputElement;
+    expect(api1.checked && web.checked).toBe(true);
+    fireEvent.click(api1);
+    fireEvent.click(web);
+    expect(screen.getByTestId("start-reason").textContent).toBe("Tick at least one repo.");
+    expect((screen.getByRole("button", { name: "Start Eagle-Eye" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("passes the ticked repos and the implementer count, clamped on blur", async () => {
+    const api = await import("../run/api");
+    const detect = api.detectFolderRepos as unknown as ReturnType<typeof vi.fn>;
+    const startRun = api.startRun as unknown as ReturnType<typeof vi.fn>;
+    startRun.mockReset();
+    startRun.mockResolvedValue({ tab: {}, runDir: "/d/runs/new" });
+    detect.mockResolvedValue(workspace);
+    render(<StartScreen windowId="main" initialFolder="/w" onStarted={() => {}} onPlainTab={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Do it" } });
+    fireEvent.click(await screen.findByRole("checkbox", { name: "web" }));
+    const field = screen.getByLabelText("Implementers") as HTMLInputElement;
+    expect(field.value).toBe("3");
+    fireEvent.change(field, { target: { value: "12" } });
+    fireEvent.blur(field);
+    expect(field.value).toBe("8");
+    fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
+    await vi.waitFor(() => expect(startRun).toHaveBeenCalledOnce());
+    expect(startRun.mock.calls[0].slice(8)).toEqual([["api"], 8]);
+  });
+
+  it("sends no implementer override when the field is untouched", async () => {
+    const api = await import("../run/api");
+    const detect = api.detectFolderRepos as unknown as ReturnType<typeof vi.fn>;
+    const startRun = api.startRun as unknown as ReturnType<typeof vi.fn>;
+    startRun.mockReset();
+    startRun.mockResolvedValue({ tab: {}, runDir: "/d/runs/new" });
+    detect.mockResolvedValue(workspace);
+    render(<StartScreen windowId="main" initialFolder="/w" onStarted={() => {}} onPlainTab={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Do it" } });
+    await screen.findByRole("checkbox", { name: "web" });
+    fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
+    await vi.waitFor(() => expect(startRun).toHaveBeenCalledOnce());
+    expect(startRun.mock.calls[0].slice(8)).toEqual([["api", "web"], null]);
+  });
+});
+
+describe("StartScreen cost estimate", () => {
+  afterEach(cleanup);
+
+  it("shows the range or the not-enough line and never blocks Start", async () => {
+    const api = await import("../run/api");
+    (api.detectFolderRepos as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: "repo",
+      repos: [{ name: "app", path: "/w/app", check: null }],
+    });
+    const overview = api.runOverview as unknown as ReturnType<typeof vi.fn>;
+    const finished = (usd: number): RunListItem =>
+      run(1, { repoCount: 1, bmadApplied: false, record: { outcome: "done", totalTokens: 1, estimateUsd: usd, minutes: 1, prUrls: [], firstActivity: null, lastActivity: null } });
+    overview.mockResolvedValueOnce({ pluginDir: "/p", pluginVersion: null, roles: [], runs: [finished(4), finished(9), finished(6)] });
+    const { unmount } = render(<StartScreen windowId="main" initialFolder="/w/app" onStarted={() => {}} onPlainTab={() => {}} />);
+    fireEvent.click(await screen.findByLabelText("Off")); // BMAD off: matches the finished runs
+    expect((await screen.findByTestId("estimate-line")).textContent).toBe("Similar runs: $4–$9 (3 runs)");
+    unmount();
+
+    overview.mockResolvedValueOnce({ pluginDir: "/p", pluginVersion: null, roles: [], runs: [finished(4)] });
+    render(<StartScreen windowId="main" initialFolder="/w/app" onStarted={() => {}} onPlainTab={() => {}} />);
+    expect((await screen.findByTestId("estimate-line")).textContent).toBe("Not enough earlier runs for an estimate.");
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Do it" } });
+    expect((screen.getByRole("button", { name: "Start Eagle-Eye" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+describe("StartScreen refresh stale", () => {
+  afterEach(cleanup);
+
+  it("launches onboard with the explicit request, not the textarea text", async () => {
+    const api = await import("../run/api");
+    const startRun = api.startRun as unknown as ReturnType<typeof vi.fn>;
+    startRun.mockReset();
+    startRun.mockResolvedValue({ tab: {}, runDir: null });
+    (api.detectFolderRepos as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: "repo",
+      repos: [{ name: "app", path: "/w/app", check: null }],
+    });
+    render(<StartScreen windowId="main" initialFolder="/w/app" onStarted={() => {}} onPlainTab={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "something else" } });
+    fireEvent.click(await screen.findByRole("button", { name: "mock refresh stale" }));
+    await vi.waitFor(() => expect(startRun).toHaveBeenCalledOnce());
+    expect(startRun.mock.calls[0].slice(1, 4)).toEqual(["/w/app", "stale backend", "onboard"]);
   });
 });

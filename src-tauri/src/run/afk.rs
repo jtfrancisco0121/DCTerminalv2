@@ -4,6 +4,7 @@
 //! in `cleanup` and `requests`; this module only wires them to the app.
 
 use super::cleanup::{self, GhCli};
+use super::github::{self, GhCi};
 use super::requests::{self, Actions, Limiter};
 use super::{data_dir, folder, janitor, status};
 use crate::store::SettingsStore;
@@ -18,6 +19,8 @@ use tauri::{AppHandle, Manager};
 const CLEANUP_TICK: Duration = Duration::from_secs(30);
 /// How often the request sweep looks for new requests.
 const REQUEST_TICK: Duration = Duration::from_secs(2);
+/// How often a run's old answered requests are pruned.
+const PRUNE_EVERY: Duration = Duration::from_secs(3600);
 
 fn auto_cleanup_on(app: &AppHandle) -> bool {
     app.state::<Mutex<SettingsStore>>()
@@ -31,10 +34,13 @@ pub fn spawn_afk_sweeps(app: &AppHandle) {
     let cleanup_app = app.clone();
     std::thread::spawn(move || {
         let mut asked: HashMap<PathBuf, Instant> = HashMap::new();
+        let mut github_asked: HashMap<PathBuf, Instant> = HashMap::new();
         loop {
             let data = data_dir(&cleanup_app);
             let enabled = auto_cleanup_on(&cleanup_app);
             cleanup::sweep(&data, enabled, &GhCli, &mut asked, cleanup::ASK_EVERY);
+            // CI and PR state, whatever the clean-up setting says.
+            github::sweep(&data, &GhCi, &mut github_asked, github::ASK_EVERY);
             std::thread::sleep(CLEANUP_TICK);
         }
     });
@@ -42,6 +48,8 @@ pub fn spawn_afk_sweeps(app: &AppHandle) {
     std::thread::spawn(move || {
         let mut limiter = Limiter::default();
         let mut first = true;
+        // When each run's answered requests were last pruned (once an hour).
+        let mut pruned: HashMap<PathBuf, Instant> = HashMap::new();
         loop {
             let data = data_dir(&request_app);
             // The app's own run folders only (adopted runs belong to the dev
@@ -59,6 +67,13 @@ pub fn spawn_afk_sweeps(app: &AppHandle) {
                 }
                 if first {
                     requests::fail_interrupted(&dir);
+                }
+                if pruned
+                    .get(&dir)
+                    .is_none_or(|at| at.elapsed() >= PRUNE_EVERY)
+                {
+                    pruned.insert(dir.clone(), Instant::now());
+                    requests::prune(&dir, std::time::SystemTime::now());
                 }
                 for pending in requests::pending(&dir) {
                     let Some(kind) = requests::accept(&dir, &pending, &mut limiter, Instant::now())

@@ -3,9 +3,11 @@ import {
   claudeVersionStatus,
   runClaudeSelftest,
   selftestSteps,
+  versionNote,
   versionWarning,
   type ClaudeVersionStatus,
 } from "../run/observe";
+import { reportError } from "../uiErrors";
 import { errorText } from "./InlineNotice";
 
 type ViewProps = {
@@ -36,13 +38,15 @@ export function SelftestSteps({ test }: { test: NonNullable<ClaudeVersionStatus[
 /** R3: out-of-range warning, and the one-click self-test after a version change. */
 export function ClaudeVersionBannerView({ status, running, problem, onSelftest, showResult = false }: ViewProps) {
   const warning = versionWarning(status);
+  const note = versionNote(status);
   const last = status.selftest;
   const failed = last && !last.ok && last.version && status.version?.startsWith(last.version);
   const listed = Boolean(last && (failed || showResult));
-  if (!warning && !status.selftestWanted && !failed && !running && !problem && !listed) return null;
+  if (!warning && !note && !status.selftestWanted && !failed && !running && !problem && !listed) return null;
   return (
     <div className="version-banner" role="status" data-testid="version-banner">
       {warning && <p className="hint warn">{warning}</p>}
+      {note && <p className="hint">{note}</p>}
       {status.selftestWanted && !running && (
         <p className="hint">
           Claude Code {status.version} has not been self-tested with the dcv2 plugin.{" "}
@@ -73,7 +77,10 @@ export function ClaudeVersionBanner({ windowId }: { windowId: string }) {
   const [ran, setRan] = useState(false);
 
   useEffect(() => {
-    claudeVersionStatus(windowId).then(setStatus, () => setStatus(null));
+    claudeVersionStatus(windowId).then(setStatus, (err: unknown) => {
+      reportError("Claude version check", err, { once: "claude-version" });
+      setStatus(null);
+    });
   }, [windowId]);
 
   const selftest = () => {

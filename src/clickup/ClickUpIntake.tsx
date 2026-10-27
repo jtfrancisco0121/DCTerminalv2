@@ -1,12 +1,20 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { errorText } from "../components/InlineNotice";
+import { safeUrl } from "../run/words";
+import { reportError } from "../uiErrors";
 import { clickupFetch, type ClickUpStart, type IntakePreview } from "./api";
 import { parseIntakeRefs, type IntakeRef } from "./intakeRefs";
+
+/** How many tickets one run takes (the backend's limit, src-tauri/src/clickup/intake.rs). */
+const MAX_TICKETS = 100;
 
 type Props = {
   windowId: string;
   /** The tickets Start takes (null: none). */
   onChange: (start: ClickUpStart | null) => void;
+  /** The backend's "too many tickets" text while more than 100 are kept; null otherwise. */
+  onTooMany?: (text: string | null) => void;
   disabled?: boolean;
 };
 
@@ -15,7 +23,7 @@ type Props = {
  * ones you don't want. Start then snapshots the rest into `tickets.json`
  * and names them (id + title) in request.md. Uses the window's account token.
  */
-export function ClickUpIntake({ windowId, onChange, disabled }: Props) {
+export function ClickUpIntake({ windowId, onChange, onTooMany, disabled }: Props) {
   const [text, setText] = useState("");
   const [fetched, setFetched] = useState<{ refs: IntakeRef[]; preview: IntakePreview } | null>(null);
   const [removed, setRemoved] = useState<Set<string>>(new Set());
@@ -24,6 +32,11 @@ export function ClickUpIntake({ windowId, onChange, disabled }: Props) {
   const parsed = parseIntakeRefs(text);
 
   const kept = (fetched?.preview.tickets ?? []).filter((t) => !removed.has(t.id));
+  // The backend's text, only while the kept count is still over the limit it names.
+  const tooMany = kept.length > MAX_TICKETS ? (fetched?.preview.tooMany ?? null) : null;
+  useEffect(() => {
+    onTooMany?.(tooMany);
+  }, [tooMany, onTooMany]);
 
   const report = (next: typeof fetched, gone: Set<string>) => {
     const ids = (next?.preview.tickets ?? []).filter((t) => !gone.has(t.id)).map((t) => t.id);
@@ -99,16 +112,32 @@ export function ClickUpIntake({ windowId, onChange, disabled }: Props) {
             </p>
           ))}
           {kept.length === 0 && <p className="hint">No tickets will be taken.</p>}
-          {kept.length > 100 && (
+          {tooMany && (
             <p className="hint warn" data-testid="too-many">
-              {kept.length} tickets, more than the 100 one run takes: remove some before Start.
+              {tooMany}
             </p>
           )}
           {kept.length > 0 && (
             <ul>
               {kept.map((t) => (
                 <li key={t.id} data-testid={`ticket-${t.id}`}>
-                  <strong>{t.customId ?? t.id}</strong> {t.title}
+                  <strong>{t.customId ?? t.id}</strong>{" "}
+                  {safeUrl(t.url) ? (
+                    <button
+                      type="button"
+                      className="link-button"
+                      title={t.url}
+                      onClick={() =>
+                        void openUrl(t.url).catch((err: unknown) =>
+                          reportError("Open ticket", err, { notify: true }),
+                        )
+                      }
+                    >
+                      {t.title}
+                    </button>
+                  ) : (
+                    t.title
+                  )}
                   <span className="hint">
                     {" "}
                     — {t.status || "no status"}

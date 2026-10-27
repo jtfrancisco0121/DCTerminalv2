@@ -213,6 +213,7 @@ pub fn run() {
             clickup::commands::clickup_check_tickets,
             clickup::commands::clickup_pull_tickets,
             clickup::commands::clickup_post_writeback,
+            clickup::commands::clickup_post_merged_status,
             clickup::commands::clickup_auto_post_retry,
             clickup::commands::clickup_auto_post_consent,
             clickup::commands::clickup_auto_post_now,

@@ -6,13 +6,17 @@ type Props = {
   children: ReactNode;
   footer?: ReactNode;
   className?: string;
+  /** No header (title and close button): the title is only the accessible name. */
+  bare?: boolean;
+  /** An extra class on the backdrop (its position). */
+  backdropClass?: string;
 };
 
 /**
  * A modal panel over the window: Escape and the backdrop close it, focus
  * moves into it and goes back where it was when it closes.
  */
-export function Dialog({ title, onClose, children, footer, className = "" }: Props) {
+export function Dialog({ title, onClose, children, footer, className = "", bare = false, backdropClass = "" }: Props) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -23,7 +27,7 @@ export function Dialog({ title, onClose, children, footer, className = "" }: Pro
   }, []);
 
   return (
-    <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className={`dialog-backdrop ${backdropClass}`.trim()} onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div
         ref={ref}
         className={`dialog ${className}`.trim()}
@@ -38,12 +42,14 @@ export function Dialog({ title, onClose, children, footer, className = "" }: Pro
           onClose();
         }}
       >
-        <div className="dialog-header">
-          <h2 className="dialog-title">{title}</h2>
-          <button type="button" className="ghost-button dialog-close" aria-label="Close" onClick={onClose}>
-            ×
-          </button>
-        </div>
+        {!bare && (
+          <div className="dialog-header">
+            <h2 className="dialog-title">{title}</h2>
+            <button type="button" className="ghost-button dialog-close" aria-label="Close" onClick={onClose}>
+              ×
+            </button>
+          </div>
+        )}
         <div className="dialog-body">{children}</div>
         {footer && <div className="dialog-footer">{footer}</div>}
       </div>

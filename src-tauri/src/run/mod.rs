@@ -14,6 +14,7 @@ pub mod cleanup;
 pub mod duplicate;
 pub mod folder;
 pub mod git;
+pub mod github;
 pub mod janitor;
 pub mod launch;
 pub mod memory;
@@ -25,7 +26,7 @@ pub mod status;
 use crate::commands::{tab_summary, TabSummary};
 use crate::paths::validate_working_folder;
 use crate::provider::ClaudeProvider;
-use crate::store::settings_store::account_display_name;
+use crate::store::settings_store::{account_display_name, MAX_IMPLEMENTERS_LIMIT};
 use crate::store::{SettingsStore, StateStore};
 use serde::Serialize;
 use std::collections::HashSet;
@@ -440,6 +441,11 @@ pub fn save_tickets(
 /// `clickup` (Eagle-Eye only): the snapshot is read before the run folder
 /// is made, so a ClickUp failure starts nothing. `bmad_mode` (Eagle-Eye only):
 /// `auto`, `on` or `off`, recorded in meta.json with the vendored BMAD pin.
+/// `repos` (Eagle-Eye only): the repo names ticked on the start screen; a
+/// strict subset becomes request.md's `repos:` line (repos.json keeps every
+/// repo). `max_implementers` (Eagle-Eye only): this run's
+/// `DCV2_MAX_IMPLEMENTERS` (clamped to 1..=8), recorded in meta.json so a
+/// resume uses it; the global setting is never written.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // one argument per start-screen choice; the page calls it by name
 pub async fn start_run(
@@ -452,6 +458,8 @@ pub async fn start_run(
     review_mode: Option<String>,
     bmad_mode: Option<String>,
     force: Option<bool>,
+    repos: Option<Vec<String>>,
+    max_implementers: Option<u32>,
 ) -> Result<StartedRun, StartError> {
     blocking(move || {
         let folder = start_folder(&folder)?;
@@ -497,6 +505,9 @@ pub async fn start_run(
                 )
                 .into());
             }
+            let detected: Vec<String> = found.repos.iter().map(|r| r.name.clone()).collect();
+            let repos_limit = folder::repos_limit_for(&detected, repos.as_deref())?;
+            let max_implementers = max_implementers.map(|n| n.clamp(1, MAX_IMPLEMENTERS_LIMIT));
             let meta = folder::RunMeta {
                 plugin_version: launch::plugin_version(&plugin),
                 claude_version: ctx.provider.detect().version,
@@ -506,6 +517,7 @@ pub async fn start_run(
                 review_mode: review_mode.filter(|m| folder::REVIEW_MODES.contains(&m.as_str())),
                 bmad_mode: bmad_mode.filter(|m| folder::BMAD_MODES.contains(&m.as_str())),
                 bmad_version: launch::plugin_version(&plugin.join("bmad")),
+                max_implementers,
             };
             let snapshot = match clickup.as_ref().filter(|c| !c.ticket_ids.is_empty()) {
                 Some(c) => Some(crate::clickup::commands::start_snapshot(
@@ -516,7 +528,8 @@ pub async fn start_run(
                 None => None,
             };
             let request = request_with_tickets(&request, snapshot.as_ref());
-            let created = folder::create_run(&data, &folder, &found.repos, &[], &request, &meta)?;
+            let created =
+                folder::create_run(&data, &folder, &found.repos, &repos_limit, &request, &meta)?;
             let run_dir = PathBuf::from(&created.run_dir);
             if let Some(snapshot) = &snapshot {
                 // The app's own copy first (outside the run folder), then
@@ -536,6 +549,7 @@ pub async fn start_run(
             let spec = launch::launch_spec(&launch::LaunchInput {
                 prompt: format!("/dcv2:eagle-eye run={}", run_dir.display()),
                 run_dir: Some(run_dir.clone()),
+                max_implementers: max_implementers.unwrap_or(base.max_implementers),
                 memory_prompt: prompt_file,
                 ..base
             });
@@ -604,7 +618,9 @@ pub async fn resume_run(
             plugin_dir: plugin.clone(),
             memory_dir,
             run_dir: Some(run_dir.clone()),
-            max_implementers: ctx.run.max_implementers,
+            // The run's own override (meta.json) before the setting.
+            max_implementers: folder::max_implementers_of(&run_dir)
+                .unwrap_or(ctx.run.max_implementers),
             stop_hooks: ctx.run.stop_hooks,
             settings_file: launch::launch_settings_file(&plugin),
             memory_prompt: prompt_file,

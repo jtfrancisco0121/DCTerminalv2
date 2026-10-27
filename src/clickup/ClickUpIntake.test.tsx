@@ -6,11 +6,14 @@ import type { IntakePreview } from "./api";
 const fetchMock = vi.fn<(windowId: string, refs: unknown[]) => Promise<IntakePreview>>();
 vi.mock("./api", () => ({ clickupFetch: (w: string, r: unknown[]) => fetchMock(w, r) }));
 
+const openUrl = vi.fn(async (_url: string) => {});
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: (url: string) => openUrl(url) }));
+
 import { ClickUpIntake } from "./ClickUpIntake";
 
 const preview: IntakePreview = {
   tickets: [
-    { id: "86b1aa001", customId: "QA-129", title: "Sync stalls", status: "open", list: "QA", url: "u1" },
+    { id: "86b1aa001", customId: "QA-129", title: "Sync stalls", status: "open", list: "QA", url: "https://app.clickup.com/t/86b1aa001" },
     { id: "86b1aa002", customId: null, title: "Duplicate lines", status: "in progress", list: "QA", url: "u2" },
   ],
   excluded: [{ id: "86b1aa003", customId: null, title: "Old", status: "closed", list: "QA", url: "u3", reason: "Status is \"closed\" (closed)" }],
@@ -58,5 +61,40 @@ describe("ClickUpIntake", () => {
     fireEvent.change(box, { target: { value: "86b1aa001" } });
     fireEvent.click(screen.getByText("Fetch"));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("No ClickUp token yet"));
+  });
+
+  it("opens a ticket title's URL in the default browser, only for http(s)", async () => {
+    fetchMock.mockResolvedValue(preview);
+    render(<ClickUpIntake windowId="w" onChange={vi.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText(/Paste ClickUp/), { target: { value: "86b1aa001" } });
+    fireEvent.click(screen.getByText("Fetch"));
+    await waitFor(() => expect(screen.getByTestId("ticket-86b1aa001")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Sync stalls" }));
+    expect(openUrl).toHaveBeenCalledWith("https://app.clickup.com/t/86b1aa001");
+    // "u2" is not a link the opener may open: plain text.
+    expect(screen.queryByRole("button", { name: "Duplicate lines" })).toBeNull();
+  });
+
+  it("shows the backend's too-many text and tells Start until removals bring it to 100", async () => {
+    const many = Array.from({ length: 102 }, (_, i) => ({
+      id: `t${i}`,
+      customId: null,
+      title: `T${i}`,
+      status: "open",
+      list: "QA",
+      url: "https://x.test",
+    }));
+    fetchMock.mockResolvedValue({ ...preview, tickets: many, excluded: [], problems: [], tooMany: "102 tickets, more than the 100 one run takes: remove some before Start." });
+    const onTooMany = vi.fn();
+    render(<ClickUpIntake windowId="w" onChange={vi.fn()} onTooMany={onTooMany} />);
+    fireEvent.change(screen.getByPlaceholderText(/Paste ClickUp/), { target: { value: "86b1aa001" } });
+    fireEvent.click(screen.getByText("Fetch"));
+    expect((await screen.findByTestId("too-many")).textContent).toContain("102 tickets, more than the 100");
+    await waitFor(() => expect(onTooMany).toHaveBeenLastCalledWith(expect.stringContaining("102 tickets")));
+    fireEvent.click(screen.getByLabelText("Remove t0"));
+    expect(screen.getByTestId("too-many")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Remove t1"));
+    expect(screen.queryByTestId("too-many")).toBeNull();
+    await waitFor(() => expect(onTooMany).toHaveBeenLastCalledWith(null));
   });
 });

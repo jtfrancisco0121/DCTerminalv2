@@ -103,7 +103,7 @@ pub struct PartResult {
 }
 
 impl PartResult {
-    fn is(&self, result: &str) -> bool {
+    pub(crate) fn is(&self, result: &str) -> bool {
         self.result == result
     }
 }
@@ -114,6 +114,10 @@ pub struct PostedDraft {
     pub comment: Option<PartResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<PartResult>,
+    /// The "merged" status set from the merged draft (`merged.rs`), apart
+    /// from the draft's own status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_status: Option<PartResult>,
 }
 
 /// `writeback-posted.json`: ticket id → what was sent.
@@ -247,7 +251,7 @@ fn check_comment(text: &str) -> Result<(), String> {
 /// Whether `status` is one of the statuses of the list the ticket is in
 /// NOW (read fresh: it may have moved since the snapshot), each list read
 /// once per send. `Err` is the reason it is not sent.
-fn check_status(
+pub(crate) fn check_status(
     client: &ClickUp,
     lists: &mut HashMap<String, Result<Vec<String>, String>>,
     ticket: &SnapshotTask,

@@ -8,6 +8,7 @@
 use super::autopost;
 use super::backoff::Backoff;
 use super::intake::{self, ChangedTicket, IntakePreview, IntakeRef};
+use super::merged;
 use super::trust;
 use super::writeback::{self, PostOutcome, PostRequest, PostedDraft};
 use super::{ClickUp, ClickUpError, ClickUpToken, KeychainStore, SecretStore, UreqTransport};
@@ -250,6 +251,8 @@ pub struct RunClickUp {
     pub writeback_problem: Option<String>,
     /// Comments posted on their own after the ship approval.
     pub auto_post: Option<AutoPostView>,
+    /// A status draft per ticket whose PRs all merged (`merged.rs`).
+    pub merged: Vec<merged::MergedDraft>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -398,6 +401,9 @@ pub async fn clickup_run_state(app: AppHandle, run_dir: String) -> Result<RunCli
         let data = crate::run::trust_data_dir(&data, &dir);
         let key = trust::install_key();
         let mut view = run_clickup(&key, &data, &dir);
+        if let Ok(key) = &key {
+            view.merged = merged_drafts(&app, key, &data, &dir);
+        }
         if autopost::may_be_due(&dir) {
             if let Ok(key) = &key {
                 let adopted = data != own;
@@ -407,6 +413,55 @@ pub async fn clickup_run_state(app: AppHandle, run_dir: String) -> Result<RunCli
         Ok(view)
     })
     .await
+}
+
+/// The per-list done-status mapping (`settings.json` `clickup.doneStatus`).
+fn done_status_map(app: &AppHandle) -> std::collections::BTreeMap<String, String> {
+    app.state::<Mutex<SettingsStore>>()
+        .lock()
+        .map(|s| s.clickup().done_status.clone())
+        .unwrap_or_default()
+}
+
+/// The merged drafts of the run's view. Local files only, unless a ticket
+/// has all its PRs merged and no merged status posted yet: then the list's
+/// statuses are read (cached 10 min, a failure 60 s) and a failure is a note
+/// on the row, never an error of the view.
+fn merged_drafts(
+    app: &AppHandle,
+    key: &trust::Key,
+    data: &Path,
+    dir: &Path,
+) -> Vec<merged::MergedDraft> {
+    let Ok(Some(run)) = trust::load(key, data, dir) else {
+        return Vec::new();
+    };
+    let Ok(Some((drafts, _))) = writeback::read_drafts(dir) else {
+        return Vec::new();
+    };
+    let posted = trust::read_posted(key, data, dir).unwrap_or_default();
+    let tickets: HashMap<String, intake::SnapshotTask> = run
+        .snapshot
+        .tasks
+        .into_iter()
+        .map(|t| (t.id.clone(), t))
+        .collect();
+    let account = run.account_id;
+    merged::derive(
+        &tickets,
+        &drafts,
+        &crate::run::github::read_github(dir),
+        &crate::run::cleanup::read_cleanup(dir),
+        &posted,
+        &done_status_map(app),
+        &mut |list_id| {
+            merged::cache().get(list_id, std::time::Instant::now(), || {
+                let token = token_of(&KeychainStore, &account)?;
+                let transport = UreqTransport::new();
+                merged::fetch_statuses(&ClickUp::new(&transport, &token), list_id)
+            })
+        },
+    )
 }
 
 fn auto_post_on(app: &AppHandle, account_id: &str) -> bool {
@@ -805,6 +860,59 @@ pub async fn clickup_post_writeback(
             &dir,
             &drafts_version,
             &requests,
+        )
+    })
+    .await
+}
+
+/// Sets a ticket's "merged" status, once its PRs all merged: only the
+/// status (never a comment), only what the app derives itself, one send per
+/// run at a time and across processes, recorded in the signed posted record.
+/// The list is read fresh here (not from the cache).
+#[tauri::command]
+pub async fn clickup_post_merged_status(
+    app: AppHandle,
+    run_dir: String,
+    ticket_id: String,
+    status: String,
+) -> Result<PostOutcome, String> {
+    blocking(move || {
+        let data = data_dir(&app);
+        let dir = checked_run_dir(&data, &run_dir)?;
+        // An adopted run's records are its own data folder's run-trust.
+        let data = crate::run::trust_data_dir(&data, &dir);
+        let _lock = RunLock::take(&dir)?;
+        let key = trust::install_key()?;
+        let run = trusted(&key, &data, &dir)?;
+        let token = token_of(&KeychainStore, &run.account_id)?;
+        let transport = UreqTransport::new();
+        let _post_lock = trust::lock_posts(&data, &dir)?;
+        let (drafts, _) =
+            writeback::read_drafts(&dir)?.ok_or("This run has no writeback.json yet.")?;
+        let tickets: HashMap<String, intake::SnapshotTask> = run
+            .snapshot
+            .tasks
+            .into_iter()
+            .map(|t| (t.id.clone(), t))
+            .collect();
+        let mut posted = trust::read_posted(&key, &data, &dir)?;
+        let mut store = trust::TrustStore {
+            key: &key,
+            data: &data,
+            run_dir: &dir,
+        };
+        merged::post_merged(
+            &ClickUp::new(&transport, &token),
+            &tickets,
+            &drafts,
+            &crate::run::github::read_github(&dir),
+            &crate::run::cleanup::read_cleanup(&dir),
+            &mut posted,
+            &mut store,
+            &done_status_map(&app),
+            &ticket_id,
+            &status,
+            &now_text,
         )
     })
     .await

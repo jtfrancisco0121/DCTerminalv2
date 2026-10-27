@@ -23,14 +23,14 @@
 use super::hooks::{TabActivity, TabHookState};
 use super::watchdog::{self, WatchInput};
 use crate::clickup::{autopost, trust};
-use crate::run::{cleanup, folder, record, status};
+use crate::run::{cleanup, folder, github, record, status};
 use crate::store::{StateStore, TabKind, TabRecord};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// How often the open tabs are looked at.
 pub const FAST_TICK: Duration = Duration::from_secs(2);
@@ -56,6 +56,7 @@ pub enum Kind {
     RunDone,
     RunFailed,
     CheckFailed,
+    CiFailed,
     AutopostFailed,
     WaitingReminder,
     MergedCleaned,
@@ -67,13 +68,14 @@ impl Kind {
         Kind::ALL.into_iter().find(|kind| kind.key() == key)
     }
 
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 10] = [
         Kind::NeedsYou,
         Kind::ApprovalWait,
         Kind::Stall,
         Kind::RunDone,
         Kind::RunFailed,
         Kind::CheckFailed,
+        Kind::CiFailed,
         Kind::AutopostFailed,
         Kind::WaitingReminder,
         Kind::MergedCleaned,
@@ -94,6 +96,7 @@ impl Kind {
             Kind::RunDone => "run-done",
             Kind::RunFailed => "run-failed",
             Kind::CheckFailed => "check-failed",
+            Kind::CiFailed => "ci-failed",
             Kind::AutopostFailed => "autopost-failed",
             Kind::WaitingReminder => "waiting-reminder",
             Kind::MergedCleaned => "merged-cleaned",
@@ -138,6 +141,7 @@ impl Event {
             Kind::RunDone => format!("dcv2: run finished{run}"),
             Kind::RunFailed => format!("dcv2: run failed{run}"),
             Kind::CheckFailed => format!("dcv2: {detail} check failed{run}"),
+            Kind::CiFailed => format!("dcv2: {detail} CI failed on GitHub{run}"),
             Kind::AutopostFailed => format!("dcv2: ClickUp auto-post failed for {detail}{run}"),
             Kind::WaitingReminder => format!("dcv2: {tab} is still waiting for you"),
             Kind::MergedCleaned => format!("dcv2: {detail} merged and cleaned up{run}"),
@@ -158,6 +162,10 @@ pub struct TabFacts {
     pub stalled: bool,
     /// The wait is past the watchdog minutes: when it began (the episode).
     pub waiting_since_ms: Option<u64>,
+    /// A tool runs (hook state); part of the `tab-state` push.
+    pub tool_running: bool,
+    /// Sub-agents running (hook state); part of the `tab-state` push.
+    pub subagents_running: u32,
 }
 
 /// What the detector sees of one run at one tick.
@@ -176,6 +184,26 @@ pub struct RunFacts {
     pub cleaned: BTreeMap<String, String>,
     /// Tickets whose signed auto-post result is `failed`.
     pub autopost_failed: BTreeSet<String>,
+    /// PRs whose GitHub CI (`app-github.json`) is `fail`.
+    pub ci_failed: BTreeSet<String>,
+    /// Per PR: its state, app check result, GitHub CI and PR state, for the
+    /// `run-state` push.
+    pub prs: Vec<PrFact>,
+}
+
+/// One PR of a run as the `run-state` push tells it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrFact {
+    pub id: String,
+    /// status.json's PR state (`building`, `reviewed`, `opened`, …).
+    pub state: Option<String>,
+    /// The app's own check result.
+    pub app_check: Option<String>,
+    /// `pass`, `fail`, `pending`, `none`, `unknown`; None until read.
+    pub ci: Option<String>,
+    /// `OPEN`, `MERGED`, `CLOSED`; None until read.
+    pub pr_state: Option<String>,
 }
 
 /// One tick's reading.
@@ -240,6 +268,9 @@ impl Detector {
                 }
                 for pr in run.failed_checks.difference(&prev.failed_checks) {
                     push(Kind::CheckFailed, Some(pr.clone()));
+                }
+                for pr in run.ci_failed.difference(&prev.ci_failed) {
+                    push(Kind::CiFailed, Some(pr.clone()));
                 }
                 for ticket in run.autopost_failed.difference(&prev.autopost_failed) {
                     push(Kind::AutopostFailed, Some(ticket.clone()));
@@ -319,6 +350,140 @@ impl Detector {
             self.fired.insert(key, now_ms);
             true
         });
+        out
+    }
+}
+
+// ---- push events (tab-state, run-state, stall) ---------------------------
+
+/// What the page is told when a tab's hook state changes.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabStatePush {
+    pub tab_id: String,
+    pub activity: TabActivity,
+    pub tool_running: bool,
+    pub subagents_running: u32,
+}
+
+/// What the page is told when a tab's stall flag flips.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StallPush {
+    pub tab_id: String,
+    pub run_id: Option<String>,
+    pub stalled: bool,
+}
+
+/// What the page is told when a run's state changes: ids and state fields
+/// only (no ticket or log text, no paths but the run folder).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunStatePush {
+    pub run_id: String,
+    pub run_dir: String,
+    pub stage: Option<String>,
+    pub waiting_for: Option<String>,
+    pub prs_done: u32,
+    pub prs_total: u32,
+    /// PR ids whose app check failed, timed out or errored.
+    pub failed_checks: Vec<String>,
+    /// Each PR's state, app check, CI and GitHub state.
+    pub prs: Vec<PrFact>,
+}
+
+impl RunStatePush {
+    fn of(run: &RunFacts) -> Self {
+        RunStatePush {
+            run_id: run.run_id.clone(),
+            run_dir: run.run_dir.clone(),
+            stage: run.stage.clone(),
+            waiting_for: run.waiting_for.clone(),
+            prs_done: run.prs_done,
+            prs_total: run.prs_total,
+            failed_checks: run.failed_checks.iter().cloned().collect(),
+            prs: run.prs.clone(),
+        }
+    }
+}
+
+/// One event for the page.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Push {
+    TabState(TabStatePush),
+    RunState(RunStatePush),
+    Stall(StallPush),
+}
+
+/// What the last tick told the page about one tab.
+#[derive(Debug, Clone, PartialEq)]
+struct TabPushed {
+    state: (TabActivity, bool, u32),
+    stalled: bool,
+}
+
+/// Which events a tick's reading makes: only changes since the last one.
+/// Pure like [`Detector`]: no files, no clock. The first tick is silent
+/// (the page reads once on its own). A tab closed is forgotten at once
+/// (every tick lists every open tab). A run missing from a tick that is not
+/// `complete_runs` (a fast tick skips runs with no open tab) keeps its
+/// memory and emits nothing; it is forgotten only on a `complete_runs` tick
+/// that does not list it, exactly like [`Detector::diff`].
+#[derive(Debug, Default)]
+pub struct PushDiff {
+    started: bool,
+    tabs: HashMap<String, TabPushed>,
+    runs: HashMap<String, RunStatePush>,
+}
+
+impl PushDiff {
+    pub fn diff(&mut self, now: &Observed) -> Vec<Push> {
+        let silent = !self.started;
+        self.started = true;
+        let mut out = Vec::new();
+
+        let mut tabs = HashMap::new();
+        for tab in &now.tabs {
+            let pushed = TabPushed {
+                state: (tab.activity, tab.tool_running, tab.subagents_running),
+                stalled: tab.stalled,
+            };
+            let prev = self.tabs.get(&tab.tab_id);
+            if !silent {
+                if prev.map(|p| p.state) != Some(pushed.state) {
+                    out.push(Push::TabState(TabStatePush {
+                        tab_id: tab.tab_id.clone(),
+                        activity: tab.activity,
+                        tool_running: tab.tool_running,
+                        subagents_running: tab.subagents_running,
+                    }));
+                }
+                if prev.is_some_and(|p| p.stalled != pushed.stalled)
+                    || (prev.is_none() && pushed.stalled)
+                {
+                    out.push(Push::Stall(StallPush {
+                        tab_id: tab.tab_id.clone(),
+                        run_id: tab.run_id.clone(),
+                        stalled: tab.stalled,
+                    }));
+                }
+            }
+            tabs.insert(tab.tab_id.clone(), pushed);
+        }
+        self.tabs = tabs;
+
+        for run in &now.runs {
+            let pushed = RunStatePush::of(run);
+            // A run first seen after the first tick is a new run for the page.
+            if !silent && self.runs.get(&run.run_id) != Some(&pushed) {
+                out.push(Push::RunState(pushed.clone()));
+            }
+            self.runs.insert(run.run_id.clone(), pushed);
+        }
+        if now.complete_runs {
+            let seen: HashSet<&str> = now.runs.iter().map(|r| r.run_id.as_str()).collect();
+            self.runs.retain(|id, _| seen.contains(id.as_str()));
+        }
         out
     }
 }
@@ -594,11 +759,25 @@ impl Reader {
         let view = value.as_ref().and_then(|v| status::parse_status(v).ok());
         let prs = view.as_ref().map(|v| v.prs.as_slice()).unwrap_or_default();
         let checks = status::read_app_checks(run_dir);
+        let github = github::read_github(run_dir);
         let cleaned = cleanup::read_cleanup(run_dir)
             .prs
             .into_iter()
             .filter(|(_, rec)| !rec.retry && matches!(rec.outcome.as_str(), "cleaned" | "kept"))
             .map(|(id, rec)| (id, rec.outcome))
+            .collect();
+        let pr_facts: Vec<PrFact> = prs
+            .iter()
+            .map(|pr| {
+                let gh = github.prs.get(&pr.id);
+                PrFact {
+                    id: pr.id.clone(),
+                    state: pr.state.clone(),
+                    app_check: checks.get(&pr.id).map(|c| c.result.clone()),
+                    ci: gh.map(|g| g.ci.clone()),
+                    pr_state: gh.map(|g| g.pr_state.clone()).filter(|s| !s.is_empty()),
+                }
+            })
             .collect();
         Some(RunFacts {
             run_dir: run_dir.display().to_string(),
@@ -623,6 +802,13 @@ impl Reader {
                 .map(|(id, _)| id)
                 .collect(),
             cleaned,
+            ci_failed: github
+                .prs
+                .iter()
+                .filter(|(_, rec)| rec.ci == "fail")
+                .map(|(id, _)| id.clone())
+                .collect(),
+            prs: pr_facts,
             autopost_failed: self.autopost_failed(data, run_dir, &run_id, keys),
             run_id,
         })
@@ -805,6 +991,8 @@ fn tab_facts(
         )
     };
     TabFacts {
+        tool_running: hook.is_some_and(|h| h.tool_running),
+        subagents_running: hook.map_or(0, |h| h.subagents_running),
         tab_id: tab.id.clone(),
         window_label: crate::store::window_label(&tab.window_id).to_string(),
         label: tab.label.clone(),
@@ -883,6 +1071,17 @@ fn collect(
     }
 }
 
+/// Sends one change to every window. A failed emit is dropped: the page
+/// polls on its own and catches up.
+fn emit_push(app: &AppHandle, push: Push) {
+    use super::notify::{RUN_STATE_EVENT, STALL_EVENT, TAB_STATE_EVENT};
+    let _ = match &push {
+        Push::TabState(p) => app.emit(TAB_STATE_EVENT, p),
+        Push::RunState(p) => app.emit(RUN_STATE_EVENT, p),
+        Push::Stall(p) => app.emit(STALL_EVENT, p),
+    };
+}
+
 /// Starts the detector thread (app setup, beside `spawn_afk_sweeps`).
 pub fn spawn(app: &AppHandle, notifier: Box<dyn Notifier>) {
     let app = app.clone();
@@ -890,6 +1089,7 @@ pub fn spawn(app: &AppHandle, notifier: Box<dyn Notifier>) {
         .name("dcv2-attention".into())
         .spawn(move || {
             let mut detector = Detector::default();
+            let mut push_diff = PushDiff::default();
             let mut reader = Reader::default();
             let mut tick: u64 = 0;
             loop {
@@ -908,6 +1108,9 @@ pub fn spawn(app: &AppHandle, notifier: Box<dyn Notifier>) {
                         .map(|r| (r.run_id.clone(), r.clone()))
                         .collect(),
                 );
+                for push in push_diff.diff(&observed) {
+                    emit_push(&app, push);
+                }
                 let events = detector.diff(observed, now_ms());
                 if let Some(state) = app.try_state::<AttentionState>() {
                     state.set_snapshot(snapshot.clone());
@@ -943,6 +1146,8 @@ mod tests {
             activity: TabActivity::Working,
             stalled: false,
             waiting_since_ms: None,
+            tool_running: false,
+            subagents_running: 0,
         }
     }
 
@@ -987,6 +1192,174 @@ mod tests {
     }
 
     const T: u64 = 1_000_000;
+
+    fn push_kinds(pushes: &[Push]) -> Vec<&'static str> {
+        pushes
+            .iter()
+            .map(|p| match p {
+                Push::TabState(_) => "tab-state",
+                Push::RunState(_) => "run-state",
+                Push::Stall(_) => "stall",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ci_failed_is_raised_once_on_the_edge_to_fail_per_pr() {
+        let mut d = Detector::default();
+        let tabs = vec![run_tab("t1", "r-1")];
+        d.diff(observed(tabs.clone(), vec![run("r-1")]), T);
+        let mut failing = run("r-1");
+        failing.ci_failed.insert("PR1".into());
+        let fired = d.diff(observed(tabs.clone(), vec![failing.clone()]), T + 2_000);
+        assert_eq!(kinds(&fired), [Kind::CiFailed]);
+        assert_eq!(fired[0].detail.as_deref(), Some("PR1"));
+        assert!(fired[0].text().contains("PR1 CI failed"));
+        assert!(
+            d.diff(observed(tabs.clone(), vec![failing.clone()]), T + 4_000)
+                .is_empty(),
+            "once"
+        );
+        // Another PR failing is its own event; the first stays quiet.
+        failing.ci_failed.insert("PR2".into());
+        let fired = d.diff(observed(tabs.clone(), vec![failing]), T + 6_000);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].detail.as_deref(), Some("PR2"));
+        // A run first seen already failing is seeded silently.
+        let mut seeded = run("r-2");
+        seeded.ci_failed.insert("PR1".into());
+        assert!(d.diff(observed(vec![], vec![seeded]), T + 8_000).is_empty());
+    }
+
+    #[test]
+    fn a_ci_change_is_one_run_state_with_the_per_pr_fields() {
+        let mut p = PushDiff::default();
+        let mut r = run("r-1");
+        r.prs = vec![PrFact {
+            id: "PR1".into(),
+            state: Some("opened".into()),
+            app_check: Some("pass".into()),
+            ci: Some("pending".into()),
+            pr_state: Some("OPEN".into()),
+        }];
+        p.diff(&observed(vec![], vec![r.clone()]));
+        assert!(p.diff(&observed(vec![], vec![r.clone()])).is_empty());
+        r.prs[0].ci = Some("fail".into());
+        let pushes = p.diff(&observed(vec![], vec![r.clone()]));
+        assert_eq!(push_kinds(&pushes), ["run-state"]);
+        let json = match &pushes[0] {
+            Push::RunState(r) => serde_json::to_value(r).unwrap(),
+            _ => unreachable!(),
+        };
+        assert_eq!(json["prs"][0]["ci"], "fail");
+        assert_eq!(json["prs"][0]["prState"], "OPEN");
+        assert_eq!(json["prs"][0]["appCheck"], "pass");
+    }
+
+    #[test]
+    fn push_diff_is_silent_first_and_when_nothing_changed() {
+        let mut p = PushDiff::default();
+        let now = observed(vec![run_tab("t1", "r-1")], vec![run("r-1")]);
+        assert!(p.diff(&now).is_empty(), "the first tick is silent");
+        assert!(
+            p.diff(&now).is_empty(),
+            "unchanged observation emits nothing"
+        );
+        assert!(p.diff(&now).is_empty());
+    }
+
+    #[test]
+    fn a_hook_state_change_is_one_tab_state_and_a_stall_flip_is_one_stall() {
+        let mut p = PushDiff::default();
+        p.diff(&observed(vec![tab("a")], vec![]));
+        for change in [
+            |t: &mut TabFacts| t.activity = TabActivity::NeedsYou,
+            |t: &mut TabFacts| t.tool_running = true,
+            |t: &mut TabFacts| t.subagents_running = 2,
+        ] {
+            let mut next = tab("a");
+            change(&mut next);
+            let first = p.diff(&observed(vec![next.clone()], vec![]));
+            assert_eq!(push_kinds(&first), ["tab-state"]);
+            assert!(p.diff(&observed(vec![next.clone()], vec![])).is_empty());
+            p.diff(&observed(vec![tab("a")], vec![]));
+        }
+        let mut stalled = tab("a");
+        stalled.stalled = true;
+        let pushes = p.diff(&observed(vec![stalled.clone()], vec![]));
+        assert_eq!(push_kinds(&pushes), ["stall"]);
+        assert!(matches!(&pushes[0], Push::Stall(s) if s.stalled && s.tab_id == "a"));
+        assert!(p.diff(&observed(vec![stalled], vec![])).is_empty());
+        let back = p.diff(&observed(vec![tab("a")], vec![]));
+        assert!(matches!(&back[0], Push::Stall(s) if !s.stalled));
+    }
+
+    #[test]
+    fn a_closed_tab_is_forgotten_at_once() {
+        let mut p = PushDiff::default();
+        let mut busy = tab("a");
+        busy.tool_running = true;
+        p.diff(&observed(vec![busy.clone()], vec![]));
+        p.diff(&observed(vec![], vec![]));
+        // The same tab id opening again is news, not a repeat.
+        assert_eq!(
+            push_kinds(&p.diff(&observed(vec![busy], vec![]))),
+            ["tab-state"]
+        );
+    }
+
+    #[test]
+    fn fast_ticks_that_skip_a_tabless_run_keep_its_memory_and_emit_nothing() {
+        let mut p = PushDiff::default();
+        let complete = |tabs, runs| Observed {
+            tabs,
+            runs,
+            complete_runs: true,
+        };
+        // Background tick: the run (no open tab) is read.
+        p.diff(&complete(vec![], vec![run("r-9")]));
+        // Fast ticks omit it: nothing emitted, memory kept.
+        assert!(p.diff(&observed(vec![], vec![])).is_empty());
+        assert!(p.diff(&observed(vec![], vec![])).is_empty());
+        // The next background tick with the same state emits nothing.
+        assert!(p.diff(&complete(vec![], vec![run("r-9")])).is_empty());
+        // A background tick with a changed stage emits exactly one run-state.
+        let mut done = run("r-9");
+        done.stage = Some("done".into());
+        let pushes = p.diff(&complete(vec![], vec![done.clone()]));
+        assert_eq!(push_kinds(&pushes), ["run-state"]);
+        assert!(matches!(&pushes[0], Push::RunState(r) if r.stage.as_deref() == Some("done")));
+        // A background tick without the run forgets it: it is new when it returns.
+        assert!(p.diff(&complete(vec![], vec![])).is_empty());
+        assert_eq!(
+            push_kinds(&p.diff(&complete(vec![], vec![done]))),
+            ["run-state"]
+        );
+    }
+
+    #[test]
+    fn a_run_first_seen_after_the_first_tick_and_a_stage_change_are_one_run_state() {
+        let mut p = PushDiff::default();
+        p.diff(&observed(vec![], vec![]));
+        let tabs = vec![run_tab("t1", "r-1")];
+        assert_eq!(
+            push_kinds(&p.diff(&observed(tabs.clone(), vec![run("r-1")]))),
+            ["tab-state", "run-state"],
+            "a new tab and a new run appear"
+        );
+        assert!(p.diff(&observed(tabs.clone(), vec![run("r-1")])).is_empty());
+        let mut next = run("r-1");
+        next.waiting_for = Some("plan-approval".into());
+        let pushes = p.diff(&observed(tabs, vec![next]));
+        assert_eq!(push_kinds(&pushes), ["run-state"]);
+        // Ids and state only: nothing of the run's text.
+        let text = serde_json::to_string(&match &pushes[0] {
+            Push::RunState(r) => r.clone(),
+            _ => unreachable!(),
+        })
+        .unwrap();
+        assert!(text.contains("\"runId\":\"r-1\"") && !text.contains("title"));
+    }
 
     #[test]
     fn the_first_tick_is_silent_and_a_steady_state_stays_silent() {
@@ -1212,6 +1585,7 @@ mod tests {
         r.waiting_for = Some("plan-approval".into());
         r.stage = Some("done".into());
         r.failed_checks.insert("PR1".into());
+        r.ci_failed.insert("PR1".into());
         r.autopost_failed.insert("T1".into());
         r.cleaned.insert("PR1".into(), "cleaned".into());
         let fired = d.diff(observed(vec![t.clone()], vec![r.clone()]), T + 2_000);
@@ -1225,11 +1599,18 @@ mod tests {
             Kind::Stall,
             Kind::RunDone,
             Kind::CheckFailed,
+            Kind::CiFailed,
             Kind::AutopostFailed,
             Kind::WaitingReminder,
             Kind::MergedCleaned,
         ];
         want.sort();
+        // Every kind is here but RunFailed, which has its own transition below.
+        assert_eq!(
+            want.len() + 1,
+            Kind::ALL.len(),
+            "every kind is in this test"
+        );
         assert_eq!(got, want);
         // The failed kind too, from its own transition.
         let mut f = run("r-1");
