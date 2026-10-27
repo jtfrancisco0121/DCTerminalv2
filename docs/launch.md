@@ -42,6 +42,8 @@ All commands read `DCV2_MEMORY_DIR` (or `--root <dir>`), print nothing secret, e
 | `memory.sh write <repo id or "workspace:<id>"> <relative file> < content` | The only write path for agents: enforces size caps, secret scan, pinned lines (`<!-- pinned -->` lines cannot be removed or changed by an automatic write), topic header. Rejects with a reason. |
 | `memory.sh scan < text` | The secret scanner alone: `clean` (exit 0), or `looks like a secret on line <n> (<kind>)` (exit 1), never the value. `state.sh` runs it on every GitHub post (fails closed when it cannot run). |
 
+`state.sh put <path> < json` is the one way the skill writes status.json: the path must be `$DCV2_RUN_DIR/status.json` (exact name, same real path); any other path, name or an unset `DCV2_RUN_DIR` is refused with nothing written.
+
 The guard blocks Edit/Write into `DCV2_MEMORY_DIR` (agents use `memory.sh write`). The app's own memory editor (P3) writes files directly, as the user.
 
 ## Run folder additions (P2b)
@@ -122,3 +124,11 @@ Debug builds keep their data in `<identifier>.dev`, release builds in `<identifi
 - **Refused while the dev app is live**: its `app.lock` is held (every build now flocks `<app data>/app.lock` for its whole life, pid inside), a `claude` process runs one of its tabs' sessions (`ps`), or a session log was written in the last 2 min → "Quit the dev app first".
 - Resuming an adopted run's tab is refused while another `claude` process runs that session.
 - Keychain items (ClickUp tokens, the trust key) have the same service names in both builds; macOS asks once to let the built app use them.
+
+Guard no-write zones (run-safety hardening): in a bound run (`DCV2_RUN_DIR` set) nobody, the orchestrator included, writes with Edit/Write or a shell redirect/copy/move into the plugin folder, `CLAUDE_CONFIG_DIR` or `~/.claude*`, or the app's data folder outside the run folder (run-folder.md, Run-safety hardening). A session with no `DCV2_RUN_DIR` is not affected.
+
+Hooks (run-safety hardening): `hooks/hooks.json` runs the guard on `Edit|Write|NotebookEdit|MultiEdit|Bash|Monitor|PowerShell|mcp__.*`. PowerShell is refused in a bound run; unbound, it gets the Bash analysis, whose known limit is that PowerShell-native writes (`Set-Content`, `Out-File`, `Remove-Item`, `Copy-Item`) are not seen. See run-folder.md, Run-safety hardening, for the MCP verb rule.
+
+Env assignments (run-safety hardening): `DCV2_MEMORY_DIR` is set at every dcv2 launch, so the guard's rule against assigning `DCV2_*`, `CLAUDE_PLUGIN_ROOT` and `CLAUDE_CONFIG_DIR` applies in every dcv2 tab, not only in Eagle-Eye runs: hand development such as `DCV2_RUN_DIR=… bash plugin/scripts/state.sh …`, `CLAUDE_CONFIG_DIR=… claude …` or `DCV2_TEST_MODE=…` typed through Claude in a dcv2 tab is refused. `env -u NAME …` and `unset NAME` still work, `DCV2_E2E_*` and a `DCV2_RUN_DIR` / `DCV2_MEMORY_DIR` equal to the session's own are allowed, and a plain terminal is unaffected. `memory.sh --root` is refused while `DCV2_MEMORY_DIR` is set.
+
+Guard without python3: with `DCV2_RUN_DIR` set the guard blocks every call when python3 is missing or broken (it cannot judge them); in a tab with only `DCV2_MEMORY_DIR` it blocks calls that name the memory or plugin folder (run-folder.md, Run-safety hardening).

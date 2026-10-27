@@ -23,6 +23,7 @@ use super::client::{ClickUp, ClickUpError, TaskRef};
 use super::intake::{SnapshotTask, MAX_TICKETS};
 use super::transport::NoReply;
 use super::valid_id;
+use crate::store::CappedError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -138,6 +139,9 @@ pub struct PostRequest {
     /// You confirmed sending a comment that may already be posted.
     #[serde(default)]
     pub confirm_resend: bool,
+    /// You checked a comment the secret scan flagged and want it sent anyway.
+    #[serde(default)]
+    pub confirm_secret: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -152,14 +156,19 @@ pub struct PostOutcome {
 /// writeback.json and its version (sha-256 of the bytes), checked: schema
 /// 1, at most [`MAX_DRAFTS_BYTES`] and [`MAX_TICKETS`] drafts, one draft per ticket.
 pub fn read_drafts(run_dir: &Path) -> Result<Option<(Drafts, String)>, String> {
-    let bytes = match std::fs::read(run_dir.join(DRAFTS_FILE)) {
+    // Never more than the cap is read, and a link or special file is refused.
+    let bytes = match crate::store::read_capped(&run_dir.join(DRAFTS_FILE), MAX_DRAFTS_BYTES as u64)
+    {
         Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(format!("writeback.json: {err}")),
+        Err(CappedError::Missing) => return Ok(None),
+        Err(CappedError::TooLarge) => {
+            return Err("writeback.json is larger than 2 MB; the app does not read it.".into())
+        }
+        Err(CappedError::NotRegular) => {
+            return Err("writeback.json is not a regular file; the app does not read it.".into())
+        }
+        Err(CappedError::Io(err)) => return Err(format!("writeback.json: {err}")),
     };
-    if bytes.len() > MAX_DRAFTS_BYTES {
-        return Err("writeback.json is larger than 2 MB; the app does not read it.".into());
-    }
     let drafts: Drafts = serde_json::from_slice(&bytes)
         .map_err(|_| "writeback.json could not be read.".to_string())?;
     if drafts.schema != 1 {
@@ -378,6 +387,13 @@ pub fn post(
                 skipped.push("Comment already posted.".into());
             } else if let Err(why) = check_comment(text) {
                 skipped.push(why);
+            } else if let Some(kind) =
+                super::secret_scan::first_hit(text).filter(|_| !request.confirm_secret)
+            {
+                // The same scan auto-post applies: a hit goes out only with the user's confirm.
+                skipped.push(format!(
+                    "Comment not sent: looks like it contains {kind}. Check the comment, tick the confirm box, then post again."
+                ));
             } else if needs_confirm(record.comment.as_ref()) && !request.confirm_resend {
                 skipped.push(RESEND_NEEDS_CONFIRM.into());
             } else {
@@ -512,6 +528,7 @@ mod tests {
             comment: comment.map(str::to_string),
             status: status.map(str::to_string),
             confirm_resend: false,
+            confirm_secret: false,
         }
     }
 
@@ -583,6 +600,57 @@ mod tests {
         );
         assert_eq!(out[0].result, "posted");
         assert_eq!(api.paths(), ["POST /task/86b1aa002/comment"]);
+    }
+
+    #[test]
+    fn a_ticked_comment_the_secret_scan_flags_is_sent_only_with_the_confirm() {
+        const TOKEN_TEXT: &str = "Fixed, key ghp_abcdefghijklmnopqrstuvwxyz0123 was used";
+        let api = Recorded::default().on("POST /task/86b1aa002/comment", ok("{}".into()));
+        let mut posted = Posted::default();
+        let mut saves = Saves::default();
+        // Without the confirm: this ticket is not sent (and says why), the other ticked one is.
+        let out = send(
+            &api,
+            &mut posted,
+            &mut saves,
+            &[
+                req("86b1aa001", Some(TOKEN_TEXT), None),
+                req("86b1aa002", Some("No PR"), None),
+            ],
+        );
+        assert_eq!(out[0].result, "not-sent", "{out:?}");
+        assert!(
+            out[0]
+                .message
+                .contains("looks like it contains a GitHub token"),
+            "{}",
+            out[0].message
+        );
+        assert!(!out[0].message.contains("ghp_"), "the value is never shown");
+        assert_eq!(out[1].result, "posted", "{out:?}");
+        assert_eq!(api.paths(), ["POST /task/86b1aa002/comment"]);
+        assert!(
+            !posted.drafts.contains_key("86b1aa001"),
+            "nothing recorded for the refused one"
+        );
+        // With the confirm for that ticket: sent.
+        let api = Recorded::default().on(COMMENT1, ok("{}".into()));
+        let mut confirmed = req("86b1aa001", Some(TOKEN_TEXT), None);
+        confirmed.confirm_secret = true;
+        let out = send(&api, &mut posted, &mut saves, &[confirmed]);
+        assert_eq!(out[0].result, "posted", "{out:?}");
+        assert_eq!(api.paths(), [COMMENT1]);
+        assert_eq!(
+            api.writes.lock().unwrap()[0].body["comment_text"],
+            TOKEN_TEXT
+        );
+        // The confirm covers a comment that was edited clean too: no flag, no confirm needed.
+        let api = Recorded::default().on("POST /task/86b1aa002/comment", ok("{}".into()));
+        let again = req("86b1aa002", Some("No PR"), None);
+        assert_eq!(
+            send(&api, &mut posted, &mut saves, &[again])[0].message,
+            "Comment already posted."
+        );
     }
 
     #[test]
@@ -894,5 +962,28 @@ mod tests {
             Some("https://github.com/o/r/pull/1")
         );
         assert!(d.drafts[1].status.is_none());
+    }
+
+    #[test]
+    fn writeback_json_is_read_capped_and_never_through_a_link() {
+        let dir = crate::test_support::TempDir::new("wb_read_cap");
+        // 3 MB sparse: refused from its length, nothing past the cap is read.
+        std::fs::File::create(dir.join(DRAFTS_FILE))
+            .unwrap()
+            .set_len(3 * 1024 * 1024)
+            .unwrap();
+        assert!(read_drafts(dir.path()).unwrap_err().contains("2 MB"));
+        #[cfg(unix)]
+        {
+            let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../fixtures/clickup/writeback-skill.json");
+            let real = dir.join("real.json");
+            std::fs::copy(&fixture, &real).unwrap();
+            std::fs::remove_file(dir.join(DRAFTS_FILE)).unwrap();
+            std::os::unix::fs::symlink(&real, dir.join(DRAFTS_FILE)).unwrap();
+            assert!(read_drafts(dir.path())
+                .unwrap_err()
+                .contains("not a regular file"));
+        }
     }
 }

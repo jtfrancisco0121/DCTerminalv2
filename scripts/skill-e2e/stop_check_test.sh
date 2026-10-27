@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HOOK="$ROOT/plugin/scripts/stop-check.sh"
 d="$(mktemp -d)"; d="$(cd "$d" && pwd -P)"
 trap 'rm -rf "$d"' EXIT
-unset DCV2_STOP_HOOKS DCV2_TEST_MODE || true
+unset DCV2_STOP_HOOKS DCV2_TEST_MODE DCV2_RUN_DIR DCV2_MEMORY_DIR || true
 
 RUN="$d/runs/r-s"; A="$d/ws/a"; B="$d/ws/b"
 WT1="$d/ws/a-worktrees/dcv2-r-s-pr1"; WT2="$d/ws/b-worktrees/dcv2-r-s-pr2"
@@ -63,6 +63,12 @@ errhas "  keeps the tail" "1 test failed"
 okif "no ANSI" '! grep -q $'"'"'\033'"'"' "$d/err"'
 okif "trimmed" '(( $(wc -c < "$d/err") < 4500 ))'
 okif "full output in logs/PR1-stop-check.txt" 'grep -q "progress line 200" "$RUN/logs/PR1-stop-check.txt"'
+# a link planted at the full log's name is not written through (CAP-8)
+rm -f "$RUN/logs/PR1-stop-check.txt"; echo outside > "$d/outside-log.txt"; ln -s "$d/outside-log.txt" "$RUN/logs/PR1-stop-check.txt"
+expect 2 "failing check with a link at the log name" "$(payload dcv2:implementer "$reply1")"
+okif "  the outside file is unchanged" '[[ "$(cat "$d/outside-log.txt")" == outside ]]'
+errhas "  still reports the failure" "PR1 check \`bash check.sh\` fails"
+rm -f "$RUN/logs/PR1-stop-check.txt"
 expect 0 "second stop in a row (stop_hook_active)" "$(payload dcv2:implementer "$reply1" true)"
 expect 0 "kill switch DCV2_STOP_HOOKS=off" "$(payload dcv2:implementer "$reply1")" DCV2_STOP_HOOKS=off
 expect 0 "no run bound (standalone)" "$(payload dcv2:implementer "$reply1")" DCV2_RUN_DIR=

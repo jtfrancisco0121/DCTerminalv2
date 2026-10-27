@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -8,6 +8,131 @@ use std::time::SystemTime;
 /// Data files moved aside since startup, as one line each for the user.
 /// Process-wide so every store can add to it without an AppHandle.
 static RECOVERY_NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// `opts` that never follows a symbolic link at the last path component (unix: `O_NOFOLLOW`).
+fn no_follow(opts: &mut fs::OpenOptions) -> &mut fs::OpenOptions {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    opts
+}
+
+fn is_link(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+fn link_refusal(path: &Path) -> std::io::Error {
+    std::io::Error::other(format!(
+        "{} is a link; the app does not write through links",
+        file_name(path)
+    ))
+}
+
+/// Make a brand-new file at `path` holding `data`. Whatever is there (a stale
+/// leftover, or a link someone planted) is removed first, and the file is
+/// opened `create_new` without following links (`O_EXCL` + `O_NOFOLLOW`), so
+/// the bytes can never land in a file the link points at.
+pub(crate) fn write_new_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if meta.is_dir() {
+            return Err(std::io::Error::other(format!(
+                "{} is a folder",
+                file_name(path)
+            )));
+        }
+        fs::remove_file(path)?;
+    }
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    let mut file = no_follow(&mut opts).open(path)?;
+    file.write_all(data)?;
+    file.sync_all()
+}
+
+/// Atomic write of `data` to a file in a run folder: a fresh temp file beside
+/// it (never a link), then a rename. A destination that is a link is refused.
+pub(crate) fn write_run_file(path: &Path, data: &[u8]) -> Result<(), String> {
+    if is_link(path) {
+        return Err(link_refusal(path).to_string());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "path has no parent".to_string())?;
+    let tmp = parent.join(format!(
+        ".{}.{}-{}.tmp",
+        file_name(path),
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    write_new_file(&tmp, data).map_err(|e| format!("{}: {e}", file_name(path)))?;
+    #[cfg(windows)]
+    if path.exists() {
+        let _ = fs::remove_file(path);
+    }
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("{}: {e}", file_name(path))
+    })
+}
+
+/// Append to a file in a run folder (created when missing); a link is refused.
+pub(crate) fn append_run_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    if cfg!(not(unix)) && is_link(path) {
+        return Err(link_refusal(path));
+    }
+    let mut opts = fs::OpenOptions::new();
+    opts.append(true).create(true);
+    no_follow(&mut opts).open(path)?.write_all(data)
+}
+
+/// Create (truncate) a log file in a run folder; a link is refused.
+pub(crate) fn create_run_log(path: &Path) -> std::io::Result<fs::File> {
+    if cfg!(not(unix)) && is_link(path) {
+        return Err(link_refusal(path));
+    }
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    no_follow(&mut opts).open(path)
+}
+
+/// Why [`read_capped`] read nothing.
+#[derive(Debug)]
+pub(crate) enum CappedError {
+    Missing,
+    /// A link, a folder or a special file.
+    NotRegular,
+    TooLarge,
+    Io(String),
+}
+
+/// Read a regular file of at most `cap` bytes: a link or a special file is
+/// refused, and no more than `cap + 1` bytes are ever read.
+pub(crate) fn read_capped(path: &Path, cap: u64) -> Result<Vec<u8>, CappedError> {
+    let meta = fs::symlink_metadata(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => CappedError::Missing,
+        _ => CappedError::Io(e.to_string()),
+    })?;
+    if !meta.file_type().is_file() {
+        return Err(CappedError::NotRegular);
+    }
+    let mut opts = fs::OpenOptions::new();
+    opts.read(true);
+    let file = no_follow(&mut opts)
+        .open(path)
+        .map_err(|e| CappedError::Io(e.to_string()))?;
+    let mut data = Vec::new();
+    file.take(cap + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| CappedError::Io(e.to_string()))?;
+    if data.len() as u64 > cap {
+        return Err(CappedError::TooLarge);
+    }
+    Ok(data)
+}
 
 pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let parent = path
@@ -19,7 +144,10 @@ pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Str
     // could not be moved aside on load must not replace the good `.bak`.
     if path.exists() && read_json::<serde_json::Value>(path).is_ok() {
         let backup = path.with_extension("json.bak");
-        let _ = fs::copy(path, backup);
+        if let Ok(good) = fs::read(path) {
+            // Never `fs::copy` onto the backup: a link planted there would be followed.
+            let _ = write_new_file(&backup, &good);
+        }
     }
 
     let tmp = path.with_extension("json.tmp");
@@ -27,11 +155,7 @@ pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Str
     if !data.ends_with(b"\n") {
         data.push(b'\n');
     }
-    {
-        let mut file = fs::File::create(&tmp).map_err(|e| e.to_string())?;
-        file.write_all(&data).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-    }
+    write_new_file(&tmp, &data).map_err(|e| e.to_string())?;
 
     // Unix rename replaces the file atomically, so a crash never leaves no
     // file at all. Windows keeps the old remove-then-rename.
@@ -197,8 +321,13 @@ fn schema_version_in(value: &serde_json::Value) -> Option<u32> {
 fn restore(source: &Path, path: &Path) {
     let tmp = path.with_extension("json.tmp");
     let copied = source != tmp;
-    if copied && fs::copy(source, &tmp).is_err() {
-        return;
+    if copied {
+        let Ok(data) = fs::read(source) else {
+            return;
+        };
+        if write_new_file(&tmp, &data).is_err() {
+            return;
+        }
     }
     // Remove only our own copy: a `.tmp` source is the data itself.
     if fs::rename(&tmp, path).is_err() && copied {
@@ -290,5 +419,111 @@ mod tests {
         write_json_atomic(&path, &serde_json::json!({"new": 2})).unwrap();
         let bak: serde_json::Value = read_json(&path.with_extension("json.bak")).unwrap();
         assert_eq!(bak["new"], 1);
+    }
+
+    #[cfg(unix)]
+    fn plant_link(dir: &TempDir, name: &str) -> (PathBuf, PathBuf) {
+        let outside = dir.join(format!("outside-{name}"));
+        fs::write(&outside, "outside").unwrap();
+        let link = dir.join("run").join(name);
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        (link, outside)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn json_writes_never_follow_a_link_planted_at_the_temp_or_backup_name() {
+        let dir = TempDir::new("io_links");
+        let path = dir.join("run").join("doc.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        write_json_atomic(&path, &serde_json::json!({"n": 1})).unwrap();
+        let outside_tmp = dir.join("outside-tmp");
+        let outside_bak = dir.join("outside-bak");
+        fs::write(&outside_tmp, "outside tmp").unwrap();
+        fs::write(&outside_bak, "outside bak").unwrap();
+        std::os::unix::fs::symlink(&outside_tmp, path.with_extension("json.tmp")).unwrap();
+        std::os::unix::fs::symlink(&outside_bak, path.with_extension("json.bak")).unwrap();
+        write_json_atomic(&path, &serde_json::json!({"n": 2})).unwrap();
+        assert_eq!(fs::read_to_string(&outside_tmp).unwrap(), "outside tmp");
+        assert_eq!(fs::read_to_string(&outside_bak).unwrap(), "outside bak");
+        let bak = path.with_extension("json.bak");
+        assert!(!is_link(&bak), "the backup is a real file again");
+        let kept: serde_json::Value = read_json(&bak).unwrap();
+        assert_eq!(kept["n"], 1);
+        let now: serde_json::Value = read_json(&path).unwrap();
+        assert_eq!(now["n"], 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_folder_helpers_refuse_a_link_and_leave_its_target_alone() {
+        let dir = TempDir::new("io_run_links");
+        let (link, outside) = plant_link(&dir, "x.txt");
+        assert!(write_run_file(&link, b"new").is_err());
+        assert!(append_run_file(&link, b"new").is_err());
+        assert!(create_run_log(&link).is_err());
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "outside");
+        // A missing file is made, an existing regular one replaced / appended to.
+        let file = dir.join("run").join("plain.txt");
+        write_run_file(&file, b"one").unwrap();
+        append_run_file(&file, b"+two").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "one+two");
+        write_run_file(&file, b"three").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "three");
+        // No temp file is left behind.
+        assert_eq!(names_in(&dir.join("run")), vec!["plain.txt", "x.txt"]);
+    }
+
+    #[test]
+    fn read_capped_reads_at_most_the_cap_and_refuses_what_is_not_a_regular_file() {
+        let dir = TempDir::new("io_capped");
+        let big = dir.join("big");
+        // 3 MB sparse: the size is known from metadata, but at most cap + 1 bytes are read.
+        fs::File::create(&big)
+            .unwrap()
+            .set_len(3 * 1024 * 1024)
+            .unwrap();
+        assert!(matches!(
+            read_capped(&big, 2 * 1024 * 1024),
+            Err(CappedError::TooLarge)
+        ));
+        let exact = dir.join("exact");
+        fs::write(&exact, vec![b'a'; 10]).unwrap();
+        assert_eq!(read_capped(&exact, 10).unwrap().len(), 10);
+        assert!(matches!(read_capped(&exact, 9), Err(CappedError::TooLarge)));
+        assert!(matches!(
+            read_capped(&dir.join("none"), 10),
+            Err(CappedError::Missing)
+        ));
+        assert!(matches!(
+            read_capped(dir.path(), 10),
+            Err(CappedError::NotRegular)
+        ));
+        #[cfg(unix)]
+        {
+            let link = dir.join("link");
+            std::os::unix::fs::symlink(&exact, &link).unwrap();
+            assert!(matches!(
+                read_capped(&link, 100),
+                Err(CappedError::NotRegular)
+            ));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_the_old_fixed_temp_name_is_never_written_through() {
+        let dir = TempDir::new("io_old_tmp");
+        let outside = dir.join("outside.md");
+        fs::write(&outside, "outside").unwrap();
+        fs::create_dir_all(dir.join("run")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("run/.tickets-update.md.tmp")).unwrap();
+        write_run_file(&dir.join("run/tickets-update.md"), b"update").unwrap();
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "outside");
+        assert_eq!(
+            fs::read_to_string(dir.join("run/tickets-update.md")).unwrap(),
+            "update"
+        );
     }
 }

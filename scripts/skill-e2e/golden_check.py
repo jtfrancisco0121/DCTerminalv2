@@ -209,6 +209,8 @@ def check_bmad(run, ws, prs, st):
         check(chk.get("digest") == bmad_digest(run, docs), "the last bmad-check digest matches the documents (unchanged since stop #1)")
     plan = open(os.path.join(run, "plan.md")).read()
     check(re.search(r"\bCAP-\d+", plan) is not None, "plan.md stories cite spec items (CAP-n)")
+    blocks = re.findall(r"(?ms)^###\s+S\d+\b(.*?)(?=^###\s|^##\s|\Z)", plan)
+    check(bool(blocks) and all(re.search(r"(?m)^\s*-\s*Covers:\s*\S", b) for b in blocks), "every story in plan.md has a Covers: line")
     check(os.path.isfile(os.path.join(run, "bmad", "_bmad", "config.toml")), "bmad-init made config.toml")
     leftovers = []
     for pr in prs:

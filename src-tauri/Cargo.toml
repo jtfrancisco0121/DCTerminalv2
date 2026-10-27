@@ -52,6 +52,10 @@ regex = "1"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 
+# O_NOFOLLOW for the run-folder writes (src/store/json_io.rs); already in the lockfile through std's dependencies.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1

@@ -66,22 +66,26 @@ fn recorded(run_dir: &Path) -> Vec<(String, PathBuf, Option<String>, Option<Stri
     out
 }
 
-/// The main checkout `worktree` belongs to, and whether `worktree` is a
-/// linked worktree (not that main checkout).
-fn linked_of(worktree: &Path) -> Result<PathBuf, String> {
-    let git_dir = git(worktree, &["rev-parse", "--absolute-git-dir"])?;
-    let common = git(
-        worktree,
+/// The git common dir of the repo `path` is a checkout of (the shared `.git`
+/// of a normal repo, of a linked worktree, `.git/modules/<name>` of a
+/// submodule, or the folder `--separate-git-dir` named).
+fn common_dir_of(path: &Path) -> Result<PathBuf, String> {
+    git(
+        path,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?;
-    if canonical(Path::new(&git_dir)) == canonical(Path::new(&common)) {
+    )
+    .map(|common| canonical(Path::new(&common)))
+}
+
+/// The common dir `worktree` shares with its repo, once `worktree` is known to
+/// be a linked worktree (not a main checkout).
+fn linked_common(worktree: &Path) -> Result<PathBuf, String> {
+    let git_dir = git(worktree, &["rev-parse", "--absolute-git-dir"])?;
+    let common = common_dir_of(worktree)?;
+    if canonical(Path::new(&git_dir)) == common {
         return Err("this is a main checkout, not a worktree".into());
     }
-    let common = PathBuf::from(common);
-    common
-        .parent()
-        .map(canonical)
-        .ok_or_else(|| "no main checkout found".into())
+    Ok(common)
 }
 
 /// The branch the skill must use for `pr_id` (run-folder.md).
@@ -154,15 +158,27 @@ pub fn verify_worktree(
     if !worktree.is_dir() {
         return Err("already gone".into());
     }
-    let main = linked_of(worktree)?;
-    if let Some(repo) = repo {
-        if canonical(Path::new(repo)) == canonical(worktree) {
-            return Err("this is the repo's main checkout".into());
+    let common = linked_common(worktree)?;
+    // The repo status.json names owns the worktree when both share one git common
+    // dir. That holds for a start folder that is itself a linked worktree, a
+    // submodule and a `--separate-git-dir` repo, where the common dir's parent
+    // is not the checkout. Without a recorded repo the common dir's parent is it.
+    let main = match repo {
+        Some(repo) => {
+            let repo = canonical(Path::new(repo));
+            if repo == canonical(worktree) {
+                return Err("this is the repo's main checkout".into());
+            }
+            if common_dir_of(&repo).ok().as_ref() != Some(&common) {
+                return Err("its repo is not the one status.json names".into());
+            }
+            repo
         }
-        if canonical(Path::new(repo)) != main {
-            return Err("its repo is not the one status.json names".into());
-        }
-    }
+        None => common
+            .parent()
+            .map(canonical)
+            .ok_or("no main checkout found")?,
+    };
     let expected = expected_worktree(&main, run_id, pr_id).ok_or("no repo folder name")?;
     if canonical(worktree) != canonical(&expected) {
         return Err(format!(
@@ -509,5 +525,93 @@ mod tests {
         assert!(ignored.join(".env").exists());
         assert!(elsewhere.exists() && wrong_branch.exists() && detached.exists());
         assert!(repo.join("README.md").exists());
+    }
+
+    /// The run's own worktree of `repo` (made where the contract puts it) is accepted.
+    fn own_worktree_ok(repo: &Path) {
+        let wt = expected_worktree(repo, RUN, "PR1").unwrap();
+        add(repo, &format!("dcv2/{RUN}-pr1"), &wt);
+        let main = verify_worktree(RUN, "PR1", &wt, Some(repo.to_str().unwrap()))
+            .unwrap_or_else(|err| panic!("{} refused: {err}", repo.display()));
+        assert_eq!(canonical(&main), canonical(repo));
+        // The same worktree is not accepted for a different repo.
+        let other = repo.parent().unwrap().join("unrelated");
+        repo_at(&other);
+        assert_eq!(
+            verify_worktree(RUN, "PR1", &wt, Some(other.to_str().unwrap())).unwrap_err(),
+            "its repo is not the one status.json names"
+        );
+        // And the janitor lists it as removable.
+        let run_dir = repo.parent().unwrap().join("runs").join(RUN);
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("status.json"),
+            json!({"schema": 1, "stage": "done", "prs": [
+                {"id": "PR1", "repoPath": repo, "worktree": wt}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let items = list_worktrees(&run_dir);
+        assert!(items[0].removable, "{:?}", items[0]);
+    }
+
+    #[test]
+    fn a_start_folder_that_is_itself_a_linked_worktree_owns_its_worktrees() {
+        let dir = TempDir::new("janitor_linked_start");
+        let main = dir.join("main");
+        repo_at(&main);
+        let start = dir.join("ws/start");
+        std::fs::create_dir_all(dir.join("ws")).unwrap();
+        add(&main, "feature/start", &start);
+        own_worktree_ok(&start);
+    }
+
+    #[test]
+    fn a_submodule_owns_its_worktrees() {
+        let dir = TempDir::new("janitor_submodule");
+        let inner = dir.join("inner");
+        repo_at(&inner);
+        let sup = dir.join("super");
+        repo_at(&sup);
+        run(
+            &sup,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                inner.to_str().unwrap(),
+                "sub",
+            ],
+        );
+        let sub = sup.join("sub");
+        assert!(sub.join(".git").is_file(), "a submodule's .git is a file");
+        own_worktree_ok(&sub);
+    }
+
+    #[test]
+    fn a_separate_git_dir_repo_owns_its_worktrees() {
+        let dir = TempDir::new("janitor_separate");
+        let work = dir.join("ws/work");
+        let git_dir = dir.join("gitdirs/work.git");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(git_dir.parent().unwrap()).unwrap();
+        run(
+            &work,
+            &[
+                "init",
+                "-q",
+                "-b",
+                "main",
+                "--separate-git-dir",
+                git_dir.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(work.join("README.md"), "hi\n").unwrap();
+        run(&work, &["add", "."]);
+        run(&work, &["commit", "-q", "-m", "init"]);
+        own_worktree_ok(&work);
     }
 }

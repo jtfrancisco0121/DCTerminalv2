@@ -185,11 +185,10 @@ pub fn create_run(
     let dir = runs.join(&run_id);
     std::fs::create_dir(&dir).map_err(|e| format!("run folder: {e}"))?;
     let dir = dir.canonicalize().unwrap_or(dir);
-    std::fs::write(
-        dir.join("request.md"),
-        request_md(folder, repos_limit, request),
-    )
-    .map_err(|e| format!("request.md: {e}"))?;
+    crate::store::write_run_file(
+        &dir.join("request.md"),
+        request_md(folder, repos_limit, request).as_bytes(),
+    )?;
     write_json_atomic(
         &dir.join("repos.json"),
         &json!({"schema": 1, "repos": repos}),
@@ -242,7 +241,6 @@ pub fn run_folder_of(run_dir: &Path) -> Option<String> {
 /// splits a line state.sh appends at the same time. Control characters
 /// become spaces; at most 500 characters.
 pub fn append_app_log(run_dir: &Path, text: &str) -> Result<(), String> {
-    use std::io::Write;
     let stage = read_json_value(&run_dir.join("status.json"))
         .and_then(|v| v.get("stage").and_then(Value::as_str).map(str::to_string))
         .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
@@ -261,11 +259,7 @@ pub fn append_app_log(run_dir: &Path, text: &str) -> Result<(), String> {
         "{} {stage} app: {text}\n",
         chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
     );
-    std::fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(run_dir.join("log.md"))
-        .and_then(|mut f| f.write_all(line.as_bytes()))
+    crate::store::append_run_file(&run_dir.join("log.md"), line.as_bytes())
         .map_err(|e| format!("log.md: {e}"))
 }
 
@@ -750,5 +744,21 @@ mod tests {
             "{id}"
         );
         assert!(!id.contains('/') && !id.starts_with('.'));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn log_md_planted_as_a_link_is_not_appended_through() {
+        let dir = TempDir::new("log_md_link");
+        let outside = dir.join("outside.txt");
+        std::fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("log.md")).unwrap();
+        assert!(append_app_log(dir.path(), "cleanup done").is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside");
+        std::fs::remove_file(dir.join("log.md")).unwrap();
+        append_app_log(dir.path(), "cleanup done").unwrap();
+        assert!(std::fs::read_to_string(dir.join("log.md"))
+            .unwrap()
+            .contains("app: cleanup done"));
     }
 }

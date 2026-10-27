@@ -368,15 +368,15 @@ pub struct SettingsFile {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ClickUpSettings {
-    /// "Post ClickUp comments automatically after ship approval", per
-    /// account id. Missing: on.
+    /// "Post ClickUp comments after ship approval, after one click in the
+    /// run panel", per account id. Missing: off (a stored `true` is kept).
     #[serde(default)]
     pub auto_post: std::collections::BTreeMap<String, bool>,
 }
 
 impl ClickUpSettings {
     pub fn auto_post_for(&self, account_id: &str) -> bool {
-        self.auto_post.get(account_id).copied().unwrap_or(true)
+        self.auto_post.get(account_id).copied().unwrap_or(false)
     }
 }
 
@@ -759,9 +759,11 @@ mod tests {
     }
 
     #[test]
-    fn worktree_setup_is_checked_and_auto_post_defaults_on() {
+    fn worktree_setup_is_checked_and_auto_post_defaults_off() {
         let dir = TempDir::new("settings_setup");
         let mut store = SettingsStore::open(dir.path()).unwrap();
+        assert!(!store.clickup().auto_post_for(DEFAULT_ACCOUNT_ID));
+        store.set_auto_post(DEFAULT_ACCOUNT_ID, true).unwrap();
         assert!(store.clickup().auto_post_for(DEFAULT_ACCOUNT_ID));
         store.set_auto_post(DEFAULT_ACCOUNT_ID, false).unwrap();
         assert!(!store.clickup().auto_post_for(DEFAULT_ACCOUNT_ID));

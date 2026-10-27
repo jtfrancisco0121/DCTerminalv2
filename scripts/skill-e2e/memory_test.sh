@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 MEM="$ROOT/plugin/scripts/memory.sh"
 d="$(mktemp -d)"; d="$(cd "$d" && pwd -P)"
 trap 'rm -rf "$d"' EXIT
-unset DCV2_RUN_DIR DCV2_TEST_MODE || true
+unset DCV2_RUN_DIR DCV2_MEMORY_DIR DCV2_TEST_MODE || true
 export DCV2_MEMORY_DIR="$d/mem"
 
 fails=0
@@ -126,7 +126,16 @@ $s
 EOF
   hasnt "  the value is not echoed" "${s: -6}"
 done
-for s in 'The token lives in the keychain (CLICKUP_TOKEN env).' 'API_KEY=<your key>' 'password: ********' 'SECRET_KEY=${SECRET_KEY}' \
+for s in 'curl -H "Authorization: Bearer 9fK2mQ7xL4pR8tW1zB6nC3vD" https://api.example.com' 'https://hooks.slack.com/services/T0123ABCD/B0123ABCD/abcdEFGH1234' \
+         'https://discord.com/api/webhooks/123456789/abcdefghijkl' 'https://contoso.webhook.office.com/webhookb2/abc-123@def/IncomingWebhook/xyz'; do
+  expect 1 "secret refused: ${s:0:24}..." bash "$MEM" write "$APIID" topics/sync.md <<EOF
+# Sync
+covers: server/sync/
+checked-at: $A0
+$s
+EOF
+done
+for s in 'The token lives in the keychain (CLICKUP_TOKEN env).' 'The Bearer token is rotated nightly.' 'Send Authorization: Bearer ${TOKEN} with each call' 'see https://hooks.slack.com/ for how webhooks work' 'API_KEY=<your key>' 'password: ********' 'SECRET_KEY=${SECRET_KEY}' \
          'tokenizer: src/lexer/tokenizer.rs' 'token_store: keeps refresh tokens in memory only' 'run `npm run sk-lint-and-format-all` first' \
          'SECRET_KEY_BASE=dev_only_not_secret' 'auth_key: config.auth.key_name' 'password: see the vault entry' \
          'primary_key: users.id' 'key: value' 'token_file: ./secrets/token.txt' 'password_hash: src/auth/hash.go' \
@@ -229,5 +238,10 @@ expect 0 "compose of the single repo" bash "$MEM" compose "$API" "$d/p1.md"
 grep -q "Workspace" "$d/p1.md" && bad "  a single repo has no workspace section" || ok "  no workspace section for a single repo"
 expect 0 "--root overrides the env" env -u DCV2_MEMORY_DIR bash "$MEM" status "$API" --root "$DCV2_MEMORY_DIR"
 is "  present via --root" repos.0.present true
+expect 1 "--root refused while DCV2_MEMORY_DIR is set" bash "$MEM" write --root "$d/other" repoa topics/x.md <<<"# x"
+has "  says why" "--root is refused"
+[[ ! -e "$d/other" ]] && ok "  nothing written" || bad "  $d/other was made"
+expect 1 "--root refused for status too" bash "$MEM" status "$API" --root "$d/other"
+expect 0 "--root without DCV2_MEMORY_DIR still works (tests, hand use)" env -u DCV2_MEMORY_DIR bash "$MEM" status "$API" --root "$d/mem"
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

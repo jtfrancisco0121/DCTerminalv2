@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 STATE="$ROOT/plugin/scripts/state.sh"
 d="$(mktemp -d)"; d="$(cd "$d" && pwd -P)"
 trap 'rm -rf "$d"' EXIT
-unset DCV2_TEST_MODE DCV2_RUN_DIR || true
+unset DCV2_TEST_MODE DCV2_RUN_DIR DCV2_MEMORY_DIR || true
 
 fails=0
 ok()   { echo "ok   $*"; }
@@ -286,12 +286,35 @@ expect 0 "PR2 worktree" bash "$STATE" worktree "$RUN" "$RR" PR2 "$RBASE"
 WT2="$(dirname "$RR")/rr-worktrees/dcv2-r-t-pr2"
 git -C "$WT2" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "S2: x"
 
+echo "# worktree only for the run's repos (CAP-17)"
+OUT="$d/outside/orepo"; OUT2="$d/outside/orepo2"; mkdir -p "$OUT" "$OUT2"
+for repo in "$OUT" "$OUT2"; do git -C "$repo" init -q -b main; git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init; done
+OBASE="$(git -C "$OUT" rev-parse HEAD)"; OBASE2="$(git -C "$OUT2" rev-parse HEAD)"
+cp "$RUN/.guard.json" "$d/guard.before"
+expect 1 "a repo outside repos.json and the start folder is refused" bash "$STATE" worktree "$RUN" "$OUT" PR1 "$OBASE"
+has "  says why" "not one of this run's repos"
+cmp -s "$RUN/.guard.json" "$d/guard.before" && ok "  .guard.json is byte-identical" || bad "  .guard.json changed"
+[[ ! -d "$d/outside/orepo-worktrees" ]] && ok "  no worktree made" || bad "  a worktree was made"
+git -C "$OUT" branch --list 'dcv2/*' | grep -q . && bad "  a branch was made" || ok "  no branch made"
+ln -s "$OUT2" "$d/outside/lnk"
+printf '{"schema": 1, "repos": [{"name": "o", "path": "%s", "check": null}]}\n' "$d/outside/lnk" > "$RUN/repos.json"
+expect 1 "a repo not in repos.json is still refused when repos.json lists another" bash "$STATE" worktree "$RUN" "$OUT" PR1 "$OBASE"
+expect 0 "a repo listed in repos.json by a symlinked path is accepted" bash "$STATE" worktree "$RUN" "$OUT2" PR1 "$OBASE2"
+rm -rf "$RUN/repos.json" "$d/outside/orepo2-worktrees"; git -C "$OUT2" worktree prune; git -C "$OUT2" branch -q -D dcv2/r-t-pr1
+python3 - "$RUN/.guard.json" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1])); g["repos"] = [r for r in g["repos"] if not r.endswith("orepo2")]; g["worktrees"].pop("PR1", None); json.dump(g, open(sys.argv[1], "w"))
+PY
+expect 0 "a repo inside the start folder is accepted (PR1 again)" bash "$STATE" worktree "$RUN" "$R" PR1 "$BASE"
+
 echo "# ship (3, 4, 8, 10)"
+export DCV2_TEST_LOCAL_REMOTES=1   # the remote is a local bare repo (state.sh pushes to local folders only in the suites)
 gh="$d/gh"; mkdir -p "$gh"
 cat > "$gh/gh" <<EOF
 #!/bin/sh
 echo "\$*" >> "$d/gh.log"
 case "\$1 \$2" in
+  "repo view") echo o/rr ;;
   "pr view") [ -f "$d/gh-has-pr" ] && echo https://github.com/o/rr/pull/7 && exit 0; exit 1 ;;
   "pr create") echo https://github.com/o/rr/pull/8 ;;
   *) exit 1 ;;
@@ -302,14 +325,58 @@ export PATH="$gh:$PATH"
 expect 0 "put ship-approval" put < <(status ship-approval reviewed reviewed 'doc["waitingFor"]="ship-approval"')
 expect 1 "ship-pr refused before the ship approval" bash "$STATE" ship-pr "$RUN" PR2
 expect 0 "ship-check" bash "$STATE" ship-check "$RUN"
-has "  no remote for r" "PR1 r: no git remote"; has "  base on origin for rr" "PR2 rr: remote origin, base main is on the remote"
+has "  no remote for r" "PR1 r: no git remote"; has "  base on the recorded remote for rr" "PR2 rr: remote $d/origin.git, base main is on the remote"
 expect 1 "approve ship test without the env" bash "$STATE" approve "$RUN" ship test
 expect 0 "approve ship user" bash "$STATE" approve "$RUN" ship user
 is "  stage shipping" "$RUN/status.json" stage '"shipping"'
 is "  shipApproval.by user" "$RUN/status.json" shipApproval.by '"user"'
 expect 0 "ship-pr PR1 (no remote)" bash "$STATE" ship-pr "$RUN" PR1
 is "  PR1 local-only" "$RUN/status.json" prs.0.state '"local-only"'
+# Local-mode ship-pr has the github-mode protections (CAP-14). Each case undoes itself, so PR2 ships normally after them.
+pr2() { python3 - "$RUN" "$@" <<'PY'    # pr2 <python on st (status.json) and g (.guard.json)>
+import json, sys
+run, code = sys.argv[1:3]
+st, g = json.load(open(run + "/status.json")), json.load(open(run + "/.guard.json"))
+exec(code)
+json.dump(st, open(run + "/status.json", "w")); json.dump(g, open(run + "/.guard.json", "w"))
+PY
+}
+pr2reset() { pr2 'st["prs"][1].update(state="reviewed", note=None)'; }
+: > "$d/gh.log"
+expect 0 "a recorded remote the run may not push (a local folder, outside the suites) is needs-attention" env -u DCV2_TEST_LOCAL_REMOTES bash "$STATE" ship-pr "$RUN" PR2
+is "  PR2 needs-attention" "$RUN/status.json" prs.1.state '"needs-attention"'
+has "  says why" "is not an owner/name https or ssh URL: nothing pushed"
+has "  names the URL" "remote $d/origin.git"
+git -C "$d/origin.git" show-ref --verify -q refs/heads/dcv2/r-t-pr2 && bad "  the branch was pushed" || ok "  nothing pushed"
+[[ ! -s "$d/gh.log" ]] && ok "  no gh call" || bad "  gh calls: $(cat "$d/gh.log")"
+expect 0 "ship-check says the same before approving" env -u DCV2_TEST_LOCAL_REMOTES bash "$STATE" ship-check "$RUN"
+has "  cannot be pushed" "PR2 rr: remote $d/origin.git cannot be pushed by the run"
+has "  needs attention" ": needs attention"
+pr2reset
+pr2 'st["prs"][1]["worktree"] = "/tmp/x"'
+expect 1 "ship-pr: a status.json worktree that is not canonical is refused" bash "$STATE" ship-pr "$RUN" PR2
+has "  says where it must be" "must be on dcv2/r-t-pr2 in its worktree"
+pr2 'st["prs"][1]["worktree"] = g["worktrees"]["PR2"]'
+pr2 'g["worktrees"].pop("PR2")'
+expect 1 "ship-pr: a worktree not recorded in .guard.json is refused" bash "$STATE" ship-pr "$RUN" PR2
+has "  says so" "not recorded in .guard.json"
+pr2 'g["worktrees"]["PR2"] = st["prs"][1]["worktree"]'
+git -C "$d/origin.git" show-ref --verify -q refs/heads/dcv2/r-t-pr2 && bad "  pushed anyway" || ok "  nothing pushed by the refused cases"
+pr2 'g.setdefault("copied", {})["PR2"] = [".env"]'
+echo "K=1" > "$WT2/.env"; git -C "$WT2" add -f .env; git -C "$WT2" -c user.name=t -c user.email=t@t commit -q -m "oops: .env"
+expect 3 "ship-pr: a committed copied .env is needs-attention" bash "$STATE" ship-pr "$RUN" PR2
+has "  names the file" "the branch commits .env"
+is "  PR2 needs-attention" "$RUN/status.json" prs.1.state '"needs-attention"'
+git -C "$d/origin.git" show-ref --verify -q refs/heads/dcv2/r-t-pr2 && bad "  the .env was pushed" || ok "  nothing pushed"
+git -C "$WT2" reset -q --hard HEAD~1; rm -f "$WT2/.env"; pr2 'g["copied"].pop("PR2")'; pr2reset
+mkdir -p "$(git -C "$RR" rev-parse --path-format=absolute --git-common-dir)/hooks"
+printf '#!/bin/sh\ntouch "%s/pre-push-ran"\nexit 0\n' "$d" > "$(git -C "$RR" rev-parse --path-format=absolute --git-common-dir)/hooks/pre-push"
+chmod +x "$(git -C "$RR" rev-parse --path-format=absolute --git-common-dir)/hooks/pre-push"
+: > "$d/gh.log"
 expect 0 "ship-pr PR2 (remote)" bash "$STATE" ship-pr "$RUN" PR2
+[[ ! -e "$d/pre-push-ran" ]] && ok "  the worktree's pre-push hook did not run" || bad "  the pre-push hook ran"
+grep -q -- "pr view dcv2/r-t-pr2 --json url -q .url -R o/rr" "$d/gh.log" && ok "  gh pr view names -R o/rr" || bad "  gh calls: $(cat "$d/gh.log")"
+grep -q -- "pr create .* -R o/rr" "$d/gh.log" && ok "  gh pr create names -R o/rr" || bad "  gh calls: $(cat "$d/gh.log")"
 is "  PR2 opened" "$RUN/status.json" prs.1.state '"opened"'
 is "  PR2 url" "$RUN/status.json" prs.1.prUrl '"https://github.com/o/rr/pull/8"'
 git -C "$d/origin.git" show-ref --verify -q refs/heads/dcv2/r-t-pr2 && ok "  branch pushed" || bad "  branch not on origin"
@@ -327,6 +394,12 @@ touch "$d/gh-has-pr"; : > "$d/gh.log"
 expect 0 "ship-pr of a pushed PR with no url (resume)" bash "$STATE" ship-pr "$RUN" PR2
 is "  url from gh pr view" "$RUN/status.json" prs.1.prUrl '"https://github.com/o/rr/pull/7"'
 grep -q "pr create" "$d/gh.log" && bad "  opened a second PR" || ok "  no second PR"
+echo "# an ssh host alias remote is recognised as owner/name (CAP-14)"
+AL="$WS/al"; mkdir -p "$AL"; git -C "$AL" init -q -b main; git -C "$AL" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$AL" remote add origin github-work:o/rr
+expect 0 "worktree for a repo whose remote is an ssh host alias" bash "$STATE" worktree "$RUN" "$AL" PR3 "$(git -C "$AL" rev-parse HEAD)"
+is "  recorded as owner/name" "$RUN/.guard.json" remotes.PR3.repo '"o/rr"'
+is "  with its URL" "$RUN/.guard.json" remotes.PR3.url '"github-work:o/rr"'
 
 echo "# writeback (5, 15)"
 cat > "$RUN/tickets.json" <<'EOF'
@@ -350,6 +423,36 @@ expect 1 "put refuses requests/" bash "$STATE" put "$RUN/requests/20261027T10000
 for f in tickets.json meta.json writeback-posted.json tickets-pulls.json tickets-update.md app-checks.json app-cleanup.json app-usage.json; do
   expect 1 "put refuses the app's $f" bash "$STATE" put "$RUN/$f" <<<'{}'
 done
+
+echo "# put writes only <DCV2_RUN_DIR>/status.json (CAP-1, CAP-2)"
+PH="$d/home"; mkdir -p "$PH/.claude" "$d/appdata" "$d/runs/r-other"
+for tgt in "$RUN/Repos.json" "$RUN/Requests/x.json" "$PH/.claude/settings.json" \
+           "$d/appdata/adopted-runs.json" "$d/runs/r-other/status.json" "$RUN/notes.json" "$RUN/sub/status.json"; do
+  rm -f "$tgt"
+  expect 1 "put refuses ${tgt#$d/}" env HOME="$PH" bash "$STATE" put "$tgt" <<<'{"schema": 1}'
+  [[ ! -e "$tgt" ]] && ok "  nothing written" || bad "  $tgt was written"
+done
+{ cp "$RUN/status.json" "$d/status.before" 2>/dev/null || : > "$d/status.before"; }
+for v in Writeback.json .Guard.json Meta.JSON; do   # protected names in another case: refused (and not removed: the volume may ignore case)
+  expect 1 "put refuses $v" bash "$STATE" put "$RUN/$v" <<<'{"schema": 1}'
+done
+for v in Status.json STATUS.JSON; do     # the same file on a case-insensitive volume: refused, whatever the volume
+  expect 1 "put refuses $v (not the exact name)" bash "$STATE" put "$RUN/$v" <<<'{"schema": 1}'
+  cmp -s "$RUN/status.json" "$d/status.before" && ok "  status.json unchanged" || bad "  status.json changed by $v"
+done
+expect 1 "put without DCV2_RUN_DIR refused" env -u DCV2_RUN_DIR bash "$STATE" put "$RUN/status.json" <<<'{"schema": 1}'
+{ [[ -f "$RUN/status.json" ]] && cmp -s "$RUN/status.json" "$d/status.before" || { [[ ! -f "$RUN/status.json" && ! -s "$d/status.before" ]]; }; } && ok "  status.json unchanged" || bad "  status.json changed"
+expect 1 "put of another run's status.json refused" bash "$STATE" put "$d/runs/r-other/status.json" <<<'{"schema": 1}'
+ln -s "$RUN" "$d/runlink"
+expect 0 "put through a symlinked run path is still the run's status.json" bash "$STATE" put "$d/runlink/status.json" < "$d/status.before"
+
+echo "# schema must be the integer 1 (CAP-16)"
+cp "$RUN/status.json" "$d/status.before"
+for bad in '1.0' 'True' '"1"' 'None' '2'; do
+  expect 1 "put with schema $bad refused" put < <(status planning "" "" "doc[\"schema\"]=$bad")
+  cmp -s "$RUN/status.json" "$d/status.before" && ok "  status.json unchanged" || bad "  status.json changed by schema $bad"
+done
+expect 1 "put with no schema refused" put < <(status planning "" "" 'del doc["schema"]')
 
 echo "# done gate, report (R10)"
 bash "$STATE" log "$RUN" <<<'PR2 implementer retried: no JSON block' >/dev/null
@@ -377,16 +480,16 @@ import json, sys
 print(json.dumps({"schema": 1, "runId": "r-f", "stage": "failed", "waitingFor": None, "folder": "/x", "plan": None, "prs": [],
                   "ship": None, "writeback": None, "error": "planner failed twice: usage limit"}))
 PY2
-expect 0 "failed run" bash "$STATE" put "$RUN2/status.json" < "$d/failed.json"
+expect 0 "failed run" env DCV2_RUN_DIR="$RUN2" bash "$STATE" put "$RUN2/status.json" < "$d/failed.json"
 grep -q "planner failed twice" "$RUN2/report.md" && ok "  report.md at failed, with the error" || bad "  report: $(cat "$RUN2/report.md" 2>/dev/null)"
 rm -f "$RUN2/report.md"; mkdir "$RUN2/report.md"
-expect 0 "a report that cannot be written does not fail the status write (LOW 9)" bash "$STATE" put "$RUN2/status.json" < "$d/failed.json"
+expect 0 "a report that cannot be written does not fail the status write (LOW 9)" env DCV2_RUN_DIR="$RUN2" bash "$STATE" put "$RUN2/status.json" < "$d/failed.json"
 has "  says so" "report.md not written"
 
 echo "# BMAD mode: size, init, check, and the plan-approval refusal (run folder path has a space)"
 B="$d/App Support/runs/r-b"; mkdir -p "$B"
 printf 'folder: %s\n' "$WS" > "$B/request.md"
-printf '# Plan\n## Stories\n### S1: x\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n' > "$B/plan.md"
+printf '# Plan\n## Stories\n### S1: x\n- Covers: CAP-1, AD-1\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n' > "$B/plan.md"
 printf '{"schema":1,"repos":[{"name":"toy \\"quoted\\" repo","path":"%s","check":null}]}\n' "$R" > "$B/repos.json"
 # bstatus <stage>: a minimal status.json document for the BMAD run (no PRs yet)
 bstatus() {
@@ -555,6 +658,27 @@ assert len(c["digest"]) == 64 and c["reasons"] == [] and c["at"].endswith("Z")
 assert "bmad/output/r-b/spec-toy/spec-toy.md" in c["documents"] and "bmad/output/r-b/ux-toy/EXPERIENCE.md" in c["documents"], c["documents"]
 PY
 
+echo "# BMAD placeholders name only real template tokens (CAP-18)"
+SPEC="$B/bmad/output/r-b/spec-toy/spec-toy.md"; cp "$SPEC" "$d/spec.keep"
+{ cat "$d/spec.keep"; printf '\nThe endpoint is GET /invoices/{invoiceId} and returns {"ok": true}.\n'; } > "$SPEC"
+expect 0 "prose with a REST path parameter passes" bash "$STATE" bmad-check "$B"
+tok="$(grep -ho '{Product Name}' "$ROOT"/plugin/bmad/skills/*/assets/*template*.md | head -1)"
+[[ "$tok" == "{Product Name}" ]] && ok "  {Product Name} is a vendored template token" || bad "  no template token found"
+{ cat "$d/spec.keep"; printf '\n# %s\n' "$tok"; } > "$SPEC"
+expect 3 "a vendored template token left in fails" bash "$STATE" bmad-check "$B"
+has "  names it" "{Product Name}"
+{ cat "$d/spec.keep"; printf '\nCall {{base_url}}/x.\n'; } > "$SPEC"
+expect 3 "a double-brace token fails" bash "$STATE" bmad-check "$B"
+has "  names it" "{{base_url}}"
+{ cat "$d/spec.keep"; printf '\nIn code it is fine: `{Product Name}` and\n\n```\n{Product Name}\n```\n'; } > "$SPEC"
+expect 0 "a template token inside code passes" bash "$STATE" bmad-check "$B"
+cp "$d/spec.keep" "$SPEC"
+rm -f "$B/bmad/output/r-b/ux-toy/validation-report.md" "$B/bmad/output/r-b/ux-toy/validation-report.html"
+expect 3 "a UX folder without its validation reports fails" bash "$STATE" bmad-check "$B"
+[[ "$(grep -o 'ux-toy/validation-report.md is missing' <<<"$out" | wc -l | tr -d ' ')" == 1 ]] && ok "  the missing report is named once, not once per document" || bad "  repeated: $out"
+mkdocs prd ux
+expect 0 "bmad-check passes again" bash "$STATE" bmad-check "$B"
+
 echo "# BMAD: plan-approval is allowed with a passing check, refused after a document edit, and recovers"
 expect 0 "plan-approval put with a passing check" bput < <(bstatus plan-approval)
 echo "A new line." >> "$B/bmad/output/r-b/spec-toy/spec-toy.md"
@@ -581,6 +705,67 @@ is "  applied (mode on)" "$B/status.json" bmad.applied true
 mkdocs
 expect 0 "on: check passes" bash "$STATE" bmad-check "$B"
 expect 0 "on: plan-approval allowed after the check" bput < <(bstatus plan-approval)
+
+echo "# BMAD: plan.md must trace to the documents"
+W="$B/bmad/output/r-b"
+# setplan <story blocks...> [-- <extra text>]: plan.md with the given story blocks (each "ID|Covers value", empty value = no Covers: line)
+setplan() {
+  { printf '# Plan\n## Stories\n'
+    local x
+    for x in "$@"; do printf '### %s: t\n' "${x%%|*}"; if [[ -n "${x#*|}" ]]; then printf -- '- Covers: %s\n' "${x#*|}"; fi; done
+    printf '## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n'
+    if [[ -n "${EXTRA:-}" ]]; then printf '\n## Out of scope\n%s\n' "$EXTRA"; fi
+  } > "$B/plan.md"
+}
+bothrefused() { # <label> <must-mention>
+  expect 1 "$1: put refused" bput < <(bstatus plan-approval)
+  has "  names it" "$2"
+  has "  trace message" "plan.md does not trace to the BMAD documents"
+  expect 1 "$1: approve refused" bash "$STATE" approve "$B" plan user
+  has "  names it (approve)" "$2"
+}
+bothallowed() {
+  expect 0 "$1: put allowed" bput < <(bstatus plan-approval)
+  expect 0 "$1: approve allowed" bash "$STATE" approve "$B" plan user
+}
+setplan "S1|CAP-1" "S2|"
+bothrefused "story without Covers:" "S2 has no Covers: line"
+setplan "S1|CAP-1, CAP-9"
+bothrefused "unknown CAP" "unknown CAP-9"
+setplan "S1|none"; bothrefused "Covers: none (no reason)" "S1 has a Covers: line with no ID"
+setplan "S1|none:"; bothrefused "Covers: none: (no reason)" "S1 has a Covers: line with no ID"
+setplan "S1|n/a"; bothrefused "Covers: n/a" "S1 has a Covers: line with no ID"
+# a second CAP in the spec that no story covers
+printf -- '- **CAP-2** users can remove\n' >> "$W/spec-toy/spec-toy.md"
+printf -- '\n- **SM-C1** counter metric\n- **FR-1** a PRD requirement\n' >> "$W/spec-toy/spec-toy.md"
+expect 0 "bmad-check at plan-approval with an untraced plan still records pass" bash "$STATE" bmad-check "$B"
+is "  recorded" "$B/status.json" bmad.check.result '"pass"'
+setplan "S1|CAP-1"
+bothrefused "CAP-2 covered by no story" "CAP-2 is covered by no story"
+setplan "S1|CAP-1" "S2|none: refactor needed by S1"
+bothrefused "CAP-2 still uncovered with a none story" "CAP-2"
+EXTRA="- CAP-2" setplan "S1|CAP-1"
+bothrefused "Out of scope line without a reason" "CAP-2"
+EXTRA="- CAP-2: not in this release" setplan "S1|CAP-1"
+bothallowed "CAP-2 out of scope with a reason"
+setplan "S1|CAP-1, CAP-2" "S2|none: refactor needed by S1" "S3|NONE - shared helper"
+bothallowed "all covered, none forms (colon, upper-case dash)"
+setplan "S1|CAP-1, CAP-2" "S2|SM-C1"
+bothallowed "counter-metric SM-C1 alone"
+setplan "S1|CAP-1, CAP-2" "S2|FR-1"
+bothallowed "a known PRD-style ID"
+setplan "S1|CAP-1, CAP-2" "S2|FR-7"
+bothrefused "unknown FR-7" "unknown FR-7"
+setplan "S1|CAP-1, CAP-2"
+# non-BMAD runs: no Covers: needed
+printf '# Plan\n## Stories\n### S1: x\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n' > "$B/plan.md"
+rm -f "$B/status.json"; bmeta off
+expect 0 "mode off: put plan-approval without Covers:" bput < <(bstatus plan-approval)
+expect 0 "mode off: approve without Covers:" bash "$STATE" approve "$B" plan user
+rm -f "$B/meta.json" "$B/status.json"
+expect 0 "no meta.json: put plan-approval without Covers:" bput < <(bstatus plan-approval)
+expect 0 "no meta.json: approve without Covers:" bash "$STATE" approve "$B" plan user
+bmeta on; rm -f "$B/status.json"
 # an app mode change cannot be undone by status.json: on stays on
 rm -f "$B/status.json"; bash "$STATE" put "$B/status.json" < <(bstatus planning) >/dev/null
 bash "$STATE" put "$B/status.json" < <(bforge planning '{"mode":"on","size":"Small","applied":false}') >/dev/null
@@ -743,6 +928,44 @@ expect 0 "request-wait: done" bash "$STATE" request-wait "$CRUN" "$rid"
 has "  the result line" "result=done ok=yes message=no ticket changed in ClickUp"
 expect 1 "request-wait: not an id" bash "$STATE" request-wait "$CRUN" "../../etc/passwd"
 expect 1 "request-wait: no such request" bash "$STATE" request-wait "$CRUN" "20261027T000000Z-recheck"
+
+echo "# worktree identity is the git common dir: a linked-worktree start folder, a --separate-git-dir repo (CAP-15)"
+cleanup_layout() { # <tag> <repo path>: the run's own worktree of the repo is made by state.sh worktree, then cleaned up at done
+  local tag="$1" repo="$2" lrun="$d/runs/r-$1" base wtp
+  mkdir -p "$lrun"; printf 'folder: %s\n' "$(dirname "$repo")" > "$lrun/request.md"; echo '{"schema": 1, "reviewMode": "local"}' > "$lrun/meta.json"
+  base="$(git -C "$repo" rev-parse HEAD)"
+  expect 0 "[$tag] worktree made" env DCV2_RUN_DIR="$lrun" bash "$STATE" worktree "$lrun" "$repo" PR1 "$base"
+  wtp="$(dirname "$repo")/$(basename "$repo")-worktrees/dcv2-r-$tag-pr1"
+  python3 - "$lrun/status.json" "$tag" "$repo" "$wtp" <<'PY'
+import json, sys
+f, tag, repo, wt = sys.argv[1:5]
+json.dump({"schema": 1, "runId": "r-" + tag, "stage": "done", "prs": [{"id": "PR1", "repoPath": repo, "branch": f"dcv2/r-{tag}-pr1", "worktree": wt, "state": "reviewed"}]}, open(f, "w"))
+PY
+  expect 0 "[$tag] cleanup accepts the run's own worktree" env DCV2_RUN_DIR="$lrun" bash "$STATE" cleanup "$lrun"
+  has "  [$tag] removed" "PR1: worktree removed"
+  [[ ! -d "$wtp" ]] && ok "  [$tag] the folder is gone" || bad "  [$tag] worktree still there"
+}
+LMAIN="$d/lw/main"; LSTART="$d/lw/start"; mkdir -p "$LMAIN"
+git -C "$LMAIN" init -q -b main; git -C "$LMAIN" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$LMAIN" worktree add -q -b feature/start "$LSTART"
+cleanup_layout lnk "$LSTART"
+SWORK="$d/sw/work"; mkdir -p "$SWORK" "$d/sw/gd"
+git -C "$SWORK" init -q -b main --separate-git-dir "$d/sw/gd/work.git"; git -C "$SWORK" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+[[ -f "$SWORK/.git" ]] && ok "  the separate-git-dir repo's .git is a file" || bad "  .git is not a file"
+cleanup_layout sep "$SWORK"
+# a worktree of an unrelated repo is still refused: it sits where the contract puts the recorded repo's worktree, but is not that repo's
+URUN="$d/runs/r-unrel"; mkdir -p "$URUN" "$d/lw/unrelated"; printf 'folder: %s\n' "$d/lw" > "$URUN/request.md"
+git -C "$d/lw/unrelated" init -q -b main; git -C "$d/lw/unrelated" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+UWT="$d/lw/unrelated-worktrees/dcv2-r-unrel-pr1"; git -C "$LSTART" worktree add -q -b dcv2/r-unrel-pr1 "$UWT"
+python3 - "$URUN" "$d/lw/unrelated" "$UWT" <<'PY'
+import json, sys
+run, repo, wt = sys.argv[1:4]
+json.dump({"schema": 1, "runId": "r-unrel", "stage": "done", "prs": [{"id": "PR1", "repoPath": repo, "branch": "dcv2/r-unrel-pr1", "worktree": wt, "state": "reviewed"}]}, open(run + "/status.json", "w"))
+json.dump({"schema": 1, "runDir": run, "repos": [repo], "worktrees": {"PR1": wt}}, open(run + "/.guard.json", "w"))
+PY
+expect 0 "cleanup with a worktree of another repo" env DCV2_RUN_DIR="$URUN" bash "$STATE" cleanup "$URUN"
+has "  kept: not a worktree of its recorded repo" "not a worktree of its recorded repo"
+[[ -d "$UWT" ]] && ok "  the unrelated worktree is untouched" || bad "  it was removed"
 
 echo "# report: what the run could not do"
 bash "$STATE" log "$CRUN" <<<'not done: re-run the checks (the app did not answer: is DCTerminalv2 running?)' >/dev/null

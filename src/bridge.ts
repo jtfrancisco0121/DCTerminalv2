@@ -143,7 +143,7 @@ export type SettingsView = {
   observe?: ObserveSettings;
   notify?: NotifySettings;
   push?: PushSettings;
-  /** Per account: auto-post ClickUp comments after ship approval (missing: on). */
+  /** Per account: auto-post ClickUp comments after ship approval and the user's click (missing: off). */
   clickup?: { autoPost: Record<string, boolean> };
   accounts: ResolvedClaudeAccount[];
   configDirEnv: string | null;

@@ -100,6 +100,9 @@ SECRETS = [
     ("a Google API key", re.compile(r"\bAIza[0-9A-Za-z_-]{30,}"), None),
     ("a JWT", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+"), None),
     ("a password in a URL", re.compile(r"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]{3,}@"), None),
+    ("a Bearer token", re.compile(r"(?i)\bAuthorization[\"']?\s*[:=]\s*[\"']?Bearer\s+([A-Za-z0-9._~+/=-]{16,})"), lambda m: secretish(m.group(1))),
+    ("a webhook URL", re.compile(r"(?i)\bhttps?://(?:hooks\.slack\.com/services/|discord(?:app)?\.com/api/webhooks/|outlook\.office\.com/webhook/|"
+                                r"[a-z0-9-]+\.webhook\.office\.com/|hooks\.zapier\.com/hooks/catch/)[A-Za-z0-9]"), None),
     ("a secret assignment (.env / JSON / YAML style)", ASSIGN, assignment),
 ]
 
@@ -218,6 +221,8 @@ def in_play(folder):
 
 
 def root_dir(required=True):
+    if ROOT and os.environ.get("DCV2_MEMORY_DIR"):  # a launched session's memory root is fixed; --root is for tests and hand use
+        die("--root is refused while DCV2_MEMORY_DIR is set: the memory root of a dcv2 session cannot be redirected")
     r = ROOT or os.environ.get("DCV2_MEMORY_DIR") or ""
     if not r:
         if required:

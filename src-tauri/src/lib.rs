@@ -214,6 +214,8 @@ pub fn run() {
             clickup::commands::clickup_pull_tickets,
             clickup::commands::clickup_post_writeback,
             clickup::commands::clickup_auto_post_retry,
+            clickup::commands::clickup_auto_post_consent,
+            clickup::commands::clickup_auto_post_now,
             clickup::commands::clickup_set_auto_post,
             import_dev::dev_import_status,
             import_dev::dev_import_dismiss,
