@@ -30,4 +30,6 @@ LOWs left for later:
 - A copied-in `.env` (copyFiles) that the user edited in the worktree goes with the worktree (it is treated as a copy).
 - **Do first:** interpreter writes (`python3 -c 'open(".guard.json","w")…'`, `node -e`) are not seen by the guard; this is the root of a forged `.guard.json` (and with it forged worktree / remote records).
 - `git stash drop` / `stash clear` by a sub-agent drops the shared `refs/stash` (LOW).
+- Same class as the interpreter gap: shells fed a script the guard never sees: stdin (`echo … | bash`, `bash <<< …`, `bash /dev/stdin`), process substitution (`bash <(…)`, `source <(…)`), and a script written earlier (`printf … > /tmp/x.sh; bash /tmp/x.sh`), plus `set -a; . ./envfile`.
+- `DCV2_TEST_LOCAL_REMOTES` is matched as a substring, so `DCV2_TEST_LOCAL_REM""OTES=1` gets past the guard (no escalation: it only lets state.sh talk to a local folder remote, which a run cannot record without a forged `.guard.json`).
 - (MEDIUM per the re-review) The orchestrator may still delete or reset a run worktree's files (`rm -rf <wt>`, `git clean`, `git reset --hard` in the worktree) and write files through interpreters (`python3 -c 'open(...)'`): the guard sees shell write targets only. Worth a rule that the orchestrator writes nothing in worktrees.
