@@ -357,8 +357,9 @@ def check_approval(v, name, problems):
 
 def validate_status(doc, run):
     p = []
-    if doc.get("schema") != 1:
-        p.append("schema must be 1")
+    schema = doc.get("schema")
+    if not (type(schema) is int and schema == 1):  # the integer 1 only: not 1.0, true or "1"
+        p.append("schema must be the integer 1")
     stage = doc.get("stage")
     if stage not in STAGES:
         p.append(f"stage {stage!r} not one of {STAGES}")

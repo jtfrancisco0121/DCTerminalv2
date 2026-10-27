@@ -215,17 +215,29 @@ pub fn valid_pr_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// `schema` is the integer 1 (not missing, `"1"`, `1.0` or `true`): for readers that
+/// look into status.json without going through [`parse_status`].
+pub fn has_known_schema(value: &Value) -> bool {
+    value.get("schema").and_then(Value::as_u64) == Some(KNOWN_SCHEMA as u64)
+}
+
 /// status.json as the panel's model, tolerating partial documents.
 pub fn parse_status(value: &Value) -> Result<RunView, String> {
     if !value.is_object() {
         return Err("status.json is not an object".into());
     }
-    match value.get("schema").and_then(Value::as_i64) {
-        Some(KNOWN_SCHEMA) | None => {}
-        Some(other) => {
+    // Only the integer 1 is a schema: missing, "1", 1.0 and true are not.
+    match value.get("schema") {
+        Some(Value::Number(n)) if n.as_u64() == Some(KNOWN_SCHEMA as u64) => {}
+        Some(Value::Number(n)) if n.as_u64().is_some_and(|v| v > KNOWN_SCHEMA as u64) => {
             return Err(format!(
-            "status.json has schema {other}; this app knows schema {KNOWN_SCHEMA}. Update the app."
-        ))
+                "status.json has schema {n}; this app knows schema {KNOWN_SCHEMA}. Update the app."
+            ))
+        }
+        _ => {
+            return Err(format!(
+                "status.json has no valid schema (it must be the number {KNOWN_SCHEMA}), so the app does not read it."
+            ))
         }
     }
     let plan = value
@@ -681,7 +693,7 @@ mod tests {
     #[test]
     fn a_partial_status_with_unknown_fields_still_reads() {
         let view = parse_status(&json!({
-            "stage": "building", "somethingNew": {"x": 1},
+            "schema": 1, "stage": "building", "somethingNew": {"x": 1},
             "plan": {"approved": true, "verdict": "APPROVED", "reviewRound": "2"},
             "prs": [
                 {"id": "PR1", "repo": "mathlib", "state": "teleporting", "stories": {"done": 1}, "check": "oops"},
@@ -703,7 +715,28 @@ mod tests {
         assert_eq!(view.prs[1].id, "PR2");
         assert!(parse_status(&json!({"schema": 2}))
             .unwrap_err()
-            .contains("schema 2"));
+            .contains("schema 2; this app knows schema 1. Update the app."));
+        // Only the integer 1 is a schema (CAP-16).
+        for bad in [
+            json!({}),
+            json!({"schema": "1"}),
+            json!({"schema": 1.0}),
+            json!({"schema": true}),
+            json!({"schema": null}),
+            json!({"schema": [1]}),
+            json!({"schema": 0}),
+            json!({"schema": -1}),
+        ] {
+            let err = parse_status(&bad).unwrap_err();
+            assert!(
+                err.contains("status.json has no valid schema (it must be the number 1), so the app does not read it."),
+                "{bad}: {err}"
+            );
+        }
+        assert!(parse_status(&json!({"schema": 1})).is_ok());
+        assert!(has_known_schema(&json!({"schema": 1})));
+        assert!(!has_known_schema(&json!({"schema": 1.0})));
+        assert!(!has_known_schema(&json!({})));
         assert!(parse_status(&json!([1])).is_err());
     }
 
@@ -934,7 +967,8 @@ mod draft_pr_tests {
         assert_eq!(view.prs[1].draft, None);
         assert!(view.prs[1].comments.is_empty());
         assert_eq!(view.prs[2].draft, Some(false));
-        let approved = parse_status(&json!({"shipApproval": {"by": "user", "at": "t"}})).unwrap();
+        let approved =
+            parse_status(&json!({"schema": 1, "shipApproval": {"by": "user", "at": "t"}})).unwrap();
         assert!(approved.ship_approved);
         // An old run (no reviewMode in meta.json) reads as local.
         assert_eq!(
@@ -945,7 +979,7 @@ mod draft_pr_tests {
 
     #[test]
     fn a_bmad_object_is_read_and_a_missing_or_malformed_one_is_survived() {
-        let view = parse_status(&json!({"bmad": {
+        let view = parse_status(&json!({"schema": 1, "bmad": {
             "mode": "auto", "size": "Large", "applied": true,
             "reasons": ["more than one repo", 7, "new data model"],
             "docs": ["prd"],
@@ -962,15 +996,15 @@ mod draft_pr_tests {
         assert_eq!(b.documents, vec!["bmad/output/r-1/spec-a/spec-a.md"]);
         // Missing, null, a string, or odd field types: no panic, no error.
         for v in [
-            json!({}),
-            json!({"bmad": null}),
-            json!({"bmad": "on"}),
-            json!({"bmad": []}),
+            json!({"schema": 1}),
+            json!({"schema": 1, "bmad": null}),
+            json!({"schema": 1, "bmad": "on"}),
+            json!({"schema": 1, "bmad": []}),
         ] {
             assert!(parse_status(&v).unwrap().bmad.is_none(), "{v}");
         }
         let odd = parse_status(
-            &json!({"bmad": {"size": "Huge", "applied": "yes", "reasons": "x",
+            &json!({"schema": 1, "bmad": {"size": "Huge", "applied": "yes", "reasons": "x",
             "check": {"result": 5, "documents": "no"}}}),
         )
         .unwrap()

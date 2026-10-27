@@ -56,6 +56,7 @@ pub struct AutoPostRecord {
 /// status.json has `shipApproval` (an object: written by `state.sh approve`).
 pub fn ship_approved(run_dir: &Path) -> bool {
     crate::run::folder::read_json_value(&run_dir.join("status.json"))
+        .filter(crate::run::status::has_known_schema)
         .and_then(|v| v.get("shipApproval").cloned())
         .is_some_and(|v| v.is_object())
 }

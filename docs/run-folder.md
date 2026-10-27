@@ -283,6 +283,8 @@ Small and Medium runs in `auto` skip BMAD entirely and approve as before.
 - Adding a field, or a value to an enum the app already treats as "unknown → show as-is", keeps `schema: 1`.
 - Removing or renaming a field, changing its type or meaning, or adding a `stage` / PR `state` value the app must act on bumps `schema` (to 2). The app refuses a schema it does not know and says so, rather than guessing.
 
+- `schema` must be the JSON integer `1`. The app refuses a status.json whose `schema` is missing, a string (`"1"`), a float (`1.0`), a bool or any other non-integer with "status.json has no valid schema (it must be the number 1), so the app does not read it."; an integer above 1 gets the "Update the app" message. `state.sh put` refuses the same documents, so it never writes a status.json the app then refuses; the app's other direct readers of status.json (ship approval, request handling) apply the same rule.
+
 ## .guard.json (skill output, for the hook)
 
 ```json

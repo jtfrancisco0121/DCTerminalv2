@@ -373,6 +373,14 @@ expect 1 "put of another run's status.json refused" bash "$STATE" put "$d/runs/r
 ln -s "$RUN" "$d/runlink"
 expect 0 "put through a symlinked run path is still the run's status.json" bash "$STATE" put "$d/runlink/status.json" < "$d/status.before"
 
+echo "# schema must be the integer 1 (CAP-16)"
+cp "$RUN/status.json" "$d/status.before"
+for bad in '1.0' 'True' '"1"' 'None' '2'; do
+  expect 1 "put with schema $bad refused" put < <(status planning "" "" "doc[\"schema\"]=$bad")
+  cmp -s "$RUN/status.json" "$d/status.before" && ok "  status.json unchanged" || bad "  status.json changed by schema $bad"
+done
+expect 1 "put with no schema refused" put < <(status planning "" "" 'del doc["schema"]')
+
 echo "# done gate, report (R10)"
 bash "$STATE" log "$RUN" <<<'PR2 implementer retried: no JSON block' >/dev/null
 echo "Updated topics/sync.md (checked-at abc1234)." > "$RUN/memory-update.md"
