@@ -96,3 +96,5 @@ Debug builds keep their data in `<identifier>.dev`, release builds in `<identifi
 - Keychain items (ClickUp tokens, the trust key) have the same service names in both builds; macOS asks once to let the built app use them.
 
 Guard no-write zones (run-safety hardening): in a bound run (`DCV2_RUN_DIR` set) nobody, the orchestrator included, writes with Edit/Write or a shell redirect/copy/move into the plugin folder, `CLAUDE_CONFIG_DIR` or `~/.claude*`, or the app's data folder outside the run folder (run-folder.md, Run-safety hardening). A session with no `DCV2_RUN_DIR` is not affected.
+
+Hooks (run-safety hardening): `hooks/hooks.json` runs the guard on `Edit|Write|NotebookEdit|MultiEdit|Bash|Monitor|PowerShell|mcp__.*`. PowerShell is refused in a bound run; unbound, it gets the Bash analysis, whose known limit is that PowerShell-native writes (`Set-Content`, `Out-File`, `Remove-Item`, `Copy-Item`) are not seen. See run-folder.md, Run-safety hardening, for the MCP verb rule.

@@ -237,6 +237,44 @@ expect 2 "adopted run: the memory folder's parent (the other data folder) is not
 expect 2 "adopted run: the run's own data folder is not written" "$(payload "" Write file_path "$DEVD/launch/x")" DCV2_RUN_DIR="$DRUN" DCV2_MEMORY_DIR="$APPD/memory" "${zenv[@]}"
 expect 0 "adopted run: its own run folder is" "$(payload "" Write file_path "$DRUN/plan.md")" DCV2_RUN_DIR="$DRUN" DCV2_MEMORY_DIR="$APPD/memory" "${zenv[@]}"
 
+echo "# Monitor, PowerShell and MCP tools (CAP-5; the shapes are assumed: no 2.1.287 fixture shows them)"
+mon() { expect "$1" "$2 $3: ${4//$d/}" "$(payload "$2" "$3" command "$4")"; }               # <exit> <agent> <tool> <cmd>
+python3 - "$RUN/status.json" <<'PY'
+import json, sys
+json.dump({"schema": 1, "stage": "building", "shipApproval": None}, open(sys.argv[1], "w"))
+PY
+mon 2 "" Monitor "git -C $WT push -u origin dcv2/r-x-pr1"
+mon 2 "" Monitor "echo {} > $RUN/status.json"
+mon 2 "" Monitor "gh pr create --title x"
+mon 2 dcv2:implementer Monitor "echo x > $R/a.js"
+mon 0 "" Monitor "tail -f $RUN/log.md"
+mon 0 dcv2:implementer Monitor "echo x > $WT/a.js"
+mon 2 "" Monitor "git -C $R reset --hard"
+expect 2 "Monitor without a command (bound)" "$(python3 -c 'import json; print(json.dumps({"tool_name":"Monitor","tool_input":{},"cwd":"/"}))')"
+expect 2 "Monitor with an empty command (bound)" "$(payload "" Monitor command "  ")"
+expect 2 "Bash without a command (bound)" "$(python3 -c 'import json; print(json.dumps({"tool_name":"Bash","tool_input":{},"cwd":"/"}))')"
+expect 0 "Monitor without a command (unbound)" "$(python3 -c 'import json; print(json.dumps({"tool_name":"Monitor","tool_input":{},"cwd":"/"}))')" -u DCV2_RUN_DIR
+for who in "" dcv2:implementer dcv2:planner; do
+  mon 2 "$who" PowerShell "Get-ChildItem"
+  mon 2 "$who" PowerShell "Set-Content -Path $R/a.js -Value x"
+done
+expect 0 "PowerShell in an unbound session is judged like Bash" "$(payload "" PowerShell command "Get-ChildItem")" -u DCV2_RUN_DIR
+expect 2 "PowerShell in an unbound session with memory set: a write into memory" "$(payload "" PowerShell command "echo x > $APPD/memory/x/index.md")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$APPD/memory"
+mcp() { expect "$1" "$2 $3" "$(payload "$2" "$3" x y)"; }                                      # <exit> <agent> <tool>
+mcp 2 "" mcp__github__create_pull_request
+mcp 2 "" mcp__github__merge_pull_request
+mcp 2 "" mcp__x__update_issue
+mcp 0 "" mcp__x__get_issue
+mcp 0 "" mcp__x__list_issues
+mcp 0 "" mcp__x__search_code
+mcp 0 "" mcp__x__describe_table
+mcp 2 dcv2:implementer mcp__x__get_issue
+mcp 2 dcv2:planner mcp__x__get_issue
+mcp 2 dcv2:pr-reviewer mcp__x__list_issues
+mcp 2 implementer mcp__github__create_pull_request
+expect 0 "an mcp__ tool in an unbound session" "$(payload "" mcp__github__create_pull_request x y)" -u DCV2_RUN_DIR
+expect 0 "an mcp__ tool in an unbound session (memory set)" "$(payload "" mcp__github__create_pull_request x y)" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$APPD/memory"
+
 echo "# Bash: the orchestrator"
 b 2 "" "git -C $WT push -u origin dcv2/r-x-pr1"
 b 2 "" "gh pr create --base main --head dcv2/r-x-pr1 --title x --body-file /dev/null"

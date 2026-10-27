@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse guard for the eagle-eye run (plugin hook: Edit, Write, NotebookEdit, MultiEdit, Bash).
+# PreToolUse guard for the eagle-eye run (plugin hook: Edit, Write, NotebookEdit, MultiEdit, Bash, Monitor, PowerShell, mcp__*).
 #
 # The run it guards is the one named by the env DCV2_RUN_DIR, set when claude is launched
 # (the app and the e2e test set it; `state.sh preflight` refuses to start a run without it).
@@ -276,10 +276,29 @@ if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
     block(f"{who} may only write inside {where}, not {p}. Never edit a repo main checkout; use the exact worktree path you were given.")
 
 bound = pipeline or bool(run)
-if tool != "Bash" or not (bound or mem):
+
+# ---- MCP tools -----------------------------------------------------------------------------
+# Their effects cannot be seen from here, so in a bound run a pipeline sub-agent calls none, and the orchestrator
+# calls only read-verb tools (the last `__` segment starts with get / list / read / search / fetch / view / query /
+# find / describe). Unbound sessions are not affected.
+MCP_READ_RE = re.compile(r"^(get|list|read|search|fetch|view|query|find|describe)", re.I)
+if tool.startswith("mcp__"):
+    if pipeline:
+        block(f"{who} calls no MCP tool ({tool}): their effects cannot be checked.")
+    if run and not MCP_READ_RE.match(tool.rsplit("__", 1)[-1]):
+        block(f"the orchestrator calls only read-verb MCP tools (get / list / read / search / fetch / view / query / find / "
+              f"describe), not {tool}: their effects cannot be checked. Writes go through state.sh.")
     sys.exit(0)
 
-# ---- Bash --------------------------------------------------------------------------------
+# ---- Bash, Monitor, PowerShell: the shell text in tool_input.command ------------------------
+if tool == "PowerShell" and bound:
+    block("PowerShell is not used in a run (its writes, such as Set-Content, Out-File, Remove-Item and Copy-Item, cannot be "
+          "checked here); use Bash.")
+if tool not in ("Bash", "Monitor", "PowerShell") or not (bound or mem):
+    sys.exit(0)
+if bound and not str(inp.get("command") or "").strip():
+    block(f"{tool} without a command text: it cannot be checked.")
+
 GIT_RO = {"status", "log", "diff", "show", "rev-parse", "rev-list", "ls-files", "ls-tree", "cat-file", "grep",
           "blame", "annotate", "describe", "shortlog", "merge-base", "name-rev", "for-each-ref", "show-ref",
           "whatchanged", "help", "version", "var", "check-ignore", "count-objects", "show-branch", "range-diff",
