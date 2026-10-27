@@ -1091,7 +1091,9 @@ mod tests {
         let held = hold_app_lock(&root.join("other-app")).unwrap();
         assert!(lock_held(&root.join("other-app")));
         drop(held);
-        assert!(!lock_held(&root.join("other-app")));
+        assert!(crate::test_support::eventually(|| !lock_held(
+            &root.join("other-app")
+        )));
         assert!(!lock_held(&dev), "no lock file in an old dev build");
         assert_eq!(snapshot(&dev), before);
         let _ = config;

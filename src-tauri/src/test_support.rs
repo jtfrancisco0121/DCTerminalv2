@@ -11,6 +11,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
+/// `ok()` within about 2 s. A lock dropped by one test can look held for a
+/// moment: a child another test thread is forking shares the open file
+/// (and its `flock`) until its `exec` closes it (O_CLOEXEC). Production
+/// never re-takes a lock that fast; tests that do wait for that window.
+pub fn eventually(mut ok: impl FnMut() -> bool) -> bool {
+    for _ in 0..100 {
+        if ok() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 /// Folder under `temp_dir()` that holds every test run folder.

@@ -413,7 +413,9 @@ pub(crate) mod tests {
         // A second open file (as another process would have) is refused.
         assert_eq!(lock_posts(&data, &run).err().as_deref(), Some(POST_BUSY));
         drop(held);
-        assert!(lock_posts(&data, &run).is_ok());
+        assert!(crate::test_support::eventually(
+            || lock_posts(&data, &run).is_ok()
+        ));
         // Another process saved ticket B; our stale copy saving A keeps B.
         let mut theirs = read_posted(&k, &data, &run).unwrap();
         theirs.drafts.insert("B".into(), Default::default());
