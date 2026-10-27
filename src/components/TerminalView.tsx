@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { ptyOpen, ptyResize, ptyWrite, terminalResumeId, type TabSummary } from "../bridge";
+import { ptyResize, terminalResumeId, type TabSummary } from "../bridge";
 import { detectPlatform, isAppShortcut, isShiftEnter, SHIFT_ENTER_SEQUENCE, shiftEnterSendsNewline } from "../terminal/keys";
 import { formatDroppedPaths } from "../terminal/drop";
 import { firstOpenResumes, folderProblem } from "../terminal/openPlan";
@@ -9,14 +9,7 @@ import { TerminalSearchBar } from "./TerminalSearchBar";
 import { TerminalExitStrip, lastFiftyLines, lastOutputLine } from "./TerminalExitStrip";
 import { TerminalContextMenu, type ContextMenuItem } from "./TerminalContextMenu";
 import { reportError } from "../uiErrors";
-import {
-  beginLivePty,
-  isPtyOpening,
-  livePty,
-  markPtyOpening,
-  restartLivePty,
-  subscribeLivePty,
-} from "../terminal/live";
+import { livePty, openLivePty, sendPtyInput, subscribeLivePty } from "../terminal/live";
 import {
   blurParkedTerminal,
   clearTerminalScrollback,
@@ -42,28 +35,6 @@ export type TerminalViewProps = {
   /** Take keyboard focus when shown (the active tab). */
   autoFocus?: boolean;
 };
-
-/** How long a rejected keystroke waits for the PTY's exit event before it is shown. */
-export const KEYSTROKE_SETTLE_MS = 300;
-
-/**
- * Keystrokes to the PTY (a drop or paste reaches it the same way, through
- * xterm). A failed write is shown once per terminal, not per keystroke. An
- * exited or still-opening terminal refusing them is expected, not news.
- */
-function sendInput(ptyId: string, data: string): void {
-  void ptyWrite(ptyId, data).catch((err: unknown) => {
-    // A PTY that just died rejects the write before its exit event lands, so
-    // decide once that event has had time to arrive. A restart in between
-    // replaces the session, and the old process's refusal is not news either.
-    const rejectedBy = livePty(ptyId);
-    window.setTimeout(() => {
-      const live = livePty(ptyId);
-      if (!live || live !== rejectedBy || live.exited || isPtyOpening(ptyId)) return;
-      reportError("Keystrokes not sent", err, { notify: true, once: `Keystrokes not sent:${ptyId}` });
-    }, KEYSTROKE_SETTLE_MS);
-  });
-}
 
 /**
  * The size to open a PTY at: the mounted slot, measured now, so the program
@@ -243,7 +214,7 @@ export function TerminalView({ tab, fontSize, autoFocus = true }: TerminalViewPr
     const live = livePty(ptyId);
     // Subscribe before replaying. ConPTY's first bytes are often a cursor
     // query, and xterm answers that only through onData.
-    const onData = parked.term.onData((data) => sendInput(ptyId, data));
+    const onData = parked.term.onData((data) => sendPtyInput(ptyId, data));
     const detach = live?.buffer.attach({
       data: (bytes) => parked.term.write(bytes),
       exit: (code) => setExitCode(code ?? -1),
@@ -255,7 +226,7 @@ export function TerminalView({ tab, fontSize, autoFocus = true }: TerminalViewPr
     parked.term.attachCustomKeyEventHandler((event) => {
       if (newlineOnShiftEnter && isShiftEnter(event)) {
         // Handle keydown only; swallow keypress and keyup so xterm sends no CR.
-        if (event.type === "keydown" && !event.repeat) sendInput(ptyId, SHIFT_ENTER_SEQUENCE);
+        if (event.type === "keydown" && !event.repeat) sendPtyInput(ptyId, SHIFT_ENTER_SEQUENCE);
         return false;
       }
       // The app's own shortcuts bubble to the window, unsent to the program.
@@ -311,13 +282,11 @@ export function TerminalView({ tab, fontSize, autoFocus = true }: TerminalViewPr
   // this view: a remount meanwhile (StrictMode) finds it opening and waits.
   useEffect(() => {
     if (problem) return;
-    if (!markPtyOpening(ptyId)) return;
-    void firstOpenResumes(tab, terminalResumeId).then((resume) => {
-      const live = beginLivePty(ptyId);
-      const size = openSize(ensureParkedTerminal(ptyId, fontSize));
-      void ptyOpen({ id: ptyId, cols: size.cols, rows: size.rows, resume, onOutput: live.channel }).catch(
-        (err: unknown) => setFailed(err instanceof Error ? err.message : String(err)),
-      );
+    void openLivePty(ptyId, {
+      ifIdle: true,
+      before: () => firstOpenResumes(tab, terminalResumeId),
+      start: (resume) => ({ ...openSize(ensureParkedTerminal(ptyId, fontSize)), resume }),
+      onError: setFailed,
     });
     // The tab record only matters for this first open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -328,11 +297,10 @@ export function TerminalView({ tab, fontSize, autoFocus = true }: TerminalViewPr
     setFailed(null);
     const parked = ensureParkedTerminal(ptyId, fontSize);
     parked.term.reset();
-    const live = restartLivePty(ptyId);
-    const size = openSize(parked);
-    void ptyOpen({ id: ptyId, cols: size.cols, rows: size.rows, resume, onOutput: live.channel }).catch(
-      (err: unknown) => setFailed(err instanceof Error ? err.message : String(err)),
-    );
+    void openLivePty(ptyId, {
+      start: () => ({ ...openSize(parked), resume }),
+      onError: setFailed,
+    });
   };
 
   const mac = detectPlatform(navigator.platform) === "mac";
