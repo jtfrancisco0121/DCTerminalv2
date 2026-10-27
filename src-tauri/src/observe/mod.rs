@@ -80,10 +80,14 @@ fn save_session(store: &Mutex<StateStore>, tab_id: &str, session_id: &str) -> Re
     state.remember_claude_session(tab_id, session_id, &config_dir)
 }
 
-/// The `hooks` settings value and the env for one dcv2 tab launch. None
+/// The `hooks` settings value, the env, and the token of one dcv2 tab launch
+/// (for `HookServer::launch_exited`).
+pub type LaunchHooks = (Value, Vec<(String, String)>, String);
+
+/// The hooks for one dcv2 tab launch. None
 /// when the listener or the `dcv2-hook` binary is missing (the tab then
 /// runs without per-tab state; nothing else changes).
-pub fn launch_hooks(app: &AppHandle, tab_id: &str) -> Option<(Value, Vec<(String, String)>)> {
+pub fn launch_hooks(app: &AppHandle, tab_id: &str) -> Option<LaunchHooks> {
     let state = app.try_state::<ObserveState>()?;
     let server = state.hooks.as_ref()?;
     let exe = std::env::current_exe().ok();
@@ -95,9 +99,9 @@ pub fn launch_hooks(app: &AppHandle, tab_id: &str) -> Option<(Value, Vec<(String
     let env = vec![
         (forward::TAB_ENV.to_string(), tab_id.to_string()),
         (forward::PORT_ENV.to_string(), server.port.to_string()),
-        (forward::TOKEN_ENV.to_string(), token),
+        (forward::TOKEN_ENV.to_string(), token.clone()),
     ];
-    Some((hooks::hook_settings(&hooks::quoted(&bin)), env))
+    Some((hooks::hook_settings(&hooks::quoted(&bin)), env, token))
 }
 
 /// The app's `--settings` keys: the status line (when any) plus `hooks`.

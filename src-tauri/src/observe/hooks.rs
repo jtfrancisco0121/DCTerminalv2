@@ -280,6 +280,29 @@ impl HookServer {
         token
     }
 
+    /// The program of the launch that got `token` exited: its tab's hook
+    /// state goes back to unknown (nothing is running, no tool, no
+    /// sub-agent). Nothing happens when `token` is no longer the tab's
+    /// (a newer launch replaced it, or the tab was forgotten).
+    pub fn launch_exited(&self, tab_id: &str, token: &str) {
+        let Ok(mut shared) = self.shared.lock() else {
+            return;
+        };
+        if !shared
+            .tokens
+            .get(tab_id)
+            .is_some_and(|want| same_token(want, token))
+        {
+            return;
+        }
+        let state = shared.states.entry(tab_id.to_string()).or_default();
+        state.activity = TabActivity::Unknown;
+        state.subagents_running = 0;
+        state.tool_running = false;
+        state.last_event = Some("PtyExit".to_string());
+        state.updated_ms = Some(now_ms());
+    }
+
     /// The tab's launch got hooks (a token) from this app run.
     pub fn has_tab(&self, tab_id: &str) -> bool {
         self.shared
@@ -557,6 +580,31 @@ mod tests {
         server.forget_tab("tab-a");
         assert_eq!(server.accept("tab-a", &fresh, body), 403);
         assert!(same_token("abc", "abc") && !same_token("abc", "abd") && !same_token("ab", "abc"));
+    }
+
+    #[test]
+    fn the_exit_of_the_current_launch_resets_the_tab_but_an_old_launch_does_not() {
+        let server = HookServer::start().unwrap();
+        let old = server.register_tab("tab-x");
+        let work = br#"{"hook_event_name":"PreToolUse"}"#;
+        assert_eq!(server.accept("tab-x", &old, work), 204);
+        // A newer launch replaced the token: the old launch's exit is ignored.
+        let current = server.register_tab("tab-x");
+        assert_eq!(server.accept("tab-x", &current, work), 204);
+        server.launch_exited("tab-x", &old);
+        let state = server.state("tab-x").unwrap();
+        assert_eq!(state.activity, TabActivity::Working);
+        assert!(state.tool_running);
+        server.launch_exited("tab-x", &current);
+        let state = server.state("tab-x").unwrap();
+        assert_eq!(state.activity, TabActivity::Unknown);
+        assert!(!state.tool_running);
+        assert_eq!(state.subagents_running, 0);
+        assert_eq!(state.last_event.as_deref(), Some("PtyExit"));
+        // A forgotten tab stays forgotten.
+        server.forget_tab("tab-x");
+        server.launch_exited("tab-x", &current);
+        assert!(server.state("tab-x").is_none());
     }
 
     #[test]

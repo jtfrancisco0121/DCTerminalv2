@@ -153,17 +153,31 @@ impl Drop for PtyRegistry {
     }
 }
 
-fn forward(output: Receiver<PtyOutput>, channel: Channel<PtyPacket>) {
-    while let Ok(event) = output.recv() {
-        let packet = match event {
-            PtyOutput::Data(bytes) => data_packet(&bytes),
-            PtyOutput::Exit { code } => {
+/// What runs once when the program has exited (the app resets the tab's
+/// hook state there).
+type OnExit = Box<dyn FnOnce() + Send>;
+
+/// Streams the program's output to the view. `on_exit` runs when the
+/// program exited (its exit packet, or the output ended). It does not run
+/// when the view's channel fails first (a webview reload while the program
+/// still runs): that program is not known to be gone.
+fn forward(output: Receiver<PtyOutput>, channel: Channel<PtyPacket>, on_exit: OnExit) {
+    loop {
+        match output.recv() {
+            Ok(PtyOutput::Data(bytes)) => {
+                if channel.send(data_packet(&bytes)).is_err() {
+                    return;
+                }
+            }
+            Ok(PtyOutput::Exit { code }) => {
                 let _ = channel.send(exit_packet(code));
+                on_exit();
                 return;
             }
-        };
-        if channel.send(packet).is_err() {
-            break;
+            Err(_) => {
+                on_exit();
+                return;
+            }
         }
     }
 }
@@ -282,6 +296,7 @@ fn open_session_as(
         still_wanted,
         before_spawn,
         || Ok(()),
+        Box::new(|| {}),
     )
 }
 
@@ -291,6 +306,7 @@ fn open_session_as(
 /// never for a superseded, closed or failed one): it saves what the open
 /// changes in the tab record (lock order: `PtyRegistry` before
 /// `StateStore`). Its failure is logged and does not stop the terminal.
+/// `on_exit` runs once when the started program has exited (see `forward`).
 ///
 /// Blocking: runs on a `spawn_blocking` thread, never the UI thread or a
 /// Tokio worker. A replaced (or just closed) program is stopped first, and
@@ -313,6 +329,7 @@ fn open_session_with(
     still_wanted: impl FnOnce() -> bool,
     before_spawn: impl FnOnce() -> Result<(), String>,
     after_spawn: impl FnOnce() -> Result<(), String>,
+    on_exit: OnExit,
 ) -> Result<Option<u32>, String> {
     let stopping = {
         let mut registry = registry.lock().map_err(|err| err.to_string())?;
@@ -360,7 +377,7 @@ fn open_session_with(
     if let Some(rx) = session.take_output() {
         thread::Builder::new()
             .name(format!("pty-fwd-{id}"))
-            .spawn(move || forward(rx, on_output))
+            .spawn(move || forward(rx, on_output, on_exit))
             .map_err(|err| err.to_string())?;
     }
     registry.sessions.insert(id.to_string(), session);
@@ -482,7 +499,12 @@ fn pty_open_blocking(
 ) -> Result<u32, String> {
     // First, so a close of the tab (or its window) from here on cancels it.
     let token = begin_open(&registry, &input.id)?;
-    let (tab, spec, remember) = match spawn_spec(app, &input, &settings, &store) {
+    let SpawnPlan {
+        tab,
+        spec,
+        remember,
+        hook_token,
+    } = match spawn_spec(app, &input, &settings, &store) {
         Ok(found) => found,
         Err(err) => {
             end_open(&registry, &input.id, token);
@@ -516,6 +538,20 @@ fn pty_open_blocking(
         }
         None => Ok(()),
     };
+    let on_exit: OnExit = match hook_token {
+        Some(token) => {
+            let app = app.clone();
+            let tab_id = tab.id.clone();
+            Box::new(move || {
+                if let Some(observe) = app.try_state::<crate::observe::ObserveState>() {
+                    if let Some(hooks) = &observe.hooks {
+                        hooks.launch_exited(&tab_id, &token);
+                    }
+                }
+            })
+        }
+        None => Box::new(|| {}),
+    };
     let pid = open_session_with(
         &registry,
         &tab.id,
@@ -525,13 +561,21 @@ fn pty_open_blocking(
         still_wanted,
         before_spawn,
         after_spawn,
+        on_exit,
     )?;
     // The frontend does not use the pid; 0 means a newer open replaced this one.
     Ok(pid.unwrap_or(0))
 }
 
-/// A tab, what its terminal runs, and the `(session id, account folder)` to save.
-type SpawnPlan = (crate::store::TabRecord, SpawnSpec, Option<(String, String)>);
+/// A tab and what its terminal runs.
+struct SpawnPlan {
+    tab: crate::store::TabRecord,
+    spec: SpawnSpec,
+    /// Claude tabs: the `(session id, account folder)` to save once the open wins.
+    remember: Option<(String, String)>,
+    /// The hook token of this launch (dcv2 tabs with the forwarder).
+    hook_token: Option<String>,
+}
 
 /// The tab `input.id`, what its terminal runs, and for a Claude tab the
 /// `(session id, account folder)` to save once the open wins (it is not
@@ -561,6 +605,7 @@ fn spawn_spec(
     // `None` once the window's account was removed from Settings.
     let account_config = known_account_config(&claude, &account);
     let mut remember = None;
+    let mut hook_token = None;
     let (program, args, env, env_remove) = match tab.kind {
         TabKind::Shell => {
             let resolved = resolve_shell_for_host(&shell);
@@ -593,6 +638,7 @@ fn spawn_spec(
             let launch = tab.launch.as_ref();
             // A2: dcv2 tabs also get the hook forwarder (per-launch token).
             let hooks = launch.and_then(|_| crate::observe::launch_hooks(app, &tab.id));
+            hook_token = hooks.as_ref().map(|h| h.2.clone());
             let app_settings = crate::observe::with_hooks(usage, hooks.as_ref().map(|h| &h.0));
             let settings = crate::run::launch::merged_settings(
                 launch.and_then(|l| l.settings_file.as_deref()),
@@ -605,7 +651,7 @@ fn spawn_spec(
             })?;
             command.env.push(claude_scheme_env());
             let env_remove = crate::run::launch::apply_launch(&mut command, launch, start.resumed);
-            if let Some((_, env)) = hooks {
+            if let Some((_, env, _)) = hooks {
                 command.env.extend(env);
             }
             remember = Some((start.session_id.clone(), current));
@@ -621,7 +667,12 @@ fn spawn_spec(
         cols: input.cols,
         rows: input.rows,
     };
-    Ok((tab, spec, remember))
+    Ok(SpawnPlan {
+        tab,
+        spec,
+        remember,
+        hook_token,
+    })
 }
 
 /// The id after `--resume` in a Claude command line.
@@ -1078,6 +1129,70 @@ mod tests {
         assert!(registry.lock().unwrap().opening.is_empty());
     }
 
+    // Ticket 14yq6g30jek: `on_exit` runs once when the program exited, and
+    // not when the view's channel fails while the program still runs.
+    #[cfg(unix)]
+    #[test]
+    fn forward_runs_on_exit_once_when_the_program_exits() {
+        let dir = crate::test_support::TempDir::new("pty_on_exit");
+        let registry = Mutex::new(PtyRegistry::new());
+        let (view, seen) = recording_view();
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = ran.clone();
+        let token = begin_open(&registry, "t").unwrap();
+        open_session_with(
+            &registry,
+            "t",
+            token,
+            sh_spec(dir.path(), "printf 'bye'; exit 2"),
+            view,
+            || true,
+            || Ok(()),
+            || Ok(()),
+            Box::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+            }),
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while ran.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(ran.load(Ordering::SeqCst), 1);
+        assert!(seen.lock().unwrap().iter().any(|p| p.0 == "exit"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forward_skips_on_exit_when_the_view_fails_while_the_program_runs() {
+        let dir = crate::test_support::TempDir::new("pty_on_exit_view");
+        let registry = Mutex::new(PtyRegistry::new());
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = ran.clone();
+        let token = begin_open(&registry, "t").unwrap();
+        // A view whose channel always fails, like a reloaded webview.
+        let broken: Channel<PtyPacket> =
+            Channel::new(|_| Err(std::io::Error::other("gone").into()));
+        open_session_with(
+            &registry,
+            "t",
+            token,
+            sh_spec(dir.path(), "printf 'out'; sleep 30"),
+            broken,
+            || true,
+            || Ok(()),
+            || Ok(()),
+            Box::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+            }),
+        )
+        .unwrap();
+        thread::sleep(Duration::from_millis(800));
+        assert_eq!(ran.load(Ordering::SeqCst), 0, "the program still runs");
+        registry.lock().unwrap().kill("t");
+    }
+
     // Ticket 14yq6g30jet: the saved session changed before the open knew it
     // had won, so a superseded, closed or failed open still changed the tab.
     #[cfg(unix)]
@@ -1101,6 +1216,7 @@ mod tests {
                 || true,
                 || Ok(()),
                 saved,
+                Box::new(|| {}),
             )
         };
         // Superseded by a newer open of the same id.
@@ -1128,6 +1244,7 @@ mod tests {
             || false,
             || Ok(()),
             saved,
+            Box::new(|| {}),
         );
         assert!(gone.is_err());
         assert_eq!(calls.get(), 0);
