@@ -1378,6 +1378,26 @@ body,
 
 .run-pr-repo,
 .run-pr-title,
+.away-notice {
+  margin-bottom: var(--space-3);
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-subtle);
+}
+
+.away-notice h3 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-md);
+}
+
+.away-notice ul {
+  margin: 0 0 var(--space-1);
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+}
+
 .ci-chip {
   font-weight: 600;
 }

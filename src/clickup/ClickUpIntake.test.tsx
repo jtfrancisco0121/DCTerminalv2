@@ -90,11 +90,11 @@ describe("ClickUpIntake", () => {
     fireEvent.change(screen.getByPlaceholderText(/Paste ClickUp/), { target: { value: "86b1aa001" } });
     fireEvent.click(screen.getByText("Fetch"));
     expect((await screen.findByTestId("too-many")).textContent).toContain("102 tickets, more than the 100");
-    expect(onTooMany).toHaveBeenLastCalledWith(expect.stringContaining("102 tickets"));
+    await waitFor(() => expect(onTooMany).toHaveBeenLastCalledWith(expect.stringContaining("102 tickets")));
     fireEvent.click(screen.getByLabelText("Remove t0"));
     expect(screen.getByTestId("too-many")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Remove t1"));
     expect(screen.queryByTestId("too-many")).toBeNull();
-    expect(onTooMany).toHaveBeenLastCalledWith(null);
+    await waitFor(() => expect(onTooMany).toHaveBeenLastCalledWith(null));
   });
 });

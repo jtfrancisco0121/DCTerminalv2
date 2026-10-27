@@ -9,6 +9,7 @@ import {
   rerunChecks,
   runWorktrees,
   type BmadView,
+  type LogLine,
   type PrView,
   type PrWorktreeAction,
   type WorktreeCheck,
@@ -33,6 +34,7 @@ import {
 import { ClickUpRunSection } from "../clickup/ClickUpRunSection";
 import { checkLogPr, readCheckLog } from "../run/observe";
 import { RUN_STATE_EVENT, usePushRefresh } from "../run/events";
+import { AWAY_ROWS, useAwayNotice } from "../run/away";
 import { Dialog } from "./Dialog";
 import { RunPanelShell } from "./RunPanelShell";
 import { ApprovalCard } from "./ApprovalCard";
@@ -60,6 +62,8 @@ type ViewProps = {
   worktrees?: Readonly<Record<string, WorktreeCheck>>;
   onPrAction?: (prId: string, action: PrWorktreeAction) => void;
   onCopyBranch?: (branch: string) => void;
+  /** "While you were away": the timeline lines since the panel was last seen, with its Dismiss. */
+  away?: { lines: LogLine[]; dismiss: () => void } | null;
 };
 
 type PrActionProps = Pick<ViewProps, "worktrees" | "onPrAction" | "onCopyBranch">;
@@ -72,6 +76,28 @@ type PrActionProps = Pick<ViewProps, "worktrees" | "onPrAction" | "onCopyBranch"
 export function mergeKey(view: RunView): string {
   const cleaned = new Map((view.cleanup ?? []).map((rec) => [rec.prId, rec.retry ? "" : rec.outcome]));
   return view.prs.map((pr) => `${pr.id}:${pr.prState ?? ""}:${cleaned.get(pr.id) ?? ""}`).join("|");
+}
+
+/** "While you were away": up to 10 rows (local times), "+n more", Dismiss. */
+function AwayNotice({ lines, onDismiss }: { lines: LogLine[]; onDismiss: () => void }) {
+  const shown = lines.slice(-AWAY_ROWS);
+  const more = lines.length - shown.length;
+  return (
+    <section className="away-notice" aria-label="While you were away" data-testid="away-notice">
+      <h3>While you were away</h3>
+      <ul>
+        {shown.map((line, index) => (
+          <li key={`${line.time ?? ""}-${index}`}>
+            {line.time && <TimelineTime time={line.time} />} {line.text}
+          </li>
+        ))}
+      </ul>
+      {more > 0 && <p className="hint">+{more} more</p>}
+      <button type="button" className="secondary-button" onClick={onDismiss}>
+        Dismiss
+      </button>
+    </section>
+  );
 }
 
 /** One timeline time in the local zone; the title holds the full time and the UTC value. */
@@ -254,10 +280,11 @@ function BmadSection({
 }
 
 /** The progress panel for one run, drawn from a read of its folder. */
-export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch }: ViewProps) {
+export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch, away }: ViewProps) {
   const timeline = view.timeline.slice(-30).reverse();
   return (
     <aside className="run-panel" aria-label="Run progress">
+      {away && <AwayNotice lines={away.lines} onDismiss={away.dismiss} />}
       <header className="run-panel-head">
         <div className="run-stage" data-testid="run-stage">
           {stageText(view.stage)}
@@ -464,6 +491,7 @@ export function RunPanel({
   );
   const autoChecked = useRef<string | null>(null);
   const [worktrees, setWorktrees] = useState<Record<string, WorktreeCheck>>();
+  const away = useAwayNotice(windowId ?? "main", runDir, view?.timeline, view !== null);
 
   const load = useCallback(
     () =>
@@ -592,6 +620,7 @@ export function RunPanel({
         worktrees={worktrees}
         onPrAction={prAction}
         onCopyBranch={copyBranch}
+        away={away}
         session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} /> : undefined}
         extra={<ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} mergeKey={mergeKey(view)} />}
       />

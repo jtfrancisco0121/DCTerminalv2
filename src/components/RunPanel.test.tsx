@@ -281,6 +281,46 @@ describe("RunPanelView", () => {
     expect(items[0].textContent).toContain("waiting for ship approval");
   });
 
+  it("lists the lines since you were away with local times, at most 10, a count of the rest and Dismiss", () => {
+    vi.stubEnv("TZ", "Asia/Manila");
+    try {
+      const lines = Array.from({ length: 13 }, (_, i) => ({
+        time: `2026-10-27T14:${String(i).padStart(2, "0")}:00Z`,
+        stage: "building",
+        text: `step ${i}`,
+      }));
+      const dismiss = vi.fn();
+      render(
+        <RunPanelView
+          view={view}
+          checking={false}
+          onRerunChecks={vi.fn()}
+          onOpenFile={vi.fn()}
+          onOpenUrl={vi.fn()}
+          onCleanUp={vi.fn()}
+          away={{ lines, dismiss }}
+        />,
+      );
+      const notice = screen.getByTestId("away-notice");
+      expect(within(notice).getByText("While you were away")).toBeTruthy();
+      const rows = notice.querySelectorAll("li");
+      expect(rows).toHaveLength(10);
+      expect(rows[9].textContent).toContain("step 12");
+      expect(rows[9].querySelector(".run-time")?.textContent).toBe("22:12");
+      expect(rows[9].querySelector(".run-time")?.getAttribute("title")).toContain("(UTC 2026-10-27T14:12:00Z)");
+      expect(within(notice).getByText("+3 more")).toBeTruthy();
+      fireEvent.click(within(notice).getByText("Dismiss"));
+      expect(dismiss).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("shows no notice when nothing changed", () => {
+    renderPanel();
+    expect(screen.queryByTestId("away-notice")).toBeNull();
+  });
+
   it("shows a CI chip beside the app check only with a PR URL and a reading", () => {
     const prs = view.prs.map((pr, i) => ({
       ...pr,
