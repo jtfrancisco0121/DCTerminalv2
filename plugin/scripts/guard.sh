@@ -658,6 +658,7 @@ def check_git(args, cwd):
         ship_gate("git push")
         return
     shared_refs(sub, rest, target)
+    check_orchestrator_destructive(sub, rest, target)
     if not pipeline:
         if run and sub in ("remote", "config") and not git_readonly(sub, rest):
             block(f"the orchestrator never changes git remotes or config (`git {sub} ...`): they are shared by the repo and "
@@ -1114,6 +1115,49 @@ def check_runs_written(path, cwd, what):
               "command (Edit/Write) and run it in the next.")
 
 
+def worktree_hit(p):
+    return bool(p) and any(inside(p, w) for w in worktrees)
+
+
+def check_orchestrator_destructive(sub, rest, target):
+    """The orchestrator (no agent type) in a bound run never runs git commands that discard files in a run worktree
+    (git clean, reset --hard, checkout -- <path> / checkout ., restore, stash drop|clear): the Implementer's work lives
+    there. Implementers keep these commands inside their own worktree."""
+    if not run or pipeline or not worktrees:
+        return
+    kind = None
+    if sub == "clean":
+        kind = "git clean"
+    elif sub == "reset" and any(a == "--hard" or a == "--merge" or a == "--keep" for a in rest):
+        kind = "git reset --hard"
+    elif sub == "checkout" and ("--" in rest or "." in rest or any(a in ("-f", "--force") for a in rest)):
+        kind = "git checkout -- <path>"
+    elif sub == "restore":
+        kind = "git restore"
+    elif sub == "stash" and rest[:1] in (["drop"], ["clear"]):
+        kind = f"git stash {rest[0]}"
+    if not kind:
+        return
+    if target is None or worktree_hit(target):
+        block(f"the orchestrator never runs `{kind}` in a run worktree (or where the folder cannot be told): it discards the "
+              "Implementer's files. The Implementer cleans up inside its own worktree.")
+
+
+def check_orchestrator_rm(args, cwd):
+    """`rm -r` (any recursive flag) by the orchestrator with the cwd or a target inside a run worktree."""
+    if not run or pipeline or not worktrees:
+        return
+    recursive = any(a in ("--recursive",) or (re.match(r"^-[A-Za-z]+$", a) and ("r" in a or "R" in a)) for a in args)
+    if not recursive:
+        return
+    targets = [a for a in args if a and not a.startswith("-")]
+    unknown = cwd is None and any(not os.path.isabs(os.path.expanduser(t)) for t in targets)
+    if worktree_hit(cwd) or unknown or any(
+            "$" in t or re.search(r"[*?]", t) or worktree_hit(real(t, cwd or "/")) for t in targets):
+        block("the orchestrator never runs `rm -r` in a run worktree, or on a path that cannot be told apart from one: it deletes "
+              "the Implementer's files. Worktrees are removed with `state.sh cleanup` (or by the app).")
+
+
 PROC_SUBST_RE = re.compile(r"(?:^|[\s;&|(])(?:source|\.|bash|sh|zsh|dash|ksh|python[\d.]*|nodejs?|perl[\d.]*|ruby[\d.]*)\s+(?:-[\w-]+\s+)*<\(")
 
 
@@ -1261,6 +1305,10 @@ def analyze(cmd, cwd, depth=0):
                 cwd = mem
                 continue
             cwd = None if ("$" in d or cwd is None and not os.path.isabs(os.path.expanduser(d))) else real(d, cwd or "/")
+        elif name == "rm" and run and not pipeline:
+            check_orchestrator_rm(args, cwd)
+            for t in write_targets(name, args, cwd):
+                check_write(t, cwd)
         elif name == "git":
             check_git(args, cwd)
         elif name == "gh":

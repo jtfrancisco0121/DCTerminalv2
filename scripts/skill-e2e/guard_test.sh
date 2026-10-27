@@ -794,4 +794,33 @@ for who in "" dcv2:implementer; do
   b 0 "$who" "bash $EL/q.sh" "$WT"                                   # running a file an earlier command made is the next call's business
 done
 
+echo "# the orchestrator cannot destroy a run worktree (S15)"
+for c in "git -C $WT clean -fd" "git -C $WT clean -n -fdx" "git -C $WT reset --hard" "git -C $WT reset --hard HEAD~1" "git -C $WT checkout -- a.js" \
+         "git -C $WT checkout ." "git -C $WT checkout HEAD -- src" "git -C $WT restore a.js" "git -C $WT restore --staged ." "git -C $WT stash drop" \
+         "git -C $WT stash clear" "git --git-dir=$WT/.git --work-tree=$WT reset --hard" "rm -rf $WT" "rm -r $WT/node_modules" "rm -R $WT/build" \
+         "rm --recursive $WT/build" "rm -fr $WT/src" "rm -rf $WT/*"; do
+  b 2 "" "$c"
+done
+for c in "git clean -fd" "git reset --hard" "git checkout -- ." "git restore ." "git stash clear" "rm -rf build" "rm -r ."; do
+  b 2 "" "$c" "$WT"                                                   # the cwd is the worktree
+done
+b 2 "" "cd $WT && rm -rf build"
+b 2 "" "cd $WT && git clean -fd"
+b 2 "" 'cd "$SOMEWHERE" && git clean -fd'                           # a folder that cannot be told
+b 2 "" 'rm -rf "$SOMEWHERE"'
+for c in "git -C $WT status" "git -C $WT diff" "git -C $WT log -1" "git -C $WT stash list" "git -C $WT restore --help" \
+         "rm -f $WT/a.js" "rm $WT/a.js" "rm -rf $EL/x" "rm -r $EL" "git -C $EL clean -fd" "git -C $d/ws/r-worktrees/dcv2-r-x-pr2 reset --hard"; do
+  case "$c" in
+    "git -C $WT restore --help") continue ;;
+  esac
+  b 0 "" "$c"
+done
+b 0 "" "git clean -fd" "$EL"
+b 0 "" "rm -rf build" "$EL"
+for c in "git -C $WT clean -fd" "git -C $WT reset --hard" "git -C $WT checkout -- a.js" "git -C $WT restore a.js" "git -C $WT stash drop" \
+         "rm -rf $WT/build" "rm -r $WT/node_modules"; do
+  b 0 dcv2:implementer "$c" "$WT"                                     # the Implementer keeps them in its own worktree
+done
+b 2 dcv2:implementer "rm -rf $d/ws/r-worktrees/dcv2-r-x-pr2/build" "$WT"   # but not in another one
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }
