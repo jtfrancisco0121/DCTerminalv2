@@ -27,6 +27,7 @@ import {
 import { ClickUpRunSection } from "../clickup/ClickUpRunSection";
 import { checkLogPr, readCheckLog } from "../run/observe";
 import { Dialog } from "./Dialog";
+import { ApprovalCard } from "./ApprovalCard";
 import { ObserveSection } from "./ObserveSection";
 import { errorText } from "./InlineNotice";
 
@@ -44,6 +45,8 @@ type ViewProps = {
   extra?: ReactNode;
   /** P3b: the tab's session (state, watchdog, context, cost). */
   session?: ReactNode;
+  /** Focus the tab's terminal, where the question is asked. */
+  onGoToPrompt?: () => void;
 };
 
 function PrRow({ pr, onOpenFile, onOpenUrl }: { pr: PrView } & Pick<ViewProps, "onOpenFile" | "onOpenUrl">) {
@@ -180,7 +183,7 @@ function BmadSection({
 }
 
 /** The progress panel for one run, drawn from a read of its folder. */
-export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra }: ViewProps) {
+export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt }: ViewProps) {
   const timeline = view.timeline.slice(-30).reverse();
   return (
     <aside className="run-panel" aria-label="Run progress">
@@ -194,9 +197,12 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
       {session}
       {!view.hasStatus && !view.statusProblem && <p className="hint">Claude is starting the run in the tab.</p>}
       {view.waitingFor && (
-        <p className="run-waiting" role="status">
-          Claude is asking you in the tab.
-        </p>
+        <ApprovalCard
+          view={view}
+          waitingFor={view.waitingFor}
+          onReadPlan={() => onOpenFile("plan.md", "Plan")}
+          onGoToPrompt={onGoToPrompt ?? (() => undefined)}
+        />
       )}
       {view.pausedReason && <p className="hint warn">Paused: {view.pausedReason}</p>}
       {view.error && <p className="error">{view.error}</p>}
@@ -349,7 +355,18 @@ export function TextDialog({ title, text, onClose }: { title: string; text: stri
 }
 
 /** The panel beside an Eagle-Eye tab: polls the run folder. */
-export function RunPanel({ runDir, tabId, onResume }: { runDir: string; tabId?: string; onResume?: () => void }) {
+export function RunPanel({
+  runDir,
+  tabId,
+  onResume,
+  onGoToPrompt,
+}: {
+  runDir: string;
+  tabId?: string;
+  onResume?: () => void;
+  /** Focus the tab's terminal (the approval card's Go to prompt). */
+  onGoToPrompt?: () => void;
+}) {
   const [view, setView] = useState<RunView | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
@@ -451,6 +468,7 @@ export function RunPanel({ runDir, tabId, onResume }: { runDir: string; tabId?: 
         onOpenFile={openFile}
         onOpenUrl={(url) => void openUrl(url).catch((err: unknown) => setProblem(errorText(err)))}
         onCleanUp={openJanitor}
+        onGoToPrompt={onGoToPrompt}
         session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} /> : undefined}
         extra={<ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} />}
       />

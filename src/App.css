@@ -1384,6 +1384,32 @@ body,
   background: var(--border);
 }
 
+.approval-card {
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--attention);
+  border-radius: var(--radius-md);
+  background: var(--warning-subtle);
+}
+
+.approval-card h3 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-md);
+}
+
+.approval-prs {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.approval-prs th,
+.approval-prs td {
+  text-align: left;
+  padding: 2px var(--space-1);
+}
+
 .tab-activity-button {
   padding: 0;
   border: 0;

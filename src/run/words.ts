@@ -117,3 +117,24 @@ export function reviewText(pr: PrView): string | null {
 export function safeUrl(url: string | null): string | null {
   return url && /^https?:\/\//i.test(url) ? url : null;
 }
+
+/** The approval stops (status.json `waitingFor`) and their titles. */
+const APPROVALS: Record<string, string> = {
+  "plan-approval": "Plan approval",
+  "ship-approval": "Ship approval",
+};
+
+/** "Plan approval" / "Ship approval"; an unknown value is shown as it is. */
+export function approvalTitle(waitingFor: string): string {
+  return APPROVALS[waitingFor] ?? waitingFor;
+}
+
+export function isKnownApproval(waitingFor: string): boolean {
+  return waitingFor in APPROVALS;
+}
+
+/** The app's own check result for a PR (R1), in words. */
+export function appCheckText(pr: PrView): string {
+  if (!pr.checkKnown) return "no check known";
+  return `${checkMark(pr.appCheck?.result)} ${pr.appCheck?.result ?? "not run"}`;
+}

@@ -34,7 +34,7 @@ import { newTabDefaults, type NewTabDraft } from "./newTab";
 import { detectPlatform } from "./terminal/keys";
 import { ACCOUNT_REMOVED, accountProblem } from "./terminal/openPlan";
 import { dropLivePty, ptyExitCode, ptyRunning, subscribeLivePty, subscribePtyExit } from "./terminal/live";
-import { requestTerminalSearch, setCopyOnSelect, setOptionAsMeta, setTerminalTheme } from "./terminal/park";
+import { focusParkedTerminal, requestTerminalSearch, setCopyOnSelect, setOptionAsMeta, setTerminalTheme } from "./terminal/park";
 import { applyTheme, watchSystemTheme } from "./theme";
 import { reportError, setErrorNotifier } from "./uiErrors";
 import { statusLimit } from "./usage/limits";
@@ -380,6 +380,7 @@ function App() {
               runDir={active.runDir}
               tabId={active.id}
               onResume={() => resumeActiveRun(active.runDir!)}
+              onGoToPrompt={() => focusParkedTerminal(active.id)}
             />
           </div>
         )}
