@@ -28,7 +28,10 @@ vi.mock("../run/api", async () => ({
   resumeRun: vi.fn(),
   readRunFile: (dir: string, path: string) => readRunFile(dir, path),
 }));
-vi.mock("../bridge", () => ({ recentFolders: vi.fn(async () => ["/w/app", "/w/web"]) }));
+vi.mock("../bridge", () => ({
+  recentFolders: vi.fn(async () => ["/w/app", "/w/web"]),
+  getSettings: vi.fn(async () => ({ run: { maxImplementers: 3, stopHooks: true } })),
+}));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
 vi.mock("@tauri-apps/plugin-opener", () => ({
   revealItemInDir: (path: string) => revealItemInDir(path),
@@ -206,5 +209,73 @@ describe("StartScreen disabled Start", () => {
     expect(start.disabled).toBe(false);
     expect(screen.queryByTestId("start-reason")).toBeNull();
     expect(start.getAttribute("aria-describedby")).toBeNull();
+  });
+});
+
+describe("StartScreen repos and implementers", () => {
+  afterEach(cleanup);
+
+  const workspace = {
+    kind: "workspace",
+    repos: [
+      { name: "api", path: "/w/api", check: null },
+      { name: "web", path: "/w/web", check: null },
+    ],
+  };
+
+  it("offers tick boxes only for a folder of several repos; none ticked disables Start", async () => {
+    const api = await import("../run/api");
+    const detect = api.detectFolderRepos as unknown as ReturnType<typeof vi.fn>;
+    detect.mockResolvedValue({ kind: "repo", repos: [{ name: "app", path: "/w/app", check: null }] });
+    const { unmount } = render(<StartScreen windowId="main" initialFolder="/w/app" onStarted={() => {}} onPlainTab={() => {}} />);
+    await screen.findByLabelText("Implementers");
+    expect(screen.queryByRole("checkbox", { name: "api" })).toBeNull();
+    unmount();
+
+    detect.mockResolvedValue(workspace);
+    render(<StartScreen windowId="main" initialFolder="/w" onStarted={() => {}} onPlainTab={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Do it" } });
+    const api1 = (await screen.findByRole("checkbox", { name: "api" })) as HTMLInputElement;
+    const web = screen.getByRole("checkbox", { name: "web" }) as HTMLInputElement;
+    expect(api1.checked && web.checked).toBe(true);
+    fireEvent.click(api1);
+    fireEvent.click(web);
+    expect(screen.getByTestId("start-reason").textContent).toBe("Tick at least one repo.");
+    expect((screen.getByRole("button", { name: "Start Eagle-Eye" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("passes the ticked repos and the implementer count, clamped on blur", async () => {
+    const api = await import("../run/api");
+    const detect = api.detectFolderRepos as unknown as ReturnType<typeof vi.fn>;
+    const startRun = api.startRun as unknown as ReturnType<typeof vi.fn>;
+    startRun.mockReset();
+    startRun.mockResolvedValue({ tab: {}, runDir: "/d/runs/new" });
+    detect.mockResolvedValue(workspace);
+    render(<StartScreen windowId="main" initialFolder="/w" onStarted={() => {}} onPlainTab={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Do it" } });
+    fireEvent.click(await screen.findByRole("checkbox", { name: "web" }));
+    const field = screen.getByLabelText("Implementers") as HTMLInputElement;
+    expect(field.value).toBe("3");
+    fireEvent.change(field, { target: { value: "12" } });
+    fireEvent.blur(field);
+    expect(field.value).toBe("8");
+    fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
+    await vi.waitFor(() => expect(startRun).toHaveBeenCalledOnce());
+    expect(startRun.mock.calls[0].slice(8)).toEqual([["api"], 8]);
+  });
+
+  it("sends no implementer override when the field is untouched", async () => {
+    const api = await import("../run/api");
+    const detect = api.detectFolderRepos as unknown as ReturnType<typeof vi.fn>;
+    const startRun = api.startRun as unknown as ReturnType<typeof vi.fn>;
+    startRun.mockReset();
+    startRun.mockResolvedValue({ tab: {}, runDir: "/d/runs/new" });
+    detect.mockResolvedValue(workspace);
+    render(<StartScreen windowId="main" initialFolder="/w" onStarted={() => {}} onPlainTab={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Do it" } });
+    await screen.findByRole("checkbox", { name: "web" });
+    fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
+    await vi.waitFor(() => expect(startRun).toHaveBeenCalledOnce());
+    expect(startRun.mock.calls[0].slice(8)).toEqual([["api", "web"], null]);
   });
 });

@@ -1168,6 +1168,16 @@ body,
   font-family: inherit;
 }
 
+.run-repo-pick {
+  display: inline-block;
+  margin: 0;
+}
+
+.run-implementers-input {
+  display: inline-block;
+  width: 4rem;
+}
+
 .run-repos ul,
 .run-list ul,
 .memory-repos,

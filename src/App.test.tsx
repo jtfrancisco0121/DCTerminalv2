@@ -188,7 +188,7 @@ describe("App", () => {
       fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
     });
     // Review on GitHub is on by default, and so is BMAD Auto.
-    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null, "github", "auto", false);
+    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null, "github", "auto", false, null, null);
     expect((await screen.findByTestId("terminal")).textContent).toBe("Eagle-Eye · ws");
     expect(await screen.findByTestId("run-stage")).toBeTruthy();
     expect(screen.getByTestId("run-stage").textContent).toBe("Planning");
@@ -213,7 +213,7 @@ describe("App", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
     });
-    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null, "github", "on", false);
+    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null, "github", "on", false, null, null);
     state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
     localStorage.removeItem("dcv2.bmadMode./w/ws");
   });

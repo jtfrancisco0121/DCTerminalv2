@@ -241,7 +241,23 @@ export const startRun = (
   reviewMode: ReviewMode | null = null,
   bmadMode: BmadMode | null = null,
   force = false,
-) => invoke<StartedRun>("start_run", { windowId, folder, request, role, clickup, reviewMode, bmadMode, force });
+  /** The repo names ticked on the start screen (null: every repo). */
+  repos: string[] | null = null,
+  /** This run's implementer count (null: the setting). */
+  maxImplementers: number | null = null,
+) =>
+  invoke<StartedRun>("start_run", {
+    windowId,
+    folder,
+    request,
+    role,
+    clickup,
+    reviewMode,
+    bmadMode,
+    force,
+    repos,
+    maxImplementers,
+  });
 
 /** An unfinished run with the same request, folder and tickets (what `start_run` answers instead of starting). */
 export type DuplicateRun = { runId: string; runDir: string };

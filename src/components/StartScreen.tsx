@@ -21,6 +21,7 @@ import { TextDialog } from "./RunPanel";
 import { Dialog } from "./Dialog";
 import { RecentFolderOptions, useRecentFolders } from "./RecentFolders";
 import { nearLimitWarning, type RateWindow } from "../usage/limits";
+import { getSettings } from "../bridge";
 import { errorText } from "./InlineNotice";
 import { MemoryPanel } from "./MemoryPanel";
 import { ClickUpIntake } from "../clickup/ClickUpIntake";
@@ -77,6 +78,13 @@ export function disabledReason(input: {
   if (input.tooMany) return input.tooMany;
   if (input.busy) return "Starting…";
   return null;
+}
+
+/** The implementer count field's value as 1..=8; an empty or unreadable one is `fallback`. */
+export function clampImplementers(text: string, fallback: number): number {
+  const n = Math.round(Number(text));
+  if (!text.trim() || !Number.isFinite(n)) return Math.min(8, Math.max(1, fallback));
+  return Math.min(8, Math.max(1, n));
 }
 
 const REVIEW_KEY = "dcv2.reviewOnGitHub.";
@@ -137,6 +145,10 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   const [duplicate, setDuplicate] = useState<{ run: DuplicateRun; role: string } | null>(null);
   const [tickets, setTickets] = useState<ClickUpStart | null>(null);
   const [tooMany, setTooMany] = useState<string | null>(null);
+  // The repos ticked for this run (all, until you untick; reset with the folder), and the implementer count.
+  const [unticked, setUnticked] = useState<ReadonlySet<string>>(new Set());
+  const [defaultImplementers, setDefaultImplementers] = useState(3);
+  const [implementers, setImplementers] = useState<string | null>(null);
   const [reviewOnGitHub, setReviewOnGitHub] = useState(() => rememberedReviewOnGitHub(windowId));
   const [bmadMode, setBmadMode] = useState<BmadMode>(() => rememberedBmadMode(initialFolder.trim()));
 
@@ -145,6 +157,17 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   useEffect(() => {
     setBmadMode(rememberedBmadMode(folder.trim()));
   }, [folder]);
+
+  useEffect(() => {
+    getSettings().then(
+      (settings) => setDefaultImplementers(settings.run?.maxImplementers ?? 3),
+      () => undefined, // The default stays 3; Settings reports its own failures.
+    );
+  }, []);
+
+  useEffect(() => {
+    setUnticked(new Set());
+  }, [folder, found]);
 
   useEffect(() => {
     runOverview().then(setOverview, (err: unknown) => setError(errorText(err)));
@@ -192,7 +215,21 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
       const said = request.trim() || (eagleTickets ? "Do the ClickUp tickets below." : request);
       const mode: ReviewMode | null = role === "eagle-eye" ? (reviewOnGitHub ? "github" : "local") : null;
       const bmad: BmadMode | null = role === "eagle-eye" ? bmadMode : null;
-      onStarted(await startRun(windowId, folder.trim(), said, role, eagleTickets, mode, bmad, force));
+      const eagle = role === "eagle-eye";
+      onStarted(
+        await startRun(
+          windowId,
+          folder.trim(),
+          said,
+          role,
+          eagleTickets,
+          mode,
+          bmad,
+          force,
+          eagle ? tickedRepos : null,
+          eagle && implementers !== null ? implementersValue : null,
+        ),
+      );
     } catch (err) {
       const same = duplicateOf(err);
       if (same) setDuplicate({ run: same, role });
@@ -220,11 +257,15 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
       (err: unknown) => setError(errorText(err)),
     );
 
+  const choosable = (found?.repos.length ?? 0) > 1;
+  const tickedRepos = choosable ? (found?.repos ?? []).filter((r) => !unticked.has(r.name)).map((r) => r.name) : null;
+  const implementersValue = clampImplementers(implementers ?? String(defaultImplementers), defaultImplementers);
   const startReason = disabledReason({
     folder,
     found,
     hasRequest: Boolean(request.trim()),
     hasTickets: Boolean(tickets),
+    noRepoTicked: tickedRepos !== null && tickedRepos.length === 0,
     tooMany,
     busy,
   });
@@ -255,11 +296,47 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
             <ul>
               {found.repos.map((repo) => (
                 <li key={repo.path}>
-                  <strong>{repo.name}</strong>
+                  {choosable ? (
+                    <label className="check-label run-repo-pick">
+                      <input
+                        type="checkbox"
+                        checked={!unticked.has(repo.name)}
+                        disabled={busy}
+                        onChange={(event) =>
+                          setUnticked((current) => {
+                            const next = new Set(current);
+                            if (event.target.checked) next.delete(repo.name);
+                            else next.add(repo.name);
+                            return next;
+                          })
+                        }
+                      />
+                      <strong>{repo.name}</strong>
+                    </label>
+                  ) : (
+                    <strong>{repo.name}</strong>
+                  )}
                   <span className="hint"> — check: {repo.check ?? "none known"}</span>
                 </li>
               ))}
             </ul>
+          )}
+          {found.repos.length > 0 && (
+            <label className="field-label run-implementers">
+              Implementers
+              <input
+                className="text-input run-implementers-input"
+                type="number"
+                min={1}
+                max={8}
+                value={implementers ?? String(defaultImplementers)}
+                disabled={busy}
+                aria-label="Implementers"
+                onChange={(event) => setImplementers(event.target.value)}
+                onBlur={() => implementers !== null && setImplementers(String(implementersValue))}
+              />
+              <span className="hint"> at most this many PRs build at once in this run (Settings has the default)</span>
+            </label>
           )}
           {found.repos.length > 0 && (
             <WorktreeSetup key={found.repos.map((r) => r.path).join("|")} repos={found.repos} />
