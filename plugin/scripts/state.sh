@@ -54,6 +54,14 @@
 #                                             user's reason
 #   state.sh report <run>                     write report.md from status.json, plan.md, log.md and the
 #                                             gates (R10); put does it itself at stage done / failed
+#   state.sh cleanup <run>                    stage done / failed only: remove the run's clean worktrees (no --force),
+#                                             `git branch -d` (never -D), and delete the remote dcv2/ branch only of a
+#                                             merged PR whose remote tip is the PR's head (recorded remote URL, no force)
+#   state.sh request <run> recheck|cleanup|tickets|selftest
+#                                             ask the app for one of its fixed actions (requests/<id>.json); prints request=<id>
+#   state.sh request-wait <run> <id> [--timeout <s>]
+#                                             wait (default 90 s, at most 600) for the app's requests/<id>.result.json;
+#                                             prints "result=<state> ok=yes|no message=<one line>" (exit 3: still pending)
 #
 # Limits put enforces: at most DCV2_MAX_IMPLEMENTERS (default 3) PRs building/fixing at once (R6);
 # a PR becomes reviewed only with a PASS, CONCERNS or WAIVED gate file (A1).
@@ -64,7 +72,7 @@ set -euo pipefail
 py_works() { command -v python3 >/dev/null 2>&1 && python3 -c 'import json, sys; sys.exit(0)' >/dev/null 2>&1; }
 
 IFS= read -r -d '' PY <<'PY' || true
-import datetime, json, os, re, shutil, signal, subprocess, sys, tempfile
+import datetime, json, os, re, shutil, signal, subprocess, sys, tempfile, time
 
 STAGES = ["planning", "plan-approval", "building", "ship-approval", "shipping", "done", "failed"]
 STATES = ["pending", "building", "drafted", "reviewing", "fixing", "reviewed", "needs-attention", "opened", "pushed", "local-only"]
@@ -75,7 +83,10 @@ CHECK_RESULTS = ["not-run", "pass", "fail", "none", "error"]
 POST_APPROVAL = ("building", "ship-approval", "shipping", "done")
 SHIPPED = ("opened", "pushed", "local-only")
 # Run files only the app writes (docs/run-folder.md); `put` refuses them.
-APP_FILES = ("tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json")
+APP_FILES = ("tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json",
+             "app-cleanup.json")
+REQUEST_KINDS = ("recheck", "cleanup", "tickets", "selftest")
+REQUEST_ID = re.compile(r"^\d{8}T\d{6}Z(?:-\d+)?-(" + "|".join(REQUEST_KINDS) + r")$")
 ISO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 AGENT_FOR_STATE = {"building": "implementer", "fixing": "implementer", "reviewing": "pr-reviewer"}
 GATES = ("PASS", "CONCERNS", "FAIL", "WAIVED")
@@ -121,9 +132,39 @@ def atomic_write(dest, text):
         raise
 
 
+DEDUPE_SECONDS = 30
+
+
+def last_log_text(run, stage=None):
+    """The text of log.md's last line, whitespace collapsed, when it has this stage and was written in the last
+    DEDUPE_SECONDS (else None)."""
+    try:
+        with open(os.path.join(run, "log.md"), "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 4096))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    parts = lines[-1].split(" ", 2) if lines else []
+    if len(parts) != 3 or (stage is not None and parts[1] != stage):
+        return None
+    try:
+        at = datetime.datetime.strptime(parts[0], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None
+    if (datetime.datetime.now(datetime.timezone.utc) - at).total_seconds() > DEDUPE_SECONDS:
+        return None
+    return " ".join(parts[2].split())
+
+
 def append_log(run, stage, text):
+    text = " ".join(text.split())
+    # The same event logged twice in a row within seconds (state.sh logged it, then the orchestrator repeated it).
+    # Never a retry line: each retry counts in report.md.
+    if "retried" not in text and text == last_log_text(run, stage):
+        return
     with open(os.path.join(run, "log.md"), "a") as f:
-        f.write(f"{now()} {stage} {' '.join(text.split())}\n")
+        f.write(f"{now()} {stage} {text}\n")
 
 
 def testmode():
@@ -568,6 +609,8 @@ def cmd_put(dest):
         die(f"NOT WRITTEN: {name} is written only by its own state.sh command")
     if name in APP_FILES:
         die(f"NOT WRITTEN: {name} is written only by the app")
+    if os.path.basename(os.path.dirname(os.path.abspath(dest))) == "requests":
+        die("NOT WRITTEN: requests/ is written only by `state.sh request` and the app")
     text = sys.stdin.read()
     try:
         doc = json.loads(text)
@@ -1163,14 +1206,73 @@ def neutral(text):
     return re.sub(r"(?<![\w/])([A-Za-z0-9][\w.-]*/[\w.-]+)#(?=\d)", r"\1#" + ZWJ, text)
 
 
+# Network git: only https / ssh (and local folders in the test suites only) transports, no hooks, and the URL after
+# --end-of-options, so a recorded URL can never be an option (`--upload-pack=…`) or an ext:: helper. The system git
+# config is kept: it is where e.g. Homebrew git keeps the credential helper (osxkeychain) https pushes need.
+NET = ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always",
+       "-c", "protocol.file.allow=always", "-c", "core.hooksPath=/dev/null"]
+
+
+def url_problem(url):
+    """None when the run may talk to this remote URL: an owner/name https or ssh URL (SLUG); an existing absolute
+    folder only in the test suites (DCV2_TEST_LOCAL_REMOTES=1: a local bare repo runs its own hooks on a push)."""
+    url = str(url or "")
+    if not url or url.startswith("-") or any(c in url for c in "\n\r\0 ") or "::" in url:
+        return "refused: not a safe remote URL"
+    if url.startswith("http://"):
+        return "refused: http:// remotes are not used (use https://)"
+    if SLUG.match(url):
+        return None
+    if url.startswith("/") and os.path.isdir(url) and os.environ.get("DCV2_TEST_LOCAL_REMOTES") == "1":
+        return None
+    return "refused: not a safe remote URL (only https / ssh GitHub-style remotes)"
+
+
+def net_env():
+    return dict(os.environ, GIT_TERMINAL_PROMPT="0")
+
+
+def net_git(url, args, cwd=None):
+    why = url_problem(url)
+    if why:
+        return subprocess.CompletedProcess(args, 128, "", why)
+    env = net_env()
+    neutral = cwd or tempfile.mkdtemp(prefix="dcv2-net-")
+    try:
+        return subprocess.run(["git", *NET, *args], capture_output=True, text=True, cwd=neutral, env=env, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess(args, 128, "", str(e))
+    finally:
+        if not cwd:
+            shutil.rmtree(neutral, ignore_errors=True)
+
+
+def remote_tip(url, branch):
+    """(sha or None when the branch is not there, error or None). Run from a neutral folder: no repo config applies."""
+    r = net_git(url, ["ls-remote", "--heads", "--end-of-options", url, f"refs/heads/{branch}"])
+    if r.returncode != 0:
+        return None, first_line(r.stderr) or "ls-remote failed"
+    return (r.stdout.split() or [None])[0], None
+
+
 def remote_sha(url, branch):
-    r = git("ls-remote", "--heads", url, f"refs/heads/{branch}")
-    return (r.stdout.split() or [None])[0] if r.returncode == 0 else None
+    return remote_tip(url, branch)[0]
 
 
 def push_branch(wt, url, branch):
     """Push the branch to the recorded URL: never force, no hooks."""
-    return git("-c", "core.hooksPath=/dev/null", "-C", wt, "push", url, f"refs/heads/{branch}:refs/heads/{branch}")
+    return net_git(url, ["-C", wt, "push", "--end-of-options", url, f"refs/heads/{branch}:refs/heads/{branch}"], cwd=wt)
+
+
+def delete_remote_branch(url, branch, oid):
+    """Delete the remote branch only while it is still at oid (a lease, never a plain force), from an empty repo."""
+    tmp = tempfile.mkdtemp(prefix="dcv2-del-")
+    try:
+        subprocess.run(["git", "init", "-q", tmp], capture_output=True)
+        return net_git(url, ["-C", tmp, "push", f"--force-with-lease=refs/heads/{branch}:{oid}", "--end-of-options", url,
+                        f":refs/heads/{branch}"], cwd=tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def scan_secrets(text):
@@ -1668,7 +1770,9 @@ def cmd_writeback(run, force):
             chk, rev = pr.get("check") or {}, pr.get("review") or {}
             lines.append(f"- {pr['id']} ({pr.get('repo')}): {where}. Check `{chk.get('command')}`: {chk.get('result')}. Review: {rev.get('verdict')} (round {rev.get('round')}).")
         done = [f"- {s}: {titles.get(s, '')}".rstrip(": ") for s in stories]
-        comment = "Eagle-Eye run " + str(st.get("runId", "")) + "\n\nDone:\n" + "\n".join(done or ["- (no story covers this ticket)"]) + "\n\nPull requests:\n" + "\n".join(lines or ["- none"])
+        # A ticket no story covers gets no comment (nothing to say on it, and nothing is auto-posted).
+        comment = ("Eagle-Eye run " + str(st.get("runId", "")) + "\n\nDone:\n" + "\n".join(done) + "\n\nPull requests:\n"
+                   + "\n".join(lines or ["- none"])) if stories else None
         # Opened = ready for review (a PR left as a draft has a url but does not count).
         flags = [bool(p.pop("opened") and p["url"]) for p in prs]
         opened = bool(prs) and all(flags)
@@ -1798,6 +1902,10 @@ def write_report(run):
                   ""]
     mu = read(os.path.join(run, "memory-update.md")).strip()
     L += ["## Memory update", "", "\n".join(mu.splitlines()[:15]) if mu else "No memory-update.md.", ""]
+    # What the run could not do itself (the skill logs "not done: <what> (<why>)" instead of handing the user a command).
+    nd = [l.split(" ", 2)[2] for l in log if len(l.split(" ", 2)) == 3 and l.split(" ", 2)[2].lower().startswith("not done:")]
+    if nd:
+        L += ["## Not done by the run", ""] + [f"- {x[len('not done:'):].strip()}" for x in nd] + [""]
     L += ["## Events", "", f"{len(log)} log lines; retries {sum(1 for l in log if 'retried' in l)}; "
           f"needs-attention {sum(1 for p in prs if p.get('state') == 'needs-attention')}. Full timeline: `log.md`.", ""]
     atomic_write(os.path.join(run, "report.md"), "\n".join(L))
@@ -1810,10 +1918,213 @@ def cmd_report(run):
     print(f"wrote {os.path.join(run, 'report.md')}")
 
 
+# ---- cleanup and app requests (AFK runs, plan 2026-10-27) -------------------------------------
+# `cleanup` does what the app's janitor and its merged-run cleanup do, for this run only, with the same rules:
+# only the run's own worktrees (where the contract puts them, a linked worktree, on the run's branch), never
+# --force (a dirty one, or one with ignored files other than build output and the copied-in files, is kept),
+# `git branch -d` only, and a remote branch delete only for a merged PR whose head is the run's branch and
+# whose remote tip is the PR's headRefOid, pushed to the remote URL recorded when the worktree was made.
+
+DISPOSABLE = ("node_modules", "target", "dist", "build", ".next", "coverage", ".turbo", "__pycache__", ".venv",
+              ".pytest_cache", ".gradle")
+REQUEST_WAIT_DEFAULT, REQUEST_WAIT_MAX = 90, 600
+
+
+def disposable(path):
+    comps = path.rstrip("/").split("/")
+    dirs = comps if path.endswith("/") else comps[:-1]
+    return any(c in DISPOSABLE for c in dirs)
+
+
+def verify_wt(run_id, pid, repo, wt):
+    """None when wt is this PR's own linked worktree of repo on its branch, else why not."""
+    branch, want = canon(repo, run_id, pid)
+    if os.path.realpath(wt) != want:
+        return f"not where this run's worktrees go ({want})"
+    gd = git("-C", wt, "rev-parse", "--absolute-git-dir").stdout.strip()
+    common = git("-C", wt, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+    if not gd or not common or os.path.realpath(gd) == os.path.realpath(common):
+        return "not a linked worktree"
+    if os.path.realpath(os.path.dirname(common)) != repo:
+        return "not a worktree of its recorded repo"
+    head = git("-C", wt, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
+    if head != branch:
+        return f"on {head or 'a detached HEAD'}, not {branch}"
+    return None
+
+
+def kept_files(wt, copied):
+    """(changed count, kept ignored files) or (None, why)."""
+    r = git("-C", wt, "status", "--porcelain", "--ignored", "--untracked-files=normal")
+    if r.returncode != 0:
+        return None, first_line(r.stderr) or "git status failed"
+    changed, kept = 0, []
+    for line in r.stdout.splitlines():
+        if len(line) <= 3:
+            continue
+        path = line[3:].strip('"')
+        if line.startswith("!!"):
+            if not disposable(path) and path not in copied:
+                kept.append(path)
+        else:
+            changed += 1
+    return changed, kept
+
+
+def merged_head(pr, rem, cwd, branch):
+    """(headRefOid, None) for a merged PR of this run's branch in the recorded repo, else (None, why)."""
+    url = pr.get("prUrl")
+    if not url:
+        return None, "no PR"
+    if not rem or not rem.get("url") or not rem.get("repo"):
+        return None, "no recorded GitHub remote"
+    m = GH_URL.match(str(url))
+    hm = REMOTE_HOST.match(rem.get("url") or "")
+    hosts = {"github.com"} | ({hm.group(1).lower()} if hm else set())
+    if not m or f"{m.group(1)}/{m.group(2)}".lower() != rem["repo"].lower() or url.split("/")[2].lower() not in hosts:
+        return None, f"{url} is not a pull request of {rem['repo']}"
+    r = gh(["pr", "view", url, "--json", "state,mergeCommit,headRefName,headRefOid"], cwd, rem["repo"], 60)
+    if r.returncode != 0:
+        return None, gh_err(r, "gh pr view")
+    try:
+        v = json.loads(r.stdout or "{}")
+    except ValueError:
+        return None, "gh pr view printed no JSON"
+    if v.get("headRefName") != branch:
+        return None, f"the PR's head is {v.get('headRefName')}, not {branch}"
+    if v.get("state") != "MERGED":
+        return None, f"not merged ({str(v.get('state') or 'unknown').lower()})"
+    oid = str(v.get("headRefOid") or "")
+    return (oid, None) if re.fullmatch(r"[0-9a-f]{40}", oid) else (None, "gh pr view gave no head commit")
+
+
+def this_run(run, what):
+    """The run folder, refused when it is not the run claude was launched for (DCV2_RUN_DIR)."""
+    run = os.path.realpath(run)
+    env = os.environ.get("DCV2_RUN_DIR", "")
+    if env and os.path.realpath(env) != run:
+        die(f"{what}: only this session's run ({os.path.realpath(env)}) can be asked about, not {run}")
+    return run
+
+
+def cmd_cleanup(run):
+    run = this_run(run, "NOT CLEANED")
+    st = load_status(run)
+    if st.get("stage") not in ("done", "failed"):
+        die(f"NOT CLEANED: cleanup runs only at stage done or failed (stage {st.get('stage')})")
+    run_id = os.path.basename(run)
+    g = guard_rec(run)
+    repos = {os.path.realpath(r) for r in g.get("repos") or [] if isinstance(r, str)}
+    by_id = {p.get("id"): p for p in st.get("prs") or [] if isinstance(p, dict)}
+    results = []
+    for pid, wt in sorted((g.get("worktrees") or {}).items()):
+        if not isinstance(wt, str) or not re.fullmatch(r"PR\d+", pid):
+            continue
+        pr = by_id.get(pid) or {}
+        repo = os.path.realpath(str(pr.get("repoPath") or ""))
+        if repo not in repos:
+            results.append(f"{pid}: kept: its repo is not recorded for this run")
+            continue
+        branch, want = canon(repo, run_id, pid)
+        parts = []
+        if os.path.isdir(wt):
+            why = verify_wt(run_id, pid, repo, wt)
+            changed, kept = kept_files(wt, set(((g.get("copied") or {}).get(pid)) or [])) if not why else (None, why)
+            if why or changed is None:
+                parts.append(f"worktree kept: {why or kept}")
+            elif changed or kept:
+                parts.append(f"worktree kept: {changed} changed files" if changed else
+                             f"worktree kept: has ignored files ({', '.join(kept[:3])}{' and more' if len(kept) > 3 else ''})")
+            else:
+                r = git("-C", repo, "worktree", "remove", "--", want)  # no --force: git refuses a dirty one too
+                parts.append("worktree removed" if r.returncode == 0 else f"worktree kept: {first_line(r.stderr)}")
+        else:
+            git("-C", repo, "worktree", "prune")
+            parts.append("worktree already gone")
+        if git("-C", repo, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0:
+            if os.path.isdir(want) and f"worktree {want}" in git("-C", repo, "worktree", "list", "--porcelain").stdout.splitlines():
+                parts.append(f"branch {branch} kept (its worktree is kept)")
+            else:
+                r = git("-C", repo, "branch", "-d", "--", branch)  # never -D
+                parts.append(f"branch {branch} deleted" if r.returncode == 0 else f"branch {branch} kept (not merged here)")
+        rem = (g.get("remotes") or {}).get(pid)
+        oid, why = merged_head(pr, rem if isinstance(rem, dict) else None, repo, branch)
+        if not oid:
+            parts.append(f"remote branch kept ({why})")
+        else:
+            tip, err = remote_tip(rem["url"], branch)
+            if err:
+                parts.append(f"remote branch kept ({err[:200]})")
+            elif not tip:
+                parts.append("remote branch already deleted")
+            elif tip != oid:
+                parts.append("remote branch kept (its tip is not the merged PR's head)")
+            else:
+                r = delete_remote_branch(rem["url"], branch, oid)
+                gone = r.returncode == 0 or "remote ref does not exist" in (r.stderr or "")
+                parts.append("remote branch deleted" if gone else f"remote branch kept: {first_line(r.stderr)[:200]}")
+        results.append(f"{pid}: " + "; ".join(parts))
+    if not results:
+        print("cleanup: this run has no worktrees")
+        return
+    for line in results:
+        print(line)
+    append_log(run, st.get("stage") or "done", "cleanup: " + " | ".join(results))
+
+
+def cmd_request(run, kind):
+    run = this_run(run, "NOT REQUESTED")
+    if kind not in REQUEST_KINDS:
+        die(f"NOT REQUESTED: the app does only {', '.join(REQUEST_KINDS)} (got {kind!r})")
+    if not os.path.isfile(os.path.join(run, "request.md")):
+        die(f"NOT REQUESTED: {run} is not a run folder")
+    d = os.path.join(run, "requests")
+    os.makedirs(d, exist_ok=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    rid, n = f"{stamp}-{kind}", 1
+    while os.path.exists(os.path.join(d, rid + ".json")):
+        n += 1
+        rid = f"{stamp}-{n}-{kind}"
+    atomic_write(os.path.join(d, rid + ".json"), json.dumps({"schema": 1, "id": rid, "kind": kind, "at": now()}) + "\n")
+    print(f"request={rid}")
+
+
+def cmd_request_wait(run, rid, rest):
+    run = this_run(run, "NOT WAITED")
+    if not REQUEST_ID.match(rid):
+        die(f"not a request id: {rid!r} (use the id `state.sh request` printed)")
+    timeout = REQUEST_WAIT_DEFAULT
+    if "--timeout" in rest[:-1]:
+        v = rest[rest.index("--timeout") + 1]
+        if not v.isdigit():
+            die("--timeout takes seconds")
+        timeout = min(int(v), REQUEST_WAIT_MAX)
+    if not os.path.isfile(os.path.join(run, "requests", rid + ".json")):
+        die(f"no request {rid} in {run}/requests")
+    res_path = os.path.join(run, "requests", rid + ".result.json")
+    deadline = time.monotonic() + timeout
+    res = None
+    while True:
+        res = load_json(res_path)
+        if isinstance(res, dict) and res.get("state") in ("done", "refused", "ignored"):
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(1)
+    state = res.get("state") if isinstance(res, dict) else None
+    msg = " ".join(str((res or {}).get("message") or "").split())[:500] if isinstance(res, dict) else ""
+    if state in ("done", "refused", "ignored"):
+        print(f"result={state} ok={'yes' if res.get('ok') else 'no'} message={msg or '-'}")
+        return
+    print(f"result=pending message={msg or ('the app has not picked it up yet: is DCTerminalv2 running?' if state is None else 'still running')}")
+    sys.exit(3)
+
+
 def main(argv):
     cmd, args = (argv[0] if argv else ""), argv[1:]
     need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0,
-            "gate": 4, "report": 1, "mode": 1, "draft-pr": 2, "push": 2, "post-review": 3, "comment": 4, "ready": 2, "bmad-size": 2, "bmad-init": 1, "bmad-check": 1}
+            "gate": 4, "report": 1, "mode": 1, "draft-pr": 2, "push": 2, "post-review": 3, "comment": 4, "ready": 2, "bmad-size": 2, "bmad-init": 1, "bmad-check": 1,
+            "cleanup": 1, "request": 2, "request-wait": 2}
     if cmd not in need or len(args) < need[cmd]:
         die("usage: see the header of state.sh", 2)
     if cmd == "preflight": cmd_preflight(args[0], "resume" in args[1:])
@@ -1839,6 +2150,9 @@ def main(argv):
     elif cmd == "bmad-size": cmd_bmad_size(args[0], args[1], args[2:])
     elif cmd == "bmad-init": cmd_bmad_init(args[0])
     elif cmd == "bmad-check": cmd_bmad_check(args[0])
+    elif cmd == "cleanup": cmd_cleanup(args[0])
+    elif cmd == "request": cmd_request(args[0], args[1])
+    elif cmd == "request-wait": cmd_request_wait(args[0], args[1], args[2:])
 
 
 main(sys.argv[1:])
@@ -1859,6 +2173,17 @@ except Exception: print("run")' "$run/status.json" 2>/dev/null || echo run)"
     [[ "$stage" =~ ^[a-z-]+$ ]] || { echo "log: stage must be a stage name" >&2; exit 2; }
     text="$(cat)"; text="${text//$'\r'/ }"; text="${text//$'\n'/ }"
     [[ -n "${text// /}" ]] || { echo "log: empty text on stdin" >&2; exit 2; }
+    # The same event twice in a row, same stage, within 30 s (state.sh already logged it and the orchestrator repeated
+    # it) is written once. Retry lines always count.
+    squash() { tr -s '[:space:]' ' ' <<<"$1" | sed -e 's/^ //' -e 's/ $//'; }
+    lastline="$(tail -n 1 "$run/log.md" 2>/dev/null || true)"
+    read -r lt ls _ <<<"$lastline" || true
+    last="$(cut -d' ' -f3- <<<"$lastline")"
+    lsec="$(date -u -j -f %Y-%m-%dT%H:%M:%SZ "${lt:-x}" +%s 2>/dev/null || date -u -d "${lt:-x}" +%s 2>/dev/null || echo 0)"
+    if [[ -n "$last" && "$ls" == "$stage" && "$text" != *retried* ]] && (( $(date -u +%s) - lsec <= 30 )) \
+       && [[ "$(squash "$last")" == "$(squash "$text")" ]]; then
+      exit 0
+    fi
     printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$stage" "$text" >> "$run/log.md"
     ;;
   preflight)

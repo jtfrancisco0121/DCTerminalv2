@@ -202,7 +202,7 @@ greet: `greet(name)` must return `"Hello, <name>!"`, and `"Hello, friend!"` for 
 EOF
   printf '{"schema": 1, "runId": "r-golden-github", "reviewMode": "github"}\n' > "$run/meta.json"
   printf '{"schema": 1, "repos": [{"name": "greet", "path": "%s", "check": "npm run check", "setup": "", "copyFiles": [".env"]}]}\n' "$ws/greet" > "$run/repos.json"
-  launch github "$ws" "$run" PATH="$E2E_DIR/gh-shim:$PATH" GH_SHIM_DIR="$shimdir"
+  launch github "$ws" "$run" PATH="$E2E_DIR/gh-shim:$PATH" GH_SHIM_DIR="$shimdir" DCV2_TEST_LOCAL_REMOTES=1
   GH_SHIM_DIR="$shimdir" python3 "$E2E_DIR/golden_check.py" github "$run" "$ws" "$TMP/github.jsonl" "$TMP/memory" "$TMP/greet-origin.git"
 }
 

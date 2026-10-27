@@ -294,6 +294,10 @@ pub struct RepoSetup {
     /// Git-ignored files copied from the main checkout, relative paths.
     #[serde(default)]
     pub copy_files: Vec<String>,
+    /// "Allow live Claude tests in checks" (repos.json `liveTests`): the
+    /// Implementer and PR Reviewer may run scripts/skill-e2e/golden.sh.
+    #[serde(default)]
+    pub live_tests: bool,
 }
 
 pub const MAX_COPY_FILES: usize = 20;
@@ -345,6 +349,7 @@ pub fn clean_repo_setup(next: RepoSetup) -> Result<RepoSetup, String> {
     Ok(RepoSetup {
         setup,
         copy_files: files,
+        live_tests: next.live_tests,
     })
 }
 
@@ -361,6 +366,10 @@ pub struct RunSettings {
     /// R2 watchdog: minutes with no progress before the panel says so; 0 is off.
     #[serde(default = "default_watchdog_minutes")]
     pub watchdog_minutes: u32,
+    /// "Clean up merged runs automatically" (plan 2026-10-27): finished
+    /// runs' merged PRs lose their worktree, local and remote branch.
+    #[serde(default = "default_true")]
+    pub auto_cleanup: bool,
 }
 
 pub const WATCHDOG_MINUTES_LIMIT: u32 = 240;
@@ -385,6 +394,7 @@ impl Default for RunSettings {
             max_implementers: default_max_implementers(),
             stop_hooks: true,
             watchdog_minutes: default_watchdog_minutes(),
+            auto_cleanup: true,
         }
     }
 }
@@ -470,6 +480,7 @@ impl SettingsStore {
             max_implementers: next.max_implementers.clamp(1, MAX_IMPLEMENTERS_LIMIT),
             stop_hooks: next.stop_hooks,
             watchdog_minutes: next.watchdog_minutes.min(WATCHDOG_MINUTES_LIMIT),
+            auto_cleanup: next.auto_cleanup,
         };
         self.save()
     }
@@ -549,6 +560,7 @@ mod tests {
             let next = RepoSetup {
                 setup: None,
                 copy_files: vec![bad.into()],
+                live_tests: false,
             };
             assert!(store.set_repo_setup("/w/a", next).is_err(), "{bad}");
         }
@@ -563,17 +575,20 @@ mod tests {
                         " ".into(),
                         "cfg/.env.local".into(),
                     ],
+                    live_tests: true,
                 },
             )
             .unwrap();
         assert_eq!(saved.setup.as_deref(), Some("pnpm i"));
         assert_eq!(saved.copy_files, [".env", "cfg/.env.local"]);
+        assert!(saved.live_tests);
         assert!(store
             .set_repo_setup(
                 "/w/a",
                 RepoSetup {
                     setup: Some("a\nb".into()),
-                    copy_files: vec![]
+                    copy_files: vec![],
+                    live_tests: false,
                 }
             )
             .is_err());

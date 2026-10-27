@@ -7,13 +7,16 @@
 //! thread with no store lock held; the stores are locked only to copy
 //! settings out and to add the tab.
 
+pub mod afk;
 pub mod check;
+pub mod cleanup;
 pub mod folder;
 pub mod git;
 pub mod janitor;
 pub mod launch;
 pub mod memory;
 pub mod repos;
+pub mod requests;
 pub mod status;
 
 use crate::commands::{tab_summary, TabSummary};
@@ -569,24 +572,33 @@ pub async fn read_run(app: AppHandle, run_dir: String) -> Result<status::RunView
 
 static CHECKS_RUNNING: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 
+/// R1 for one run folder, at most once at a time (the button and a typed
+/// request share it).
+pub fn rerun_checks_once(dir: &Path) -> Result<(), String> {
+    {
+        let mut running = CHECKS_RUNNING.lock().map_err(|e| e.to_string())?;
+        if !running
+            .get_or_insert_with(HashSet::new)
+            .insert(dir.to_path_buf())
+        {
+            return Err("The checks of this run are already running.".into());
+        }
+    }
+    let result = check::rerun_checks(dir, check::CHECK_TIMEOUT);
+    if let Ok(mut running) = CHECKS_RUNNING.lock() {
+        if let Some(set) = running.as_mut() {
+            set.remove(dir);
+        }
+    }
+    result
+}
+
 /// R1: re-runs every PR's check of the run (one run at a time per folder).
 #[tauri::command]
 pub async fn rerun_checks(app: AppHandle, run_dir: String) -> Result<(), String> {
     blocking(move || {
         let dir = checked_run_dir(&data_dir(&app), &run_dir)?;
-        {
-            let mut running = CHECKS_RUNNING.lock().map_err(|e| e.to_string())?;
-            if !running.get_or_insert_with(HashSet::new).insert(dir.clone()) {
-                return Err("The checks of this run are already running.".into());
-            }
-        }
-        let result = check::rerun_checks(&dir, check::CHECK_TIMEOUT);
-        if let Ok(mut running) = CHECKS_RUNNING.lock() {
-            if let Some(set) = running.as_mut() {
-                set.remove(&dir);
-            }
-        }
-        result
+        rerun_checks_once(&dir)
     })
     .await
 }

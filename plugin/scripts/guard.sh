@@ -38,6 +38,12 @@
 # naming ade-runtime.mjs (the bundle behind the wrapper) is blocked for everyone; <run>/bmad/_bmad/
 # config*.toml and _bmad/custom/ are written only by `state.sh bmad-init`, never with Edit/Write or
 # a shell write. Repo and worktree rules are unchanged.
+# Cleanup (0.5.0): the orchestrator never runs `git worktree <anything but list>` or a changing `git branch`
+# anywhere in a bound run (and never `git push --delete`): `state.sh cleanup` does it, at done / failed only.
+# <run>/requests/ is written only by `state.sh request` and the app; app-cleanup.json only by the app.
+# Live tests: a pipeline sub-agent never runs `claude`; `scripts/skill-e2e/golden.sh` / `bmad_spike.sh` (which
+# launch claude) only the implementer or pr-reviewer runs, inside its recorded worktree, when repos.json gives
+# that repo `liveTests: true` (the app setting "Allow live Claude tests in checks"). Best effort, like the rest.
 # Everyone: status.json, writeback.json and .guard.json in a run folder are written only by
 # state.sh. When DCV2_MEMORY_DIR is set (every dcv2 launch), nobody writes into it with
 # Edit/Write or a shell redirect/copy: agents use memory.sh write (the app's editor writes as the
@@ -110,7 +116,8 @@ if run:
 # Written only by state.sh (status, writeback, guard) or only by the app
 # (the ClickUp snapshot and records, meta.json, the app's own check results).
 PROTECTED = ("status.json", "writeback.json", ".guard.json",
-             "tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json")
+             "tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json",
+             "app-cleanup.json")
 who = agent or "the orchestrator"
 where = "your worktree or the run folder" if role == "implementer" else "the run folder"
 
@@ -128,7 +135,23 @@ def inside(p, root):
     return bool(root) and (p == root or p.startswith(root.rstrip(os.sep) + os.sep))
 
 
+def git_user_config(p):
+    """The user's own git config (~/.gitconfig, $XDG_CONFIG_HOME/git/): the app's network git reads it (credential
+    helpers run from there), so nothing in a run writes it."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    xdg = os.path.realpath(os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"))
+    return p == os.path.join(home, ".gitconfig") or inside(p, os.path.join(xdg, "git"))
+
+
+GITCONFIG_MSG = "the user's git config (~/.gitconfig, ~/.config/git/) is never written from a dcv2 run."
+
+
 def protected(p):
+    q = p
+    while q and q != os.path.dirname(q):  # requests/ of any run folder: state.sh request and the app only
+        if os.path.basename(q) == "requests" and (os.path.dirname(q) == run or os.path.isfile(os.path.join(os.path.dirname(q), "request.md"))):
+            return True
+        q = os.path.dirname(q)
     if os.path.basename(p) not in PROTECTED:
         return False
     d = os.path.dirname(p)
@@ -191,6 +214,8 @@ if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
         block("write run-folder state only with scripts/state.sh (put / approve / writeback / worktree), never with Edit or Write.")
     if bmad_config(p):
         block(BMAD_CFG_MSG)
+    if (run or pipeline) and git_user_config(p):
+        block(GITCONFIG_MSG)
     if inside(p, mem):
         block("codebase memory is written only with `bash <plugin>/scripts/memory.sh write <repo id> <file> <<'EOF'` "
               "(it checks size caps, secrets and pinned lines), never with Edit or Write.")
@@ -253,6 +278,8 @@ def ship_gate(what):
 def check_write(t, cwd):
     if t in SAFE_DEV or t.startswith("/dev/fd/"):
         return
+    if bound and re.search(r"[$`*?]", t) and re.search(r"\.gitconfig|\.config/git|/git/config\b", t):
+        block(GITCONFIG_MSG)
     if re.search(r"[$`*?]", t) or (cwd is None and not os.path.isabs(os.path.expanduser(t))):
         if trust_root and "run-trust" in t:
             block(TRUST_MSG)
@@ -271,6 +298,8 @@ def check_write(t, cwd):
         block("codebase memory is written only with memory.sh write, never with a shell redirect, copy or move.")
     if not bound:
         return
+    if git_user_config(p):
+        block(GITCONFIG_MSG)
     if protected(p):
         block("write run-folder state only with scripts/state.sh, never with a shell redirect or copy.")
     if bmad_config(p):
@@ -331,7 +360,16 @@ def git_readonly(sub, rest):
     if sub == "remote":
         return not rest or rest[0] in ("-v", "--verbose", "show", "get-url")
     if sub == "config":
-        return any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l") for a in rest)
+        if any(a in ("--unset", "--unset-all", "--add", "--replace-all", "--rename-section", "--remove-section", "-e", "--edit")
+               for a in rest):
+            return False
+        if any(a in ("--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l") for a in rest):
+            return True
+        if rest[:1] in (["get"], ["list"]):
+            return True
+        rest = [a for a in rest if a not in ("--show-origin", "--show-scope")]  # `git config --show-origin <key>` reads
+        # `git config <key>` reads; a key and anything else (a value, even one starting with `-`) writes.
+        return len(rest) == 1 and not rest[0].startswith("-") and rest[0] not in ("set", "unset", "edit")
     if sub == "worktree":
         return rest[:1] == ["list"]
     if sub == "stash":
@@ -345,6 +383,68 @@ def git_readonly(sub, rest):
     return False
 
 
+GIT_C_KEYS = ("user.name", "user.email", "core.quotepath", "init.defaultbranch", "commit.gpgsign")
+GIT_C_PREFIXES = ("color.", "advice.")
+
+
+def git_c_ok(kv):
+    key, _, value = kv.partition("=")
+    key = key.lower()
+    if key == "commit.gpgsign":
+        return value.lower() in ("false", "0", "no", "off")
+    return key in GIT_C_KEYS or key.startswith(GIT_C_PREFIXES)
+
+
+GIT_ENV_RE = re.compile(r"^(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES|"
+                        r"GIT_NAMESPACE|GIT_TEMPLATE_DIR|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\w*|GIT_CONFIG_VALUE_\w*|GIT_CONFIG_PARAMETERS|GIT_CONFIG|GIT_CONFIG_GLOBAL|"
+                        r"GIT_CONFIG_SYSTEM|GIT_EXEC_PATH|GIT_SSH_COMMAND|GIT_SSH|GIT_ASKPASS|GIT_PROXY_COMMAND|GIT_EXTERNAL_DIFF)=")
+
+
+def own_branch(target):
+    """The run's branch of the recorded worktree target is in (dcv2/<runId>-<pr>), or None."""
+    for w in worktrees:
+        if target and inside(target, w):
+            name = os.path.basename(w)
+            return "dcv2/" + name[len("dcv2-"):] if name.startswith("dcv2-") else None
+    return None
+
+
+def shared_refs(sub, rest, target):
+    """Worktrees, branches and refs belong to the whole repo (every worktree shares them): nobody in a bound run changes
+    them with raw git. Only `state.sh worktree` / `state.sh cleanup` and the app do; the Implementer may create or
+    switch to its own PR's branch only."""
+    if not run:
+        return
+    how = ("worktrees are made by `state.sh worktree`; removing worktrees and branches is `state.sh cleanup <run>` "
+           "(at done / failed), or the app does it.")
+    if sub == "worktree" and rest[:1] != ["list"]:
+        block(f"{who} never runs `git worktree {' '.join(rest[:1])}`: {how}")
+    if sub in ("update-ref", "prune", "gc", "replace") or (sub == "symbolic-ref" and not git_readonly(sub, rest)) \
+            or (sub == "reflog" and not git_readonly(sub, rest)) or (sub == "tag" and not git_readonly(sub, rest)):
+        block(f"{who} never runs `git {sub}` (it changes refs every worktree of the repo shares): {how}")
+    if sub == "notes" and rest[:1] not in ([], ["list"], ["show"]):
+        block(f"{who} never writes git notes (they are shared by every worktree).")
+    mine = own_branch(target) if role == "implementer" else None
+    if sub in ("fetch", "pull"):
+        refs = [a for a in rest if not a.startswith("-")][1:]
+        for ref in refs:
+            dst = ref.split(":", 1)[1] if ":" in ref else ""
+            dst = dst[len("refs/heads/"):] if dst.startswith("refs/heads/") else dst
+            if ":" in ref and dst and not dst.startswith("refs/remotes/") and dst != mine:
+                block(f"{who} never fetches into a local branch (`git {sub} … {ref}`): branches are shared by every worktree.")
+    if sub == "branch" and not git_readonly(sub, rest):
+        names = [a for a in rest if not a.startswith("-")]
+        if not (mine and not [a for a in rest if a.startswith("-")] and names == [mine]):
+            block(f"{who} never changes branches with `git branch` (they are shared by every worktree): {how}")
+    if sub in ("checkout", "switch"):
+        for i, a in enumerate(rest):
+            flag = a.split("=", 1)[0]
+            if flag in ("-b", "-B", "-c", "-C", "--orphan", "--create", "--force-create") or re.match(r"^-[a-zA-Z]*[bBcC]$", a):
+                name = a.split("=", 1)[1] if "=" in a else (rest[i + 1] if i + 1 < len(rest) else "")
+                if not mine or name != mine:
+                    block(f"{who} never creates or resets a branch (`git {sub} {a} {name}`): branches are shared by every worktree.")
+
+
 def check_git(args, cwd):
     if not bound:
         return
@@ -356,7 +456,19 @@ def check_git(args, cwd):
             target = None if "$" in v else (os.path.realpath(v) if os.path.isabs(v) else (real(v, target) if target else None))
             i += 2
             continue
-        if a in ("-c", "--git-dir", "--work-tree", "--namespace") and i + 1 < len(args):
+        if a == "--config-env" or a.startswith("--config-env="):
+            block("`git --config-env` is never used in a dcv2 run.")
+        if a.startswith("--exec-path="):
+            block("`git --exec-path=<dir>` is never used in a dcv2 run.")
+        if a == "-c" or (a.startswith("-c") and len(a) > 2):
+            kv = args[i + 1] if a == "-c" and i + 1 < len(args) else a[2:]
+            if not git_c_ok(kv):
+                block(f"`git -c {kv.split('=', 1)[0]}=…` is not allowed in a dcv2 run (only identity, colour, advice and "
+                      "similar harmless keys): it could run a program.")
+            if a != "-c":
+                i += 1
+                continue
+        if a in ("-c", "--git-dir", "--work-tree", "--namespace", "--config-env") and i + 1 < len(args):
             if a in ("--git-dir", "--work-tree"):
                 target = real(args[i + 1], target or "/") if "$" not in args[i + 1] else None
             i += 2
@@ -393,8 +505,12 @@ def check_git(args, cwd):
             block("this run reviews on GitHub: pushes go only through state.sh (draft-pr / push / ready), which check the stage and approvals.")
         ship_gate("git push")
         return
+    shared_refs(sub, rest, target)
     if not pipeline:
-        if run and target and main_checkout(target) and not git_readonly(sub, rest) and sub != "worktree":
+        if run and sub in ("remote", "config") and not git_readonly(sub, rest):
+            block(f"the orchestrator never changes git remotes or config (`git {sub} ...`): they are shared by the repo and "
+                  "its worktrees, and every push goes to the remote recorded for the run.")
+        if run and target and main_checkout(target) and not git_readonly(sub, rest):
             block(f"the orchestrator never runs `git {sub}` in a repo's main checkout ({target}); worktrees go through state.sh worktree.")
         return
     if role == "implementer" and target and any(inside(target, w) for w in worktrees):
@@ -486,7 +602,7 @@ def check_state_sh(args):
     ship approval (state.sh checks too)."""
     sub = next((a for a in args[1:] if not a.startswith("-")), "")
     if pipeline:
-        if sub in GH_STATE + ("ready", "ship-pr"):
+        if sub in GH_STATE + ("ready", "ship-pr", "cleanup", "request"):
             block(f"{who} never runs `state.sh {sub}`: only the orchestrator touches GitHub.")
         return
     if sub in GH_STATE:
@@ -497,18 +613,147 @@ def check_state_sh(args):
             block(f"`state.sh {sub}` needs the plan approval first (stop #1).")
     if sub == "ready" and not status.get("shipApproval"):
         block("`state.sh ready` needs the ship approval first (stop #2).")
+    if sub in ("cleanup", "request", "request-wait") and run:
+        rest = [a for a in args[1:] if not a.startswith("-")]
+        target = re.sub(r"\$\{?DCV2_RUN_DIR\}?", lambda _: run, rest[1] if len(rest) > 1 else "")
+        if "$" not in target and os.path.realpath(os.path.expanduser(target)) != run:
+            block(f"`state.sh {sub}` acts only on this run's folder ({run}), not {target or 'none'}.")
 
 
-def check_node(args):
-    """BMAD's runtime: only the planner runs the wrapper (bmad/runtime.mjs); nobody runs the bundle behind it."""
+def check_node(args, cwd):
+    """BMAD's runtime: only the planner runs the wrapper (bmad/runtime.mjs); nobody runs the bundle behind it.
+    The path is normalised first (relative to the cwd when it is known, `..` resolved), so `cd <plugin>/bmad &&
+    node ./runtime.mjs` and `bmad/x/../runtime.mjs` are the runtime too."""
     for a in args:
         if a.startswith("-"):
             continue
-        d, b = os.path.split(a)
+        if "$" in a or (cwd is None and not os.path.isabs(os.path.expanduser(a))):
+            p = os.path.normpath(a)
+        else:
+            p = real(a, cwd or "/")
+        d, b = os.path.split(p)
         if b == "runtime.mjs" and os.path.basename(d) in ("bmad", ""):
             if role != "planner":
                 block(f"{who} never runs the BMAD runtime: only the planner does, for its bmad pass "
                       "(the orchestrator checks the documents with `state.sh bmad-check`).")
+
+
+LIVE_SCRIPTS = ("golden.sh", "bmad_spike.sh")
+
+
+def live_tests_on(wt):
+    """repos.json (app-written) gives the repo of worktree wt `liveTests: true`."""
+    parent = os.path.dirname(wt)
+    name = os.path.basename(parent)
+    if not name.endswith("-worktrees"):
+        return False
+    repo = os.path.join(os.path.dirname(parent), name[: -len("-worktrees")])
+    try:
+        rj = json.load(open(os.path.join(run, "repos.json")))
+    except Exception:
+        return False
+    for r in (rj.get("repos") if isinstance(rj, dict) else None) or []:
+        if isinstance(r, dict) and isinstance(r.get("path"), str) and os.path.realpath(r["path"]) == os.path.realpath(repo):
+            return r.get("liveTests") is True
+    return False
+
+
+def check_live(script, cwd):
+    """golden.sh / bmad_spike.sh launch claude: only the implementer / pr-reviewer, in its worktree, with liveTests."""
+    if role not in ("implementer", "pr-reviewer"):
+        block(f"{who} never runs the live Claude tests ({os.path.basename(script)}).")
+    if "$" in script or (cwd is None and not os.path.isabs(os.path.expanduser(script))):
+        block(f"cannot tell where {script!r} is: run it as `cd <worktree> && bash scripts/skill-e2e/{os.path.basename(script)} ...`")
+    p = real(script, cwd or "/")
+    wt = next((w for w in worktrees if inside(p, w)), None)
+    if not wt or os.path.relpath(p, wt) != os.path.join("scripts", "skill-e2e", os.path.basename(p)):
+        block(f"live Claude tests run only as your worktree's scripts/skill-e2e/{os.path.basename(script)}.")
+    if not live_tests_on(wt):
+        block("live Claude tests are off for this repo (the app setting \"Allow live Claude tests in checks\"); "
+              "they stay a manual step for the user.")
+
+
+SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
+INTERPRETERS = ("python", "python3", "node", "nodejs", "perl", "ruby", "osascript", "deno", "bun")
+ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Programs that run the next word as a command, and their options that take a value.
+RUNNERS = {"nohup": (), "caffeinate": (), "stdbuf": (), "command": (), "exec": ("-a",), "builtin": (), "sudo": ("-u", "-g", "-C"),
+           "doas": ("-u",), "time": (), "env": ("-u", "--unset", "-C", "--chdir", "-S", "--split-string"),
+           "nice": ("-n", "--adjustment"), "timeout": ("-s", "--signal", "-k", "--kill-after"), "npx": ("-p", "--package"),
+           "bunx": (), "unbuffer": (), "chronic": ()}
+
+
+def unwrap(words):
+    """The command a segment really runs: assignments, `then`/`do`/…, and runners (timeout, nice, env, npx, …) with
+    their options dropped."""
+    while words:
+        w, b = words[0], os.path.basename(words[0])
+        if ASSIGN.match(w) or (w in WRAPPERS and b not in RUNNERS):
+            words = words[1:]
+            continue
+        if b in ("npm", "pnpm", "yarn") and len(words) > 1 and words[1] in ("exec", "dlx", "x"):
+            b, words = "npx", words[1:]
+        if b not in RUNNERS:
+            break
+        words = words[1:]
+        while words and (words[0].startswith("-") or (b == "env" and ASSIGN.match(words[0]))):
+            opt, words = words[0], words[1:]
+            if opt == "--":
+                break
+            if b == "env" and (opt in ("-S", "--split-string") or opt.startswith("--split-string=")) and (words or "=" in opt):
+                text = opt.split("=", 1)[1] if "=" in opt else words.pop(0)
+                try:
+                    words = shlex.split(text) + words
+                except ValueError:
+                    block("could not parse `env -S` text")
+                continue
+            if opt in RUNNERS[b] and words:
+                words = words[1:]
+        if b == "timeout" and words:
+            words = words[1:]  # the duration
+    return words
+
+
+def shell_c(args):
+    """The command string of `bash [-lxe…]c [-o opt] [--] '<command>'` (any flag cluster with c), else None."""
+    i, has_c = 0, False
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            i += 1
+            break
+        if a in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file"):
+            i += 2
+            continue
+        if re.match(r"^[-+][a-zA-Z]+$", a):
+            has_c = has_c or (a[0] == "-" and "c" in a)
+            i += 1
+            continue
+        if a.startswith("--"):
+            i += 1
+            continue
+        break
+    return args[i] if has_c and i < len(args) else None
+
+
+def shell_script(args):
+    """The script file `bash [options] [--] <script>` runs (None with -c, or none given)."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "-c" or (re.match(r"^-[a-zA-Z]+$", a) and "c" in a):
+            return None
+        if a == "--":
+            i += 1
+            break
+        if a in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file"):
+            i += 2
+            continue
+        if a.startswith("-") or a.startswith("+"):
+            i += 1
+            continue
+        break
+    return args[i] if i < len(args) else None
 
 
 def check_security(args):
@@ -570,11 +815,25 @@ def analyze(cmd, cwd, depth=0):
                 analyze(a or b, cwd, depth + 1)
         for t in targets:
             check_write(t, cwd)
-        while words and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]) or words[0] in WRAPPERS):
-            words = words[1:]
+        if bound:
+            for w in words:
+                if GIT_ENV_RE.match(w):
+                    block(f"setting {w.split('=', 1)[0]} is not allowed in a dcv2 run: it changes which repo git works on "
+                          "or which programs it runs.")
+        words = unwrap(words)
         if not words:
             continue
         name, args = os.path.basename(words[0]), words[1:]
+        script = shell_script(args) if name in SHELLS else (args[0] if name in ("source", ".") and args else None)
+        if pipeline:
+            if "$" in words[0] and "claude" in CMD:
+                block(f"cannot tell which program `{words[0]}` is, and the command mentions claude: {who} never launches claude.")
+            if any("@anthropic-ai/claude-code" in w for w in words) or name == "claude-code":
+                block(f"{who} never launches claude (the @anthropic-ai/claude-code package).")
+            if name in ("find",):
+                for i, a in enumerate(args):
+                    if a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args):
+                        analyze(" ".join(shlex.quote(x) for x in args[i + 1:] if x not in (";", "+")), cwd, depth + 1)
         if bound and any("ade-runtime.mjs" in w for w in words):
             block("ade-runtime.mjs is the bundle behind the BMAD wrapper and bypasses its write checks; run `node <plugin>/bmad/runtime.mjs <command>` (planner only).")
         if name in ("cd", "pushd"):
@@ -590,13 +849,20 @@ def analyze(cmd, cwd, depth=0):
         elif name == "security" and bound:
             check_security(args)
         elif name in ("node", "nodejs") and bound:
-            check_node(args)
+            check_node(args, cwd)
+        elif name == "claude" and pipeline:
+            block(f"{who} never launches claude. Live Claude tests run only as `bash scripts/skill-e2e/golden.sh` or "
+                  "`bmad_spike.sh` in your worktree, when the repo allows them (repos.json liveTests).")
+        elif name in LIVE_SCRIPTS and pipeline:
+            check_live(words[0], cwd)
+        elif script and os.path.basename(script) in LIVE_SCRIPTS and pipeline:
+            check_live(script, cwd)
         elif name == "state.sh" and bound:  # run directly by path
             check_state_sh([words[0]] + args)
-        elif name in ("bash", "sh", "zsh", "dash", "ksh") and args and os.path.basename(args[0]) == "state.sh" and bound:
-            check_state_sh(args)
-        elif name in ("bash", "sh", "zsh", "dash", "ksh") and "-c" in args and args.index("-c") + 1 < len(args):
-            analyze(args[args.index("-c") + 1], cwd, depth + 1)
+        elif script and os.path.basename(script) == "state.sh" and bound:
+            check_state_sh(args[args.index(script):])
+        elif name in SHELLS and shell_c(args) is not None:
+            analyze(shell_c(args), cwd, depth + 1)
         elif name == "eval":
             analyze(" ".join(args), cwd, depth + 1)
         elif name == "xargs" and args:
@@ -610,6 +876,8 @@ def analyze(cmd, cwd, depth=0):
 
 
 CMD = str(inp.get("command") or "")
+if bound and "DCV2_TEST_LOCAL_REMOTES" in CMD:
+    block("DCV2_TEST_LOCAL_REMOTES is set only by the test suites, never from inside a run.")
 MEM_MENTIONED = bool(mem) and ("DCV2_MEMORY_DIR" in CMD or mem in CMD)
 analyze(CMD, cwd0)
 sys.exit(0)

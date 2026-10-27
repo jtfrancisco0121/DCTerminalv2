@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { SettingsView } from "../bridge";
 
+const setRunSettings = vi.fn(async (run: unknown) => run);
 const setClaudeSettings = vi.fn(async (claude: SettingsView["claude"]) => ({ ...view(), claude }));
 vi.mock("../bridge", () => ({
   claudeStatus: vi.fn(async () => ({ found: true, path: "/opt/homebrew/bin/claude", version: "2.1.287", error: null })),
@@ -17,6 +18,7 @@ vi.mock("../bridge", () => ({
   setClaudeSettings: (claude: SettingsView["claude"]) => setClaudeSettings(claude),
   setTerminalSettings: vi.fn(async (terminal: unknown) => terminal),
   setUiSettings: vi.fn(async (ui: unknown) => ui),
+  setRunSettings: (run: unknown) => setRunSettings(run),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
 
@@ -65,6 +67,16 @@ describe("SettingsPage", () => {
     expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Check logins" }));
     expect(await screen.findByText("Signed in: jt@example.com · claude.ai · max")).toBeTruthy();
+  });
+
+  it("cleans up merged runs automatically by default, and the switch is saved", async () => {
+    render(<SettingsPage view={view()} onSaved={() => {}} onClose={() => {}} />);
+    const box = screen.getByRole("checkbox", { name: /Clean up merged runs automatically/ }) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    fireEvent.click(box);
+    fireEvent.click(screen.getByRole("button", { name: "Save run settings" }));
+    await waitFor(() => expect(setRunSettings).toHaveBeenCalled());
+    expect(setRunSettings.mock.calls[0][0]).toMatchObject({ autoCleanup: false });
   });
 
   it("closes on Escape", () => {

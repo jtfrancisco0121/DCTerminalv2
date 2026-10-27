@@ -37,14 +37,16 @@ export function WorktreeSetup({ repos, onSaved }: { repos: Repo[]; onSaved?: () 
 function RepoRow({ repo, onSaved }: { repo: Repo; onSaved?: () => void }) {
   const [setup, setSetup] = useState(repo.setup ?? "");
   const [files, setFiles] = useState((repo.copyFiles ?? []).join("\n"));
+  const [liveTests, setLiveTests] = useState(repo.liveTests ?? false);
   const [note, setNote] = useState<{ tone: "hint" | "error"; text: string } | null>(null);
   const save = async () => {
     setNote(null);
-    const next: RepoSetup = { setup: setup.trim() || null, copyFiles: parseCopyFiles(files) };
+    const next: RepoSetup = { setup: setup.trim() || null, copyFiles: parseCopyFiles(files), liveTests };
     try {
       const saved = await setRepoSetup(repo.path, next);
       setSetup(saved.setup ?? "");
       setFiles(saved.copyFiles.join("\n"));
+      setLiveTests(saved.liveTests ?? false);
       setNote({ tone: "hint", text: "Saved." });
       onSaved?.();
     } catch (err) {
@@ -74,6 +76,16 @@ function RepoRow({ repo, onSaved }: { repo: Repo; onSaved?: () => void }) {
           placeholder=".env.local"
           onChange={(event) => setFiles(event.target.value)}
         />
+      </label>
+      <label className="check-label">
+        <input
+          type="checkbox"
+          aria-label={`Allow live Claude tests in checks for ${repo.name}`}
+          checked={liveTests}
+          onChange={(event) => setLiveTests(event.target.checked)}
+        />{" "}
+        Allow live Claude tests in checks (the Implementer and PR Reviewer may run{" "}
+        <code>scripts/skill-e2e/golden.sh</code>; they use your Claude usage)
       </label>
       <div className="button-row">
         <button type="button" className="secondary-button" onClick={() => void save()}>

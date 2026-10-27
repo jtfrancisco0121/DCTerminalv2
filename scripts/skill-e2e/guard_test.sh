@@ -368,4 +368,170 @@ for who in "" dcv2:implementer; do                                              
 done
 echo '{"schema": 1}' > "$RUN/meta.json"
 
+echo "# cleanup (0.5.0): only state.sh removes worktrees and branches"
+for c in "git -C $R worktree remove $WT" "git -C $R worktree remove --force $WT" "git worktree prune" "git -C $WT worktree remove $WT" \
+         "git -C $R worktree add /tmp/x" "git -C $R branch -d dcv2/r-x-pr1" "git -C $WT branch -D dcv2/r-x-pr1" \
+         "git -C $R branch -m dcv2/r-x-pr1 x" "git -C $R push origin --delete dcv2/r-x-pr1" "git -C $WT push origin --delete dcv2/r-x-pr1" \
+         "cd $R && git branch -d dcv2/r-x-pr1"; do
+  b 2 "" "$c"
+done
+b 0 "" "git -C $R worktree list && git -C $R branch --list 'dcv2/*' && git -C $WT branch --show-current"
+b 0 "" "bash $STATE cleanup $RUN"
+b 0 "" "bash $STATE request $RUN recheck && bash $STATE request-wait $RUN 20261027T100000Z-recheck"
+for who in dcv2:implementer dcv2:pr-reviewer dcv2:planner dcv2:plan-reviewer; do
+  b 2 "$who" "bash $STATE cleanup $RUN"
+  b 2 "$who" "bash $STATE request $RUN recheck"
+done
+for who in "" dcv2:implementer; do                                  # requests/ and the app's cleanup record
+  w 2 "$who" "$RUN/requests/20261027T100000Z-recheck.result.json"
+  w 2 "$who" "$RUN/requests/x.json"
+  w 2 "$who" "$RUN/app-cleanup.json"
+  b 2 "$who" "echo '{}' > $RUN/requests/20261027T100000Z-recheck.result.json"
+  b 2 "$who" "mkdir -p $RUN/requests/a"
+  b 2 "$who" "cp /dev/null $RUN/app-cleanup.json"
+done
+b 0 "" "cat $RUN/requests/20261027T100000Z-recheck.result.json"
+
+echo "# BMAD runtime: path forms are normalised"
+bx 2 dcv2:implementer "cd \"$PLUG/bmad\" && node ./runtime.mjs memlog init --workspace x"
+bx 2 dcv2:implementer "node \"$PLUG/bmad/sub/../runtime.mjs\" knowledge --root /x"
+bx 2 "" "cd \"$PLUG\" && node bmad/./runtime.mjs knowledge"
+bx 2 "" "cd \"$PLUG/bmad/skills\" && node ../runtime.mjs knowledge"
+bx 2 dcv2:implementer "cd \$HOME && node ./runtime.mjs x"                                 # unknown folder: treated as the runtime
+bx 0 dcv2:planner "cd \"$PLUG/bmad\" && node ./runtime.mjs resolve_config --project-root \"$SRUN/bmad\""
+bx 0 dcv2:implementer "cd \"$d/ws\" && node ./tools/runtime.mjs"                          # another project's runtime.mjs
+
+echo "# live Claude tests (repos.json liveTests)"
+mkdir -p "$WT/scripts/skill-e2e"
+for who in dcv2:implementer dcv2:pr-reviewer dcv2:planner dcv2:plan-reviewer dcv2:memory-updater; do
+  b 2 "$who" "claude -p hi"
+  b 2 "$who" "cd $WT && env X=1 claude --version"
+done
+b 0 "" "claude --version"                                                                 # the orchestrator: unchanged
+b 2 dcv2:implementer "cd $WT && bash scripts/skill-e2e/golden.sh github"                  # off by default
+b 2 dcv2:pr-reviewer "bash $WT/scripts/skill-e2e/bmad_spike.sh"
+printf '{"schema": 1, "repos": [{"name": "r", "path": "%s", "check": null, "liveTests": true}]}\n' "$R" > "$RUN/repos.json"
+b 0 dcv2:implementer "cd $WT && bash scripts/skill-e2e/golden.sh github > $RUN/logs/PR1-golden.txt 2>&1"
+b 0 dcv2:pr-reviewer "bash $WT/scripts/skill-e2e/bmad_spike.sh"
+b 0 dcv2:implementer "$WT/scripts/skill-e2e/golden.sh fix"
+b 2 dcv2:planner "cd $WT && bash scripts/skill-e2e/golden.sh github"                      # only the implementer / pr-reviewer
+b 2 dcv2:plan-reviewer "bash $WT/scripts/skill-e2e/golden.sh"
+b 2 dcv2:implementer "bash $R/scripts/skill-e2e/golden.sh"                                # the main checkout's copy
+b 2 dcv2:implementer "bash $d/ws/r-worktrees/dcv2-r-x-pr2/scripts/skill-e2e/golden.sh"   # another PR's worktree
+b 2 dcv2:implementer "bash $WT/golden.sh"                                                  # not the suite's path
+b 2 dcv2:implementer 'cd "$X" && bash scripts/skill-e2e/golden.sh'
+b 2 dcv2:implementer "cd $WT && claude -p 'run the suite'"                                # still never claude itself
+printf '{"schema": 1, "repos": [{"name": "r", "path": "%s", "check": null, "liveTests": "yes"}]}\n' "$R" > "$RUN/repos.json"
+b 2 dcv2:implementer "cd $WT && bash scripts/skill-e2e/golden.sh github"                  # only a JSON true counts
+rm -f "$RUN/repos.json"
+
+echo "# shared refs (review of #11): nobody changes worktrees, branches or refs with raw git"
+O="$d/ws/r-worktrees/dcv2-other-pr1"
+for who in dcv2:implementer dcv2:pr-reviewer ""; do
+  for c in "git -C $WT worktree remove --force $O" "git -C $WT worktree prune" "git -C $WT worktree add /tmp/z" \
+           "git -C $WT branch -D dcv2/other-pr1" "git -C $WT branch -D main" "git -C $WT branch -f main HEAD" \
+           "git -C $WT update-ref -d refs/heads/main" "git -C $WT update-ref --stdin" "git -C $WT symbolic-ref HEAD refs/heads/main" \
+           "git -C $WT checkout -B main" "git -C $WT switch -C main" "git -C $WT tag -d v1" "git -C $WT gc --prune=now" \
+           "cd $WT && git branch -d dcv2/r-x-pr1" "timeout 60 git -C $WT update-ref -d refs/heads/main"; do
+    b 2 "$who" "$c"
+  done
+done
+b 0 dcv2:implementer "git -C $WT branch dcv2/r-x-pr1"                          # its own branch only
+b 0 dcv2:implementer "git -C $WT checkout -b dcv2/r-x-pr1"
+b 0 dcv2:implementer "git -C $WT checkout -- src/a.js && git -C $WT branch --show-current && git -C $WT symbolic-ref --short HEAD"
+b 2 dcv2:implementer "git -C $WT checkout -b feature/x"
+for c in "git -C $WT config remote.origin.url /tmp/evil.git" "git -C $WT config url.ext::sh.insteadOf https://" \
+         "git -C $R config protocol.ext.allow always" "git -C $WT remote set-url origin -- --upload-pack=x"; do
+  b 2 "" "$c"                                                                   # the orchestrator writes no git config
+done
+b 0 "" "git -C $WT config --get remote.origin.url && git -C $WT remote -v"
+
+echo "# other runs' requests (review of #11)"
+RB="$d/runs/r-b"; mkdir -p "$RB"; printf 'folder: %s/ws\n' "$d" > "$RB/request.md"
+for who in "" dcv2:implementer; do
+  w 2 "$who" "$RB/requests/20261027T000000Z-selftest.json"
+  w 2 "$who" "$RB/app-cleanup.json"
+  b 2 "$who" "echo '{}' > $RB/requests/20261027T000000Z-selftest.result.json"
+done
+b 2 "" "bash $STATE request $RB selftest"
+b 2 "" "bash $STATE cleanup $RB"
+b 2 "" "bash $STATE request-wait $RB 20261027T000000Z-selftest"
+b 2 "" "bash -- $STATE cleanup $RB"
+b 0 "" "bash $STATE request $RUN selftest"
+
+echo "# claude and the live suites, any form (review of #11; liveTests off)"
+for c in "bash -x scripts/skill-e2e/golden.sh github" "bash -- scripts/skill-e2e/golden.sh" "timeout 600 bash scripts/skill-e2e/golden.sh" \
+         "npx claude -p hi" "npm exec claude -- -p hi" "cl''aude -p hi" "c=claude; \$c -p hi" "\$(command -v claude) -p hi" "timeout 5 claude -p hi" \
+         "find . -maxdepth 0 -exec claude -p hi \;" "nice -n 5 claude -p hi" \
+         "env -u X claude -p hi" "nohup claude -p hi" "command claude -p hi" "exec claude" "echo hi | xargs claude -p" \
+         "source scripts/skill-e2e/golden.sh" ". scripts/skill-e2e/golden.sh" "/bin/bash scripts/skill-e2e/golden.sh" "bash ./scripts/skill-e2e/golden.sh" \
+         "bash -o pipefail scripts/skill-e2e/golden.sh"; do
+  b 2 dcv2:implementer "$c" "$WT"
+done
+b 0 dcv2:implementer "grep -rn claude src && cat src/claude.rs && timeout 600 npm run check" "$WT"   # naming claude is fine
+
+echo "# re-review of #11: shell -c clusters, git aliases, fetch into branches, config reads, claude false positives"
+for c in "bash -lc 'git -C $O worktree remove --force $O'" "bash -lc 'git push --force origin main'" "sh -ec 'git -C $WT push origin main'" \
+         "bash -xc 'echo x > $RUN/status.json'" "zsh -c 'claude -p hi'" "dash -ec 'claude'" "bash -o pipefail -c 'claude -p hi'" \
+         "bash -l -c 'claude -p hi'" "bash -lc -- 'claude -p hi'" "sh -lc 'claude -p hi'" \
+         "git -c alias.x='update-ref -d refs/heads/main' x" "git -c 'alias.x=!rm -rf $O' x" "git --config-env=alias.x=EVIL x" \
+         "git fetch . +HEAD:refs/heads/main" "git fetch . HEAD:refs/heads/dcv2/other-pr1" "git fetch origin main:main" "git pull origin +main:main" \
+         "git notes add -m x" "npx --yes @anthropic-ai/claude-code -p hi" "bunx @anthropic-ai/claude-code -p hi" \
+         "npm exec @anthropic-ai/claude-code -- -p hi" "/usr/bin/env -S 'claude -p hi'" "env --split-string='claude -p hi'" \
+         "git config user.name x" "git config --unset user.name" "git config set user.name x"; do
+  b 2 dcv2:implementer "$c" "$WT"
+done
+b 2 "" "git -C $WT fetch . +HEAD:refs/heads/main"
+b 2 "" "sh -ec 'git -C $WT push --delete origin dcv2/r-x-pr1'"
+b 2 "" "bash $STATE cleanup \$DCV2_RUN_DIR/../r-b"
+b 0 "" "bash $STATE request \$DCV2_RUN_DIR recheck"
+for who in "" dcv2:implementer; do
+  b 2 "$who" "DCV2_TEST_LOCAL_REMOTES=1 bash $STATE cleanup $RUN"
+done
+for c in "git fetch origin" "git fetch origin main" "git fetch origin +refs/heads/main:refs/remotes/origin/main" "git fetch . HEAD:refs/heads/dcv2/r-x-pr1" \
+         "git config user.name" "git config --get user.email" "git config --list" "git config get user.name" \
+         "node scripts/check-claude.mjs" "python3 tools/claude-log.py" "python3 -m json.tool plugin/.claude-plugin/plugin.json" \
+         "cat fixtures/claude-2.1.287/hooks.json" "bash -lc 'npm run check'" "bash -c 'git status'"; do
+  b 0 dcv2:implementer "$c" "$WT"
+done
+b 0 dcv2:pr-reviewer "git config user.name && git -C $WT log --oneline -3" "$WT"
+
+echo "# third review of #11: config values that look like options, git -c keys, git env"
+for c in "git config alias.x '-c alias.y=!touch /tmp/p y'" "git config core.sshCommand '-oProxyCommand=x'" "git config --global user.name x" \
+         "git -c core.sshCommand='rm -rf $O' fetch origin" "git -c core.pager=x -p log" "git -c core.editor=x commit" \
+         "git -c core.fsmonitor=x status" "git -c 'Alias.x=!rm -rf $O' x" "git -calias.x='!rm -rf $O' x" "git -c commit.gpgsign=true commit -m x" \
+         "git --config-env alias.x=EVIL x" "git --config-env=core.pager=EVIL log" "git --exec-path=/tmp/evil status" \
+         "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0='!rm -rf $O' git x" \
+         "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=x; git x" "GIT_SSH_COMMAND='rm -rf $O' git fetch" \
+         "export GIT_SSH=/tmp/x" "env GIT_EXEC_PATH=/tmp/e git status" "GIT_CONFIG_PARAMETERS=\"'alias.x=!x'\" git x"; do
+  b 2 dcv2:implementer "$c" "$WT"
+done
+b 2 "" "git -C $WT config remote.origin.url '--upload-pack=touch /tmp/p'"
+b 2 "" "GIT_SSH_COMMAND=x git -C $WT log"
+for c in "git -c user.name=t -c user.email=t@t commit -m x" "git -c color.ui=never log" "git -c advice.detachedHead=false status" \
+         "git -c commit.gpgsign=false commit -m x" "git -cuser.name=t commit -m x" "git --exec-path" "git config user.name"; do
+  b 0 dcv2:implementer "$c" "$WT"
+done
+
+echo "# fourth review of #11: git repo env, the user's git config, --show-origin reads"
+for c in "GIT_DIR=$R/.git git reset --hard" "GIT_DIR=$R/.git GIT_WORK_TREE=$R git checkout -- ." "GIT_TEMPLATE_DIR=/tmp/t git init /tmp/x" \
+         "export GIT_WORK_TREE=$R; git checkout -- ." "env GIT_INDEX_FILE=/tmp/i git add -A" "declare -x GIT_COMMON_DIR=$R/.git" \
+         "typeset -x GIT_OBJECT_DIRECTORY=/tmp/o" "GIT_ALTERNATE_OBJECT_DIRECTORIES=/tmp/o git log" "GIT_NAMESPACE=x git log" \
+         "env -S 'GIT_DIR=$R/.git git reset --hard'"; do
+  b 2 dcv2:implementer "$c" "$WT"
+done
+for who in "" dcv2:implementer dcv2:planner; do
+  b 2 "$who" "echo '[alias] x = !rm -rf $O' >> ~/.gitconfig"
+  b 2 "$who" "echo x >> \$HOME/.gitconfig"
+  b 2 "$who" "cp /tmp/x ~/.config/git/config"
+  b 2 "$who" "tee -a ~/.config/git/ignore < /dev/null"
+  w 2 "$who" "$HOME/.gitconfig"
+  w 2 "$who" "$HOME/.config/git/config"
+done
+b 0 "" "cat ~/.gitconfig"
+for c in "git config --show-origin user.name" "git config --show-scope user.name" "git config --list --show-origin"; do
+  b 0 dcv2:implementer "$c" "$WT"
+done
+b 2 dcv2:implementer "git config --show-origin user.name x" "$WT"
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

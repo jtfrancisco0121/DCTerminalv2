@@ -262,6 +262,8 @@ def check_github(run, prs, events, origin, lines):
               and re.search(r"\bgit\b[^|;&]*\bpush\b|\bgh\s+pr\s+(create|comment|edit|ready|merge|close)\b|\bgh\s+api\b.*\s(-X|--method|-f|-F|--field|--raw-field|--input)\b|\bgh\s+issue\s+comment\b", str(i.get("command")))]
     check(not direct, f"no direct git push / gh by any agent: {direct[:3]}")
     check(first_idx(lines, r"draft PR (opened|found)") is not None, "log: draft PR opened")
+    opened = [l for l in lines if re.search(r"\bdraft PR (opened|found)\b", l)]
+    check(len(opened) == len(set(re.sub(r"^\S+ \S+ ", "", l) for l in opened)), f"log: each draft PR logged once ({len(opened)} lines)")
     check(first_idx(lines, r"review round 1 posted") is not None, "log: review round 1 posted")
 
 

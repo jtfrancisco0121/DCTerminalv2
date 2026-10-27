@@ -25,6 +25,10 @@ pub struct Repo {
     /// (app setting, relative paths); empty by default.
     #[serde(default)]
     pub copy_files: Vec<String>,
+    /// Live Claude tests allowed in this repo's checks (app setting);
+    /// written only when true.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live_tests: bool,
 }
 
 impl Repo {
@@ -34,6 +38,7 @@ impl Repo {
         if let Some(s) = setup {
             self.setup = s.setup.clone();
             self.copy_files = s.copy_files.clone();
+            self.live_tests = s.live_tests;
         }
         self
     }
@@ -91,6 +96,7 @@ fn repo_entry(path: &Path) -> Repo {
         check: detect_check(path),
         setup: None,
         copy_files: Vec::new(),
+        live_tests: false,
     }
 }
 

@@ -337,44 +337,53 @@ pub async fn run_claude_selftest(
     window_id: Option<String>,
 ) -> Result<version::SelfTest, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        {
-            let mut running = SELFTEST_RUNNING.lock().map_err(|e| e.to_string())?;
-            if *running {
-                return Err("The self-test is already running.".into());
-            }
-            *running = true;
-        }
-        let result = (|| {
-            let provider = window_provider(&app, window_id.as_deref())?;
-            let program =
-                crate::provider::claude_detect::resolve_claude(provider.claude_path.as_deref())
-                    .ok_or_else(|| provider.missing_message())?;
-            let cli = crate::provider::claude_detect::unwrap_windows_shim(&program);
-            let plugin =
-                crate::run::plugin_dir_for(&app).ok_or("The dcv2 plugin folder was not found.")?;
-            let data = data_dir(&app);
-            let work = std::env::temp_dir().join(format!("dcv2-selftest-{}", uuid::Uuid::new_v4()));
-            let mut result = version::run_selftest(
-                &cli.program,
-                &cli.prefix_args,
-                &provider.env(),
-                &plugin,
-                &work,
-                version::SELFTEST_TIMEOUT,
-            );
-            if result.version.is_none() {
-                result.version = provider.detect().version;
-            }
-            version::write_selftest(&data, &result)?;
-            Ok(result)
-        })();
-        if let Ok(mut running) = SELFTEST_RUNNING.lock() {
-            *running = false;
-        }
-        result
+        let provider = window_provider(&app, window_id.as_deref())?;
+        selftest_with(&app, provider)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// R3 with one account's Claude (the banner's window account, or a run's
+/// account for a typed request), at most one at a time.
+pub fn selftest_with(
+    app: &AppHandle,
+    provider: crate::provider::ClaudeProvider,
+) -> Result<version::SelfTest, String> {
+    {
+        let mut running = SELFTEST_RUNNING.lock().map_err(|e| e.to_string())?;
+        if *running {
+            return Err("The self-test is already running.".into());
+        }
+        *running = true;
+    }
+    let result = (|| {
+        let program =
+            crate::provider::claude_detect::resolve_claude(provider.claude_path.as_deref())
+                .ok_or_else(|| provider.missing_message())?;
+        let cli = crate::provider::claude_detect::unwrap_windows_shim(&program);
+        let plugin =
+            crate::run::plugin_dir_for(app).ok_or("The dcv2 plugin folder was not found.")?;
+        let data = data_dir(app);
+        let work = std::env::temp_dir().join(format!("dcv2-selftest-{}", uuid::Uuid::new_v4()));
+        let mut result = version::run_selftest(
+            &cli.program,
+            &cli.prefix_args,
+            &provider.env(),
+            &plugin,
+            &work,
+            version::SELFTEST_TIMEOUT,
+        );
+        if result.version.is_none() {
+            result.version = provider.detect().version;
+        }
+        version::write_selftest(&data, &result)?;
+        Ok(result)
+    })();
+    if let Ok(mut running) = SELFTEST_RUNNING.lock() {
+        *running = false;
+    }
+    result
 }
 
 /// The app's check output of one PR, trimmed (A4).

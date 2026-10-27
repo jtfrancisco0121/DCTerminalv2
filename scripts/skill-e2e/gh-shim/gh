@@ -4,7 +4,8 @@
 State lives in $GH_SHIM_DIR (required): prs.json, comments/<pr>-<n>.md, calls.log (one line per call).
 Every call may name the repo with -R (it must be $GH_SHIM_REPO, default shim/repo). PRs in prs.json may
 carry "headRepo" (a fork) to test cross-repo checks. Knows: repo view --json nameWithOwner; pr list --head <b> --json ...; pr create [--draft] --head <b> --title <t> --body-file <f>;
-pr comment <url> --body-file <f>; pr edit <url> --body-file <f>; pr ready <url>; pr view <b|url> [--json ...] (head, head repo, comments).
+pr comment <url> --body-file <f>; pr edit <url> --body-file <f>; pr ready <url>; pr view <b|url> [--json ...] (head, head repo, comments,
+state, headRefOid / mergeCommit when prs.json gives them: a test marks a PR merged by editing prs.json).
 GH_SHIM_FAIL=<verb>[,<verb>] makes those verbs (e.g. comment, ready, create, list) fail.
 Anything else exits 1 ("not supported by the shim").
 """
@@ -96,7 +97,8 @@ elif verb == "view":
         owner, name = p.get("headRepo", SLUG).split("/", 1)
         print(json.dumps({"url": p["url"], "headRefName": p["head"], "headRepository": {"name": name},
                           "headRepositoryOwner": {"login": owner}, "isCrossRepository": p.get("headRepo", SLUG) != SLUG,
-                          "comments": p.get("comments", [])}))
+                          "comments": p.get("comments", []), "state": p["state"],
+                          "headRefOid": p.get("headRefOid"), "mergeCommit": p.get("mergeCommit")}))
     else:
         print(p["url"])
 else:

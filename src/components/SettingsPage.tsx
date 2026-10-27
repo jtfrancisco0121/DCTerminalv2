@@ -350,6 +350,14 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
           />{" "}
           Run the repo's checks when an agent stops (stop hooks)
         </label>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={runSettings.autoCleanup ?? true}
+            onChange={(event) => setRun({ ...runSettings, autoCleanup: event.target.checked })}
+          />{" "}
+          Clean up merged runs automatically (worktree, local and remote branch of each merged PR)
+        </label>
         <label className="field-label">
           Say “no progress” after this many quiet minutes (0 is off)
           <input

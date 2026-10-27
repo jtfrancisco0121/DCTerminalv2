@@ -220,6 +220,22 @@ expect 0 "preflight resume logs the resumed line" bash "$STATE" preflight "$RUN"
 tail -1 "$RUN/log.md" | grep -q ' building resumed at stage building$' && ok "  resumed line" || bad "  log line: $(tail -1 "$RUN/log.md")"
 expect 0 "after the resumed line, halt-after no longer applies" env DCV2_TEST_MODE=halt-after=PR1 bash "$STATE" put "$RUN/status.json" < <(status building reviewed building)
 
+n0="$(wc -l < "$RUN/log.md")"
+bash "$STATE" log "$RUN" <<<'PR9 draft PR opened: https://github.com/o/r/pull/9' >/dev/null
+bash "$STATE" log "$RUN" <<<'PR9  draft PR opened: https://github.com/o/r/pull/9 ' >/dev/null
+(( $(wc -l < "$RUN/log.md") == n0 + 1 )) && ok "  the same event twice in a row is logged once" || bad "  log: $(tail -3 "$RUN/log.md")"
+bash "$STATE" log "$RUN" <<<'PR9 review round 1: APPROVED' >/dev/null
+bash "$STATE" log "$RUN" <<<'PR9 draft PR opened: https://github.com/o/r/pull/9' >/dev/null
+(( $(wc -l < "$RUN/log.md") == n0 + 3 )) && ok "  not a repeat when something came between" || bad "  log: $(tail -3 "$RUN/log.md")"
+bash "$STATE" log "$RUN" shipping <<<'PR9 draft PR opened: https://github.com/o/r/pull/9' >/dev/null
+(( $(wc -l < "$RUN/log.md") == n0 + 4 )) && ok "  another stage is not a repeat" || bad "  log: $(tail -3 "$RUN/log.md")"
+bash "$STATE" log "$RUN" <<<'PR9 implementer retried: no JSON block' >/dev/null
+bash "$STATE" log "$RUN" <<<'PR9 implementer retried: no JSON block' >/dev/null
+(( $(wc -l < "$RUN/log.md") == n0 + 6 )) && ok "  retry lines always count" || bad "  log: $(tail -3 "$RUN/log.md")"
+echo "2020-01-01T00:00:00Z building PR9 old event" >> "$RUN/log.md"
+bash "$STATE" log "$RUN" building <<<'PR9 old event' >/dev/null
+(( $(wc -l < "$RUN/log.md") == n0 + 8 )) && ok "  an old identical line is not a repeat" || bad "  log: $(tail -3 "$RUN/log.md")"
+
 echo "# plan sections (16)"
 expect 0 "plan prs" bash "$STATE" plan "$RUN" prs
 has "  has PR2" "### PR2: Prefix"; hasnt "  stops before Manual steps" "Manual steps"
@@ -315,17 +331,23 @@ grep -q "pr create" "$d/gh.log" && bad "  opened a second PR" || ok "  no second
 echo "# writeback (5, 15)"
 cat > "$RUN/tickets.json" <<'EOF'
 {"tasks": [{"id": "t1", "custom_id": "T-1", "name": "multiply", "url": "https://x/t1", "list": {"statuses": ["to do", "in review"]}},
-           {"id": "t2", "custom_id": "T-2", "name": "prefix", "url": "https://x/t2", "list": {"statuses": ["to do", "in review", "done"]}}]}
+           {"id": "t2", "custom_id": "T-2", "name": "prefix", "url": "https://x/t2", "list": {"statuses": ["to do", "in review", "done"]}},
+           {"id": "t3", "custom_id": null, "name": "nobody", "url": "https://x/t3", "list": {"statuses": ["to do", "done"]}}]}
 EOF
 expect 0 "writeback" bash "$STATE" writeback "$RUN"
 is "  t1 not opened: no status" "$RUN/writeback.json" drafts.0.status null
 is "  t2 opened: the plan's ship status (not 'in review')" "$RUN/writeback.json" drafts.1.status '"done"'
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["drafts"]; sys.exit(0 if d[0]["comment"] and "S1" in d[0]["comment"] else 1)' "$RUN/writeback.json" && ok "  t1 has its comment" || bad "  t1 comment"
+is "  t3 (no story): no comment drafted" "$RUN/writeback.json" drafts.2.comment null
+is "  t3: no status" "$RUN/writeback.json" drafts.2.status null
+is "  t3: its note" "$RUN/writeback.json" drafts.2.statusNote '"No PR covers this ticket."'
 echo '{"app": "edited"}' > "$RUN/writeback.json"
 expect 1 "writeback refuses to overwrite" bash "$STATE" writeback "$RUN"
 is "  file kept" "$RUN/writeback.json" app '"edited"'
 expect 0 "writeback --force" bash "$STATE" writeback "$RUN" --force
 expect 1 "put refuses writeback.json" bash "$STATE" put "$RUN/writeback.json" <<<'{}'
-for f in tickets.json meta.json writeback-posted.json tickets-pulls.json tickets-update.md app-checks.json; do
+expect 1 "put refuses requests/" bash "$STATE" put "$RUN/requests/20261027T100000Z-recheck.result.json" <<<'{"state": "done"}'
+for f in tickets.json meta.json writeback-posted.json tickets-pulls.json tickets-update.md app-checks.json app-cleanup.json; do
   expect 1 "put refuses the app's $f" bash "$STATE" put "$RUN/$f" <<<'{}'
 done
 
@@ -566,5 +588,165 @@ expect 1 "on: applied=false in status.json does not skip the gate" bput < <(bsta
 rm -rf "$B/bmad" "$B/status.json"; bmeta off
 expect 0 "off again: plan-approval puts as before" bput < <(bstatus plan-approval)
 
+
+echo "# cleanup (0.5.0): narrow, for this run only (gh shim, local bare remote)"
+CW="$d/cw"; CR="$CW/cr"; CRUN="$d/runs/r-c"; CO="$d/cl-origin.git"
+mkdir -p "$CR" "$CRUN" "$d/cgh"
+git -C "$CR" init -q -b main
+printf '.env\n*.local\n' > "$CR/.gitignore"; echo "K=1" > "$CR/.env"
+git -C "$CR" add .gitignore && git -C "$CR" -c user.name=t -c user.email=t@t commit -q -m init
+git init -q --bare -b main "$CO"; git -C "$CR" remote add origin "$CO"; git -C "$CR" push -q origin main
+CBASE="$(git -C "$CR" rev-parse HEAD)"
+printf 'folder: %s\n' "$CW" > "$CRUN/request.md"
+echo '{"schema": 1, "reviewMode": "github"}' > "$CRUN/meta.json"
+printf '{"schema": 1, "repos": [{"name": "cr", "path": "%s", "check": null, "copyFiles": [".env"]}]}\n' "$CR" > "$CRUN/repos.json"
+(
+  export GH_SHIM_DIR="$d/cgh" PATH="$ROOT/scripts/skill-e2e/gh-shim:$PATH"
+  for n in 1 2 3 4; do
+    bash "$STATE" worktree "$CRUN" "$CR" "PR$n" "$CBASE" >/dev/null
+    w="$CW/cr-worktrees/dcv2-r-c-pr$n"
+    echo "$n" > "$w/f$n.txt"; git -C "$w" add "f$n.txt"; git -C "$w" -c user.name=t -c user.email=t@t commit -q -m "S$n"
+    git -C "$w" push -q "$CO" "dcv2/r-c-pr$n"
+  done
+)
+tip() { git -C "$CW/cr-worktrees/dcv2-r-c-pr$1" rev-parse HEAD; }
+T1="$(tip 1)"; T2="$(tip 2)"; T3="$(tip 3)"
+[[ -f "$CW/cr-worktrees/dcv2-r-c-pr1/.env" ]] && ok "  PR1 got the copied .env" || bad "  no copied .env"
+git -C "$CR" -c user.name=t -c user.email=t@t merge -q --no-edit "dcv2/r-c-pr1"            # PR1's merge pulled into main here
+echo wip > "$CW/cr-worktrees/dcv2-r-c-pr3/f3.txt"                                             # PR3: a dirty worktree
+echo mine > "$CW/cr-worktrees/dcv2-r-c-pr2/notes.local"                                       # PR2: an ignored file of the user's
+python3 - "$d/cgh/prs.json" "$T1" "$T2" "$T3" <<'PY'
+import json, sys
+f, t1, t2, t3 = sys.argv[1:5]
+pr = lambda n, state, oid: {"url": f"https://github.com/shim/repo/pull/{n}", "head": f"dcv2/r-c-pr{n}", "isDraft": False, "state": state, "headRefOid": oid}
+json.dump([pr(1, "MERGED", t1), pr(2, "OPEN", t2), pr(3, "MERGED", t3), pr(4, "MERGED", "0" * 40)], open(f, "w"))
+PY
+cstatus() { python3 - "$CRUN/status.json" "$1" "$CR" "$CW" <<'PY'
+import json, sys
+f, stage, repo, ws = sys.argv[1:5]
+prs = [{"id": f"PR{n}", "repoPath": repo, "branch": f"dcv2/r-c-pr{n}", "worktree": f"{ws}/cr-worktrees/dcv2-r-c-pr{n}",
+        "prUrl": f"https://github.com/shim/repo/pull/{n}", "state": "opened"} for n in (1, 2, 3, 4)]
+json.dump({"schema": 1, "runId": "r-c", "stage": stage, "prs": prs}, open(f, "w"))
+PY
+}
+cstatus shipping
+export GH_SHIM_DIR="$d/cgh" DCV2_RUN_DIR="$CRUN" DCV2_TEST_LOCAL_REMOTES=1
+expect 1 "cleanup refused before done" env PATH="$ROOT/scripts/skill-e2e/gh-shim:$PATH" bash "$STATE" cleanup "$CRUN"
+[[ -d "$CW/cr-worktrees/dcv2-r-c-pr1" ]] && ok "  nothing removed" || bad "  PR1 worktree gone"
+cstatus done
+expect 0 "cleanup at done" env PATH="$ROOT/scripts/skill-e2e/gh-shim:$PATH" bash "$STATE" cleanup "$CRUN"
+has "  PR1 worktree removed (the copied .env goes with it)" "PR1: worktree removed"
+has "  PR1 branch deleted (merged here)" "branch dcv2/r-c-pr1 deleted"
+has "  PR1 remote branch deleted" "PR1: worktree removed; branch dcv2/r-c-pr1 deleted; remote branch deleted"
+has "  PR2 (open) worktree kept: the user's ignored file" "PR2: worktree kept: has ignored files (notes.local)"
+has "  PR2 remote kept: not merged" "remote branch kept (not merged (open))"
+has "  PR3 dirty worktree kept" "PR3: worktree kept: 1 changed files"
+has "  PR3 branch kept with its worktree" "branch dcv2/r-c-pr3 kept (its worktree is kept)"
+has "  PR4 tip mismatch: remote kept" "remote branch kept (its tip is not the merged PR's head)"
+[[ ! -d "$CW/cr-worktrees/dcv2-r-c-pr1" && -d "$CW/cr-worktrees/dcv2-r-c-pr2" && -d "$CW/cr-worktrees/dcv2-r-c-pr3" ]] && ok "  only PR1's and PR4's folders go" || bad "  folders: $(ls "$CW/cr-worktrees")"
+[[ ! -d "$CW/cr-worktrees/dcv2-r-c-pr4" ]] && ok "  PR4's clean worktree removed" || bad "  PR4 kept"
+heads="$(git -C "$CO" for-each-ref --format='%(refname:short)' refs/heads)"
+grep -qx "dcv2/r-c-pr1" <<<"$heads" && bad "  PR1 still on the remote" || ok "  PR1 gone from the remote"
+grep -qx "dcv2/r-c-pr3" <<<"$heads" && bad "  PR3 (merged, tip matches) still on the remote" || ok "  PR3 gone from the remote (merged)"
+grep -qx "dcv2/r-c-pr2" <<<"$heads" && grep -qx "dcv2/r-c-pr4" <<<"$heads" && grep -qx "main" <<<"$heads" && ok "  PR2, PR4 and main stay on the remote" || bad "  remote heads: $heads"
+git -C "$CR" show-ref --verify --quiet refs/heads/dcv2/r-c-pr2 && ok "  PR2 branch kept (git branch -d refused)" || bad "  PR2 branch deleted"
+grep -q "pr view https://github.com/shim/repo/pull/1 --json state,mergeCommit,headRefName,headRefOid" "$d/cgh/calls.log" && ok "  asked gh -R about the merge" || bad "  gh calls: $(cat "$d/cgh/calls.log")"
+tail -1 "$CRUN/log.md" | grep -q ' done cleanup: PR1: worktree removed' && ok "  logged once" || bad "  log: $(tail -1 "$CRUN/log.md")"
+expect 0 "cleanup again: nothing left to do" env PATH="$ROOT/scripts/skill-e2e/gh-shim:$PATH" bash "$STATE" cleanup "$CRUN"
+has "  PR1 already gone" "PR1: worktree already gone; remote branch already deleted"
+echo "# cleanup: local folders only in the suites; the system git config (credential helper) is kept"
+expect 0 "cleanup without DCV2_TEST_LOCAL_REMOTES" env -u DCV2_TEST_LOCAL_REMOTES PATH="$ROOT/scripts/skill-e2e/gh-shim:$PATH" bash "$STATE" cleanup "$CRUN"
+grep -q 'refused: not a safe remote URL (only https / ssh GitHub-style remotes)' <<<"$out" && ok "  a local folder remote is refused in production" || bad "  out: $out"
+export DCV2_TEST_LOCAL_REMOTES=1
+mkdir -p "$d/credgit"; REALGIT0="$(command -v git)"
+printf '[credential]\n\thelper = dcv2-test-helper\n' > "$d/system.gitconfig"
+cat > "$d/credgit/git" <<EOF
+#!/usr/bin/env bash
+if [[ " \$* " == *" ls-remote "* ]]; then
+  echo "nosystem=\${GIT_CONFIG_NOSYSTEM:-} helper=\$("$REALGIT0" config --get credential.helper)" >> "$d/cred.log"
+fi
+exec "$REALGIT0" "\$@"
+EOF
+chmod +x "$d/credgit/git"
+expect 0 "cleanup with a system credential helper" env PATH="$d/credgit:$ROOT/scripts/skill-e2e/gh-shim:$PATH" GIT_CONFIG_SYSTEM="$d/system.gitconfig" bash "$STATE" cleanup "$CRUN"
+grep -q '^nosystem= helper=dcv2-test-helper$' "$d/cred.log" && ok "  network git sees the system credential helper" || bad "  cred.log: $(cat "$d/cred.log" 2>/dev/null)"
+python3 - "$CRUN/.guard.json" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1])); g["remotes"]["PR4"]["url"] = "http://github.com/o/r.git"; json.dump(g, open(sys.argv[1], "w"))
+PY
+expect 0 "an http:// remote" env PATH="$ROOT/scripts/skill-e2e/gh-shim:$PATH" bash "$STATE" cleanup "$CRUN"
+grep -q 'refused: http:// remotes are not used (use https://)' <<<"$out" && ok "  refused with a clear message" || bad "  out: $out"
+
+echo "# cleanup: a remote URL is never an option, and the delete is a lease"
+mkdir -p "$d/fakegit"; REALGIT="$(command -v git)"
+cat > "$d/fakegit/git" <<EOF
+#!/usr/bin/env bash
+if [[ -n "\${FAKE_TIP:-}" && " \$* " == *" ls-remote "* ]]; then echo "\$FAKE_TIP	refs/heads/x"; exit 0; fi
+exec "$REALGIT" "\$@"
+EOF
+chmod +x "$d/fakegit/git"
+python3 - "$CRUN/.guard.json" "$d" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1])); g["remotes"]["PR4"]["url"] = f"--upload-pack=touch {sys.argv[2]}/PWN;false"; json.dump(g, open(sys.argv[1], "w"))
+PY
+python3 - "$d/cgh/prs.json" "$T2" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1])); p[1]["state"] = "MERGED"; json.dump(p, open(sys.argv[1], "w"))
+PY
+# PR2's remote branch moves on after GitHub's answer (someone pushed): the lease must refuse the delete.
+git -C "$CW/cr-worktrees/dcv2-r-c-pr2" -c user.name=t -c user.email=t@t commit -q --allow-empty -m late
+git -C "$CW/cr-worktrees/dcv2-r-c-pr2" push -q "$CO" dcv2/r-c-pr2
+expect 0 "cleanup with a forged remote URL and a racing tip" env PATH="$d/fakegit:$ROOT/scripts/skill-e2e/gh-shim:$PATH" FAKE_TIP="$T2" bash "$STATE" cleanup "$CRUN"
+[[ ! -e "$d/PWN" ]] && ok "  --upload-pack URL never ran" || bad "  the URL ran a command"
+grep -q '^PR4: .*remote branch kept (refused: not a safe remote URL)$' <<<"$out" && ok "  refused as unsafe" || bad "  PR4: $(grep '^PR4' <<<"$out")"
+git -C "$CO" show-ref --verify --quiet refs/heads/dcv2/r-c-pr2 && ok "  PR2 kept: the lease failed (ls-remote said its head, the remote has moved on)" || bad "  PR2 deleted without the lease"
+grep -q '^PR2: .*remote branch kept: ' <<<"$out" && ok "  says it was kept" || bad "  PR2: $(grep '^PR2' <<<"$out")"
+python3 - "$CRUN/.guard.json" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1])); g["remotes"]["PR4"]["url"] = "ext::sh -c touch% /tmp/x"; json.dump(g, open(sys.argv[1], "w"))
+PY
+expect 0 "an ext:: URL is refused too" env PATH="$ROOT/scripts/skill-e2e/gh-shim:$PATH" bash "$STATE" cleanup "$CRUN"
+grep -q '^PR4: .*remote branch kept (refused: not a safe remote URL)$' <<<"$out" && ok "  refused" || bad "  PR4: $(grep '^PR4' <<<"$out")"
+python3 - "$CRUN/.guard.json" "$d/elsewhere" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1])); g["worktrees"]["PR2"] = sys.argv[2]; json.dump(g, open(sys.argv[1], "w"))
+PY
+mkdir -p "$d/elsewhere"
+expect 0 "a worktree recorded somewhere else is never removed" env PATH="$ROOT/scripts/skill-e2e/gh-shim:$PATH" bash "$STATE" cleanup "$CRUN"
+has "  says why" "PR2: worktree kept: not where this run's worktrees go"
+[[ -d "$d/elsewhere" ]] && ok "  the folder stays" || bad "  removed"
+unset GH_SHIM_DIR
+
+echo "# requests to the app (0.5.0)"
+mkdir -p "$d/runs/r-other"; printf 'folder: %s\n' "$CW" > "$d/runs/r-other/request.md"; echo '{"stage": "done"}' > "$d/runs/r-other/status.json"
+expect 1 "request for another run than DCV2_RUN_DIR refused" bash "$STATE" request "$d/runs/r-other" selftest
+[[ ! -d "$d/runs/r-other/requests" ]] && ok "  nothing written there" || bad "  requests/ made"
+expect 1 "cleanup of another run refused" bash "$STATE" cleanup "$d/runs/r-other"
+expect 1 "request-wait on another run refused" bash "$STATE" request-wait "$d/runs/r-other" 20261027T000000Z-recheck
+expect 0 "request tickets" bash "$STATE" request "$CRUN" tickets
+rid="${out#request=}"
+[[ "$rid" =~ ^[0-9]{8}T[0-9]{6}Z-tickets$ ]] && ok "  id $rid" || bad "  id: $out"
+is "  kind" "$CRUN/requests/$rid.json" kind '"tickets"'
+is "  schema" "$CRUN/requests/$rid.json" schema 1
+expect 0 "a second one in the same second gets its own id" bash "$STATE" request "$CRUN" tickets
+[[ "${out#request=}" != "$rid" ]] && ok "  ${out#request=}" || bad "  same id"
+expect 1 "unknown kind refused" bash "$STATE" request "$CRUN" "merge"
+expect 1 "free text refused" bash "$STATE" request "$CRUN" "recheck; rm -rf /"
+expect 1 "not a run folder" bash "$STATE" request "$d" recheck
+expect 3 "request-wait: the app has not answered" bash "$STATE" request-wait "$CRUN" "$rid" --timeout 1
+has "  pending" "result=pending"
+echo '{"schema": 1, "id": "x", "kind": "tickets", "state": "running", "ok": null, "message": "checking"}' > "$CRUN/requests/$rid.result.json"
+expect 3 "request-wait: still running" bash "$STATE" request-wait "$CRUN" "$rid" --timeout 1
+has "  still running" "result=pending message=checking"
+echo '{"schema": 1, "id": "x", "kind": "tickets", "state": "done", "ok": true, "message": "no ticket changed in ClickUp"}' > "$CRUN/requests/$rid.result.json"
+expect 0 "request-wait: done" bash "$STATE" request-wait "$CRUN" "$rid"
+has "  the result line" "result=done ok=yes message=no ticket changed in ClickUp"
+expect 1 "request-wait: not an id" bash "$STATE" request-wait "$CRUN" "../../etc/passwd"
+expect 1 "request-wait: no such request" bash "$STATE" request-wait "$CRUN" "20261027T000000Z-recheck"
+
+echo "# report: what the run could not do"
+bash "$STATE" log "$CRUN" <<<'not done: re-run the checks (the app did not answer: is DCTerminalv2 running?)' >/dev/null
+expect 0 "report" bash "$STATE" report "$CRUN"
+grep -q '^## Not done by the run' "$CRUN/report.md" && grep -qF -- '- re-run the checks (the app did not answer' "$CRUN/report.md" && ok "  listed in report.md" || bad "  report: $(cat "$CRUN/report.md")"
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

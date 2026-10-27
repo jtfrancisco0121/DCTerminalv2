@@ -120,8 +120,8 @@ function PrRow({ pr, onOpenFile, onOpenUrl }: { pr: PrView } & Pick<ViewProps, "
   );
 }
 
-/** The BMAD documents are openable once the plan is being approved, and after. */
-const BMAD_DOCS_FROM = ["plan-approval", "building", "ship-approval", "shipping", "done"];
+/** The BMAD documents are openable once the plan is being approved, and after (a failed run's too). */
+const BMAD_DOCS_FROM = ["plan-approval", "building", "ship-approval", "shipping", "done", "failed"];
 
 /** A short title for a BMAD document path (`bmad/output/<id>/spec-x/spec-x.md`). */
 function bmadDocTitle(path: string): string {
@@ -219,6 +219,20 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
         </ul>
       )}
       {view.shipNote && <p className="hint">{view.shipNote}</p>}
+      {(view.cleanup ?? []).length > 0 && (
+        <section className="run-cleanup" aria-label="Cleanup" data-testid="cleanup">
+          <h3>Cleaned up (merged PRs)</h3>
+          <ul className="hint">
+            {(view.cleanup ?? []).map((rec) => (
+              <li key={rec.prId} data-testid={`cleanup-${rec.prId}`}>
+                <strong>{rec.prId}</strong>{" "}
+                {[rec.note, rec.worktree, rec.branch, rec.remote].filter((part) => part).join("; ")}
+                {rec.retry && " (the app tries again later)"}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       <div className="button-row">
         {view.prs.length > 0 && (
           <button type="button" className="secondary-button" disabled={checking} onClick={onRerunChecks}>

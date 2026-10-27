@@ -232,6 +232,38 @@ pub fn run_folder_of(run_dir: &Path) -> Option<String> {
         .map(|f| f.trim().to_string())
 }
 
+/// One line of the app's own in `log.md` (`<UTC> <stage> app: <text>`), the
+/// run's stage from status.json. One `write` in append mode, so it never
+/// splits a line state.sh appends at the same time. Control characters
+/// become spaces; at most 500 characters.
+pub fn append_app_log(run_dir: &Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let stage = read_json_value(&run_dir.join("status.json"))
+        .and_then(|v| v.get("stage").and_then(Value::as_str).map(str::to_string))
+        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+        .unwrap_or_else(|| "run".into());
+    let text: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(500)
+        .collect();
+    let line = format!(
+        "{} {stage} app: {text}\n",
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
+    );
+    std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(run_dir.join("log.md"))
+        .and_then(|mut f| f.write_all(line.as_bytes()))
+        .map_err(|e| format!("log.md: {e}"))
+}
+
 pub fn read_json_value(path: &Path) -> Option<Value> {
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
@@ -407,6 +439,7 @@ mod tests {
             check: Some("npm test".into()),
             setup: None,
             copy_files: vec![".env".into()],
+            live_tests: true,
         }];
         let meta = RunMeta {
             plugin_version: Some("abc123".into()),
@@ -441,6 +474,7 @@ mod tests {
         assert_eq!(meta_json["pluginVersion"], "abc123");
         assert_eq!(repos_json["repos"][0]["copyFiles"][0], ".env");
         assert!(repos_json["repos"][0]["setup"].is_null());
+        assert_eq!(repos_json["repos"][0]["liveTests"], true);
         assert!(meta_json.get("reviewMode").is_none(), "not recorded");
         assert_eq!(review_mode_of(run), "local");
         assert!(meta_json.get("bmad").is_none(), "no mode, nothing recorded");
