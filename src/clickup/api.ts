@@ -52,6 +52,17 @@ export type DraftView = {
   trusted: { customId: string | null; name: string; url: string; list: string | null } | null;
 };
 
+/** A status draft for a ticket whose PRs all merged (derived by the app, never from writeback.json). */
+export type MergedDraft = {
+  ticketId: string;
+  /** The status to set; null when `note` says why there is none. */
+  status: string | null;
+  /** "No done status in <list>." or "Could not read <list>'s statuses: …". */
+  note: string | null;
+  /** What an earlier post did (`posted`, `failed`). */
+  posted: PartResult | null;
+};
+
 export type RunClickUp = {
   hasTickets: boolean;
   ticketCount: number;
@@ -65,6 +76,8 @@ export type RunClickUp = {
   writebackProblem: string | null;
   /** Comments posted on their own after the ship approval (per-account setting). */
   autoPost?: AutoPostView | null;
+  /** Merged status drafts: absent until a ticket's PRs have all merged. */
+  merged?: MergedDraft[];
 };
 
 export type AutoPostResult = {
@@ -131,6 +144,9 @@ export const clickupPullTickets = (runDir: string, ids: string[]) =>
   invoke<{ pulled: string[]; updateFile: string }>("clickup_pull_tickets", { runDir, ids });
 export const clickupPostWriteback = (runDir: string, draftsVersion: string, requests: PostRequest[]) =>
   invoke<PostReply>("clickup_post_writeback", { runDir, draftsVersion, requests });
+/** Sets one ticket's merged status (only the status; the app recomputes and re-checks it). */
+export const clickupPostMergedStatus = (runDir: string, ticketId: string, status: string) =>
+  invoke<PostOutcome>("clickup_post_merged_status", { runDir, ticketId, status });
 export const clickupAutoPostRetry = (runDir: string, ticketId: string) =>
   invoke<NonNullable<AutoPostView["record"]>>("clickup_auto_post_retry", { runDir, ticketId });
 /** The one click: records consent for the writeback.json version shown, then the app posts. */

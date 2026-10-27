@@ -64,6 +64,16 @@ type ViewProps = {
 
 type PrActionProps = Pick<ViewProps, "worktrees" | "onPrAction" | "onCopyBranch">;
 
+/**
+ * What changes when a PR of the run merges: each PR's GitHub state and the
+ * cleanup outcomes (`PR1:MERGED:cleaned|PR2:OPEN:`). A merge changes neither
+ * status.json's stage nor `updatedAt`, so the ClickUp section reloads on this.
+ */
+export function mergeKey(view: RunView): string {
+  const cleaned = new Map((view.cleanup ?? []).map((rec) => [rec.prId, rec.retry ? "" : rec.outcome]));
+  return view.prs.map((pr) => `${pr.id}:${pr.prState ?? ""}:${cleaned.get(pr.id) ?? ""}`).join("|");
+}
+
 /** One timeline time in the local zone; the title holds the full time and the UTC value. */
 function TimelineTime({ time }: { time: string }) {
   const local = localTime(time);
@@ -583,7 +593,7 @@ export function RunPanel({
         onPrAction={prAction}
         onCopyBranch={copyBranch}
         session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} /> : undefined}
-        extra={<ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} />}
+        extra={<ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} mergeKey={mergeKey(view)} />}
       />
       </RunPanelShell>
       {problem && <p className="error run-problem">{problem}</p>}

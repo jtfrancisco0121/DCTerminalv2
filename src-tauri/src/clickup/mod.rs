@@ -23,6 +23,7 @@
 //! - `writeback`: posting the skill's `writeback.json` drafts you tick.
 //! - `autopost`: after the yes at stop #2, the comment drafts (never the
 //!   statuses) posted on their own (per-account setting, default on).
+//! - `merged`: a status draft per ticket whose PRs all merged, posted only by tick.
 //! - `secret_scan`: memory.sh's secret rules, for the auto-posted comments.
 
 pub mod autopost;
@@ -30,6 +31,7 @@ pub mod backoff;
 pub(crate) mod client;
 pub mod commands;
 pub mod intake;
+pub mod merged;
 pub mod secret;
 pub mod secret_scan;
 pub mod transport;

@@ -372,6 +372,10 @@ pub struct ClickUpSettings {
     /// run panel", per account id. Missing: off (a stored `true` is kept).
     #[serde(default)]
     pub auto_post: std::collections::BTreeMap<String, bool>,
+    /// The status a ticket moves to when its PRs merge, per ClickUp list id.
+    /// Missing: the list's first `closed`-type status. No editor yet.
+    #[serde(default)]
+    pub done_status: std::collections::BTreeMap<String, String>,
 }
 
 impl ClickUpSettings {

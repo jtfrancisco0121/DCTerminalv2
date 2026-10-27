@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChangedTicket, DraftView, PostReply, PostRequest, RunClickUp } from "./api";
+import type { ChangedTicket, DraftView, PostOutcome, PostReply, PostRequest, RunClickUp } from "./api";
 
 const api = {
   state: vi.fn<(runDir: string) => Promise<RunClickUp>>(),
@@ -11,6 +11,7 @@ const api = {
   retry: vi.fn<(runDir: string, ticketId: string) => Promise<unknown>>(),
   consent: vi.fn<(runDir: string, sha: string) => Promise<void>>(),
   now: vi.fn<(runDir: string) => Promise<void>>(),
+  merged: vi.fn<(runDir: string, ticketId: string, status: string) => Promise<PostOutcome>>(),
 };
 vi.mock("./api", () => ({
   clickupRunState: (d: string) => api.state(d),
@@ -20,6 +21,7 @@ vi.mock("./api", () => ({
   clickupAutoPostRetry: (d: string, id: string) => api.retry(d, id),
   clickupAutoPostConsent: (d: string, sha: string) => api.consent(d, sha),
   clickupAutoPostNow: (d: string) => api.now(d),
+  clickupPostMergedStatus: (d: string, id: string, status: string) => api.merged(d, id, status),
 }));
 
 import { ClickUpRunSection, draftDone, tellClaude } from "./ClickUpRunSection";
@@ -376,5 +378,87 @@ describe("an automatic attempt that failed before anything was recorded", () => 
     render(<ClickUpRunSection runDir="/r" stage="shipping" updatedAt="t" />);
     await screen.findByText("Posting the comments…");
     expect(screen.queryByTestId("backoff-notice")).toBeNull();
+  });
+});
+
+describe("ClickUpRunSection merged status", () => {
+  beforeEach(() => {
+    Object.values(api).forEach((m) => m.mockReset());
+  });
+
+  describe("merged status row", () => {
+    const withMerged = (merged: RunClickUp["merged"]): RunClickUp => ({
+      ...base,
+      drafts: [draft("86a", { status: null, comment: null })],
+      merged,
+    });
+
+    it("is an unticked row that sends nothing until ticked, and then only the status", async () => {
+      api.state.mockResolvedValue(withMerged([{ ticketId: "86a", status: "complete", note: null, posted: null }]));
+      api.merged.mockResolvedValue({ ticketId: "86a", result: "posted", message: "status set to complete" });
+      render(<ClickUpRunSection runDir="/r" stage="done" updatedAt="1" />);
+      const row = await screen.findByTestId("merged-86a");
+      const box = within(row).getByRole("checkbox") as HTMLInputElement;
+      expect(box.checked).toBe(false);
+      expect(row.textContent).toContain("Merged: set status to complete");
+      expect(row.className).toContain("clickup-draft");
+      const post = screen.getByRole("button", { name: /Post ticked/ }) as HTMLButtonElement;
+      expect(post.disabled).toBe(true);
+      expect(api.merged).not.toHaveBeenCalled();
+      fireEvent.click(box);
+      fireEvent.click(screen.getByRole("button", { name: "Post ticked (1)" }));
+      await waitFor(() => expect(api.merged).toHaveBeenCalledWith("/r", "86a", "complete"));
+      expect(api.post).not.toHaveBeenCalled();
+      expect((await screen.findByTestId("post-outcomes")).textContent).toContain("status set to complete");
+    });
+
+    it("is a muted note without a checkbox when there is no done status or the read failed", async () => {
+      api.state.mockResolvedValue(
+        withMerged([
+          { ticketId: "86a", status: null, note: "No done status in Sprint.", posted: null },
+          { ticketId: "86b", status: null, note: "Could not read Sprint's statuses: offline", posted: null },
+        ]),
+      );
+      render(<ClickUpRunSection runDir="/r" stage="done" updatedAt="1" />);
+      const a = await screen.findByTestId("merged-86a");
+      expect(a.textContent).toContain("No done status in Sprint.");
+      expect(within(a).queryByRole("checkbox")).toBeNull();
+      expect(within(screen.getByTestId("merged-86b")).queryByRole("checkbox")).toBeNull();
+      expect(screen.getByTestId("merged-86b").textContent).toContain("Could not read");
+    });
+
+    it("shows a posted one as done, and nothing when no PR merged", async () => {
+      api.state.mockResolvedValue(
+        withMerged([
+          {
+            ticketId: "86a",
+            status: "complete",
+            note: null,
+            posted: { result: "posted", at: "t", value: "complete" },
+          },
+        ]),
+      );
+      const { unmount } = render(<ClickUpRunSection runDir="/r" stage="done" updatedAt="1" />);
+      const row = await screen.findByTestId("merged-86a");
+      expect(row.textContent).toContain("status set to complete");
+      expect(within(row).queryByRole("checkbox")).toBeNull();
+      unmount();
+      api.state.mockResolvedValue(withMerged([]));
+      render(<ClickUpRunSection runDir="/r" stage="done" updatedAt="1" />);
+      await screen.findByText("Updates to post");
+      expect(screen.queryByTestId("merged-86a")).toBeNull();
+    });
+
+    it("reloads and shows the row when the merge key changes, with stage and updatedAt unchanged", async () => {
+      api.state.mockResolvedValueOnce(withMerged([]));
+      const { rerender } = render(<ClickUpRunSection runDir="/r" stage="done" updatedAt="1" mergeKey="PR1:OPEN:" />);
+      await screen.findByText("Updates to post");
+      expect(screen.queryByTestId("merged-86a")).toBeNull();
+      expect(api.state).toHaveBeenCalledTimes(1);
+      api.state.mockResolvedValue(withMerged([{ ticketId: "86a", status: "complete", note: null, posted: null }]));
+      rerender(<ClickUpRunSection runDir="/r" stage="done" updatedAt="1" mergeKey="PR1:MERGED:" />);
+      expect(await screen.findByTestId("merged-86a")).toBeTruthy();
+      expect(api.state).toHaveBeenCalledTimes(2);
+    });
   });
 });

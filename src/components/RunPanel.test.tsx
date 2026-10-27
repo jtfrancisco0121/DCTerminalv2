@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import fixture from "../../fixtures/run/run-view.json";
 import type { RunView } from "../run/api";
 import { checkSignature, wantsAppChecks } from "../run/words";
-import { JanitorDialog, RunPanelView } from "./RunPanel";
+import { JanitorDialog, mergeKey, RunPanelView } from "./RunPanel";
 
 // The view Rust reads from fixtures/run/r-20261022-1304 (status.rs fixture test).
 const view = fixture as unknown as RunView;
@@ -292,6 +292,22 @@ describe("RunPanelView", () => {
     expect(screen.getByTestId(`ci-${prs[0].id}`).textContent).toBe("CI failed");
     expect(screen.getByTestId(`ci-${prs[0].id}`).className).toContain("ci-chip-danger");
     expect(screen.queryByTestId(`ci-${prs[1].id}`)).toBeNull();
+  });
+
+  it("builds a new merge key when a PR flips to MERGED or is cleaned, with the stage unchanged", () => {
+    const open: RunView = { ...view, prs: view.prs.map((pr) => ({ ...pr, prState: "OPEN" })), cleanup: [] };
+    const merged: RunView = { ...open, prs: open.prs.map((pr, i) => (i === 0 ? { ...pr, prState: "MERGED" } : pr)) };
+    expect(merged.stage).toBe(open.stage);
+    expect(merged.updatedAt).toBe(open.updatedAt);
+    expect(mergeKey(merged)).not.toBe(mergeKey(open));
+    expect(mergeKey(open)).toBe(mergeKey({ ...open }));
+    const first = open.prs[0].id;
+    expect(mergeKey(merged)).toContain(`${first}:MERGED:`);
+    const cleaned: RunView = {
+      ...open,
+      cleanup: [{ prId: first, prUrl: "u", outcome: "cleaned", worktree: "", branch: "", remote: "", at: "t" }],
+    };
+    expect(mergeKey(cleaned)).toContain(`${first}:OPEN:cleaned`);
   });
 
   it("shows timeline times in the local zone with the UTC time on hover", () => {
