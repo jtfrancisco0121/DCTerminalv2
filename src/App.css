@@ -483,6 +483,7 @@ body,
 
 /* ---- Window layout: tab bar, terminal, status bar ---- */
 .workspace {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -1375,6 +1376,42 @@ body,
   margin-left: var(--space-1);
   border-radius: 50%;
   background: var(--border);
+}
+
+.tab-activity-button {
+  padding: 0;
+  border: 0;
+  flex: none;
+  align-self: center;
+  cursor: pointer;
+}
+
+.usage-popover {
+  position: absolute;
+  top: 2.4rem;
+  left: var(--space-3);
+  z-index: 20;
+  min-width: 12rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 30%);
+  font-size: var(--text-sm);
+}
+
+.usage-popover p {
+  margin: var(--space-1) 0;
+}
+
+.usage-popover-close {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
 }
 
 .tab-activity-working {

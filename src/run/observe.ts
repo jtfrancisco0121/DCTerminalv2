@@ -88,6 +88,11 @@ export const claudeVersionStatus = (windowId: string) => invoke<ClaudeVersionSta
 export const runClaudeSelftest = (windowId: string) => invoke<SelfTest>("run_claude_selftest", { windowId });
 export const readCheckLog = (runDir: string, prId: string) => invoke<string>("read_check_log", { runDir, prId });
 
+/** The tab bar reads hook state while any Claude tab (or run tab) exists. */
+export function pollsActivity(tabs: ReadonlyArray<{ kind: string; role?: string | null }>): boolean {
+  return tabs.some((tab) => tab.kind === "claude" || Boolean(tab.role));
+}
+
 export function activityText(activity: TabActivity | undefined | null): string | null {
   switch (activity) {
     case "working":

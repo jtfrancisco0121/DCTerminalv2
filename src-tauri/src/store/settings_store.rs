@@ -247,6 +247,24 @@ impl Default for UiSettings {
     }
 }
 
+/// Activity tracking (docs/launch.md, "Which tabs get hooks").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ObserveSettings {
+    /// "Track activity in every Claude tab": the hook forwarder is attached
+    /// to plain Claude tabs too, not only to tabs a run launched.
+    #[serde(default = "default_true")]
+    pub hooks_all_tabs: bool,
+}
+
+impl Default for ObserveSettings {
+    fn default() -> Self {
+        Self {
+            hooks_all_tabs: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsFile {
@@ -259,6 +277,8 @@ pub struct SettingsFile {
     pub ui: UiSettings,
     #[serde(default)]
     pub run: RunSettings,
+    #[serde(default)]
+    pub observe: ObserveSettings,
     /// ClickUp: per-account switches (auto-post after ship approval).
     #[serde(default)]
     pub clickup: ClickUpSettings,
@@ -407,6 +427,7 @@ impl Default for SettingsFile {
             claude: ClaudeSettings::default(),
             ui: UiSettings::default(),
             run: RunSettings::default(),
+            observe: ObserveSettings::default(),
             clickup: ClickUpSettings::default(),
             worktree_setup: Default::default(),
         }
@@ -485,6 +506,15 @@ impl SettingsStore {
         self.save()
     }
 
+    pub fn observe(&self) -> &ObserveSettings {
+        &self.data.observe
+    }
+
+    pub fn set_observe(&mut self, next: ObserveSettings) -> Result<(), String> {
+        self.data.observe = next;
+        self.save()
+    }
+
     pub fn clickup(&self) -> &ClickUpSettings {
         &self.data.clickup
     }
@@ -539,6 +569,26 @@ impl SettingsStore {
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
+
+    #[test]
+    fn an_old_settings_file_loads_with_hooks_on_and_the_same_schema() {
+        let dir = TempDir::new("settings_observe_default");
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{"schemaVersion":1,"terminal":{"fontSize":15}}"#,
+        )
+        .unwrap();
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        assert!(store.observe().hooks_all_tabs);
+        assert_eq!(store.data.schema_version, SETTINGS_SCHEMA_VERSION);
+        store
+            .set_observe(ObserveSettings {
+                hooks_all_tabs: false,
+            })
+            .unwrap();
+        let again = SettingsStore::open(dir.path()).unwrap();
+        assert!(!again.observe().hooks_all_tabs);
+    }
 
     #[test]
     fn worktree_setup_is_checked_and_auto_post_defaults_on() {

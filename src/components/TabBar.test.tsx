@@ -28,6 +28,29 @@ function bar(exited: string[] = []) {
   return props;
 }
 
+describe("TabBar activity dot", () => {
+  it("a plain Claude tab's dot is a button that asks for its usage; a run tab's is not", () => {
+    const onActivityClick = vi.fn();
+    render(
+      <TabBar
+        tabs={[tab("a", "Claude · a"), { ...tab("r", "Eagle-Eye · r"), role: "eagle-eye", runDir: "/d/r" }]}
+        activeTabId="a"
+        exited={new Set()}
+        activity={{ a: "working", r: "working" }}
+        onActivityClick={onActivityClick}
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onRename={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Claude working: show usage" }));
+    expect(onActivityClick).toHaveBeenCalledWith("a");
+    expect(screen.getAllByLabelText(/^Claude working/)).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /show usage/ })).toHaveLength(1);
+  });
+});
+
 describe("TabBar", () => {
   it("shows the tabs, the active one selected, and selects, closes and adds", () => {
     const props = bar(["b"]);

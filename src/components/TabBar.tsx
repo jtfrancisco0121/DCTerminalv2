@@ -12,10 +12,12 @@ type Props = {
   onNew: () => void;
   /** P3b: tab id → what its Claude does (`working`, `waiting`, `needs-you`). */
   activity?: Readonly<Record<string, string>>;
+  /** Click on the dot of a plain Claude tab (no run): shows its usage. */
+  onActivityClick?: (tabId: string) => void;
 };
 
 /** The window's tabs: click to show, double-click to rename, × to close, + for a new one. */
-export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename, onNew, activity }: Props) {
+export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename, onNew, activity, onActivityClick }: Props) {
   const [editing, setEditing] = useState<{ id: string; value: string } | null>(null);
 
   const commit = () => {
@@ -33,6 +35,8 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
         const classes = ["tab", active ? "tab-active" : "", exited.has(tab.id) ? "tab-exited" : ""]
           .filter(Boolean)
           .join(" ");
+        const showDot = Boolean(activity?.[tab.id]) && activity![tab.id] !== "unknown";
+        const clickableDot = Boolean(onActivityClick) && tab.kind === "claude" && !tab.role;
         return (
           <div key={tab.id} className={classes} title={tab.cwd}>
             {editing?.id === tab.id ? (
@@ -61,14 +65,23 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
                   {tab.kind === "claude" ? "✳" : "$"}
                 </span>
                 {tab.label}
-                {activity?.[tab.id] && activity[tab.id] !== "unknown" && (
+                {showDot && !clickableDot && (
                   <span
-                    className={`tab-activity tab-activity-${activity[tab.id]}`}
-                    title={activity[tab.id] === "needs-you" ? "Claude needs you" : `Claude is ${activity[tab.id]}`}
-                    aria-label={`Claude ${activity[tab.id]}`}
+                    className={`tab-activity tab-activity-${activity![tab.id]}`}
+                    title={activity![tab.id] === "needs-you" ? "Claude needs you" : `Claude is ${activity![tab.id]}`}
+                    aria-label={`Claude ${activity![tab.id]}`}
                   />
                 )}
               </button>
+            )}
+            {showDot && clickableDot && (
+              <button
+                type="button"
+                className={`tab-activity tab-activity-button tab-activity-${activity![tab.id]}`}
+                title={activity![tab.id] === "needs-you" ? "Claude needs you" : `Claude is ${activity![tab.id]}`}
+                aria-label={`Claude ${activity![tab.id]}: show usage`}
+                onClick={() => onActivityClick!(tab.id)}
+              />
             )}
             <button
               type="button"

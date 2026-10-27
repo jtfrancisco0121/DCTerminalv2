@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { activityText, checkLogPr, costText, tokensText, versionWarning } from "./observe";
+import { activityText, checkLogPr, costText, pollsActivity, tokensText, versionWarning } from "./observe";
+
+describe("pollsActivity", () => {
+  it("polls while any Claude tab exists, even with no run tab", () => {
+    expect(pollsActivity([{ kind: "claude" }])).toBe(true);
+    expect(pollsActivity([{ kind: "shell", role: "eagle-eye" }])).toBe(true);
+    expect(pollsActivity([{ kind: "shell" }])).toBe(false);
+    expect(pollsActivity([])).toBe(false);
+  });
+});
 
 describe("observe words", () => {
   it("formats tokens, cost and activity", () => {

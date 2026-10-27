@@ -27,6 +27,7 @@ import { resumeRun, type StartedRun } from "./run/api";
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
 import { TabBar } from "./components/TabBar";
+import { UsagePopover } from "./components/UsagePopover";
 import { destroyTerminal, TerminalView } from "./components/TerminalView";
 import { newTabDefaults, type NewTabDraft } from "./newTab";
 import { detectPlatform } from "./terminal/keys";
@@ -39,7 +40,7 @@ import { statusLimit } from "./usage/limits";
 import { keyAction, pageAction, type PageAction } from "./pageActions";
 import { ClaudeVersionBanner } from "./components/ClaudeVersionBanner";
 import { ImportDevDialog, useDevImport } from "./components/ImportDevDialog";
-import { observeTabs } from "./run/observe";
+import { observeTabs, pollsActivity } from "./run/observe";
 import "./App.css";
 
 /** How often the usage line is read again while nothing else asks. */
@@ -158,9 +159,11 @@ function App() {
 
   // P3b: what each tab's Claude does, from its hook events.
   const [activity, setActivity] = useState<Record<string, string>>({});
-  const hasDcv2Tab = (state?.tabs ?? []).some((tab) => Boolean(tab.role));
+  const [usageTab, setUsageTab] = useState<string | null>(null);
+  // Any Claude tab has hook state while "Track activity in every Claude tab" is on.
+  const hasClaudeTab = pollsActivity(state?.tabs ?? []);
   useEffect(() => {
-    if (!hasDcv2Tab) return;
+    if (!hasClaudeTab) return;
     const timer = window.setInterval(() => {
       observeTabs().then(
         (states) => setActivity(Object.fromEntries(Object.entries(states).map(([id, s]) => [id, s.activity]))),
@@ -168,7 +171,7 @@ function App() {
       );
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [hasDcv2Tab]);
+  }, [hasClaudeTab]);
 
   const resumeActiveRun = (runDir: string) => {
     resumeRun(windowId, runDir).then(
@@ -304,6 +307,7 @@ function App() {
           activeTabId={state.activeTabId}
           exited={exited}
           activity={activity}
+          onActivityClick={(id) => setUsageTab((current) => (current === id ? null : id))}
           onSelect={select}
           onClose={requestClose}
           onRename={rename}
@@ -313,6 +317,7 @@ function App() {
           }}
         />
       )}
+      {usageTab && <UsagePopover key={usageTab} tabId={usageTab} onClose={() => setUsageTab(null)} />}
       <section className="workspace-body">
         <ClaudeVersionBanner windowId={windowId} />
         {devImport.status && <ImportDevDialog status={devImport.status} onClose={devImport.close} />}

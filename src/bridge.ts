@@ -94,12 +94,18 @@ export type RunSettings = {
   autoCleanup?: boolean;
 };
 
+export type ObserveSettings = {
+  /** "Track activity in every Claude tab" (default on). */
+  hooksAllTabs: boolean;
+};
+
 export type SettingsView = {
   terminal: TerminalSettings;
   ui: UiSettings;
   claude: ClaudeSettings;
   /** Eagle-Eye launch settings; absent from older test fixtures. */
   run?: RunSettings;
+  observe?: ObserveSettings;
   /** Per account: auto-post ClickUp comments after ship approval (missing: on). */
   clickup?: { autoPost: Record<string, boolean> };
   accounts: ResolvedClaudeAccount[];
@@ -251,6 +257,10 @@ export function setUiSettings(ui: UiSettings): Promise<UiSettings> {
 
 export function setRunSettings(run: RunSettings): Promise<RunSettings> {
   return invoke<RunSettings>("set_run_settings", { run });
+}
+
+export function setObserveSettings(observe: ObserveSettings): Promise<ObserveSettings> {
+  return invoke<ObserveSettings>("set_observe_settings", { observe });
 }
 
 export function setClaudeSettings(claude: ClaudeSettings): Promise<SettingsView> {

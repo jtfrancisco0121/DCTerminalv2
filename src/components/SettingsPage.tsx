@@ -4,6 +4,7 @@ import {
   claudeAccountLogins,
   claudeStatus,
   setClaudeSettings,
+  setObserveSettings,
   setRunSettings,
   setTerminalSettings,
   setUiSettings,
@@ -116,6 +117,16 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
       setTerminal(saved);
       setNotice({ tone: "info", text: "Terminal settings saved." });
       onSaved({ ...view, terminal: saved });
+    } catch (err) {
+      setNotice({ tone: "error", text: errorText(err) });
+    }
+  };
+
+  const saveHooksAllTabs = async (hooksAllTabs: boolean) => {
+    try {
+      const observe = await setObserveSettings({ hooksAllTabs });
+      setNotice({ tone: "info", text: "Saved. New Claude tabs use it; open ones keep what they started with." });
+      onSaved({ ...view, observe });
     } catch (err) {
       setNotice({ tone: "error", text: errorText(err) });
     }
@@ -377,6 +388,21 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
             Save run settings
           </button>
         </div>
+      </section>
+
+      <section className="settings-section" aria-label="Activity">
+        <h2>Activity</h2>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={view.observe?.hooksAllTabs ?? true}
+            onChange={(event) => void saveHooksAllTabs(event.target.checked)}
+          />{" "}
+          Track activity in every Claude tab
+        </label>
+        <p className="hint">
+          Adds a small hook to every Claude tab so its dot shows working, waiting or needs you.
+        </p>
       </section>
 
       <section className="settings-section" aria-label="Appearance">

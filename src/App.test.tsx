@@ -73,6 +73,15 @@ vi.mock("./terminal/park", () => ({
   setOptionAsMeta: vi.fn(),
   setTerminalTheme: vi.fn(),
 }));
+vi.mock("./run/observe", async () => {
+  const actual = await vi.importActual<typeof import("./run/observe")>("./run/observe");
+  return {
+    ...actual,
+    observeTabs: vi.fn(async () => ({})),
+    observeTab: vi.fn(async () => Promise.reject(new Error("no hook state"))),
+    claudeVersionStatus: vi.fn(async () => ({ version: null, range: "ok", min: "", maxTested: "", selftest: null, selftestWanted: false })),
+  };
+});
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn(async () => {}) }));
 

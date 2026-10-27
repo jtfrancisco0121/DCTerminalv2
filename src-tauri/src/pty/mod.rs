@@ -597,9 +597,13 @@ fn spawn_spec(
         let account = state.account_for_tab(&tab.id);
         (tab, account)
     };
-    let (shell, claude) = {
+    let (shell, claude, hooks_all_tabs) = {
         let settings = settings.lock().map_err(|err| err.to_string())?;
-        (settings.terminal().shell.clone(), settings.claude().clone())
+        (
+            settings.terminal().shell.clone(),
+            settings.claude().clone(),
+            settings.observe().hooks_all_tabs,
+        )
     };
     let cwd = validate_working_folder(&tab.cwd).map_err(|err| err.message())?;
     // `None` once the window's account was removed from Settings.
@@ -636,8 +640,11 @@ fn spawn_spec(
             };
             let usage = usage_status_line(app, &tab.id, &current, &cwd);
             let launch = tab.launch.as_ref();
-            // A2: dcv2 tabs also get the hook forwarder (per-launch token).
-            let hooks = launch.and_then(|_| crate::observe::launch_hooks(app, &tab.id));
+            // A2: dcv2 tabs also get the hook forwarder (per-launch token);
+            // so does every Claude tab while `observe.hooksAllTabs` is on.
+            let hooks = wants_hooks(tab.kind, launch.is_some(), hooks_all_tabs)
+                .then(|| crate::observe::launch_hooks(app, &tab.id))
+                .flatten();
             hook_token = hooks.as_ref().map(|h| h.2.clone());
             let app_settings = crate::observe::with_hooks(usage, hooks.as_ref().map(|h| &h.0));
             let settings = crate::run::launch::merged_settings(
@@ -673,6 +680,12 @@ fn spawn_spec(
         remember,
         hook_token,
     })
+}
+
+/// Whether a Claude tab gets the hook forwarder: a run's launched tab always,
+/// any other Claude tab while the setting is on. A Shell tab never does.
+fn wants_hooks(kind: TabKind, has_launch: bool, hooks_all_tabs: bool) -> bool {
+    kind == TabKind::Claude && (has_launch || hooks_all_tabs)
 }
 
 /// The id after `--resume` in a Claude command line.
@@ -802,6 +815,19 @@ pub fn kill_tab_pty(registry: &Mutex<PtyRegistry>, tab_id: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hooks_follow_the_launch_the_setting_and_the_kind() {
+        use super::wants_hooks;
+        use crate::store::TabKind::{Claude, Shell};
+        // (kind, launched, setting on) -> hooks
+        assert!(wants_hooks(Claude, true, false));
+        assert!(wants_hooks(Claude, true, true));
+        assert!(wants_hooks(Claude, false, true));
+        assert!(!wants_hooks(Claude, false, false));
+        assert!(!wants_hooks(Shell, true, true));
+        assert!(!wants_hooks(Shell, false, true));
+    }
+
     use super::*;
 
     #[test]

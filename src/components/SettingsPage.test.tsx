@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SettingsView } from "../bridge";
 
 const setRunSettings = vi.fn(async (run: unknown) => run);
+const setObserveSettings = vi.fn(async (observe: unknown) => observe);
 const setClaudeSettings = vi.fn(async (claude: SettingsView["claude"]) => ({ ...view(), claude }));
 vi.mock("../bridge", () => ({
   claudeStatus: vi.fn(async () => ({ found: true, path: "/opt/homebrew/bin/claude", version: "2.1.287", error: null })),
@@ -19,6 +20,7 @@ vi.mock("../bridge", () => ({
   setTerminalSettings: vi.fn(async (terminal: unknown) => terminal),
   setUiSettings: vi.fn(async (ui: unknown) => ui),
   setRunSettings: (run: unknown) => setRunSettings(run),
+  setObserveSettings: (observe: unknown) => setObserveSettings(observe),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
 
@@ -40,6 +42,18 @@ function view(): SettingsView {
     configDirEnv: null,
   };
 }
+
+describe("SettingsPage activity", () => {
+  it("the all-tabs hook switch is on by default and saves when turned off", async () => {
+    const onSaved = vi.fn();
+    render(<SettingsPage view={view()} onSaved={onSaved} onClose={() => {}} />);
+    const box = screen.getByRole("checkbox", { name: /Track activity in every Claude tab/ }) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    fireEvent.click(box);
+    await waitFor(() => expect(setObserveSettings).toHaveBeenCalledWith({ hooksAllTabs: false }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  });
+});
 
 describe("SettingsPage", () => {
   it("adds an account with a safe id and saves the list", async () => {
