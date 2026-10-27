@@ -57,6 +57,19 @@ function view(): SettingsView {
   };
 }
 
+describe("SettingsPage editor", () => {
+  it("saves the editor command with the rest of the UI settings", async () => {
+    const setUi = (await import("../bridge")).setUiSettings as unknown as ReturnType<typeof vi.fn>;
+    render(<SettingsPage view={view()} onSaved={() => {}} onClose={() => {}} />);
+    const input = screen.getByRole("textbox", { name: "Editor command" });
+    fireEvent.change(input, { target: { value: "cursor --new-window" } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(setUi).toHaveBeenCalledWith({ theme: "github-dark", editorCommand: "cursor --new-window" }),
+    );
+  });
+});
+
 describe("SettingsPage phone push", () => {
   const withPush = (target: string): SettingsView => ({
     ...view(),

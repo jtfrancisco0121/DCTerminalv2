@@ -100,6 +100,44 @@ pub fn expected_worktree(repo: &Path, run_id: &str, pr_id: &str) -> Option<PathB
     )
 }
 
+/// The worktree of `pr_id`, canonical, only when it passes
+/// [`verify_worktree`] (where the contract puts it, a linked worktree of
+/// the PR's repo, on the run's branch). What the PR card's Reveal, editor
+/// and shell actions act on; never a path the page or the skill hands over
+/// by itself.
+pub fn verified_worktree(run_dir: &Path, pr_id: &str) -> Result<PathBuf, String> {
+    let run_id = run_id_of(run_dir);
+    let (_, worktree, repo, _) = recorded(run_dir)
+        .into_iter()
+        .find(|(id, ..)| id == pr_id)
+        .ok_or_else(|| "no worktree is recorded for this PR".to_string())?;
+    verify_worktree(&run_id, pr_id, &worktree, repo.as_deref())?;
+    Ok(canonical(&worktree))
+}
+
+/// One PR's worktree, verified or not, for the PR card's buttons.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeCheck {
+    pub pr_id: String,
+    pub verified: bool,
+    pub reason: Option<String>,
+}
+
+pub fn check_worktrees(run_dir: &Path) -> Vec<WorktreeCheck> {
+    recorded(run_dir)
+        .into_iter()
+        .map(|(id, ..)| {
+            let verdict = verified_worktree(run_dir, &id);
+            WorktreeCheck {
+                verified: verdict.is_ok(),
+                reason: verdict.err(),
+                pr_id: id,
+            }
+        })
+        .collect()
+}
+
 /// The status.json / .guard.json paths are written by an LLM-driven skill,
 /// so a worktree is trusted only when it is exactly where the contract puts
 /// it, a linked worktree of that repo, on the run's branch for that PR.

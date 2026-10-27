@@ -12,6 +12,6 @@ pub use settings::{
 };
 #[cfg(test)]
 pub(crate) use tabs::close_tab_then_kill;
+pub(crate) use tabs::{add_tab, summary as tab_summary, TabSummary};
 pub use tabs::{close_tab, get_app_state, new_tab, rename_tab, reopen_closed_tab, select_tab};
-pub(crate) use tabs::{summary as tab_summary, TabSummary};
 pub use usage::get_claude_usage;

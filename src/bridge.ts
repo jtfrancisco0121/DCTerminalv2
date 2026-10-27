@@ -65,7 +65,11 @@ export type TerminalSettings = {
   copyOnSelect: boolean;
 };
 
-export type UiSettings = { theme: string };
+export type UiSettings = {
+  theme: string;
+  /** "Open in editor" on a PR card: program and arguments, no shell. Empty: `code`. */
+  editorCommand?: string;
+};
 
 export type ClaudeAccount = {
   id: string;

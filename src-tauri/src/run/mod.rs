@@ -7,6 +7,7 @@
 //! thread with no store lock held; the stores are locked only to copy
 //! settings out and to add the tab.
 
+pub mod actions;
 pub mod afk;
 pub mod check;
 pub mod cleanup;

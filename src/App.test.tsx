@@ -124,6 +124,8 @@ vi.mock("./run/api", () => ({
     hasReport: false,
   })),
   rerunChecks: vi.fn(async () => {}),
+  prWorktreeChecks: vi.fn(async () => []),
+  prWorktreeAction: vi.fn(async () => null),
   runWorktrees: vi.fn(async () => []),
   removeRunWorktrees: vi.fn(async () => []),
   readRunFile: vi.fn(async () => ""),

@@ -221,6 +221,18 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
     webhook: [{ name: "webhook-url", label: "Webhook URL" }],
   };
 
+  const [editor, setEditor] = useState(view.ui.editorCommand ?? "");
+
+  const saveEditor = async () => {
+    try {
+      const ui = await setUiSettings({ ...view.ui, editorCommand: editor });
+      setEditor(ui.editorCommand ?? "");
+      onSaved({ ...view, ui });
+    } catch (err) {
+      setNotice({ tone: "error", text: errorText(err) });
+    }
+  };
+
   const saveHooksAllTabs = async (hooksAllTabs: boolean) => {
     try {
       const observe = await setObserveSettings({ hooksAllTabs });
@@ -233,7 +245,7 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
 
   const saveTheme = async (theme: string) => {
     try {
-      const ui = await setUiSettings({ theme });
+      const ui = await setUiSettings({ ...view.ui, theme });
       onSaved({ ...view, ui });
     } catch (err) {
       setNotice({ tone: "error", text: errorText(err) });
@@ -487,6 +499,17 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
             Save run settings
           </button>
         </div>
+        <label className="field-label">
+          Editor for “Open in editor” on a PR (program and arguments; empty: code)
+          <input
+            className="text-input"
+            aria-label="Editor command"
+            placeholder="code"
+            value={editor}
+            onChange={(event) => setEditor(event.target.value)}
+            onBlur={() => void saveEditor()}
+          />
+        </label>
       </section>
 
       <section className="settings-section" aria-label="Activity">

@@ -381,6 +381,8 @@ function App() {
               tabId={active.id}
               onResume={() => resumeActiveRun(active.runDir!)}
               onGoToPrompt={() => focusParkedTerminal(active.id)}
+              windowId={windowId}
+              onTabsChanged={() => void reload()}
             />
           </div>
         )}

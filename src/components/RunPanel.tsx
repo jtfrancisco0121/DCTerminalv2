@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  prWorktreeAction,
+  prWorktreeChecks,
   readRun,
   readRunFile,
   removeRunWorktrees,
@@ -8,6 +10,8 @@ import {
   runWorktrees,
   type BmadView,
   type PrView,
+  type PrWorktreeAction,
+  type WorktreeCheck,
   type RemoveResult,
   type RunView,
   type WorktreeItem,
@@ -47,9 +51,35 @@ type ViewProps = {
   session?: ReactNode;
   /** Focus the tab's terminal, where the question is asked. */
   onGoToPrompt?: () => void;
+  /** Each PR's worktree check (undefined until it is known). */
+  worktrees?: Readonly<Record<string, WorktreeCheck>>;
+  onPrAction?: (prId: string, action: PrWorktreeAction) => void;
+  onCopyBranch?: (branch: string) => void;
 };
 
-function PrRow({ pr, onOpenFile, onOpenUrl }: { pr: PrView } & Pick<ViewProps, "onOpenFile" | "onOpenUrl">) {
+type PrActionProps = Pick<ViewProps, "worktrees" | "onPrAction" | "onCopyBranch">;
+
+function PrRow({
+  pr,
+  onOpenFile,
+  onOpenUrl,
+  worktrees,
+  onPrAction,
+  onCopyBranch,
+}: { pr: PrView } & Pick<ViewProps, "onOpenFile" | "onOpenUrl"> & PrActionProps) {
+  const wt = worktrees?.[pr.id];
+  const why = !wt ? "Checking the worktree…" : wt.verified ? undefined : (wt.reason ?? "The worktree is not verified.");
+  const act = (action: PrWorktreeAction, label: string) => (
+    <button
+      type="button"
+      className="link-button"
+      disabled={!wt?.verified || !onPrAction}
+      title={why}
+      onClick={() => onPrAction?.(pr.id, action)}
+    >
+      {label}
+    </button>
+  );
   const url = safeUrl(pr.prUrl);
   const stories = storiesText(pr);
   const review = reviewText(pr);
@@ -104,6 +134,16 @@ function PrRow({ pr, onOpenFile, onOpenUrl }: { pr: PrView } & Pick<ViewProps, "
         </div>
       )}
       {pr.note && <div className="run-pr-note">{pr.note}</div>}
+      <div className="run-pr-actions" data-testid={`actions-${pr.id}`}>
+        {pr.branch && (
+          <button type="button" className="link-button" onClick={() => onCopyBranch?.(pr.branch!)}>
+            Copy branch
+          </button>
+        )}
+        {pr.worktree && act("reveal", "Reveal")}
+        {pr.worktree && act("editor", "Open in editor")}
+        {pr.worktree && act("shell", "Shell here")}
+      </div>
       {url && (
         <button type="button" className="link-button" onClick={() => onOpenUrl(url)}>
           {badge === "draft" ? "Open draft PR" : "Open PR"}
@@ -183,7 +223,7 @@ function BmadSection({
 }
 
 /** The progress panel for one run, drawn from a read of its folder. */
-export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt }: ViewProps) {
+export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch }: ViewProps) {
   const timeline = view.timeline.slice(-30).reverse();
   return (
     <aside className="run-panel" aria-label="Run progress">
@@ -220,7 +260,15 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
       {view.prs.length > 0 && (
         <ul className="run-prs">
           {view.prs.map((pr) => (
-            <PrRow key={pr.id} pr={pr} onOpenFile={onOpenFile} onOpenUrl={onOpenUrl} />
+            <PrRow
+              key={pr.id}
+              pr={pr}
+              onOpenFile={onOpenFile}
+              onOpenUrl={onOpenUrl}
+              worktrees={worktrees}
+              onPrAction={onPrAction}
+              onCopyBranch={onCopyBranch}
+            />
           ))}
         </ul>
       )}
@@ -360,12 +408,18 @@ export function RunPanel({
   tabId,
   onResume,
   onGoToPrompt,
+  windowId,
+  onTabsChanged,
 }: {
   runDir: string;
   tabId?: string;
   onResume?: () => void;
   /** Focus the tab's terminal (the approval card's Go to prompt). */
   onGoToPrompt?: () => void;
+  /** The window a "Shell here" tab opens in. */
+  windowId?: string;
+  /** A tab was added (Shell here): the window reads its tabs again. */
+  onTabsChanged?: () => void;
 }) {
   const [view, setView] = useState<RunView | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -375,6 +429,7 @@ export function RunPanel({
     null,
   );
   const autoChecked = useRef<string | null>(null);
+  const [worktrees, setWorktrees] = useState<Record<string, WorktreeCheck>>();
 
   const load = useCallback(
     () =>
@@ -427,6 +482,34 @@ export function RunPanel({
     rerun();
   }, [view, checking, rerun]);
 
+  // Which worktrees the backend would act on: read again when a PR's
+  // worktree or state changes, not on every poll (it runs git).
+  const worktreeKey = view ? view.prs.map((pr) => `${pr.id}|${pr.worktree ?? ""}|${pr.state ?? ""}`).join(";") : "";
+  useEffect(() => {
+    if (!worktreeKey) return;
+    let current = true;
+    prWorktreeChecks(runDir).then(
+      (list) => current && setWorktrees(Object.fromEntries(list.map((item) => [item.prId, item]))),
+      () => undefined,
+    );
+    return () => {
+      current = false;
+    };
+  }, [runDir, worktreeKey]);
+
+  const prAction = (prId: string, action: PrWorktreeAction) => {
+    prWorktreeAction(runDir, prId, action, windowId).then(
+      () => {
+        if (action === "shell") onTabsChanged?.();
+      },
+      (err: unknown) => setProblem(errorText(err)),
+    );
+  };
+
+  const copyBranch = (branch: string) => {
+    navigator.clipboard.writeText(branch).catch((err: unknown) => setProblem(errorText(err)));
+  };
+
   const openFile = (path: string, title: string) => {
     // A4: the app's check output is shown trimmed (ANSI, redraws, middle).
     const pr = checkLogPr(path);
@@ -469,6 +552,9 @@ export function RunPanel({
         onOpenUrl={(url) => void openUrl(url).catch((err: unknown) => setProblem(errorText(err)))}
         onCleanUp={openJanitor}
         onGoToPrompt={onGoToPrompt}
+        worktrees={worktrees}
+        onPrAction={prAction}
+        onCopyBranch={copyBranch}
         session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} /> : undefined}
         extra={<ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} />}
       />

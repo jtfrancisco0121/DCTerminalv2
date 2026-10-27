@@ -228,6 +228,13 @@ export const resumeRun = (windowId: string, runDir: string) => invoke<StartedRun
 export const readRun = (runDir: string) => invoke<RunView>("read_run", { runDir });
 export const rerunChecks = (runDir: string) => invoke<void>("rerun_checks", { runDir });
 export const runWorktrees = (runDir: string) => invoke<WorktreeItem[]>("run_worktrees", { runDir });
+/** Whether each PR's worktree passes the backend's check (where the contract puts it, on the run's branch). */
+export type WorktreeCheck = { prId: string; verified: boolean; reason: string | null };
+export const prWorktreeChecks = (runDir: string) => invoke<WorktreeCheck[]>("pr_worktree_checks", { runDir });
+export type PrWorktreeAction = "reveal" | "editor" | "shell";
+/** `shell` opens a Shell tab in `windowId` and resolves to it. */
+export const prWorktreeAction = (runDir: string, prId: string, action: PrWorktreeAction, windowId?: string) =>
+  invoke<TabSummary | null>("pr_worktree_action", { runDir, prId, action, windowId });
 export const removeRunWorktrees = (runDir: string, prIds: string[]) =>
   invoke<RemoveResult[]>("remove_run_worktrees", { runDir, prIds });
 export const readRunFile = (runDir: string, path: string) => invoke<string>("read_run_file", { runDir, path });

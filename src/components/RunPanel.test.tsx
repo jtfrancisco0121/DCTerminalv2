@@ -20,6 +20,69 @@ function renderPanel(overrides: Partial<RunView> = {}) {
   return handlers;
 }
 
+describe("PR card actions", () => {
+  const handlers = () => ({
+    onRerunChecks: vi.fn(),
+    onOpenFile: vi.fn(),
+    onOpenUrl: vi.fn(),
+    onCleanUp: vi.fn(),
+    onPrAction: vi.fn(),
+    onCopyBranch: vi.fn(),
+  });
+
+  it("copies the branch and acts on a verified worktree", () => {
+    const h = handlers();
+    render(
+      <RunPanelView
+        view={view}
+        checking={false}
+        worktrees={{ PR1: { prId: "PR1", verified: true, reason: null } }}
+        {...h}
+      />,
+    );
+    const actions = within(screen.getByTestId("actions-PR1"));
+    fireEvent.click(actions.getByText("Copy branch"));
+    expect(h.onCopyBranch).toHaveBeenCalledWith("dcv2/r-20261022-1304-pr1");
+    fireEvent.click(actions.getByText("Reveal"));
+    fireEvent.click(actions.getByText("Open in editor"));
+    fireEvent.click(actions.getByText("Shell here"));
+    expect(h.onPrAction.mock.calls).toEqual([
+      ["PR1", "reveal"],
+      ["PR1", "editor"],
+      ["PR1", "shell"],
+    ]);
+    // A PR with no branch or worktree has no actions.
+    expect(within(screen.getByTestId("actions-PR2")).queryByText("Copy branch")).toBeNull();
+    expect(within(screen.getByTestId("actions-PR2")).queryByText("Reveal")).toBeNull();
+  });
+
+  it("disables the worktree actions with the reason when the worktree is not verified", () => {
+    const h = handlers();
+    render(
+      <RunPanelView
+        view={view}
+        checking={false}
+        worktrees={{ PR1: { prId: "PR1", verified: false, reason: "not where this run's worktrees go" } }}
+        {...h}
+      />,
+    );
+    const reveal = within(screen.getByTestId("actions-PR1")).getByText("Reveal") as HTMLButtonElement;
+    expect(reveal.disabled).toBe(true);
+    expect(reveal.title).toBe("not where this run's worktrees go");
+    fireEvent.click(reveal);
+    expect(h.onPrAction).not.toHaveBeenCalled();
+    // Copying the branch needs no worktree.
+    expect((within(screen.getByTestId("actions-PR1")).getByText("Copy branch") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("waits for the check before enabling anything", () => {
+    render(<RunPanelView view={view} checking={false} {...handlers()} />);
+    const reveal = within(screen.getByTestId("actions-PR1")).getByText("Reveal") as HTMLButtonElement;
+    expect(reveal.disabled).toBe(true);
+    expect(reveal.title).toBe("Checking the worktree…");
+  });
+});
+
 describe("RunPanelView", () => {
   it("shows a draft/ready badge and a link per review-round comment", () => {
     const handlers = renderPanel();

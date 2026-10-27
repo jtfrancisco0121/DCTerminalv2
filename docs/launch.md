@@ -98,6 +98,8 @@ One backend thread, `observe/attention.rs`, started at app setup (never from a c
 
 - **Phone push** (`observe/push.rs`, Settings › Phone push). Target `ntfy` (POST `<server>/<topic>`), `pushover` (POST api.pushover.net) or `webhook` (POST JSON). A push carries exactly `run` and `event` (the run id and the kind: stall, check-failed, merged-cleaned, autopost-failed; each has its own switch) and nothing else. The ntfy topic, Pushover token and user key and the webhook URL are in the keychain (service `com.jtfrancisco.dcterminalv2.push`); settings.json holds only the target, the ntfy server and the switches. Addresses must be https (http only for this machine). Sending is on a worker thread of its own with a bounded queue, 10 s per call and one retry, so a slow push never delays the detector; failures are logged. "Send test" reports the result inline.
 
+- **PR card actions** (`run/actions.rs`). Copy branch (the page), and Reveal, Open in editor and Shell here on a PR's worktree. The backend resolves the worktree from the run and PR id and acts only when `janitor::verify_worktree` accepts it (where the contract puts it, a linked worktree of the PR's repo, on the run's branch); otherwise the buttons are disabled with the reason. The editor is `ui.editorCommand` (empty: `code`), split into program and arguments and started without a shell with the worktree last. Shell here opens a Shell tab in the calling window.
+
 ## Import from the dev app (release builds)
 
 Debug builds keep their data in `<identifier>.dev`, release builds in `<identifier>`. On first launch (offered once; `dev-import.json` records it) and from File › "Import from dev app…" (hidden in debug builds) the built app imports the dev app's session, reading `.dev` only:

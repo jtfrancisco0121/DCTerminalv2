@@ -181,6 +181,8 @@ pub fn run() {
             observe::notify::send_test_notification,
             observe::notify::notification_permission,
             run::focus_tab_command,
+            run::actions::pr_worktree_checks,
+            run::actions::pr_worktree_action,
             run::run_overview,
             run::detect_folder_repos,
             run::set_repo_setup,

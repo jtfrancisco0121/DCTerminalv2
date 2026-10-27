@@ -223,7 +223,14 @@ fn clean_optional_path(value: Option<String>, what: &str) -> Result<Option<Strin
 pub struct UiSettings {
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// "Open in editor" on a PR card: a program and its arguments, run
+    /// without a shell with the worktree last. Empty: `code`.
+    #[serde(default)]
+    pub editor_command: String,
 }
+
+/// The editor when the setting is empty.
+pub const DEFAULT_EDITOR: &str = "code";
 
 pub const UI_THEMES: &[&str] = &[
     "github-dark",
@@ -243,6 +250,7 @@ impl Default for UiSettings {
     fn default() -> Self {
         Self {
             theme: default_theme(),
+            editor_command: String::new(),
         }
     }
 }
@@ -663,7 +671,14 @@ impl SettingsStore {
         } else {
             default_theme()
         };
-        self.data.ui = UiSettings { theme };
+        let editor_command = next.editor_command.trim().to_string();
+        if editor_command.chars().count() > 300 || editor_command.contains(['\n', '\r', '\0']) {
+            return Err("The editor command must be one line (at most 300 characters).".into());
+        }
+        self.data.ui = UiSettings {
+            theme,
+            editor_command,
+        };
         self.save()
     }
 }
@@ -691,6 +706,28 @@ mod tests {
             .unwrap();
         let again = SettingsStore::open(dir.path()).unwrap();
         assert!(!again.observe().hooks_all_tabs);
+    }
+
+    #[test]
+    fn the_editor_command_defaults_empty_and_is_kept_with_the_theme() {
+        let dir = TempDir::new("settings_editor");
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(store.ui().editor_command, "");
+        store
+            .set_ui(UiSettings {
+                theme: "nord".into(),
+                editor_command: "  cursor --new-window ".into(),
+            })
+            .unwrap();
+        assert_eq!(store.ui().editor_command, "cursor --new-window");
+        assert!(store
+            .set_ui(UiSettings {
+                theme: "nord".into(),
+                editor_command: "code\nrm -rf".into(),
+            })
+            .is_err());
+        let again = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(again.ui().editor_command, "cursor --new-window");
     }
 
     #[test]
@@ -962,6 +999,7 @@ mod tests {
         store
             .set_ui(UiSettings {
                 theme: "no-such-theme".into(),
+                ..UiSettings::default()
             })
             .unwrap();
         let again = SettingsStore::open(dir.path()).unwrap();
