@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { ResolvedClaudeAccount } from "../bridge";
 import { Dialog } from "./Dialog";
 import { errorText } from "./InlineNotice";
@@ -29,13 +29,24 @@ export function AccountPicker({
     accounts.some((account) => account.id === current) ? current : (accounts[0]?.id ?? ""),
   );
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  // State updates land after the click handler returns, so two clicks in
+  // one tick would both see busy=false; the ref closes that gap.
+  const submitting = useRef(false);
 
   const submit = async () => {
+    if (submitting.current) return;
+    submitting.current = true;
+    setBusy(true);
+    setError(null);
     try {
       await onOpen(choice);
       onClose();
     } catch (err) {
       setError(errorText(err));
+    } finally {
+      submitting.current = false;
+      setBusy(false);
     }
   };
 
@@ -48,7 +59,7 @@ export function AccountPicker({
           <button type="button" className="secondary-button" onClick={onClose}>
             Cancel
           </button>
-          <button type="button" className="primary-button" disabled={!choice} onClick={() => void submit()}>
+          <button type="button" className="primary-button" disabled={!choice || busy} onClick={() => void submit()}>
             {submitLabel}
           </button>
         </>
