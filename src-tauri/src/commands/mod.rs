@@ -7,7 +7,8 @@ mod usage;
 
 pub use settings::{
     claude_account_logins, claude_status, get_settings, set_claude_settings, set_notify_settings,
-    set_observe_settings, set_run_settings, set_terminal_settings, set_ui_settings,
+    set_observe_settings, set_push_settings, set_run_settings, set_terminal_settings,
+    set_ui_settings,
 };
 #[cfg(test)]
 pub(crate) use tabs::close_tab_then_kill;

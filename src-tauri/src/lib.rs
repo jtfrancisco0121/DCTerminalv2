@@ -24,7 +24,8 @@ mod windows;
 use commands::{
     claude_account_logins, claude_status, close_tab, get_app_state, get_claude_usage, get_settings,
     new_tab, rename_tab, reopen_closed_tab, select_tab, set_claude_settings, set_notify_settings,
-    set_observe_settings, set_run_settings, set_terminal_settings, set_ui_settings,
+    set_observe_settings, set_push_settings, set_run_settings, set_terminal_settings,
+    set_ui_settings,
 };
 use pty::{
     pty_kill, pty_open, pty_resize, pty_set_scheme, pty_write, terminal_resume_id, PtyRegistry,
@@ -138,9 +139,11 @@ pub fn run() {
             run::spawn_prune_launch_prompts(app.handle());
             clickup::commands::spawn_auto_post_sweep(app.handle());
             run::afk::spawn_afk_sweeps(app.handle());
+            let push = std::sync::Arc::new(observe::push::PushClient::real());
+            app.manage(observe::notify::PushHandle(push.clone()));
             observe::attention::spawn(
                 app.handle(),
-                Box::new(observe::notify::AppNotifier::new(app.handle())),
+                Box::new(observe::notify::AppNotifier::new(app.handle(), push)),
             );
             Ok(())
         })
@@ -171,6 +174,10 @@ pub fn run() {
             set_run_settings,
             set_observe_settings,
             set_notify_settings,
+            set_push_settings,
+            observe::push::push_status,
+            observe::push::push_set_secret,
+            observe::push::push_send_test,
             observe::notify::send_test_notification,
             observe::notify::notification_permission,
             run::focus_tab_command,

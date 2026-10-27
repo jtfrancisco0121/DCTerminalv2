@@ -7,6 +7,10 @@ const setRunSettings = vi.fn(async (run: unknown) => run);
 const setObserveSettings = vi.fn(async (observe: unknown) => observe);
 const setNotifySettings = vi.fn(async (notify: unknown) => notify);
 const sendTestNotification = vi.fn(async () => {});
+const setPushSettings = vi.fn(async (push: unknown) => push);
+const pushStatus = vi.fn(async () => ({ saved: [] as string[] }));
+const pushSetSecret = vi.fn(async (_name: string, _value: string) => ({ saved: ["ntfy-topic"] }));
+const pushSendTest = vi.fn(async () => {});
 const notificationPermission = vi.fn(async () => "granted");
 const setClaudeSettings = vi.fn(async (claude: SettingsView["claude"]) => ({ ...view(), claude }));
 vi.mock("../bridge", () => ({
@@ -27,6 +31,10 @@ vi.mock("../bridge", () => ({
   setNotifySettings: (notify: unknown) => setNotifySettings(notify),
   sendTestNotification: () => sendTestNotification(),
   notificationPermission: () => notificationPermission(),
+  setPushSettings: (push: unknown) => setPushSettings(push),
+  pushStatus: () => pushStatus(),
+  pushSetSecret: (name: string, value: string) => pushSetSecret(name, value),
+  pushSendTest: () => pushSendTest(),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
 
@@ -48,6 +56,43 @@ function view(): SettingsView {
     configDirEnv: null,
   };
 }
+
+describe("SettingsPage phone push", () => {
+  const withPush = (target: string): SettingsView => ({
+    ...view(),
+    push: { target, ntfyServer: "https://ntfy.sh", events: {} },
+  });
+
+  it("saves a secret to the keychain only, and shows the test result inline", async () => {
+    render(<SettingsPage view={withPush("ntfy")} onSaved={() => {}} onClose={() => {}} />);
+    const topic = screen.getByLabelText("ntfy topic") as HTMLInputElement;
+    fireEvent.change(topic, { target: { value: "my-secret-topic" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save ntfy topic" }));
+    await waitFor(() => expect(pushSetSecret).toHaveBeenCalledWith("ntfy-topic", "my-secret-topic"));
+    await waitFor(() => expect((screen.getByLabelText("ntfy topic") as HTMLInputElement).value).toBe(""));
+    expect(setPushSettings).not.toHaveBeenCalledWith(expect.objectContaining({ ntfyTopic: expect.anything() }));
+    fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+    expect(await screen.findByText("Test push sent.")).toBeTruthy();
+    pushSendTest.mockRejectedValueOnce(new Error("the server answered 500"));
+    fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+    expect(await screen.findByText("the server answered 500")).toBeTruthy();
+  });
+
+  it("offers one switch per app-only event and no push controls while off", async () => {
+    const { unmount } = render(<SettingsPage view={withPush("none")} onSaved={() => {}} onClose={() => {}} />);
+    expect(screen.queryByRole("button", { name: "Send test" })).toBeNull();
+    unmount();
+    render(<SettingsPage view={withPush("webhook")} onSaved={() => {}} onClose={() => {}} />);
+    fireEvent.click(screen.getAllByRole("checkbox", { name: /A PR's check failed/ })[1]);
+    await waitFor(() =>
+      expect(setPushSettings).toHaveBeenCalledWith({
+        target: "webhook",
+        ntfyServer: "https://ntfy.sh",
+        events: { "check-failed": false },
+      }),
+    );
+  });
+});
 
 describe("SettingsPage notifications", () => {
   it("saves the master switch and one event switch, and the test button sends a test", async () => {

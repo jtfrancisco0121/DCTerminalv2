@@ -105,6 +105,16 @@ export type NotifySettings = {
   events: Record<string, boolean>;
 };
 
+/** Phone push: where it goes. The secrets live in the keychain and are never here. */
+export type PushSettings = {
+  /** `none`, `ntfy`, `pushover` or `webhook`. */
+  target: string;
+  ntfyServer: string;
+  events: Record<string, boolean>;
+};
+
+export type PushStatus = { saved: string[] };
+
 export type SettingsView = {
   terminal: TerminalSettings;
   ui: UiSettings;
@@ -113,6 +123,7 @@ export type SettingsView = {
   run?: RunSettings;
   observe?: ObserveSettings;
   notify?: NotifySettings;
+  push?: PushSettings;
   /** Per account: auto-post ClickUp comments after ship approval (missing: on). */
   clickup?: { autoPost: Record<string, boolean> };
   accounts: ResolvedClaudeAccount[];
@@ -287,6 +298,25 @@ export function notificationPermission(): Promise<string> {
 /** Selects the tab in its window and brings that window forward (null: the tab is gone). */
 export function focusTab(tabId: string): Promise<TabSummary | null> {
   return invoke<TabSummary | null>("focus_tab_command", { tabId });
+}
+
+export function setPushSettings(push: PushSettings): Promise<PushSettings> {
+  return invoke<PushSettings>("set_push_settings", { push });
+}
+
+/** Which push secrets are saved (names only). */
+export function pushStatus(): Promise<PushStatus> {
+  return invoke<PushStatus>("push_status");
+}
+
+/** Saves one push secret in the keychain; an empty value clears it. */
+export function pushSetSecret(name: string, value: string): Promise<PushStatus> {
+  return invoke<PushStatus>("push_set_secret", { name, value });
+}
+
+/** Sends one push; rejects with the reason when it did not arrive. */
+export function pushSendTest(): Promise<void> {
+  return invoke<void>("push_send_test");
 }
 
 export function setClaudeSettings(claude: ClaudeSettings): Promise<SettingsView> {

@@ -293,6 +293,42 @@ impl NotifySettings {
     }
 }
 
+/// Where phone pushes go (`observe/push.rs`). The ntfy topic, the Pushover
+/// token and user key and the webhook URL are secrets: they live in the
+/// keychain, never here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PushSettings {
+    /// `none`, `ntfy`, `pushover` or `webhook`.
+    #[serde(default = "default_push_target")]
+    pub target: String,
+    /// The ntfy server (the topic is the secret).
+    #[serde(default = "default_ntfy_server")]
+    pub ntfy_server: String,
+    /// App-only event kinds → on (missing: on): stall, check-failed,
+    /// merged-cleaned, autopost-failed.
+    #[serde(default)]
+    pub events: std::collections::BTreeMap<String, bool>,
+}
+
+fn default_push_target() -> String {
+    "none".to_string()
+}
+
+fn default_ntfy_server() -> String {
+    "https://ntfy.sh".to_string()
+}
+
+impl Default for PushSettings {
+    fn default() -> Self {
+        Self {
+            target: default_push_target(),
+            ntfy_server: default_ntfy_server(),
+            events: Default::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsFile {
@@ -309,6 +345,8 @@ pub struct SettingsFile {
     pub observe: ObserveSettings,
     #[serde(default)]
     pub notify: NotifySettings,
+    #[serde(default)]
+    pub push: PushSettings,
     /// ClickUp: per-account switches (auto-post after ship approval).
     #[serde(default)]
     pub clickup: ClickUpSettings,
@@ -459,6 +497,7 @@ impl Default for SettingsFile {
             run: RunSettings::default(),
             observe: ObserveSettings::default(),
             notify: NotifySettings::default(),
+            push: PushSettings::default(),
             clickup: ClickUpSettings::default(),
             worktree_setup: Default::default(),
         }
@@ -555,6 +594,27 @@ impl SettingsStore {
         next.events
             .retain(|kind, _| crate::observe::attention::Kind::from_key(kind).is_some());
         self.data.notify = next;
+        self.save()
+    }
+
+    pub fn push(&self) -> &PushSettings {
+        &self.data.push
+    }
+
+    /// The target must be known, the ntfy server a clean URL, and only the
+    /// four app-only kinds are kept.
+    pub fn set_push(&mut self, mut next: PushSettings) -> Result<(), String> {
+        if !["none", "ntfy", "pushover", "webhook"].contains(&next.target.as_str()) {
+            return Err("unknown push target".into());
+        }
+        next.ntfy_server = next.ntfy_server.trim().trim_end_matches('/').to_string();
+        if next.ntfy_server.is_empty() {
+            next.ntfy_server = default_ntfy_server();
+        }
+        crate::observe::push::check_url(&next.ntfy_server)?;
+        next.events
+            .retain(|kind, _| crate::observe::push::PUSH_KINDS.contains(&kind.as_str()));
+        self.data.push = next;
         self.save()
     }
 

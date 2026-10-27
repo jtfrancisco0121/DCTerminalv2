@@ -31,6 +31,11 @@ export const ATTENTION_KINDS: ReadonlyArray<{ key: string; label: string }> = [
   { key: "merged-cleaned", label: "A merged PR was cleaned up" },
 ];
 
+/** The events the phone gets (src-tauri/src/observe/push.rs PUSH_KINDS). */
+export const PUSH_KINDS: ReadonlyArray<{ key: string; label: string }> = ATTENTION_KINDS.filter((kind) =>
+  ["stall", "check-failed", "merged-cleaned", "autopost-failed"].includes(kind.key),
+);
+
 const PR_STATES: Record<string, string> = {
   pending: "waiting",
   building: "building",

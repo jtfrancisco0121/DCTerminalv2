@@ -77,16 +77,21 @@ impl AttentionPayload {
     }
 }
 
+/// The phone push queue, shared with the "Send test" command.
+pub struct PushHandle(pub std::sync::Arc<super::push::PushClient>);
+
 pub struct AppNotifier {
     app: AppHandle,
+    push: std::sync::Arc<super::push::PushClient>,
     /// The last badge set, so the main thread is bothered only on a change.
     badge: Mutex<Option<usize>>,
 }
 
 impl AppNotifier {
-    pub fn new(app: &AppHandle) -> Self {
+    pub fn new(app: &AppHandle, push: std::sync::Arc<super::push::PushClient>) -> Self {
         Self {
             app: app.clone(),
+            push,
             badge: Mutex::new(None),
         }
     }
@@ -103,6 +108,10 @@ impl AppNotifier {
 impl Notifier for AppNotifier {
     fn notify(&self, event: &Event, app_active: bool) {
         RunLogNotifier.notify(event, app_active);
+        // The phone gets the app-only kinds, whatever the Mac's switches say.
+        if let Ok(settings) = self.app.state::<Mutex<SettingsStore>>().lock() {
+            self.push.push(event, settings.push());
+        }
         let sinks = route(event.kind, &self.settings(), app_active);
         if sinks.in_app {
             let _ = self.app.emit(ATTENTION_EVENT, AttentionPayload::of(event));
