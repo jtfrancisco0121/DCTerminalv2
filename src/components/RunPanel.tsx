@@ -227,6 +227,7 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
               <li key={rec.prId} data-testid={`cleanup-${rec.prId}`}>
                 <strong>{rec.prId}</strong>{" "}
                 {[rec.note, rec.worktree, rec.branch, rec.remote].filter((part) => part).join("; ")}
+                {rec.retry && " (the app tries again later)"}
               </li>
             ))}
           </ul>

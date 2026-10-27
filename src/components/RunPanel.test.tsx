@@ -91,10 +91,12 @@ describe("RunPanelView", () => {
       cleanup: [
         { prId: "PR1", prUrl: "https://github.com/o/r/pull/1", outcome: "cleaned", note: "", worktree: "worktree removed", branch: "branch dcv2/r-1-pr1 deleted", remote: "remote branch deleted", at: "t" },
         { prId: "PR2", prUrl: "https://github.com/o/r/pull/2", outcome: "untouched", note: "untouched: closed without merging", worktree: "", branch: "", remote: "", at: "t" },
+        { prId: "PR3", prUrl: "https://github.com/o/r/pull/3", outcome: "kept", retry: true, worktree: "worktree kept (kept: 1 changed files)", branch: "", remote: "remote branch deleted", at: "t" },
       ],
     });
     expect(screen.getByTestId("cleanup-PR1").textContent).toBe("PR1 worktree removed; branch dcv2/r-1-pr1 deleted; remote branch deleted");
     expect(screen.getByTestId("cleanup-PR2").textContent).toBe("PR2 untouched: closed without merging");
+    expect(screen.getByTestId("cleanup-PR3").textContent).toMatch(/\(the app tries again later\)$/);
     cleanup();
     renderPanel({ cleanup: [] });
     expect(screen.queryByTestId("cleanup")).toBeNull();

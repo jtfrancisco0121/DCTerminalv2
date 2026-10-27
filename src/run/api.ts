@@ -163,6 +163,8 @@ export type CleanupRecord = {
   prUrl: string;
   outcome: string;
   note?: string;
+  /** Not final: the app asks again later (a dirty worktree, a network failure). */
+  retry?: boolean;
   worktree: string;
   branch: string;
   remote: string;

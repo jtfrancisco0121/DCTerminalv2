@@ -45,6 +45,10 @@ pub struct CleanupRecord {
     /// Why a PR was left alone (outcome `untouched`).
     #[serde(default)]
     pub note: String,
+    /// Not final: asked again later (a dirty worktree, a network failure),
+    /// within the run's 30 days.
+    #[serde(default)]
+    pub retry: bool,
     pub worktree: String,
     pub branch: String,
     pub remote: String,
@@ -158,24 +162,92 @@ impl PrLookup for GhCli {
     }
 }
 
-/// A network git call (`ls-remote`, `push --delete`): no prompts, no
-/// hooks, with a timeout.
-fn net_git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let mut cmd = Command::new("git");
-    cmd.args([
-        "-c",
-        "core.fsmonitor=false",
-        "-c",
-        "core.hooksPath=/dev/null",
-    ])
-    .arg("-C")
-    .arg(dir)
-    .args(args)
-    .env("GIT_TERMINAL_PROMPT", "0");
-    if std::env::var_os("GIT_SSH_COMMAND").is_none() {
-        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+/// A remote URL the app may talk to: an owner/name https or ssh URL, or an
+/// existing absolute folder (a local mirror). Never an option (`-…`), a
+/// helper transport (`ext::…`) or anything with spaces or control characters.
+pub fn safe_remote_url(url: &str) -> bool {
+    static SLUG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let slug = SLUG.get_or_init(|| {
+        regex::Regex::new(
+            r"^(?:https://[^/\s@]+/|ssh://(?:[\w.-]+@)?[^/\s@]+/|[\w.-]+@[^:/\s]+:)[\w.-]+/[\w.-]+?(?:\.git)?/?$",
+        )
+        .expect("slug regex")
+    });
+    if url.is_empty()
+        || url.starts_with('-')
+        || url.contains("::")
+        || url.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return false;
     }
-    run_with_timeout(cmd, CALL_TIMEOUT)
+    slug.is_match(url) || (url.starts_with('/') && Path::new(url).is_dir())
+}
+
+/// A network git call to `url`, from a fresh temp folder (an empty repo when
+/// `in_repo`) so no repo's config applies, with no system config, only the
+/// https / ssh / local transports, no hooks, no prompts, a timeout. The URL
+/// goes after `--end-of-options` in `args`.
+fn net_git(url: &str, args: &[&str], in_repo: bool) -> Result<String, String> {
+    if !safe_remote_url(url) {
+        return Err(REFUSED_URL.into());
+    }
+    let tmp = std::env::temp_dir().join(format!("dcv2-net-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    let result = (|| {
+        if in_repo {
+            git(&tmp, &["init", "-q"])?;
+        }
+        let mut cmd = Command::new("git");
+        cmd.args([
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
+            "-c",
+            "protocol.ssh.allow=always",
+            "-c",
+            "protocol.file.allow=always",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
+        .args(args)
+        .current_dir(&tmp)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0");
+        if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+            cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+        }
+        run_with_timeout(cmd, CALL_TIMEOUT)
+    })();
+    let _ = std::fs::remove_dir_all(&tmp);
+    result
+}
+
+const REFUSED_URL: &str = "refused: not a safe remote URL";
+
+/// The remote branch's tip (`None`: not there).
+fn remote_tip(url: &str, branch: &str) -> Result<Option<String>, String> {
+    let refname = format!("refs/heads/{branch}");
+    net_git(
+        url,
+        &["ls-remote", "--heads", "--end-of-options", url, &refname],
+        false,
+    )
+    .map(|out| out.split_whitespace().next().map(str::to_string))
+}
+
+/// Deletes the remote branch only while it is still at `oid` (a lease:
+/// never a plain force, so a commit pushed since is never lost).
+pub fn delete_at(url: &str, branch: &str, oid: &str) -> Result<String, String> {
+    let lease = format!("--force-with-lease=refs/heads/{branch}:{oid}");
+    let target = format!(":refs/heads/{branch}");
+    net_git(
+        url,
+        &["push", &lease, "--end-of-options", url, &target],
+        true,
+    )
 }
 
 /// `https://<host>/<owner>/<name>/pull/<n>`: (host, owner/name).
@@ -276,7 +348,8 @@ pub fn wants_cleanup(run_dir: &Path, now: chrono::DateTime<chrono::Utc>) -> bool
         return false;
     }
     let done = read_cleanup(run_dir);
-    prs.iter().any(|pr| !done.prs.contains_key(&pr.id))
+    prs.iter()
+        .any(|pr| done.prs.get(&pr.id).is_none_or(|rec| rec.retry))
 }
 
 fn untouched(pr: &PrView, url: &str, why: String) -> CleanupRecord {
@@ -374,7 +447,16 @@ fn clean_pr(run_dir: &Path, pr: &PrView, lookup: &dyn PrLookup) -> Option<Cleanu
                         format!("branch {branch} kept (git branch -d: not merged here)")
                     };
                 }
-                Some(r) => rec.worktree = format!("worktree kept ({})", r.message),
+                Some(r) => {
+                    // Changes or the user's ignored files: asked again later
+                    // (they may be cleaned up by hand). A contract problem is final.
+                    rec.retry = item.problem.is_none()
+                        || item
+                            .problem
+                            .as_deref()
+                            .is_some_and(|p| p.starts_with("has ignored files"));
+                    rec.worktree = format!("worktree kept ({})", r.message);
+                }
                 None => rec.worktree = "worktree kept".into(),
             }
         }
@@ -407,31 +489,35 @@ fn clean_pr(run_dir: &Path, pr: &PrView, lookup: &dyn PrLookup) -> Option<Cleanu
     rec.remote = if !oid_ok {
         "remote branch kept (GitHub gave no head commit)".into()
     } else {
-        let refname = format!("refs/heads/{branch}");
-        match net_git(run_dir, &["ls-remote", "--heads", &remote_url, &refname]) {
-            Err(err) => format!("remote branch kept (ls-remote: {err})"),
-            Ok(out) => match out.split_whitespace().next() {
-                None => {
+        match remote_tip(&remote_url, &branch) {
+            Err(err) if err == REFUSED_URL => format!("remote branch kept ({err})"),
+            Err(err) => {
+                rec.retry = true;
+                format!("remote branch kept for now (ls-remote: {err})")
+            }
+            Ok(None) => {
+                remote_gone = true;
+                "remote branch already deleted".into()
+            }
+            Ok(Some(tip)) if tip != info.head_ref_oid => {
+                "remote branch kept (its tip is not the merged PR's head)".into()
+            }
+            Ok(Some(_)) => match delete_at(&remote_url, &branch, &info.head_ref_oid) {
+                Ok(_) => {
+                    remote_gone = true;
+                    "remote branch deleted".into()
+                }
+                Err(err) if err.contains("remote ref does not exist") => {
                     remote_gone = true;
                     "remote branch already deleted".into()
                 }
-                Some(tip) if tip != info.head_ref_oid => {
-                    "remote branch kept (its tip is not the merged PR's head)".into()
+                Err(err) if err.contains("stale info") || err.contains("rejected") => {
+                    "remote branch kept (it moved since the merge)".into()
                 }
-                Some(_) => match recorded_repo(run_dir, pr)
-                    .ok_or_else(|| "its repo is not recorded for this run".to_string())
-                    .and_then(|repo| net_git(&repo, &["push", &remote_url, "--delete", &refname]))
-                {
-                    Ok(_) => {
-                        remote_gone = true;
-                        "remote branch deleted".into()
-                    }
-                    Err(err) if err.contains("remote ref does not exist") => {
-                        remote_gone = true;
-                        "remote branch already deleted".into()
-                    }
-                    Err(err) => format!("remote branch kept: {err}"),
-                },
+                Err(err) => {
+                    rec.retry = true;
+                    format!("remote branch kept for now: {err}")
+                }
             },
         }
     };
@@ -455,20 +541,36 @@ pub fn cleanup_run(run_dir: &Path, lookup: &dyn PrLookup) -> Vec<CleanupRecord> 
     let (_, _, prs) = prs_with_url(run_dir);
     let mut file = read_cleanup(run_dir);
     let mut new = Vec::new();
+    let mut changed = false;
     for pr in &prs {
-        if file.prs.contains_key(&pr.id) {
+        let old = file.prs.get(&pr.id).cloned();
+        if old.as_ref().is_some_and(|rec| !rec.retry) {
             continue;
         }
-        if let Some(rec) = clean_pr(run_dir, pr, lookup) {
+        if let Some(mut rec) = clean_pr(run_dir, pr, lookup) {
+            changed = true;
+            // What an earlier ask already did stays said.
+            if let Some(o) = &old {
+                if rec.remote == "remote branch already deleted"
+                    && o.remote == "remote branch deleted"
+                {
+                    rec.remote = o.remote.clone();
+                }
+            }
             file.prs.insert(rec.pr_id.clone(), rec.clone());
-            new.push(rec);
+            // A retry that ends the same way is saved, not logged again.
+            if old.is_none_or(|o| o.line() != rec.line() || o.retry != rec.retry) {
+                new.push(rec);
+            }
         }
     }
-    if !new.is_empty() {
+    if changed {
         file.schema = 1;
         if let Err(err) = write_json_atomic(&run_dir.join(CLEANUP_FILE), &file) {
             eprintln!("DCTerminalv2: {CLEANUP_FILE}: {err}");
         }
+    }
+    if !new.is_empty() {
         let lines: Vec<String> = new.iter().map(CleanupRecord::line).collect();
         let _ = append_app_log(run_dir, &format!("cleanup {}", lines.join(" | ")));
     }
@@ -727,11 +829,13 @@ mod tests {
         assert!(r4.branch.contains("kept"), "{r4:?}");
         assert!(s.on_remote(4) && s.branch(4) && !s.wt(4).exists());
 
-        // Dirty: kept, but the merged remote branch goes.
+        // Dirty: kept for now (asked again), but the merged remote branch goes.
         let r5 = by(&recs, "PR5");
         assert_eq!(r5.outcome, "kept");
+        assert!(r5.retry, "{r5:?}");
         assert!(r5.worktree.contains("kept"), "{r5:?}");
         assert!(s.wt(5).join("f5.txt").exists() && !s.on_remote(5));
+        assert!(!by(&recs, "PR4").retry, "a moved tip is final");
 
         // Not this run's head: untouched, never deleted.
         assert_eq!(by(&recs, "PR7").outcome, "untouched");
@@ -740,7 +844,8 @@ mod tests {
         assert!(!fake.calls.borrow().iter().any(|c| c.contains("/pull/6")));
         assert!(s.wt(6).exists());
 
-        // Recorded and logged once; only the open PR is asked again.
+        // Recorded and logged once; the open PR and the dirty one are asked
+        // again, and a retry that ends the same way is not logged again.
         let file = read_cleanup(&s.run_dir);
         assert_eq!(file.prs.len(), 5);
         let log = std::fs::read_to_string(s.run_dir.join("log.md")).unwrap();
@@ -751,14 +856,85 @@ mod tests {
         );
         fake.calls.borrow_mut().clear();
         assert!(cleanup_run(&s.run_dir, &fake).is_empty());
-        assert_eq!(fake.calls.borrow().as_slice(), [format!("o/r {}", url(2))]);
+        assert_eq!(
+            fake.calls.borrow().as_slice(),
+            [format!("o/r {}", url(2)), format!("o/r {}", url(5))]
+        );
+        assert_eq!(
+            std::fs::read_to_string(s.run_dir.join("log.md"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
 
-        // Merged later: cleaned on the next ask; then the run is finished.
+        // The user cleaned PR5's worktree, and PR2 was merged: both go on
+        // the next ask; then the run is finished.
+        run(&s.wt(5), &["checkout", "--", "f5.txt"]);
         fake.prs.insert(url(2), info("MERGED", 2, &s.tips[&2]));
         let later = cleanup_run(&s.run_dir, &fake);
-        assert_eq!(later.len(), 1);
-        assert!(!s.wt(2).exists() && !s.on_remote(2));
+        assert_eq!(later.len(), 2, "{later:?}");
+        assert!(!s.wt(2).exists() && !s.on_remote(2) && !s.wt(5).exists());
+        assert_eq!(by(&later, "PR5").outcome, "cleaned");
         assert!(!wants_cleanup(&s.run_dir, chrono::Utc::now()));
+    }
+
+    #[test]
+    fn forged_urls_never_run_and_network_failures_are_asked_again() {
+        let s = setup("done", &[1, 2], &[]);
+        let pwn = s.run_dir.join("PWN");
+        let guard_path = s.run_dir.join(".guard.json");
+        let mut g: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&guard_path).unwrap()).unwrap();
+        // PR1: an option as the URL; PR2: a folder that is not a repo (ls-remote fails).
+        g["remotes"]["PR1"]["url"] = json!(format!("--upload-pack=touch {};false", pwn.display()));
+        let not_repo = s.run_dir.join("not-a-repo");
+        std::fs::create_dir_all(&not_repo).unwrap();
+        g["remotes"]["PR2"]["url"] = json!(not_repo);
+        std::fs::write(&guard_path, g.to_string()).unwrap();
+        let mut fake = Fake::default();
+        fake.prs.insert(url(1), info("MERGED", 1, &s.tips[&1]));
+        fake.prs.insert(url(2), info("MERGED", 2, &s.tips[&2]));
+        let recs = cleanup_run(&s.run_dir, &fake);
+        assert!(!pwn.exists(), "the URL never ran as an option");
+        let r1 = by(&recs, "PR1");
+        assert!(r1.remote.contains(REFUSED_URL) && !r1.retry, "{r1:?}");
+        let r2 = by(&recs, "PR2");
+        assert!(r2.retry && r2.remote.contains("for now"), "{r2:?}");
+        assert!(s.on_remote(1) && s.on_remote(2));
+        assert!(
+            wants_cleanup(&s.run_dir, chrono::Utc::now()),
+            "PR2 again later"
+        );
+        for bad in [
+            "--upload-pack=x",
+            "ext::sh -c x",
+            "https://github.com/o/r x",
+            "file:///tmp/x",
+            "relative/path",
+            "https://github.com/o",
+        ] {
+            assert!(!safe_remote_url(bad), "{bad}");
+        }
+        for good in [
+            "https://github.com/o/r.git",
+            "git@github.com:o/r.git",
+            "ssh://git@ghe.example/o/r",
+        ] {
+            assert!(safe_remote_url(good), "{good}");
+        }
+    }
+
+    #[test]
+    fn the_remote_delete_is_a_lease_on_the_merged_head() {
+        let s = setup("done", &[1], &[]);
+        let origin = s.origin.to_str().unwrap();
+        let branch = format!("dcv2/{RUN}-pr1");
+        // Someone pushed after the merge: the delete at the old head is refused.
+        assert!(delete_at(origin, &branch, &"1".repeat(40)).is_err());
+        assert!(s.on_remote(1));
+        assert!(delete_at(origin, &branch, &s.tips[&1]).is_ok());
+        assert!(!s.on_remote(1));
     }
 
     #[test]
