@@ -368,4 +368,61 @@ for who in "" dcv2:implementer; do                                              
 done
 echo '{"schema": 1}' > "$RUN/meta.json"
 
+echo "# cleanup (0.5.0): only state.sh removes worktrees and branches"
+for c in "git -C $R worktree remove $WT" "git -C $R worktree remove --force $WT" "git worktree prune" "git -C $WT worktree remove $WT" \
+         "git -C $R worktree add /tmp/x" "git -C $R branch -d dcv2/r-x-pr1" "git -C $WT branch -D dcv2/r-x-pr1" \
+         "git -C $R branch -m dcv2/r-x-pr1 x" "git -C $R push origin --delete dcv2/r-x-pr1" "git -C $WT push origin --delete dcv2/r-x-pr1" \
+         "cd $R && git branch -d dcv2/r-x-pr1"; do
+  b 2 "" "$c"
+done
+b 0 "" "git -C $R worktree list && git -C $R branch --list 'dcv2/*' && git -C $WT branch --show-current"
+b 0 "" "bash $STATE cleanup $RUN"
+b 0 "" "bash $STATE request $RUN recheck && bash $STATE request-wait $RUN 20261027T100000Z-recheck"
+for who in dcv2:implementer dcv2:pr-reviewer dcv2:planner dcv2:plan-reviewer; do
+  b 2 "$who" "bash $STATE cleanup $RUN"
+  b 2 "$who" "bash $STATE request $RUN recheck"
+done
+for who in "" dcv2:implementer; do                                  # requests/ and the app's cleanup record
+  w 2 "$who" "$RUN/requests/20261027T100000Z-recheck.result.json"
+  w 2 "$who" "$RUN/requests/x.json"
+  w 2 "$who" "$RUN/app-cleanup.json"
+  b 2 "$who" "echo '{}' > $RUN/requests/20261027T100000Z-recheck.result.json"
+  b 2 "$who" "mkdir -p $RUN/requests/a"
+  b 2 "$who" "cp /dev/null $RUN/app-cleanup.json"
+done
+b 0 "" "cat $RUN/requests/20261027T100000Z-recheck.result.json"
+
+echo "# BMAD runtime: path forms are normalised"
+bx 2 dcv2:implementer "cd \"$PLUG/bmad\" && node ./runtime.mjs memlog init --workspace x"
+bx 2 dcv2:implementer "node \"$PLUG/bmad/sub/../runtime.mjs\" knowledge --root /x"
+bx 2 "" "cd \"$PLUG\" && node bmad/./runtime.mjs knowledge"
+bx 2 "" "cd \"$PLUG/bmad/skills\" && node ../runtime.mjs knowledge"
+bx 2 dcv2:implementer "cd \$HOME && node ./runtime.mjs x"                                 # unknown folder: treated as the runtime
+bx 0 dcv2:planner "cd \"$PLUG/bmad\" && node ./runtime.mjs resolve_config --project-root \"$SRUN/bmad\""
+bx 0 dcv2:implementer "cd \"$d/ws\" && node ./tools/runtime.mjs"                          # another project's runtime.mjs
+
+echo "# live Claude tests (repos.json liveTests)"
+mkdir -p "$WT/scripts/skill-e2e"
+for who in dcv2:implementer dcv2:pr-reviewer dcv2:planner dcv2:plan-reviewer dcv2:memory-updater; do
+  b 2 "$who" "claude -p hi"
+  b 2 "$who" "cd $WT && env X=1 claude --version"
+done
+b 0 "" "claude --version"                                                                 # the orchestrator: unchanged
+b 2 dcv2:implementer "cd $WT && bash scripts/skill-e2e/golden.sh github"                  # off by default
+b 2 dcv2:pr-reviewer "bash $WT/scripts/skill-e2e/bmad_spike.sh"
+printf '{"schema": 1, "repos": [{"name": "r", "path": "%s", "check": null, "liveTests": true}]}\n' "$R" > "$RUN/repos.json"
+b 0 dcv2:implementer "cd $WT && bash scripts/skill-e2e/golden.sh github > $RUN/logs/PR1-golden.txt 2>&1"
+b 0 dcv2:pr-reviewer "bash $WT/scripts/skill-e2e/bmad_spike.sh"
+b 0 dcv2:implementer "$WT/scripts/skill-e2e/golden.sh fix"
+b 2 dcv2:planner "cd $WT && bash scripts/skill-e2e/golden.sh github"                      # only the implementer / pr-reviewer
+b 2 dcv2:plan-reviewer "bash $WT/scripts/skill-e2e/golden.sh"
+b 2 dcv2:implementer "bash $R/scripts/skill-e2e/golden.sh"                                # the main checkout's copy
+b 2 dcv2:implementer "bash $d/ws/r-worktrees/dcv2-r-x-pr2/scripts/skill-e2e/golden.sh"   # another PR's worktree
+b 2 dcv2:implementer "bash $WT/golden.sh"                                                  # not the suite's path
+b 2 dcv2:implementer 'cd "$X" && bash scripts/skill-e2e/golden.sh'
+b 2 dcv2:implementer "cd $WT && claude -p 'run the suite'"                                # still never claude itself
+printf '{"schema": 1, "repos": [{"name": "r", "path": "%s", "check": null, "liveTests": "yes"}]}\n' "$R" > "$RUN/repos.json"
+b 2 dcv2:implementer "cd $WT && bash scripts/skill-e2e/golden.sh github"                  # only a JSON true counts
+rm -f "$RUN/repos.json"
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

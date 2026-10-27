@@ -38,6 +38,12 @@
 # naming ade-runtime.mjs (the bundle behind the wrapper) is blocked for everyone; <run>/bmad/_bmad/
 # config*.toml and _bmad/custom/ are written only by `state.sh bmad-init`, never with Edit/Write or
 # a shell write. Repo and worktree rules are unchanged.
+# Cleanup (0.5.0): the orchestrator never runs `git worktree <anything but list>` or a changing `git branch`
+# anywhere in a bound run (and never `git push --delete`): `state.sh cleanup` does it, at done / failed only.
+# <run>/requests/ is written only by `state.sh request` and the app; app-cleanup.json only by the app.
+# Live tests: a pipeline sub-agent never runs `claude`; `scripts/skill-e2e/golden.sh` / `bmad_spike.sh` (which
+# launch claude) only the implementer or pr-reviewer runs, inside its recorded worktree, when repos.json gives
+# that repo `liveTests: true` (the app setting "Allow live Claude tests in checks"). Best effort, like the rest.
 # Everyone: status.json, writeback.json and .guard.json in a run folder are written only by
 # state.sh. When DCV2_MEMORY_DIR is set (every dcv2 launch), nobody writes into it with
 # Edit/Write or a shell redirect/copy: agents use memory.sh write (the app's editor writes as the
@@ -110,7 +116,8 @@ if run:
 # Written only by state.sh (status, writeback, guard) or only by the app
 # (the ClickUp snapshot and records, meta.json, the app's own check results).
 PROTECTED = ("status.json", "writeback.json", ".guard.json",
-             "tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json")
+             "tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json",
+             "app-cleanup.json")
 who = agent or "the orchestrator"
 where = "your worktree or the run folder" if role == "implementer" else "the run folder"
 
@@ -129,6 +136,8 @@ def inside(p, root):
 
 
 def protected(p):
+    if run and inside(p, os.path.join(run, "requests")):
+        return True  # requests (state.sh request) and their results (the app)
     if os.path.basename(p) not in PROTECTED:
         return False
     d = os.path.dirname(p)
@@ -394,7 +403,10 @@ def check_git(args, cwd):
         ship_gate("git push")
         return
     if not pipeline:
-        if run and target and main_checkout(target) and not git_readonly(sub, rest) and sub != "worktree":
+        if run and sub in ("worktree", "branch") and not git_readonly(sub, rest):
+            block(f"the orchestrator never runs `git {sub} {' '.join(rest[:1])}`: worktrees are made by `state.sh worktree`; "
+                  "removing worktrees and branches is `state.sh cleanup <run>` (at done / failed), or the app does it.")
+        if run and target and main_checkout(target) and not git_readonly(sub, rest):
             block(f"the orchestrator never runs `git {sub}` in a repo's main checkout ({target}); worktrees go through state.sh worktree.")
         return
     if role == "implementer" and target and any(inside(target, w) for w in worktrees):
@@ -486,7 +498,7 @@ def check_state_sh(args):
     ship approval (state.sh checks too)."""
     sub = next((a for a in args[1:] if not a.startswith("-")), "")
     if pipeline:
-        if sub in GH_STATE + ("ready", "ship-pr"):
+        if sub in GH_STATE + ("ready", "ship-pr", "cleanup", "request"):
             block(f"{who} never runs `state.sh {sub}`: only the orchestrator touches GitHub.")
         return
     if sub in GH_STATE:
@@ -499,16 +511,57 @@ def check_state_sh(args):
         block("`state.sh ready` needs the ship approval first (stop #2).")
 
 
-def check_node(args):
-    """BMAD's runtime: only the planner runs the wrapper (bmad/runtime.mjs); nobody runs the bundle behind it."""
+def check_node(args, cwd):
+    """BMAD's runtime: only the planner runs the wrapper (bmad/runtime.mjs); nobody runs the bundle behind it.
+    The path is normalised first (relative to the cwd when it is known, `..` resolved), so `cd <plugin>/bmad &&
+    node ./runtime.mjs` and `bmad/x/../runtime.mjs` are the runtime too."""
     for a in args:
         if a.startswith("-"):
             continue
-        d, b = os.path.split(a)
+        if "$" in a or (cwd is None and not os.path.isabs(os.path.expanduser(a))):
+            p = os.path.normpath(a)
+        else:
+            p = real(a, cwd or "/")
+        d, b = os.path.split(p)
         if b == "runtime.mjs" and os.path.basename(d) in ("bmad", ""):
             if role != "planner":
                 block(f"{who} never runs the BMAD runtime: only the planner does, for its bmad pass "
                       "(the orchestrator checks the documents with `state.sh bmad-check`).")
+
+
+LIVE_SCRIPTS = ("golden.sh", "bmad_spike.sh")
+
+
+def live_tests_on(wt):
+    """repos.json (app-written) gives the repo of worktree wt `liveTests: true`."""
+    parent = os.path.dirname(wt)
+    name = os.path.basename(parent)
+    if not name.endswith("-worktrees"):
+        return False
+    repo = os.path.join(os.path.dirname(parent), name[: -len("-worktrees")])
+    try:
+        rj = json.load(open(os.path.join(run, "repos.json")))
+    except Exception:
+        return False
+    for r in (rj.get("repos") if isinstance(rj, dict) else None) or []:
+        if isinstance(r, dict) and isinstance(r.get("path"), str) and os.path.realpath(r["path"]) == os.path.realpath(repo):
+            return r.get("liveTests") is True
+    return False
+
+
+def check_live(script, cwd):
+    """golden.sh / bmad_spike.sh launch claude: only the implementer / pr-reviewer, in its worktree, with liveTests."""
+    if role not in ("implementer", "pr-reviewer"):
+        block(f"{who} never runs the live Claude tests ({os.path.basename(script)}).")
+    if "$" in script or (cwd is None and not os.path.isabs(os.path.expanduser(script))):
+        block(f"cannot tell where {script!r} is: run it as `cd <worktree> && bash scripts/skill-e2e/{os.path.basename(script)} ...`")
+    p = real(script, cwd or "/")
+    wt = next((w for w in worktrees if inside(p, w)), None)
+    if not wt or os.path.relpath(p, wt) != os.path.join("scripts", "skill-e2e", os.path.basename(p)):
+        block(f"live Claude tests run only as your worktree's scripts/skill-e2e/{os.path.basename(script)}.")
+    if not live_tests_on(wt):
+        block("live Claude tests are off for this repo (the app setting \"Allow live Claude tests in checks\"); "
+              "they stay a manual step for the user.")
 
 
 def check_security(args):
@@ -590,7 +643,14 @@ def analyze(cmd, cwd, depth=0):
         elif name == "security" and bound:
             check_security(args)
         elif name in ("node", "nodejs") and bound:
-            check_node(args)
+            check_node(args, cwd)
+        elif name == "claude" and pipeline:
+            block(f"{who} never launches claude. Live Claude tests run only as `bash scripts/skill-e2e/golden.sh` or "
+                  "`bmad_spike.sh` in your worktree, when the repo allows them (repos.json liveTests).")
+        elif name in LIVE_SCRIPTS and pipeline:
+            check_live(words[0], cwd)
+        elif name in ("bash", "sh", "zsh", "dash", "ksh") and args and os.path.basename(args[0]) in LIVE_SCRIPTS and pipeline:
+            check_live(args[0], cwd)
         elif name == "state.sh" and bound:  # run directly by path
             check_state_sh([words[0]] + args)
         elif name in ("bash", "sh", "zsh", "dash", "ksh") and args and os.path.basename(args[0]) == "state.sh" and bound:
