@@ -40,11 +40,32 @@ pub struct RateWindow {
     pub seen_at_ms: i64,
 }
 
+/// The most readings kept per window type per account.
+pub const HISTORY_CAP: usize = 48;
+
+/// One saved reading of a window, kept when the reading changed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Reading {
+    pub at_ms: i64,
+    pub utilization: Option<f64>,
+    pub resets_at: Option<i64>,
+}
+
+/// The saved readings of one window type, oldest first.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowHistory {
+    pub rate_limit_type: String,
+    pub readings: Vec<Reading>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSnapshot {
     pub config_dir: String,
     pub windows: Vec<RateWindow>,
+    pub history: Vec<WindowHistory>,
 }
 
 /// What `usage.json` holds: the last rate windows per config folder.
@@ -53,11 +74,16 @@ pub struct UsageSnapshot {
 struct UsageFile {
     #[serde(default)]
     by_config: HashMap<String, HashMap<String, RateWindow>>,
+    /// Config folder → window type → readings, oldest first (at most 48).
+    /// Missing in an older file.
+    #[serde(default)]
+    history: HashMap<String, HashMap<String, Vec<Reading>>>,
 }
 
 #[derive(Debug, Default)]
 pub struct UsageStore {
     by_config: HashMap<String, HashMap<String, RateWindow>>,
+    history: HashMap<String, HashMap<String, Vec<Reading>>>,
     /// Terminal tabs' status line files, by tab: (config folder, file).
     status_lines: HashMap<String, (String, PathBuf)>,
     /// `usage.json` in app data. `None` keeps everything in memory (tests).
@@ -73,6 +99,7 @@ impl UsageStore {
         let _ = std::fs::remove_dir_all(data_dir.join(crate::status_line::STATUS_LINE_DIR));
         Self {
             by_config: file.by_config,
+            history: file.history,
             path: Some(path),
             ..Self::default()
         }
@@ -84,6 +111,7 @@ impl UsageStore {
         };
         let file = UsageFile {
             by_config: self.by_config.clone(),
+            history: self.history.clone(),
         };
         if let Err(err) = crate::store::write_json_atomic(path, &file) {
             eprintln!("DCTerminalv2: could not save Claude usage ({err})");
@@ -126,10 +154,17 @@ impl UsageStore {
         if key.is_empty() || windows.is_empty() {
             return;
         }
-        let stored = self.by_config.entry(key).or_default();
+        let stored = self.by_config.entry(key.clone()).or_default();
+        let history = self.history.entry(key).or_default();
         let mut changed = false;
         for window in windows {
-            changed |= merge_window(stored, window);
+            let kind = window.rate_limit_type.clone();
+            if merge_window(stored, window) {
+                changed = true;
+                if let Some(now) = stored.get(&kind) {
+                    push_reading(history.entry(kind).or_default(), now);
+                }
+            }
         }
         if changed {
             self.save();
@@ -144,10 +179,36 @@ impl UsageStore {
             .map(|map| map.values().cloned().collect())
             .unwrap_or_default();
         windows.sort_by(|a, b| a.rate_limit_type.cmp(&b.rate_limit_type));
+        let mut history: Vec<WindowHistory> = self
+            .history
+            .get(key)
+            .map(|map| {
+                map.iter()
+                    .map(|(kind, readings)| WindowHistory {
+                        rate_limit_type: kind.clone(),
+                        readings: readings.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        history.sort_by(|a, b| a.rate_limit_type.cmp(&b.rate_limit_type));
         UsageSnapshot {
             config_dir: key.to_string(),
             windows,
+            history,
         }
+    }
+}
+
+/// Appends the stored window's reading, keeping the newest [`HISTORY_CAP`].
+fn push_reading(readings: &mut Vec<Reading>, window: &RateWindow) {
+    readings.push(Reading {
+        at_ms: window.seen_at_ms,
+        utilization: window.utilization,
+        resets_at: window.resets_at,
+    });
+    if readings.len() > HISTORY_CAP {
+        readings.drain(..readings.len() - HISTORY_CAP);
     }
 }
 
@@ -231,6 +292,69 @@ mod tests {
         assert_eq!(store.snapshot("/cfg").windows[0].utilization, Some(42.0));
         store.fold("/cfg", vec![window("five_hour", Some(55.0), 100, 20)]);
         assert_eq!(store.snapshot("/cfg").windows[0].utilization, Some(55.0));
+    }
+
+    #[test]
+    fn history_grows_only_when_a_reading_changes_and_keeps_the_newest_48() {
+        let mut store = UsageStore::default();
+        let readings = |store: &UsageStore| {
+            store
+                .snapshot("/cfg")
+                .history
+                .into_iter()
+                .find(|h| h.rate_limit_type == "five_hour")
+                .map(|h| h.readings)
+                .unwrap_or_default()
+        };
+        store.fold("/cfg", vec![window("five_hour", Some(10.0), 100, 1)]);
+        assert_eq!(readings(&store).len(), 1);
+        // The same figures seen again later: no change, nothing appended.
+        store.fold("/cfg", vec![window("five_hour", Some(10.0), 100, 2)]);
+        assert_eq!(readings(&store).len(), 1);
+        // An older reading is ignored.
+        store.fold("/cfg", vec![window("five_hour", Some(99.0), 100, 0)]);
+        assert_eq!(readings(&store).len(), 1);
+        for n in 0..60 {
+            store.fold(
+                "/cfg",
+                vec![window(
+                    "five_hour",
+                    Some(11.0 + f64::from(n)),
+                    100,
+                    10 + i64::from(n),
+                )],
+            );
+        }
+        let kept = readings(&store);
+        assert_eq!(kept.len(), HISTORY_CAP);
+        assert_eq!(kept.last().unwrap().utilization, Some(70.0));
+        assert_eq!(kept[0].utilization, Some(23.0), "the oldest were dropped");
+        // Another type and another account have their own.
+        store.fold("/cfg", vec![window("seven_day", Some(5.0), 900, 5)]);
+        store.fold("/other", vec![window("five_hour", Some(1.0), 100, 5)]);
+        assert_eq!(store.snapshot("/cfg").history.len(), 2);
+        assert_eq!(store.snapshot("/other").history[0].readings.len(), 1);
+        assert!(store.snapshot("/none").history.is_empty());
+    }
+
+    #[test]
+    fn history_is_saved_and_an_old_usage_file_without_it_loads() {
+        let dir = crate::test_support::TempDir::new("usage_history_file");
+        let mut store = UsageStore::open(dir.path());
+        store.fold("/cfg", vec![window("five_hour", Some(42.0), 100, 10)]);
+        let again = UsageStore::open(dir.path());
+        assert_eq!(again.snapshot("/cfg").history[0].readings.len(), 1);
+
+        let old = crate::test_support::TempDir::new("usage_old_file");
+        std::fs::write(
+            old.path().join(USAGE_FILE),
+            r#"{"byConfig":{"/cfg":{"five_hour":{"rateLimitType":"five_hour","label":"5h","utilization":30.0,"resetsAt":100,"status":"allowed","seenAtMs":5}}}}"#,
+        )
+        .unwrap();
+        let loaded = UsageStore::open(old.path());
+        let snap = loaded.snapshot("/cfg");
+        assert_eq!(snap.windows[0].utilization, Some(30.0));
+        assert!(snap.history.is_empty());
     }
 
     #[test]

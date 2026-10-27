@@ -19,6 +19,7 @@ import { WorktreeSetup } from "./WorktreeSetup";
 import { relativeDate, stageText } from "../run/words";
 import { TextDialog } from "./RunPanel";
 import { Dialog } from "./Dialog";
+import { nearLimitWarning, type RateWindow } from "../usage/limits";
 import { errorText } from "./InlineNotice";
 import { MemoryPanel } from "./MemoryPanel";
 import { ClickUpIntake } from "../clickup/ClickUpIntake";
@@ -32,6 +33,8 @@ type Props = {
   onPlainTab: () => void;
   /** Open the Runs view (every run, with search). */
   onShowAllRuns?: () => void;
+  /** Claude's limit windows, for the near-limit warning (never blocks starting). */
+  usageWindows?: RateWindow[] | null;
 };
 
 /** How many earlier runs the start screen lists; the Runs view has them all. */
@@ -96,7 +99,7 @@ function rememberBmadMode(folder: string, mode: BmadMode): void {
  * New run: a folder, what to do, and Start Eagle-Eye. One role on its own
  * is one tile. Earlier runs can be resumed.
  */
-export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, onShowAllRuns }: Props) {
+export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, onShowAllRuns, usageWindows }: Props) {
   const [folder, setFolder] = useState(initialFolder);
   const [found, setFound] = useState<FolderRepos | null>(null);
   const [request, setRequest] = useState("");
@@ -282,6 +285,11 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
       {error && (
         <p className="error" role="alert">
           {error}
+        </p>
+      )}
+      {nearLimitWarning(usageWindows) && (
+        <p className="hint warn" role="status" data-testid="near-limit">
+          {nearLimitWarning(usageWindows)}
         </p>
       )}
       {overview && !overview.pluginDir && <p className="hint warn">The dcv2 plugin was not found.</p>}

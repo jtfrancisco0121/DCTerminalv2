@@ -4,7 +4,10 @@ import {
   isStale,
   knownUsagePercent,
   limitTone,
+  nearLimitWarning,
+  NEAR_LIMIT_PERCENT,
   statusLimit,
+  trendText,
   type RateWindow,
 } from "./limits";
 
@@ -125,5 +128,43 @@ describe("Claude limit display", () => {
       ),
     ).toBe(40);
     expect(knownUsagePercent([window({ utilization: 0, resetsAt: later })], now)).toBe(0);
+  });
+});
+
+describe("rate-limit history and the near-limit warning", () => {
+  const reading = (minutes: number, utilization: number | null, resetsAt = window().resetsAt) => ({
+    atMs: minutes * 60_000,
+    utilization,
+    resetsAt,
+  });
+  const history = (readings: ReturnType<typeof reading>[]) => [{ rateLimitType: "five_hour", readings }];
+
+  it("words the trend of the current reset period and says nothing with fewer than two readings", () => {
+    expect(trendText(window(), history([reading(0, 30), reading(40, 42)]))).toBe("rising: +12 points in 40 min");
+    expect(trendText(window(), history([reading(0, 50), reading(180, 38)]))).toBe("falling: -12 points in 3 h");
+    expect(trendText(window(), history([reading(0, 42), reading(10, 42)]))).toBe("steady over 10 min");
+    expect(trendText(window(), history([reading(0, 30)]))).toBeNull();
+    expect(trendText(window(), history([reading(0, null), reading(5, 40)]))).toBeNull();
+    expect(trendText(window(), [])).toBeNull();
+    // Readings of the previous window (another reset time) do not count.
+    expect(trendText(window(), history([reading(0, 90, 1), reading(5, 10)]))).toBeNull();
+  });
+
+  it("puts the trend and the reset time in the status bar tooltip", () => {
+    const line = statusLimit([window()], Date.now(), history([reading(0, 30), reading(40, 42)]));
+    expect(line.title).toContain("rising: +12 points in 40 min");
+    expect(line.title).toContain("resets");
+    expect(statusLimit([window()]).title).not.toContain("rising");
+  });
+
+  it("warns at 80% on the 5-hour window and not below, stale, unknown or on the 7-day window", () => {
+    expect(NEAR_LIMIT_PERCENT).toBe(80);
+    expect(nearLimitWarning([window({ utilization: 80 })])).toContain("5-hour limit is at 80%");
+    expect(nearLimitWarning([window({ utilization: 79.9 })])).toBeNull();
+    expect(nearLimitWarning([window({ utilization: null })])).toBeNull();
+    expect(nearLimitWarning([window({ utilization: 95, resetsAt: 1 })])).toBeNull();
+    expect(nearLimitWarning([window({ rateLimitType: "seven_day", label: "7d", utilization: 95 })])).toBeNull();
+    expect(nearLimitWarning(null)).toBeNull();
+    expect(nearLimitWarning([window({ utilization: 91 })])).toContain("you can still start it");
   });
 });

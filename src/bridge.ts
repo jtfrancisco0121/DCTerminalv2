@@ -6,6 +6,7 @@
  */
 
 import { Channel, invoke } from "@tauri-apps/api/core";
+import type { WindowHistory } from "./usage/limits";
 
 export type TabKind = "claude" | "shell";
 
@@ -169,6 +170,8 @@ export type RateWindow = {
 export type UsageSnapshot = {
   configDir: string;
   windows: RateWindow[];
+  /** The saved readings per window type, oldest first (at most 48 each). Absent in older fixtures. */
+  history?: WindowHistory[];
 };
 
 export type PtyPacket = {

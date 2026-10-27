@@ -42,7 +42,7 @@ import { dropLivePty, ptyExitCode, ptyRunning, subscribeLivePty, subscribePtyExi
 import { focusParkedTerminal, refitTerminal, requestTerminalSearch, setCopyOnSelect, setOptionAsMeta, setTerminalTheme } from "./terminal/park";
 import { applyTheme, watchSystemTheme } from "./theme";
 import { reportError, setErrorNotifier } from "./uiErrors";
-import { statusLimit } from "./usage/limits";
+import { statusLimit, type WindowHistory } from "./usage/limits";
 import { keyAction, pageAction, type PageAction } from "./pageActions";
 import { ClaudeVersionBanner } from "./components/ClaudeVersionBanner";
 import { ImportDevDialog, useDevImport } from "./components/ImportDevDialog";
@@ -78,6 +78,7 @@ function App() {
   const [settings, setSettings] = useState<SettingsView | null>(null);
   const [state, setState] = useState<AppStateSnapshot | null>(null);
   const [usage, setUsage] = useState<RateWindow[] | null>(null);
+  const [usageHistory, setUsageHistory] = useState<WindowHistory[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   // Tabs that need you and unfinished runs, in every window (the status bar's control).
   const [attention, setAttention] = useState<AttentionSummary | null>(null);
@@ -125,7 +126,10 @@ function App() {
 
   const refreshUsage = useCallback(() => {
     getClaudeUsage(windowId).then(
-      (snapshot) => setUsage(snapshot.windows),
+      (snapshot) => {
+        setUsage(snapshot.windows);
+        setUsageHistory(snapshot.history ?? []);
+      },
       (err: unknown) => reportError("Claude usage", err, { once: true }),
     );
   }, [windowId]);
@@ -388,6 +392,7 @@ function App() {
                 onStarted={(run) => void started(run)}
                 onPlainTab={() => setPlainTab(true)}
                 onShowAllRuns={() => setDialog("runs")}
+                usageWindows={usage}
               />
             )}
             {state.closedTabs.length > 0 && (
@@ -434,7 +439,7 @@ function App() {
       <StatusBar
         account={ctx ? { name: ctx.accountName, config: ctx.config } : null}
         folder={active?.cwd ?? null}
-        usage={usage ? statusLimit(usage) : null}
+        usage={usage ? statusLimit(usage, Date.now(), usageHistory) : null}
         message={message ? { text: message, onDismiss: () => setMessage(null) } : null}
         attention={attention}
         onAttention={() => setActiveRunsOpen((open) => !open)}
@@ -460,6 +465,7 @@ function App() {
               onStarted={(run) => void started(run)}
               onPlainTab={() => setPlainTab(true)}
                 onShowAllRuns={() => setDialog("runs")}
+                usageWindows={usage}
             />
           )}
         </Dialog>

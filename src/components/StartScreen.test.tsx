@@ -111,3 +111,38 @@ describe("StartScreen duplicate start", () => {
     expect(onStarted).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("StartScreen near-limit warning", () => {
+  afterEach(cleanup);
+
+  const five = (utilization: number) => ({
+    rateLimitType: "five_hour",
+    label: "5h",
+    utilization,
+    resetsAt: Date.now() / 1000 + 3600,
+    status: "allowed",
+    seenAtMs: Date.now(),
+  });
+
+  it("warns at 80% on the 5-hour window without disabling Start", async () => {
+    const api = await import("../run/api");
+    (api.detectFolderRepos as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: "repo",
+      repos: [{ name: "app", path: "/w/app", check: null }],
+    });
+    render(
+      <StartScreen windowId="main" initialFolder="/w/app" onStarted={() => {}} onPlainTab={() => {}} usageWindows={[five(83)]} />,
+    );
+    expect((await screen.findByTestId("near-limit")).textContent).toContain("5-hour limit is at 83%");
+    const start = screen.getByRole("button", { name: "Start Eagle-Eye" }) as HTMLButtonElement;
+    await vi.waitFor(() => expect(start.disabled).toBe(false));
+  });
+
+  it("shows nothing below 80%", async () => {
+    render(
+      <StartScreen windowId="main" initialFolder="" onStarted={() => {}} onPlainTab={() => {}} usageWindows={[five(60)]} />,
+    );
+    await screen.findByRole("button", { name: "Start Eagle-Eye" });
+    expect(screen.queryByTestId("near-limit")).toBeNull();
+  });
+});
