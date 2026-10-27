@@ -529,7 +529,57 @@ def busy_ids(doc):
     return [p.get("id") for p in (doc or {}).get("prs") or [] if isinstance(p, dict) and p.get("state") in ("building", "fixing")]
 
 
-def gates(doc, run, old=None):
+ID_RE = re.compile(r"\b(?:(?:CAP|AD|FR|NFR|UJ)-\d+|SM-C?\d+)\b")
+NONE_RE = re.compile(r"(?i)^none\s*(?::|\s-)\s*(\S.*)$")
+
+
+def bmad_plan_trace(run):
+    """Problems that keep plan.md from tracing to the run's BMAD documents (empty list = traces)."""
+    plan = read(os.path.join(run, "plan.md"))
+    if not plan:
+        return ["no plan.md"]
+    found = bmad_find(run)
+    known = set()
+    for fs in found.values():
+        for f in fs:
+            known.update(ID_RE.findall(read(f) or ""))
+    spec = [read(f) or "" for f in found["spec"]]
+    caps = set()
+    for t in spec:
+        caps.update(re.findall(r"(?m)^\s*[-*]\s*\*\*(CAP-\d+)\*\*", t))
+    if not caps:
+        for t in spec:
+            caps.update(re.findall(r"\bCAP-\d+\b", t))
+    problems, covered = [], set()
+    for m in re.finditer(r"(?ms)^###\s+(S\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan):
+        sid, body = m.group(1), m.group(2)
+        cl = re.search(r"(?m)^\s*-\s*Covers:\s*(.+?)\s*$", body)
+        if not cl:
+            problems.append(f"{sid} has no Covers: line")
+            continue
+        val = cl.group(1)
+        ids = ID_RE.findall(val)
+        if not ids:
+            if not NONE_RE.match(val):
+                problems.append(f"{sid} has a Covers: line with no ID (use IDs from the documents, or 'none: <reason>')")
+            continue
+        unknown = sorted({i for i in ids if i not in known})
+        if unknown:
+            problems.append(f"{sid} names unknown {', '.join(unknown)}")
+        covered.update(ids)
+    out = set()
+    om = re.search(r"(?ms)^##\s+Out of scope\s*$(.*?)(?=^##\s|\Z)", plan)
+    if om:
+        for line in om.group(1).splitlines():
+            lm = re.match(r"^\s*[-*]\s*(CAP-\d+)\s*:\s*(\S.*)$", line)
+            if lm:
+                out.add(lm.group(1))
+    for c in sorted(caps - covered - out, key=lambda x: int(x.split("-")[1])):
+        problems.append(f'{c} is covered by no story (add it to a story\'s Covers: line or list it under "## Out of scope" as "- {c}: <reason>")')
+    return problems
+
+
+def gates(doc, run, old=None, plan_trace=True):
     """Refusals and reminders that depend on the run, not on the document's shape."""
     tm = testmode()
     out = []
@@ -551,6 +601,11 @@ def gates(doc, run, old=None):
                 return f"NOT WRITTEN: BMAD mode: state.sh bmad-check {run} must pass first", out
             if chk.get("digest") != bmad_digest(run, bmad_find(run)):
                 return f"NOT WRITTEN: BMAD mode: documents changed since the last bmad-check; run state.sh bmad-check {run} again and make it pass", out
+            if plan_trace:
+                pr = bmad_plan_trace(run)
+                if pr:
+                    more = f"; and {len(pr) - 10} more" if len(pr) > 10 else ""
+                    return "NOT WRITTEN: BMAD mode: plan.md does not trace to the BMAD documents: " + "; ".join(pr[:10]) + more, out
     if tm["halt"] and not resumed(run):
         pid = tm["halt"]
         prs = {p.get("id"): p for p in doc.get("prs") or [] if isinstance(p, dict)}
@@ -574,14 +629,14 @@ def gates(doc, run, old=None):
     return None, out
 
 
-def write_status(run, doc, trusted=False):
+def write_status(run, doc, trusted=False, plan_trace=True):
     dest = os.path.join(run, "status.json")
     old = load_json(dest)
     notes, bad = prepare_status(doc, old, trusted, run)
     problems = bad + validate_status(doc, run)
     if problems:
         die(f"NOT WRITTEN: {dest}: " + "; ".join(problems))
-    refusal, out = gates(doc, run, old)
+    refusal, out = gates(doc, run, old, plan_trace)
     if refusal:
         die(refusal)
     atomic_write(dest, json.dumps(doc, indent=2) + "\n")
@@ -863,7 +918,7 @@ def cmd_bmad_check(run):
     b["mode"] = bmad_mode(run)
     b["check"] = chk
     st["bmad"] = b
-    for m in write_status(run, st, trusted=True):
+    for m in write_status(run, st, trusted=True, plan_trace=False):
         print(m)
     append_log(run, st.get("stage") or "planning", f"bmad-check {chk['result']}: {len(chk['documents'])} document(s)" + (f"; {len(reasons)} problem(s)" if reasons else ""))
     if reasons:
