@@ -637,6 +637,11 @@ pub fn recent_enough(updated_at: Option<&str>, now: chrono::DateTime<chrono::Utc
 pub trait Notifier: Send + Sync {
     /// `app_active`: some window of the app has focus.
     fn notify(&self, event: &Event, app_active: bool);
+    /// Whether the person is actually told about the event (the master switch
+    /// and the event's own switch). Only a told event leaves a landing target.
+    fn is_shown(&self, _event: &Event) -> bool {
+        true
+    }
     /// The latest reading, after every tick (the badge follows it).
     fn badge(&self, _snapshot: &Snapshot) {}
 }
@@ -660,7 +665,7 @@ impl Notifier for RunLogNotifier {
 pub fn deliver(events: &[Event], app_active: bool, notifier: &dyn Notifier) -> Vec<String> {
     let mut targets = Vec::new();
     for event in events {
-        if !app_active {
+        if !app_active && notifier.is_shown(event) {
             if let Some(tab) = &event.tab_id {
                 targets.push(tab.clone());
             }
@@ -1248,6 +1253,30 @@ mod tests {
             "the app was active"
         );
         assert_eq!(fake.got.lock().unwrap().len(), 2, "both were notified");
+    }
+
+    struct SilentNotifier;
+
+    impl Notifier for SilentNotifier {
+        fn notify(&self, _event: &Event, _app_active: bool) {}
+        fn is_shown(&self, _event: &Event) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn an_event_that_is_not_shown_leaves_no_landing_target() {
+        let events = vec![Event {
+            kind: Kind::NeedsYou,
+            subject: "t1".into(),
+            tab_id: Some("t1".into()),
+            window_label: Some("main".into()),
+            tab_label: None,
+            run_id: None,
+            run_dir: None,
+            detail: None,
+        }];
+        assert!(deliver(&events, false, &SilentNotifier).is_empty());
     }
 
     #[derive(Default)]

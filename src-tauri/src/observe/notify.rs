@@ -133,6 +133,11 @@ impl Notifier for AppNotifier {
         }
     }
 
+    fn is_shown(&self, event: &Event) -> bool {
+        let sinks = route(event.kind, &self.settings(), false);
+        sinks.in_app || sinks.system
+    }
+
     fn badge(&self, snapshot: &Snapshot) {
         let count = badge_count(snapshot, &self.settings());
         let Ok(mut last) = self.badge.lock() else {
