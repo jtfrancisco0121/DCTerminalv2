@@ -102,6 +102,8 @@ One backend thread, `observe/attention.rs`, started at app setup (never from a c
 
 - **Run panel layout** (`RunPanelShell.tsx`). The panel beside a run tab is 16 to 40 rem wide (default 20): drag the 6px handle, or focus it and press Left (wider) or Right (narrower) for 1 rem; double-click resets. The button at its top edge collapses it to a narrow rail with the stage dot, which turns to the attention colour while the run waits for you; clicking the rail expands it. Width and state are kept per window in localStorage (`dcv2.runPanel.<windowId>`); the terminal beside it refits after each change.
 
+- **Duplicate start** (`run/duplicate.rs`). `start_run` (Eagle-Eye) takes `force`. Without it, an unfinished run (not `done`, not `failed`; no status.json yet counts as unfinished) with the same request words (whitespace-normalised, the ticket lines left out), the same folder (canonical) and the same set of ClickUp ticket ids makes it answer a typed `duplicate {runId, runDir}` and start nothing. The start screen then offers Resume that run (`resume_run`, which focuses a live tab of it) or Start anyway (`force`).
+
 ## Import from the dev app (release builds)
 
 Debug builds keep their data in `<identifier>.dev`, release builds in `<identifier>`. On first launch (offered once; `dev-import.json` records it) and from File › "Import from dev app…" (hidden in debug builds) the built app imports the dev app's session, reading `.dev` only:

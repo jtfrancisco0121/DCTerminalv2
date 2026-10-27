@@ -11,6 +11,7 @@ pub mod actions;
 pub mod afk;
 pub mod check;
 pub mod cleanup;
+pub mod duplicate;
 pub mod folder;
 pub mod git;
 pub mod janitor;
@@ -107,12 +108,33 @@ pub fn trust_data_dir(data: &Path, run_dir: &Path) -> PathBuf {
         .unwrap_or_else(|| data.to_path_buf())
 }
 
-async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
+async fn blocking<T: Send + 'static, E: From<String> + Send + 'static>(
+    work: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Result<T, E> {
     tauri::async_runtime::spawn_blocking(work)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| E::from(e.to_string()))?
+}
+
+/// Why `start_run` started nothing: a message, or (typed) the unfinished run
+/// that has the same request, folder and tickets.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum StartError {
+    Message(String),
+    Duplicate { duplicate: duplicate::DuplicateRun },
+}
+
+impl From<String> for StartError {
+    fn from(message: String) -> Self {
+        StartError::Message(message)
+    }
+}
+
+impl From<&str> for StartError {
+    fn from(message: &str) -> Self {
+        StartError::Message(message.to_string())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -429,7 +451,8 @@ pub async fn start_run(
     clickup: Option<ClickUpStart>,
     review_mode: Option<String>,
     bmad_mode: Option<String>,
-) -> Result<StartedRun, String> {
+    force: Option<bool>,
+) -> Result<StartedRun, StartError> {
     blocking(move || {
         let folder = start_folder(&folder)?;
         let ctx = launch_context(&app, window_id.as_deref())?;
@@ -448,13 +471,31 @@ pub async fn start_run(
             memory_prompt: None,
         };
         if role == "eagle-eye" {
+            if !force.unwrap_or(false) {
+                let wanted: std::collections::BTreeSet<String> = clickup
+                    .as_ref()
+                    .map(|c| c.ticket_ids.iter().cloned().collect())
+                    .unwrap_or_default();
+                let earlier = duplicate::earlier_runs(&folder::list_runs(&data));
+                if let Some(same) =
+                    duplicate::find(&earlier, &folder::neutralise(&request), &folder, &wanted)
+                {
+                    return Err(StartError::Duplicate {
+                        duplicate: duplicate::DuplicateRun {
+                            run_id: same.run_id.clone(),
+                            run_dir: same.run_dir.clone(),
+                        },
+                    });
+                }
+            }
             let mut found = repos::detect(&folder);
             found.repos = with_repo_setup(found.repos, &ctx.worktree_setup);
             if found.repos.is_empty() {
                 return Err(format!(
                     "{} is not a git repo or a folder of git repos.",
                     folder.display()
-                ));
+                )
+                .into());
             }
             let meta = folder::RunMeta {
                 plugin_version: launch::plugin_version(&plugin),
@@ -483,7 +524,7 @@ pub async fn start_run(
                 if let Err(err) = save_tickets(&data, &run_dir, &ctx.account_id, snapshot) {
                     crate::clickup::trust::remove(&data, &run_dir);
                     let _ = std::fs::remove_dir_all(&run_dir);
-                    return Err(err);
+                    return Err(err.into());
                 }
             }
             let prompt_file = memory::compose(

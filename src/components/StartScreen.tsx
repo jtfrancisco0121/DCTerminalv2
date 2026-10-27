@@ -3,10 +3,12 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   detectFolderRepos,
+  duplicateOf,
   readRunFile,
   resumeRun,
   runOverview,
   startRun,
+  type DuplicateRun,
   type FolderRepos,
   type BmadMode,
   type ReviewMode,
@@ -16,6 +18,7 @@ import {
 import { WorktreeSetup } from "./WorktreeSetup";
 import { relativeDate, stageText } from "../run/words";
 import { TextDialog } from "./RunPanel";
+import { Dialog } from "./Dialog";
 import { errorText } from "./InlineNotice";
 import { MemoryPanel } from "./MemoryPanel";
 import { ClickUpIntake } from "../clickup/ClickUpIntake";
@@ -101,6 +104,8 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<{ title: string; text: string } | null>(null);
+  // The same unfinished request is already running: ask before starting it again.
+  const [duplicate, setDuplicate] = useState<{ run: DuplicateRun; role: string } | null>(null);
   const [tickets, setTickets] = useState<ClickUpStart | null>(null);
   const [reviewOnGitHub, setReviewOnGitHub] = useState(() => rememberedReviewOnGitHub(windowId));
   const [bmadMode, setBmadMode] = useState<BmadMode>(() => rememberedBmadMode(initialFolder.trim()));
@@ -141,7 +146,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
     }
   };
 
-  const launch = async (role: string) => {
+  const launch = async (role: string, force = false) => {
     if (!folder.trim()) {
       setError("Choose a folder.");
       return;
@@ -157,9 +162,11 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
       const said = request.trim() || (eagleTickets ? "Do the ClickUp tickets below." : request);
       const mode: ReviewMode | null = role === "eagle-eye" ? (reviewOnGitHub ? "github" : "local") : null;
       const bmad: BmadMode | null = role === "eagle-eye" ? bmadMode : null;
-      onStarted(await startRun(windowId, folder.trim(), said, role, eagleTickets, mode, bmad));
+      onStarted(await startRun(windowId, folder.trim(), said, role, eagleTickets, mode, bmad, force));
     } catch (err) {
-      setError(errorText(err));
+      const same = duplicateOf(err);
+      if (same) setDuplicate({ run: same, role });
+      else setError(errorText(err));
     } finally {
       setBusy(false);
     }
@@ -357,6 +364,48 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
             </button>
           )}
         </section>
+      )}
+      {duplicate && (
+        <Dialog
+          title="This run is already in progress"
+          onClose={() => setDuplicate(null)}
+          footer={
+            <>
+              <button type="button" className="secondary-button" onClick={() => setDuplicate(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={busy}
+                onClick={() => {
+                  const role = duplicate.role;
+                  setDuplicate(null);
+                  void launch(role, true);
+                }}
+              >
+                Start anyway
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busy}
+                onClick={() => {
+                  const dir = duplicate.run.runDir;
+                  setDuplicate(null);
+                  void resume(dir);
+                }}
+              >
+                Resume that run
+              </button>
+            </>
+          }
+        >
+          <p>
+            An unfinished run has the same request in the same folder{tickets ? " and the same tickets" : ""}.
+            Resume it, or start a new one anyway.
+          </p>
+        </Dialog>
       )}
       {report && <TextDialog title={report.title} text={report.text} onClose={() => setReport(null)} />}
       {overview?.pluginVersion && <p className="hint run-version">dcv2 roles {overview.pluginVersion}</p>}

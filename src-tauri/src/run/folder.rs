@@ -74,6 +74,11 @@ pub fn request_md(folder: &Path, repos_limit: &[String], request: &str) -> Strin
     out
 }
 
+/// The words after `## What to do` in a request.md.
+pub fn request_md_body(text: &str) -> &str {
+    text.split("## What to do").nth(1).unwrap_or(text)
+}
+
 /// `r-YYYYMMDD-HHMM`, with `-2`, `-3`, … when that folder exists.
 pub fn new_run_id(runs: &Path, now: chrono::DateTime<chrono::Utc>) -> String {
     // Seconds and a random suffix: an id is never reused, so no record kept

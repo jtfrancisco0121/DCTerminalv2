@@ -20,7 +20,8 @@ const runs = Array.from({ length: 10 }, (_, n) => run(n + 1, n === 1 ? { stage: 
 
 const readRunFile = vi.fn(async (_dir: string, _path: string) => "# the report");
 const revealItemInDir = vi.fn(async (_path: string) => {});
-vi.mock("../run/api", () => ({
+vi.mock("../run/api", async () => ({
+  duplicateOf: (await vi.importActual<typeof import("../run/api")>("../run/api")).duplicateOf,
   runOverview: vi.fn(async () => ({ pluginDir: "/p", pluginVersion: null, roles: [], runs })),
   detectFolderRepos: vi.fn(async () => ({ kind: "none", repos: [] })),
   startRun: vi.fn(),
@@ -72,5 +73,41 @@ describe("StartScreen earlier runs", () => {
     fireEvent.click(done.getByText("Report"));
     expect(await screen.findByText("# the report")).toBeTruthy();
     expect(readRunFile).toHaveBeenCalledWith("/d/runs/r-1", "report.md");
+  });
+});
+
+describe("StartScreen duplicate start", () => {
+  afterEach(cleanup);
+
+  it("asks before starting the same request again; Resume resumes, Start anyway forces", async () => {
+    const api = await import("../run/api");
+    const startRun = api.startRun as unknown as ReturnType<typeof vi.fn>;
+    const resumeRun = api.resumeRun as unknown as ReturnType<typeof vi.fn>;
+    const detect = api.detectFolderRepos as unknown as ReturnType<typeof vi.fn>;
+    detect.mockResolvedValue({ kind: "repo", repos: [{ name: "app", path: "/w/app", check: null }] });
+    startRun.mockRejectedValueOnce({ duplicate: { runId: "r-2", runDir: "/d/runs/r-2" } });
+    startRun.mockResolvedValue({ tab: {}, runDir: "/d/runs/new" });
+    resumeRun.mockResolvedValue({ tab: {}, runDir: "/d/runs/r-2", focused: true });
+    const onStarted = vi.fn();
+    render(<StartScreen windowId="main" initialFolder="/w/app" onStarted={onStarted} onPlainTab={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Add multiply()" } });
+    const start = await screen.findByRole("button", { name: "Start Eagle-Eye" });
+    await vi.waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(start);
+    expect(await screen.findByText("This run is already in progress")).toBeTruthy();
+    expect(startRun.mock.calls[0][7]).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Resume that run" }));
+    await vi.waitFor(() => expect(resumeRun).toHaveBeenCalledWith("main", "/d/runs/r-2"));
+    expect(onStarted).toHaveBeenCalledOnce();
+
+    startRun.mockRejectedValueOnce({ duplicate: { runId: "r-2", runDir: "/d/runs/r-2" } });
+    await vi.waitFor(() =>
+      expect((screen.getByRole("button", { name: "Start Eagle-Eye" }) as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start anyway" }));
+    await vi.waitFor(() => expect(startRun).toHaveBeenCalledTimes(3));
+    expect(startRun.mock.calls[2][7]).toBe(true);
+    expect(onStarted).toHaveBeenCalledTimes(2);
   });
 });

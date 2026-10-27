@@ -240,7 +240,20 @@ export const startRun = (
   clickup: ClickUpStart | null = null,
   reviewMode: ReviewMode | null = null,
   bmadMode: BmadMode | null = null,
-) => invoke<StartedRun>("start_run", { windowId, folder, request, role, clickup, reviewMode, bmadMode });
+  force = false,
+) => invoke<StartedRun>("start_run", { windowId, folder, request, role, clickup, reviewMode, bmadMode, force });
+
+/** An unfinished run with the same request, folder and tickets (what `start_run` answers instead of starting). */
+export type DuplicateRun = { runId: string; runDir: string };
+
+/** The duplicate a failed `startRun` names, else null. */
+export function duplicateOf(err: unknown): DuplicateRun | null {
+  if (!err || typeof err !== "object") return null;
+  const dup = (err as { duplicate?: Partial<DuplicateRun> }).duplicate;
+  return dup && typeof dup.runId === "string" && typeof dup.runDir === "string"
+    ? { runId: dup.runId, runDir: dup.runDir }
+    : null;
+}
 export const setRepoSetup = (repoPath: string, setup: RepoSetup) =>
   invoke<RepoSetup>("set_repo_setup", { repoPath, setup });
 export const resumeRun = (windowId: string, runDir: string) => invoke<StartedRun>("resume_run", { windowId, runDir });
