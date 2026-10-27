@@ -84,6 +84,16 @@ tool = str(data.get("tool_name") or "")
 inp = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
 cwd0 = str(data.get("cwd") or "/")
 
+def norm(p):
+    """The identity of a path for every allow / deny decision: the real path (symlinks and .. resolved), casefolded
+    (the default macOS volume ignores case, so STATUS.json is status.json and /Users/X is /Users/x)."""
+    return os.path.realpath(p).casefold() if p else ""
+
+
+def same(a, b):
+    return bool(a) and bool(b) and norm(a) == norm(b)
+
+
 run = os.environ.get("DCV2_RUN_DIR") or ""
 run = os.path.realpath(run) if run else ""
 # The app's signed ClickUp records of each run: <app data>/run-trust (the run is <app data>/runs/<id>).
@@ -95,13 +105,13 @@ worktrees, repos, status, copied, mode = [], [], {}, set(), "local"
 if run:
     try:
         g = json.load(open(os.path.join(run, ".guard.json")))
-        if os.path.realpath(str(g.get("runDir") or "")) == run:
+        if norm(str(g.get("runDir") or "")) == norm(run):
             wmap = {k: os.path.realpath(w) for k, w in (g.get("worktrees") or {}).items() if isinstance(w, str) and os.path.isabs(w)}
             worktrees = list(wmap.values())
             repos = [os.path.realpath(r) for r in g.get("repos") or [] if isinstance(r, str) and os.path.isabs(r)]
             for k, files in (g.get("copied") or {}).items():  # files copied in from the main checkout (never committed)
                 if k in wmap and isinstance(files, list):
-                    copied.update(os.path.normpath(os.path.join(wmap[k], str(f))) for f in files)
+                    copied.update(norm(os.path.join(wmap[k], str(f))) for f in files)
     except Exception:
         pass
     try:
@@ -132,7 +142,10 @@ def real(p, base):
 
 
 def inside(p, root):
-    return bool(root) and (p == root or p.startswith(root.rstrip(os.sep) + os.sep))
+    if not root:
+        return False
+    p, root = norm(p), norm(root)
+    return p == root or p.startswith(root.rstrip(os.sep) + os.sep)
 
 
 def git_user_config(p):
@@ -140,22 +153,33 @@ def git_user_config(p):
     helpers run from there), so nothing in a run writes it."""
     home = os.path.realpath(os.path.expanduser("~"))
     xdg = os.path.realpath(os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"))
-    return p == os.path.join(home, ".gitconfig") or inside(p, os.path.join(xdg, "git"))
+    return same(p, os.path.join(home, ".gitconfig")) or inside(p, os.path.join(xdg, "git"))
 
 
 GITCONFIG_MSG = "the user's git config (~/.gitconfig, ~/.config/git/) is never written from a dcv2 run."
 
 
+PROTECTED_CF = frozenset(n.casefold() for n in PROTECTED)
+
+
+def has_request_md(d):
+    """d is a run folder: it holds a request.md (any case, as the volume may ignore case)."""
+    try:
+        return any(n.casefold() == "request.md" for n in os.listdir(d))
+    except OSError:
+        return False
+
+
 def protected(p):
     q = p
     while q and q != os.path.dirname(q):  # requests/ of any run folder: state.sh request and the app only
-        if os.path.basename(q) == "requests" and (os.path.dirname(q) == run or os.path.isfile(os.path.join(os.path.dirname(q), "request.md"))):
+        if os.path.basename(q).casefold() == "requests" and (same(os.path.dirname(q), run) or has_request_md(os.path.dirname(q))):
             return True
         q = os.path.dirname(q)
-    if os.path.basename(p) not in PROTECTED:
+    if os.path.basename(p).casefold() not in PROTECTED_CF:
         return False
     d = os.path.dirname(p)
-    return d == run or os.path.isfile(os.path.join(d, "request.md"))
+    return same(d, run) or has_request_md(d)
 
 
 def bmad_config(p):
@@ -163,7 +187,7 @@ def bmad_config(p):
     if not run:
         return False
     b = os.path.join(run, "bmad", "_bmad")
-    if os.path.dirname(p) == b and re.fullmatch(r"config[\w.-]*\.toml", os.path.basename(p)):
+    if same(os.path.dirname(p), b) and re.fullmatch(r"config[\w.-]*\.toml", os.path.basename(p), re.I):
         return True
     return inside(p, os.path.join(b, "custom"))
 
@@ -185,7 +209,7 @@ def main_checkout(p):
 
 
 def in_checkout(p):
-    if any(inside(p, r) for r in repos) or any(c.endswith("-worktrees") for c in p.split(os.sep)):
+    if any(inside(p, r) for r in repos) or any(c.casefold().endswith("-worktrees") for c in p.split(os.sep)):
         return True
     d = p
     while True:
@@ -281,7 +305,7 @@ def check_write(t, cwd):
     if bound and re.search(r"[$`*?]", t) and re.search(r"\.gitconfig|\.config/git|/git/config\b", t):
         block(GITCONFIG_MSG)
     if re.search(r"[$`*?]", t) or (cwd is None and not os.path.isabs(os.path.expanduser(t))):
-        if trust_root and "run-trust" in t:
+        if trust_root and "run-trust" in t.lower():
             block(TRUST_MSG)
         if mem and re.search(r"\$\{?DCV2_MEMORY_DIR\b", t):
             block("codebase memory is written only with memory.sh write, never with a shell redirect.")
@@ -521,7 +545,7 @@ def check_git(args, cwd):
             for a in rest:
                 if a.startswith("-") or "$" in a:
                     continue
-                p = os.path.normpath(os.path.join(target, os.path.expanduser(a)))
+                p = norm(os.path.join(target, os.path.expanduser(a)))
                 if p in copied or (force and any(c.startswith(p.rstrip(os.sep) + os.sep) for c in copied)):
                     block(f"`git {sub}` would include {a!r}, a file copied in from the main checkout (repos.json copyFiles): "
                           "it is never staged or committed. Stage only the files your story changed.")
@@ -616,7 +640,7 @@ def check_state_sh(args):
     if sub in ("cleanup", "request", "request-wait") and run:
         rest = [a for a in args[1:] if not a.startswith("-")]
         target = re.sub(r"\$\{?DCV2_RUN_DIR\}?", lambda _: run, rest[1] if len(rest) > 1 else "")
-        if "$" not in target and os.path.realpath(os.path.expanduser(target)) != run:
+        if "$" not in target and not same(os.path.expanduser(target), run):
             block(f"`state.sh {sub}` acts only on this run's folder ({run}), not {target or 'none'}.")
 
 
@@ -653,7 +677,7 @@ def live_tests_on(wt):
     except Exception:
         return False
     for r in (rj.get("repos") if isinstance(rj, dict) else None) or []:
-        if isinstance(r, dict) and isinstance(r.get("path"), str) and os.path.realpath(r["path"]) == os.path.realpath(repo):
+        if isinstance(r, dict) and isinstance(r.get("path"), str) and same(r["path"], repo):
             return r.get("liveTests") is True
     return False
 
@@ -666,7 +690,7 @@ def check_live(script, cwd):
         block(f"cannot tell where {script!r} is: run it as `cd <worktree> && bash scripts/skill-e2e/{os.path.basename(script)} ...`")
     p = real(script, cwd or "/")
     wt = next((w for w in worktrees if inside(p, w)), None)
-    if not wt or os.path.relpath(p, wt) != os.path.join("scripts", "skill-e2e", os.path.basename(p)):
+    if not wt or os.path.relpath(norm(p), norm(wt)) != os.path.join("scripts", "skill-e2e", os.path.basename(norm(p))):
         block(f"live Claude tests run only as your worktree's scripts/skill-e2e/{os.path.basename(script)}.")
     if not live_tests_on(wt):
         block("live Claude tests are off for this repo (the app setting \"Allow live Claude tests in checks\"); "
@@ -878,7 +902,7 @@ def analyze(cmd, cwd, depth=0):
 CMD = str(inp.get("command") or "")
 if bound and "DCV2_TEST_LOCAL_REMOTES" in CMD:
     block("DCV2_TEST_LOCAL_REMOTES is set only by the test suites, never from inside a run.")
-MEM_MENTIONED = bool(mem) and ("DCV2_MEMORY_DIR" in CMD or mem in CMD)
+MEM_MENTIONED = bool(mem) and ("DCV2_MEMORY_DIR" in CMD or mem.casefold() in CMD.casefold())
 analyze(CMD, cwd0)
 sys.exit(0)
 PY

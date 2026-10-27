@@ -78,6 +78,25 @@ done
 expect 2 "implementer with no DCV2_RUN_DIR" "$(payload dcv2:implementer Write file_path "$WT/a.js")" -u DCV2_RUN_DIR
 expect 0 "user session with no DCV2_RUN_DIR" "$(payload "" Write file_path "$R/a.js")" -u DCV2_RUN_DIR
 
+echo "# case variants are the same file (CAP-1: the default macOS volume ignores case)"
+UP() { python3 -c 'import sys; print(sys.argv[1].upper())' "$1"; }
+w 2 "" "$RUN/STATUS.json"
+w 2 "" "$RUN/Status.json"
+w 2 dcv2:implementer "$RUN/.GUARD.json"
+w 2 dcv2:planner "$RUN/WriteBack.json"
+w 2 dcv2:planner "$RUN/REQUESTS/x.md"
+b 2 dcv2:implementer "echo {} > $RUN/Status.json"
+b 2 dcv2:implementer "cp /dev/null $RUN/.Guard.json"
+w 2 "" "$(UP "$R")/a.js"
+w 0 dcv2:implementer "$(UP "$WT")/a.js"          # the same worktree, spelled in capitals
+b 2 "" "git -C $(UP "$R") reset --hard"
+b 2 "" "echo x > $(UP "$R")/a.js"
+b 0 "" "git -C $R status"
+MEMU="$d/mem"; mkdir -p "$MEMU/x/topics"
+expect 2 "planner Write into the upper-cased memory dir" "$(payload dcv2:planner Write file_path "$(UP "$MEMU")/x/index.md")" DCV2_MEMORY_DIR="$MEMU"
+expect 2 "orchestrator redirect into the upper-cased memory dir" "$(payload "" Bash command "echo x > $(UP "$MEMU")/x/index.md")" DCV2_MEMORY_DIR="$MEMU"
+w 0 dcv2:implementer "$WT/Sub/A.js"
+
 echo "# codebase memory: only memory.sh write (D9)"
 MEMD="$d/mem"; mkdir -p "$MEMD/x/topics"
 expect 2 "orchestrator Write into memory" "$(payload "" Write file_path "$MEMD/x/index.md")" DCV2_MEMORY_DIR="$MEMD"
