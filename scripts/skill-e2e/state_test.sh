@@ -386,7 +386,7 @@ has "  says so" "report.md not written"
 echo "# BMAD mode: size, init, check, and the plan-approval refusal (run folder path has a space)"
 B="$d/App Support/runs/r-b"; mkdir -p "$B"
 printf 'folder: %s\n' "$WS" > "$B/request.md"
-printf '# Plan\n## Stories\n### S1: x\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n' > "$B/plan.md"
+printf '# Plan\n## Stories\n### S1: x\n- Covers: CAP-1, AD-1\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n' > "$B/plan.md"
 printf '{"schema":1,"repos":[{"name":"toy \\"quoted\\" repo","path":"%s","check":null}]}\n' "$R" > "$B/repos.json"
 # bstatus <stage>: a minimal status.json document for the BMAD run (no PRs yet)
 bstatus() {
@@ -581,6 +581,67 @@ is "  applied (mode on)" "$B/status.json" bmad.applied true
 mkdocs
 expect 0 "on: check passes" bash "$STATE" bmad-check "$B"
 expect 0 "on: plan-approval allowed after the check" bput < <(bstatus plan-approval)
+
+echo "# BMAD: plan.md must trace to the documents"
+W="$B/bmad/output/r-b"
+# setplan <story blocks...> [-- <extra text>]: plan.md with the given story blocks (each "ID|Covers value", empty value = no Covers: line)
+setplan() {
+  { printf '# Plan\n## Stories\n'
+    local x
+    for x in "$@"; do printf '### %s: t\n' "${x%%|*}"; if [[ -n "${x#*|}" ]]; then printf -- '- Covers: %s\n' "${x#*|}"; fi; done
+    printf '## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n'
+    if [[ -n "${EXTRA:-}" ]]; then printf '\n## Out of scope\n%s\n' "$EXTRA"; fi
+  } > "$B/plan.md"
+}
+bothrefused() { # <label> <must-mention>
+  expect 1 "$1: put refused" bput < <(bstatus plan-approval)
+  has "  names it" "$2"
+  has "  trace message" "plan.md does not trace to the BMAD documents"
+  expect 1 "$1: approve refused" bash "$STATE" approve "$B" plan user
+  has "  names it (approve)" "$2"
+}
+bothallowed() {
+  expect 0 "$1: put allowed" bput < <(bstatus plan-approval)
+  expect 0 "$1: approve allowed" bash "$STATE" approve "$B" plan user
+}
+setplan "S1|CAP-1" "S2|"
+bothrefused "story without Covers:" "S2 has no Covers: line"
+setplan "S1|CAP-1, CAP-9"
+bothrefused "unknown CAP" "unknown CAP-9"
+setplan "S1|none"; bothrefused "Covers: none (no reason)" "S1 has a Covers: line with no ID"
+setplan "S1|none:"; bothrefused "Covers: none: (no reason)" "S1 has a Covers: line with no ID"
+setplan "S1|n/a"; bothrefused "Covers: n/a" "S1 has a Covers: line with no ID"
+# a second CAP in the spec that no story covers
+printf -- '- **CAP-2** users can remove\n' >> "$W/spec-toy/spec-toy.md"
+printf -- '\n- **SM-C1** counter metric\n- **FR-1** a PRD requirement\n' >> "$W/spec-toy/spec-toy.md"
+expect 0 "bmad-check at plan-approval with an untraced plan still records pass" bash "$STATE" bmad-check "$B"
+is "  recorded" "$B/status.json" bmad.check.result '"pass"'
+setplan "S1|CAP-1"
+bothrefused "CAP-2 covered by no story" "CAP-2 is covered by no story"
+setplan "S1|CAP-1" "S2|none: refactor needed by S1"
+bothrefused "CAP-2 still uncovered with a none story" "CAP-2"
+EXTRA="- CAP-2" setplan "S1|CAP-1"
+bothrefused "Out of scope line without a reason" "CAP-2"
+EXTRA="- CAP-2: not in this release" setplan "S1|CAP-1"
+bothallowed "CAP-2 out of scope with a reason"
+setplan "S1|CAP-1, CAP-2" "S2|none: refactor needed by S1" "S3|NONE - shared helper"
+bothallowed "all covered, none forms (colon, upper-case dash)"
+setplan "S1|CAP-1, CAP-2" "S2|SM-C1"
+bothallowed "counter-metric SM-C1 alone"
+setplan "S1|CAP-1, CAP-2" "S2|FR-1"
+bothallowed "a known PRD-style ID"
+setplan "S1|CAP-1, CAP-2" "S2|FR-7"
+bothrefused "unknown FR-7" "unknown FR-7"
+setplan "S1|CAP-1, CAP-2"
+# non-BMAD runs: no Covers: needed
+printf '# Plan\n## Stories\n### S1: x\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n' > "$B/plan.md"
+rm -f "$B/status.json"; bmeta off
+expect 0 "mode off: put plan-approval without Covers:" bput < <(bstatus plan-approval)
+expect 0 "mode off: approve without Covers:" bash "$STATE" approve "$B" plan user
+rm -f "$B/meta.json" "$B/status.json"
+expect 0 "no meta.json: put plan-approval without Covers:" bput < <(bstatus plan-approval)
+expect 0 "no meta.json: approve without Covers:" bash "$STATE" approve "$B" plan user
+bmeta on; rm -f "$B/status.json"
 # an app mode change cannot be undone by status.json: on stays on
 rm -f "$B/status.json"; bash "$STATE" put "$B/status.json" < <(bstatus planning) >/dev/null
 bash "$STATE" put "$B/status.json" < <(bforge planning '{"mode":"on","size":"Small","applied":false}') >/dev/null
