@@ -16,6 +16,7 @@ pub mod git;
 pub mod janitor;
 pub mod launch;
 pub mod memory;
+pub mod record;
 pub mod repos;
 pub mod requests;
 pub mod status;

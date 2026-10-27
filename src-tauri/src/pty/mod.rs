@@ -530,10 +530,19 @@ fn pty_open_blocking(
     };
     let after_spawn = || match remember {
         Some((session_id, config_dir)) => {
-            let mut state = store.lock().map_err(|err| err.to_string())?;
-            if state.tab_by_id(&tab.id).is_some() {
-                state.remember_claude_session(&tab.id, &session_id, &config_dir)?;
+            {
+                let mut state = store.lock().map_err(|err| err.to_string())?;
+                if state.tab_by_id(&tab.id).is_some() {
+                    state.remember_claude_session(&tab.id, &session_id, &config_dir)?;
+                }
             }
+            // No store lock held: the run's record lists every session.
+            crate::run::record::note_session(
+                &crate::data_dir::app_data_dir(app).path,
+                &tab,
+                &session_id,
+                &config_dir,
+            );
             Ok(())
         }
         None => Ok(()),

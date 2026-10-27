@@ -23,7 +23,7 @@
 use super::hooks::{TabActivity, TabHookState};
 use super::watchdog::{self, WatchInput};
 use crate::clickup::{autopost, trust};
-use crate::run::{cleanup, folder, status};
+use crate::run::{cleanup, folder, record, status};
 use crate::store::{StateStore, TabKind, TabRecord};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -459,6 +459,8 @@ pub struct Reader {
     autopost: HashMap<String, (SystemTime, BTreeSet<String>)>,
     /// Runs whose auto-post record could not be read (logged once).
     autopost_errors: HashSet<String>,
+    /// Runs whose usage record could not be written (logged once).
+    record_errors: HashSet<String>,
 }
 
 impl Reader {
@@ -533,6 +535,19 @@ impl Reader {
         keys: &dyn KeySource,
     ) -> Option<RunFacts> {
         let run_id = run_dir.file_name()?.to_str()?.to_string();
+        // Independent of the diff: a run that is already done at app start,
+        // or whose tab closed before a tick, still gets its record. The
+        // dev app's adopted runs are left to it.
+        if record::own_run_dir(data, &run_dir.display().to_string()).is_some() {
+            if let Err(err) = record::ensure_record(run_dir) {
+                if self.record_errors.insert(run_id.clone()) {
+                    let _ = folder::append_app_log(
+                        run_dir,
+                        &format!("attention: could not write app-usage.json: {err}"),
+                    );
+                }
+            }
+        }
         let value = folder::read_json_value(&run_dir.join("status.json"));
         let view = value.as_ref().and_then(|v| status::parse_status(v).ok());
         let prs = view.as_ref().map(|v| v.prs.as_slice()).unwrap_or_default();
@@ -1247,6 +1262,25 @@ mod tests {
             1,
             "the mtime did not change: not read again"
         );
+    }
+
+    #[test]
+    fn a_run_done_at_the_first_read_gets_its_record_and_fires_nothing() {
+        let tmp = TempDir::new("attention_record");
+        let dir = tmp.join("runs/r-20261027-0900-cafe");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("status.json"),
+            r#"{"schema":1,"stage":"done","updatedAt":"2026-10-27T10:30:00Z","prs":[]}"#,
+        )
+        .unwrap();
+        let mut reader = Reader::default();
+        let keys = CountingKeys::default();
+        let mut d = Detector::default();
+        let facts = reader.run_facts(tmp.path(), &dir, &keys).unwrap();
+        assert!(record::read_record(&dir).is_some_and(|r| r.outcome.as_deref() == Some("done")));
+        assert!(d.diff(observed(vec![], vec![facts.clone()]), T).is_empty());
+        assert!(d.diff(observed(vec![], vec![facts]), T + 60_000).is_empty());
     }
 
     #[test]

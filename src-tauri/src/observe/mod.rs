@@ -65,6 +65,18 @@ pub fn session_sink(app: &AppHandle) -> hooks::SessionSink {
         };
         if let Err(err) = save_session(&store, tab_id, session_id) {
             eprintln!("DCTerminalv2: could not save the new session of a tab: {err}");
+            return;
+        }
+        // A run tab's new session also goes in the run's record (no store
+        // lock held while the file is written).
+        let tab = store
+            .lock()
+            .ok()
+            .and_then(|state| state.tab_by_id(tab_id).cloned());
+        if let Some(tab) = tab {
+            if let Some(config_dir) = tab.claude_config_dir.clone() {
+                crate::run::record::note_session(&data_dir(&app), &tab, session_id, &config_dir);
+            }
         }
     })
 }

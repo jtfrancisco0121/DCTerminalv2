@@ -146,6 +146,14 @@ impl SessionTracker {
         }
     }
 
+    /// The first and last message times (Unix ms) read so far.
+    pub fn activity_span(&self) -> Option<(i64, i64)> {
+        let times = self.records.iter().filter_map(|r| r.at_ms);
+        let first = times.clone().min()?;
+        let last = times.max()?;
+        Some((first, last))
+    }
+
     /// `<session>/subagents` beside `<session>.jsonl`.
     pub fn subagents_dir(&self) -> Option<PathBuf> {
         let file = self.session_file.as_ref()?;
