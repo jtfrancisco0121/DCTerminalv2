@@ -242,7 +242,12 @@ pub fn import(
         summary.accounts_added.push(account.name.clone());
         accounts.insert(account.id.clone(), id);
     }
-    // A dev window that names no account used the first one.
+    // The accounts must be valid as a whole before anything else is
+    // touched: a refusal later would leave adopted runs and copied memory
+    // behind for an import that never finished.
+    let mut checked = claude.clone();
+    crate::store::settings_store::normalize_claude_accounts(&mut checked)
+        .map_err(|err| format!("The dev app's accounts cannot be imported: {err}"))?;
     // A dev window that names no known account used the first one; a
     // window whose own account was not brought over is skipped.
     let first_dev = dev_settings.claude.accounts.first().map(|a| a.id.clone());
@@ -659,6 +664,7 @@ pub async fn import_from_dev_app(app: tauri::AppHandle) -> Result<ImportSummary,
             let settings = settings.lock().map_err(|e| e.to_string())?;
             settings.claude().clone()
         };
+        let accounts_before = claude.accounts.clone();
         let before = {
             let state = app.state::<Mutex<crate::store::StateStore>>();
             let state = state.lock().map_err(|e| e.to_string())?;
@@ -677,11 +683,21 @@ pub async fn import_from_dev_app(app: tauri::AppHandle) -> Result<ImportSummary,
             &re,
             &now,
         )?;
-        // Settings first: the imported windows name its accounts.
+        // Settings first: the imported windows name its accounts. The
+        // accounts the import added go into the settings as they are now
+        // (not the copy taken before the slow part), so a change made
+        // meanwhile survives. A clash is refused before the state changes.
         {
+            let added: Vec<_> = claude
+                .accounts
+                .iter()
+                .filter(|a| !accounts_before.iter().any(|b| b.id == a.id))
+                .cloned()
+                .collect();
             let settings = app.state::<Mutex<crate::store::SettingsStore>>();
             let mut settings = settings.lock().map_err(|e| e.to_string())?;
-            settings.set_claude(claude)?;
+            let merged = merge_added_accounts(settings.claude(), &added, home.as_deref())?;
+            settings.set_claude(merged)?;
         }
         {
             let state = app.state::<Mutex<crate::store::StateStore>>();
@@ -701,6 +717,36 @@ pub async fn import_from_dev_app(app: tauri::AppHandle) -> Result<ImportSummary,
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// `current` Claude settings plus the accounts the import `added`. One
+/// already there (same id and folder) is kept as is. An id now taken by
+/// another folder, or a folder now under another id, means the accounts
+/// changed during the import: refused, so nothing is overwritten.
+pub fn merge_added_accounts(
+    current: &ClaudeSettings,
+    added: &[crate::store::settings_store::ClaudeAccount],
+    home: Option<&Path>,
+) -> Result<ClaudeSettings, String> {
+    let path_of = |dir: Option<&str>| resolve_with(None, dir, home).path;
+    let mut merged = current.clone();
+    for account in added {
+        let folder = path_of(account.config_dir.as_deref());
+        let same_id = merged.accounts.iter().find(|a| a.id == account.id);
+        let same_folder = merged
+            .accounts
+            .iter()
+            .find(|a| same_dir(&path_of(a.config_dir.as_deref()), &folder));
+        match (same_id, same_folder) {
+            (Some(a), Some(b)) if a.id == b.id => {}
+            (None, None) => merged.accounts.push(account.clone()),
+            _ => return Err(
+                "Settings changed during the import (an account was added or changed); try again."
+                    .into(),
+            ),
+        }
+    }
+    Ok(merged)
 }
 
 /// Adds what the import added to `before` (its windows and closed tabs) to
@@ -1182,6 +1228,71 @@ mod tests {
             active_tab_id: None,
         });
         assert!(apply_delta(&before, &after, &summary, &mut clash).is_err());
+    }
+
+    fn account(id: &str, dir: &str) -> crate::store::settings_store::ClaudeAccount {
+        crate::store::settings_store::ClaudeAccount {
+            id: id.into(),
+            name: id.to_uppercase(),
+            config_dir: Some(dir.into()),
+        }
+    }
+
+    // Ticket 14yq6g30jeu: a dev account the settings refuse was found only
+    // when the import saved them, after runs were adopted and memory copied.
+    #[test]
+    fn a_bad_dev_account_fails_before_runs_are_adopted_or_memory_is_copied() {
+        let root = TempDir::new("import_bad_account");
+        let (dev, _run, _config, _ws) = fixture(root.path());
+        std::fs::write(
+            dev.join("settings.json"),
+            json!({"schemaVersion": 1, "claude": {"accounts": [
+                {"id": "", "name": "Nameless id", "configDir": root.join("claude-x").display().to_string()}
+            ]}})
+            .to_string(),
+        )
+        .unwrap();
+        let built = root.join("app");
+        std::fs::create_dir_all(&built).unwrap();
+        let mut state = AppStateFile::default();
+        let mut claude = ClaudeSettings::default();
+        let compose = |_: &Path, _: &Path| None;
+        let re = Relaunch {
+            plugin_dir: "/p".into(),
+            settings_file: None,
+            memory_dir: built.join("memory"),
+            launch_dir: built.join("launch"),
+            compose: &compose,
+        };
+        let err = import(&dev, &built, &mut state, &mut claude, None, &re, "t").unwrap_err();
+        assert!(err.contains("cannot be imported"), "{err}");
+        assert!(!built.join("runs").exists(), "no run adopted");
+        assert!(!built.join("memory").exists(), "no memory copied");
+        assert!(state.archived_windows.is_empty() && state.closed_tabs.is_empty());
+    }
+
+    #[test]
+    fn added_accounts_are_merged_into_the_settings_as_they_are_now() {
+        let current = ClaudeSettings {
+            claude_path: None,
+            accounts: vec![account("me", "/c/me"), account("meanwhile", "/c/meanwhile")],
+        };
+        let merged = merge_added_accounts(&current, &[account("work", "/c/work")], None).unwrap();
+        let ids: Vec<&str> = merged.accounts.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["me", "meanwhile", "work"],
+            "the account added meanwhile stays"
+        );
+        // Added twice (a retry) is a no-op.
+        let again = merge_added_accounts(&merged, &[account("work", "/c/work")], None).unwrap();
+        assert_eq!(again.accounts.len(), 3);
+        // The id now belongs to another folder.
+        let taken = merge_added_accounts(&merged, &[account("meanwhile", "/c/else")], None);
+        assert!(taken.unwrap_err().contains("try again"));
+        // The folder now belongs to another id.
+        let folder = merge_added_accounts(&merged, &[account("other", "/c/meanwhile")], None);
+        assert!(folder.unwrap_err().contains("try again"));
     }
 
     #[test]
