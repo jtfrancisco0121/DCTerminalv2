@@ -200,7 +200,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
     }
   };
 
-  const launch = async (role: string, force = false) => {
+  const launch = async (role: string, force = false, requestOverride?: string) => {
     if (!folder.trim()) {
       setError("Choose a folder.");
       return;
@@ -213,7 +213,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
     setBusy(true);
     setError(null);
     try {
-      const said = request.trim() || (eagleTickets ? "Do the ClickUp tickets below." : request);
+      const said = requestOverride ?? (request.trim() || (eagleTickets ? "Do the ClickUp tickets below." : request));
       const mode: ReviewMode | null = role === "eagle-eye" ? (reviewOnGitHub ? "github" : "local") : null;
       const bmad: BmadMode | null = role === "eagle-eye" ? bmadMode : null;
       const eagle = role === "eagle-eye";
@@ -455,7 +455,12 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
         ))}
       </div>
       {folder.trim() && found && found.repos.length > 0 && (
-        <MemoryPanel folder={folder.trim()} onOnboard={() => void launch("onboard")} />
+        <MemoryPanel
+          folder={folder.trim()}
+          onOnboard={() => void launch("onboard")}
+          onRefreshStale={(stale) => void launch("onboard", false, stale)}
+          busy={busy}
+        />
       )}
       {runs.length > 0 && (
         <section className="run-list" aria-label="Earlier runs">

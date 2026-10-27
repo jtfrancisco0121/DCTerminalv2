@@ -1168,6 +1168,25 @@ body,
   font-family: inherit;
 }
 
+.memory-topics {
+  margin: var(--space-1) 0 var(--space-1) 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.memory-disclosure {
+  margin-right: 0.25rem;
+}
+
+.stale-badge {
+  margin-left: 0.4rem;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  background: var(--warning-subtle);
+  color: var(--warning);
+  font-size: 0.75rem;
+}
+
 .run-repo-pick {
   display: inline-block;
   margin: 0;

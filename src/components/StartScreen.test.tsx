@@ -38,7 +38,13 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(),
 }));
 vi.mock("./WorktreeSetup", () => ({ WorktreeSetup: () => null }));
-vi.mock("./MemoryPanel", () => ({ MemoryPanel: () => null }));
+vi.mock("./MemoryPanel", () => ({
+  MemoryPanel: ({ onRefreshStale }: { onRefreshStale?: (request: string) => void }) => (
+    <button type="button" onClick={() => onRefreshStale?.("stale backend")}>
+      mock refresh stale
+    </button>
+  ),
+}));
 vi.mock("../clickup/ClickUpIntake", () => ({ ClickUpIntake: () => null }));
 
 const { StartScreen, disabledReason } = await import("./StartScreen");
@@ -303,5 +309,25 @@ describe("StartScreen cost estimate", () => {
     expect((await screen.findByTestId("estimate-line")).textContent).toBe("Not enough earlier runs for an estimate.");
     fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Do it" } });
     expect((screen.getByRole("button", { name: "Start Eagle-Eye" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+describe("StartScreen refresh stale", () => {
+  afterEach(cleanup);
+
+  it("launches onboard with the explicit request, not the textarea text", async () => {
+    const api = await import("../run/api");
+    const startRun = api.startRun as unknown as ReturnType<typeof vi.fn>;
+    startRun.mockReset();
+    startRun.mockResolvedValue({ tab: {}, runDir: null });
+    (api.detectFolderRepos as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: "repo",
+      repos: [{ name: "app", path: "/w/app", check: null }],
+    });
+    render(<StartScreen windowId="main" initialFolder="/w/app" onStarted={() => {}} onPlainTab={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "something else" } });
+    fireEvent.click(await screen.findByRole("button", { name: "mock refresh stale" }));
+    await vi.waitFor(() => expect(startRun).toHaveBeenCalledOnce());
+    expect(startRun.mock.calls[0].slice(1, 4)).toEqual(["/w/app", "stale backend", "onboard"]);
   });
 });
