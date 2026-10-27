@@ -38,7 +38,7 @@ vi.mock("./WorktreeSetup", () => ({ WorktreeSetup: () => null }));
 vi.mock("./MemoryPanel", () => ({ MemoryPanel: () => null }));
 vi.mock("../clickup/ClickUpIntake", () => ({ ClickUpIntake: () => null }));
 
-const { StartScreen } = await import("./StartScreen");
+const { StartScreen, disabledReason } = await import("./StartScreen");
 
 describe("StartScreen earlier runs", () => {
   afterEach(cleanup);
@@ -135,6 +135,7 @@ describe("StartScreen near-limit warning", () => {
       <StartScreen windowId="main" initialFolder="/w/app" onStarted={() => {}} onPlainTab={() => {}} usageWindows={[five(83)]} />,
     );
     expect((await screen.findByTestId("near-limit")).textContent).toContain("5-hour limit is at 83%");
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Add multiply()" } });
     const start = screen.getByRole("button", { name: "Start Eagle-Eye" }) as HTMLButtonElement;
     await vi.waitFor(() => expect(start.disabled).toBe(false));
   });
@@ -158,5 +159,52 @@ describe("StartScreen recent folders", () => {
     const input = screen.getByPlaceholderText("/path/to/repo or folder of repos");
     const list = input.getAttribute("list")!;
     await vi.waitFor(() => expect(container.querySelectorAll(`datalist#${list} option`)).toHaveLength(2));
+  });
+});
+
+describe("StartScreen disabled Start", () => {
+  afterEach(cleanup);
+
+  const ready = {
+    folder: "/w/app",
+    found: { kind: "repo", repos: [{ name: "app", path: "/w/app", check: null }] } as never,
+    hasRequest: true,
+    hasTickets: false,
+    tooMany: null,
+    busy: false,
+  };
+
+  it("gives the first matching reason, in order", () => {
+    expect(disabledReason({ ...ready, folder: " " })).toBe("Choose a folder first.");
+    expect(disabledReason({ ...ready, found: { kind: "none", repos: [] } })).toBe(
+      "This folder has no git repo. Pick a repo or a folder of repos.",
+    );
+    expect(disabledReason({ ...ready, found: { kind: "inside-repo", repos: [] } })).toBe("Pick the repo's top folder.");
+    expect(disabledReason({ ...ready, hasRequest: false })).toBe("Say what should be done, or fetch ClickUp tickets.");
+    expect(disabledReason({ ...ready, hasRequest: false, hasTickets: true })).toBeNull();
+    expect(disabledReason({ ...ready, noRepoTicked: true })).toBe("Tick at least one repo.");
+    expect(disabledReason({ ...ready, tooMany: "150 tickets, remove some" })).toBe("150 tickets, remove some");
+    expect(disabledReason({ ...ready, busy: true })).toBe("Starting…");
+    expect(disabledReason(ready)).toBeNull();
+  });
+
+  it("shows the reason on screen and as the button's description, none when enabled", async () => {
+    const api = await import("../run/api");
+    (api.detectFolderRepos as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: "repo",
+      repos: [{ name: "app", path: "/w/app", check: null }],
+    });
+    render(<StartScreen windowId="main" initialFolder="/w/app" onStarted={() => {}} onPlainTab={() => {}} />);
+    const start = screen.getByRole("button", { name: "Start Eagle-Eye" }) as HTMLButtonElement;
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("start-reason").textContent).toBe("Say what should be done, or fetch ClickUp tickets."),
+    );
+    expect(start.disabled).toBe(true);
+    expect(start.getAttribute("aria-describedby")).toBe("start-reason");
+    expect(document.getElementById("start-reason")?.textContent).toContain("Say what should be done");
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Add multiply()" } });
+    expect(start.disabled).toBe(false);
+    expect(screen.queryByTestId("start-reason")).toBeNull();
+    expect(start.getAttribute("aria-describedby")).toBeNull();
   });
 });

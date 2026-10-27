@@ -55,6 +55,30 @@ function reposText(found: FolderRepos | null): string {
   }
 }
 
+/**
+ * Why Start Eagle-Eye is disabled, or null when it can start: the first
+ * matching reason, in the order of the UX voice table.
+ */
+export function disabledReason(input: {
+  folder: string;
+  found: FolderRepos | null;
+  hasRequest: boolean;
+  hasTickets: boolean;
+  noRepoTicked?: boolean;
+  tooMany: string | null;
+  busy: boolean;
+}): string | null {
+  if (!input.folder.trim()) return "Choose a folder first.";
+  if (!input.found) return "Looking at the folder…";
+  if (input.found.kind === "inside-repo") return "Pick the repo's top folder.";
+  if (input.found.repos.length === 0) return "This folder has no git repo. Pick a repo or a folder of repos.";
+  if (!input.hasRequest && !input.hasTickets) return "Say what should be done, or fetch ClickUp tickets.";
+  if (input.noRepoTicked) return "Tick at least one repo.";
+  if (input.tooMany) return input.tooMany;
+  if (input.busy) return "Starting…";
+  return null;
+}
+
 const REVIEW_KEY = "dcv2.reviewOnGitHub.";
 
 /** The last "Review on GitHub" choice of this window; on by default. */
@@ -112,6 +136,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   // The same unfinished request is already running: ask before starting it again.
   const [duplicate, setDuplicate] = useState<{ run: DuplicateRun; role: string } | null>(null);
   const [tickets, setTickets] = useState<ClickUpStart | null>(null);
+  const [tooMany, setTooMany] = useState<string | null>(null);
   const [reviewOnGitHub, setReviewOnGitHub] = useState(() => rememberedReviewOnGitHub(windowId));
   const [bmadMode, setBmadMode] = useState<BmadMode>(() => rememberedBmadMode(initialFolder.trim()));
 
@@ -195,7 +220,14 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
       (err: unknown) => setError(errorText(err)),
     );
 
-  const canEagle = found !== null && found.repos.length > 0;
+  const startReason = disabledReason({
+    folder,
+    found,
+    hasRequest: Boolean(request.trim()),
+    hasTickets: Boolean(tickets),
+    tooMany,
+    busy,
+  });
   const runs = (overview?.runs ?? []).slice(0, EARLIER_RUNS);
 
   return (
@@ -244,7 +276,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           onChange={(event) => setRequest(event.target.value)}
         />
       </label>
-      <ClickUpIntake windowId={windowId} onChange={setTickets} disabled={busy} />
+      <ClickUpIntake windowId={windowId} onChange={setTickets} onTooMany={setTooMany} disabled={busy} />
       <label className="check-label">
         <input
           type="checkbox"
@@ -301,7 +333,8 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
         <button
           type="button"
           className="primary-button"
-          disabled={busy || !canEagle}
+          disabled={startReason !== null}
+          aria-describedby={startReason ? "start-reason" : undefined}
           onClick={() => void launch("eagle-eye")}
         >
           Start Eagle-Eye
@@ -310,6 +343,11 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           Plain terminal tab instead
         </button>
       </div>
+      {startReason && (
+        <p className="hint" id="start-reason" data-testid="start-reason">
+          {startReason}
+        </p>
+      )}
       <p className="hint run-tiles-hint">Or one role on its own, in this folder:</p>
       <div className="role-tiles">
         {(overview?.roles ?? []).map((role) => (
