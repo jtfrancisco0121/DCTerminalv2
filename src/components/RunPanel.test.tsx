@@ -281,6 +281,27 @@ describe("RunPanelView", () => {
     expect(items[0].textContent).toContain("waiting for ship approval");
   });
 
+  it("shows timeline times in the local zone with the UTC time on hover", () => {
+    vi.stubEnv("TZ", "Asia/Manila");
+    try {
+      renderPanel({
+        timeline: [
+          { time: "2026-10-27T14:04:27Z", stage: null, text: "built" },
+          { time: null, stage: null, text: "no time" },
+          { time: "garbage-time-value", stage: null, text: "bad time" },
+        ],
+      });
+      const items = screen.getByLabelText("Timeline").querySelectorAll("li");
+      // Newest first: the last line comes first.
+      expect(items[2].querySelector(".run-time")?.textContent).toBe("22:04");
+      expect(items[2].querySelector(".run-time")?.getAttribute("title")).toContain("(UTC 2026-10-27T14:04:27Z)");
+      expect(items[1].querySelector(".run-time")).toBeNull();
+      expect(items[0].querySelector(".run-time")?.textContent).toBe("garbage-time-value".slice(11, 16));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("tolerates a run with no status yet and unknown values", () => {
     renderPanel({
       hasStatus: false,

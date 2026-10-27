@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { errorText } from "../components/InlineNotice";
-import { safeUrl } from "../run/words";
+import { localTime, safeUrl } from "../run/words";
 import {
   clickupAutoPostConsent,
   clickupAutoPostNow,
@@ -395,9 +395,7 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
 
 /** HH:MM in the user's local time for a UTC ISO time. */
 export function localClock(iso: string): string {
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return iso;
-  return at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  return localTime(iso)?.short ?? iso;
 }
 
 const AUTO_RESULT: Record<string, string> = {

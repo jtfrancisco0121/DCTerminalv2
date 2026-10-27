@@ -20,6 +20,7 @@ import {
   checkMark,
   checkSignature,
   draftBadge,
+  localTime,
   prStateText,
   reviewText,
   runFinished,
@@ -59,6 +60,16 @@ type ViewProps = {
 };
 
 type PrActionProps = Pick<ViewProps, "worktrees" | "onPrAction" | "onCopyBranch">;
+
+/** One timeline time in the local zone; the title holds the full time and the UTC value. */
+function TimelineTime({ time }: { time: string }) {
+  const local = localTime(time);
+  return (
+    <span className="run-time" title={local?.title ?? time}>
+      {local?.short ?? time.slice(11, 16)}
+    </span>
+  );
+}
 
 function PrRow({
   pr,
@@ -310,7 +321,7 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
           <ol>
             {timeline.map((line, at) => (
               <li key={`${line.time ?? ""}-${at}`}>
-                {line.time && <span className="run-time">{line.time.slice(11, 16)}</span>} {line.text}
+                {line.time && <TimelineTime time={line.time} />} {line.text}
               </li>
             ))}
           </ol>

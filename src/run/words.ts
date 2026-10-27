@@ -171,3 +171,26 @@ export function minutesText(minutes: number | null | undefined): string {
   if (total < 60) return `${total} min`;
   return `${Math.floor(total / 60)} h ${total % 60} min`;
 }
+
+/**
+ * A time in the machine's local zone (the system zone, no hardcoded offset).
+ * `short` is HH:MM (24 h, never "24:xx"); `title` is the full local date-time
+ * plus the UTC ISO time, for a hover. Stored times stay UTC; only the display
+ * is local. Null on an unparseable input. Built per call: no cached formatter,
+ * so a changed TZ is honoured.
+ */
+export function localTime(at: string | number): { short: string; title: string } | null {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return null;
+  const short = new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+  const full = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+    hourCycle: "h23",
+  }).format(date);
+  return { short, title: `${full} (UTC ${date.toISOString().replace(/\.\d{3}Z$/, "Z")})` };
+}

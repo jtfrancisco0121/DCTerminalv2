@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { minutesText, relativeDate, runMatches } from "./words";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { localTime, minutesText, relativeDate, runMatches } from "./words";
 
 describe("runs list words", () => {
   const run = { title: "Add multiply()", folder: "/w/App", runId: "r-20261027-0900-abcd", ticketIds: ["86b1aa001", "QA-129"] };
@@ -29,5 +29,30 @@ describe("runs list words", () => {
     expect(relativeDate(at(1, 12), now)).toBe(at(1, 12).slice(0, 10));
     expect(relativeDate(null, now)).toBe("");
     expect(relativeDate("not a date", now)).toBe("");
+  });
+});
+
+describe("localTime", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("shows the system zone's HH:MM with the UTC time in the title", () => {
+    vi.stubEnv("TZ", "Asia/Manila");
+    const manila = localTime("2026-10-27T14:04:27Z");
+    expect(manila?.short).toBe("22:04");
+    expect(manila?.title).toContain("(UTC 2026-10-27T14:04:27Z)");
+    vi.stubEnv("TZ", "UTC");
+    expect(localTime("2026-10-27T14:04:27Z")?.short).toBe("14:04");
+  });
+
+  it("never shows 24:xx at midnight, and takes epoch milliseconds", () => {
+    vi.stubEnv("TZ", "UTC");
+    expect(localTime("2026-10-28T00:05:00Z")?.short).toBe("00:05");
+    expect(localTime(Date.parse("2026-10-28T00:05:00Z"))).toEqual(localTime("2026-10-28T00:05:00Z"));
+  });
+
+  it("returns null for garbage", () => {
+    expect(localTime("not a time")).toBeNull();
   });
 });
