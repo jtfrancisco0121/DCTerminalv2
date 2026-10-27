@@ -19,6 +19,8 @@ export type PageAction =
   | { kind: "zoom-out" }
   | { kind: "zoom-reset" }
   | { kind: "reopen-closed"; tabId: string }
+  | { kind: "split"; direction: "right" | "down" }
+  | { kind: "focus-pane"; direction: "left" | "right" | "up" | "down" }
   | { kind: "select"; index: number };
 
 /** File > Recently Closed items are `reopen-closed:<tab id>`. */
@@ -49,8 +51,8 @@ export function pageAction(id: unknown): PageAction | null {
  * A key press the page acts on, or null (`lookupShortcut` has the table).
  * On macOS the native menu takes new / close / reopen tab, new window,
  * Settings, the bracket tab keys and the zoom keys, and sends a `menu`
- * event; the page acts on the rest. Elsewhere there is no native menu, so
- * the page acts on every shortcut.
+ * event; the page acts on the rest (the split and pane keys included).
+ * Elsewhere there is no native menu, so the page acts on every shortcut.
  */
 export function keyAction(event: KeyEvent, platform: Platform): PageAction | null {
   const binding = lookupShortcut(event, platform);

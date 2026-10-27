@@ -81,3 +81,19 @@ describe("a parked terminal owns its streams", () => {
     expect(written).toEqual([]);
   });
 });
+
+describe("a split tab's two terminals (park)", () => {
+  it("parks one xterm per terminal id and releases them separately", async () => {
+    const { ensureParkedTerminal, isParkedHost, releaseParkedTerminal } = await import("./park");
+    const first = ensureParkedTerminal("t_split", 14);
+    const second = ensureParkedTerminal("t_split:p2", 14);
+    expect(second).not.toBe(first);
+    expect(ensureParkedTerminal("t_split", 14)).toBe(first);
+    expect(isParkedHost("t_split", first.host)).toBe(true);
+    expect(isParkedHost("t_split", second.host)).toBe(false);
+    releaseParkedTerminal("t_split:p2");
+    expect(isParkedHost("t_split:p2", second.host)).toBe(false);
+    expect(ensureParkedTerminal("t_split", 14)).toBe(first);
+    releaseParkedTerminal("t_split");
+  });
+});

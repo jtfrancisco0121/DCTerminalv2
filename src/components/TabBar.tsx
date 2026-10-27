@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import type { TabSummary } from "../bridge";
+import { urgentActivity } from "../run/observe";
 import { DRAG_THRESHOLD_PX, dropIndex, markerX } from "../tabDrag";
 import { TabContextMenu } from "./TabContextMenu";
 import type { ContextMenuItem } from "./TerminalContextMenu";
@@ -68,13 +69,13 @@ export function tabMenuItems(tabs: readonly TabSummary[], tabId: string, handler
       id: "split-right",
       label: "Split right",
       divider: true,
-      disabled: !handlers.onSplit,
+      disabled: !handlers.onSplit || Boolean(tabs[at]?.split),
       onSelect: () => handlers.onSplit?.(tabId, "right"),
     },
     {
       id: "split-down",
       label: "Split down",
-      disabled: !handlers.onSplit,
+      disabled: !handlers.onSplit || Boolean(tabs[at]?.split),
       onSelect: () => handlers.onSplit?.(tabId, "down"),
     },
     {
@@ -182,7 +183,11 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
         const classes = ["tab", active ? "tab-active" : "", exited.has(tab.id) ? "tab-exited" : "", dragging ? "tab-dragging" : ""]
           .filter(Boolean)
           .join(" ");
-        const showDot = Boolean(activity?.[tab.id]) && activity![tab.id] !== "unknown";
+        // A split tab's dot shows its most urgent pane.
+        const shown = tab.split
+          ? urgentActivity([activity?.[tab.id], activity?.[tab.split.id]])
+          : activity?.[tab.id];
+        const showDot = Boolean(shown) && shown !== "unknown";
         const clickableDot = Boolean(onActivityClick) && tab.kind === "claude" && !tab.role;
         return (
           <div
@@ -248,9 +253,9 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
                 {tab.label}
                 {showDot && !clickableDot && (
                   <span
-                    className={`tab-activity tab-activity-${activity![tab.id]}`}
-                    title={activityTitle(activity![tab.id])}
-                    aria-label={`Claude ${activity![tab.id]}`}
+                    className={`tab-activity tab-activity-${shown!}`}
+                    title={activityTitle(shown!)}
+                    aria-label={`Claude ${shown!}`}
                   />
                 )}
               </button>
@@ -258,9 +263,9 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
             {showDot && clickableDot && (
               <button
                 type="button"
-                className={`tab-activity tab-activity-button tab-activity-${activity![tab.id]}`}
-                title={activityTitle(activity![tab.id])}
-                aria-label={`Claude ${activity![tab.id]}: show usage`}
+                className={`tab-activity tab-activity-button tab-activity-${shown!}`}
+                title={activityTitle(shown!)}
+                aria-label={`Claude ${shown!}: show usage`}
                 onClick={() => onActivityClick!(tab.id)}
               />
             )}

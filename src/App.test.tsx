@@ -59,6 +59,9 @@ vi.mock("./bridge", () => ({
   selectTab: vi.fn(async () => {}),
   renameTab: vi.fn(async () => tab),
   moveTab: vi.fn(async () => state),
+  splitTab: vi.fn(async () => tab),
+  closePane: vi.fn(async () => tab),
+  setSplitRatio: vi.fn(async () => tab),
   recentFolders: vi.fn(async () => []),
   setTerminalSettings: vi.fn(async (terminal: unknown) => terminal),
   reopenClosedTab: vi.fn(async () => tab),
@@ -341,5 +344,75 @@ describe("App tab context menu", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate in same folder" }));
     await waitFor(() => expect(newTab).toHaveBeenCalledWith("main", "/w/dup", "shell"));
     state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
+});
+
+describe("App split panes", () => {
+  const splitTab: TabSummary = {
+    ...tab,
+    id: "t_s",
+    label: "Claude · split",
+    cwd: "/w/split",
+    split: { direction: "right", ratio: 0.5, id: "t_s:p2", cwd: "/w/split", folderStatus: "ok" },
+  };
+
+  it("Ctrl+Shift+D splits the active tab right and Ctrl+Shift+Alt+D down", async () => {
+    const bridge = await import("./bridge");
+    const split = bridge.splitTab as unknown as ReturnType<typeof vi.fn>;
+    split.mockClear();
+    state = { windowId: "main", activeTabId: "tab_1", tabs: [tab], closedTabs: [] };
+    render(<App />);
+    await screen.findByTestId("terminal");
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "D", ctrlKey: true, shiftKey: true });
+    });
+    expect(split).toHaveBeenLastCalledWith("main", "tab_1", "right");
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "D", ctrlKey: true, shiftKey: true, altKey: true });
+    });
+    expect(split).toHaveBeenLastCalledWith("main", "tab_1", "down");
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
+
+  it("a split tab shows both panes; Cmd+W closes the focused pane, not the tab", async () => {
+    const bridge = await import("./bridge");
+    const closePane = bridge.closePane as unknown as ReturnType<typeof vi.fn>;
+    const closeTabMock = closeTab;
+    closePane.mockClear();
+    closeTabMock.mockClear();
+    state = { windowId: "main", activeTabId: "t_s", tabs: [splitTab], closedTabs: [] };
+    render(<App />);
+    expect(await screen.findByTestId("split")).toBeTruthy();
+    expect(screen.getAllByTestId("terminal")).toHaveLength(2);
+    // Move to the second pane (the arrow toward the second pane), then close.
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "ArrowRight", ctrlKey: true, shiftKey: true, altKey: true });
+    });
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "W", ctrlKey: true, shiftKey: true });
+    });
+    expect(closePane).toHaveBeenLastCalledWith("main", "t_s", 2);
+    expect(closeTabMock).not.toHaveBeenCalled();
+    // Back in the first pane, the same key closes pane 1.
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "ArrowLeft", ctrlKey: true, shiftKey: true, altKey: true });
+    });
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "W", ctrlKey: true, shiftKey: true });
+    });
+    expect(closePane).toHaveBeenLastCalledWith("main", "t_s", 1);
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
+
+  it("a one-pane tab: Cmd+W closes the tab", async () => {
+    const closeTabMock = closeTab;
+    closeTabMock.mockClear();
+    state = { windowId: "main", activeTabId: "tab_1", tabs: [tab], closedTabs: [] };
+    render(<App />);
+    await screen.findByTestId("terminal");
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "W", ctrlKey: true, shiftKey: true });
+    });
+    await waitFor(() => expect(closeTabMock).toHaveBeenCalledWith("main", "tab_1"));
   });
 });

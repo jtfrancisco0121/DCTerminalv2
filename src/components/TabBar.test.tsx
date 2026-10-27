@@ -282,3 +282,50 @@ describe("TabBar context menu and middle-click", () => {
     expect(by("move-left").disabled && by("move-right").disabled).toBe(true);
   });
 });
+
+describe("TabBar split tabs", () => {
+  const split = (id: string): TabSummary => ({
+    ...tab(id, id.toUpperCase()),
+    split: { direction: "right", ratio: 0.5, id: `${id}:p2`, cwd: `/w/${id}`, folderStatus: "ok" },
+  });
+
+  it("a split tab's dot shows its most urgent pane", () => {
+    render(
+      <TabBar
+        tabs={[split("a")]}
+        activeTabId="a"
+        exited={new Set()}
+        activity={{ a: "waiting", "a:p2": "needs-you" }}
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onRename={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("Claude needs-you").className).toContain("tab-activity-needs-you");
+  });
+
+  it("the menu splits an unsplit tab and disables Split on one that already has two panes", () => {
+    const onSplit = vi.fn();
+    const props = {
+      activeTabId: "a",
+      exited: new Set<string>(),
+      onSelect: vi.fn(),
+      onClose: vi.fn(),
+      onRename: vi.fn(),
+      onNew: vi.fn(),
+      onSplit,
+    };
+    const { unmount } = render(<TabBar tabs={[tab("a", "A"), split("b")]} {...props} />);
+    fireEvent.contextMenu(screen.getByRole("tab", { name: "A" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Split right" }));
+    expect(onSplit).toHaveBeenLastCalledWith("a", "right");
+    fireEvent.contextMenu(screen.getByRole("tab", { name: "A" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Split down" }));
+    expect(onSplit).toHaveBeenLastCalledWith("a", "down");
+    fireEvent.contextMenu(screen.getByRole("tab", { name: "B" }));
+    expect((screen.getByRole("menuitem", { name: "Split right" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("menuitem", { name: "Split down" }) as HTMLButtonElement).disabled).toBe(true);
+    unmount();
+  });
+});

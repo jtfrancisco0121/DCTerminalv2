@@ -24,6 +24,20 @@ export type TabSummary = {
   runDir?: string | null;
   /** dcv2 tabs: `eagle-eye`, `eagle-eye-resume`, or the role. */
   role?: string | null;
+  /** The second pane (a Shell) when the tab is split. */
+  split?: SplitSummary | null;
+};
+
+export type SplitDirection = "right" | "down";
+
+export type SplitSummary = {
+  direction: SplitDirection;
+  /** The first pane's share of the tab, 0.2 to 0.8. */
+  ratio: number;
+  /** The second pane's terminal id (`<tab id>:p2`). */
+  id: string;
+  cwd: string;
+  folderStatus: string;
 };
 
 export type ClosedTabSummary = {
@@ -224,6 +238,21 @@ export function recentFolders(): Promise<string[]> {
 /** Points a tab whose folder is gone at another folder; it keeps its id (and its name unless it follows the folder). */
 export function setTabFolder(tabId: string, cwd: string): Promise<TabSummary> {
   return invoke<TabSummary>("set_tab_folder", { tabId, cwd });
+}
+
+/** Splits the tab: a second Shell pane, right of it or below it. */
+export function splitTab(windowId: string, tabId: string, direction: SplitDirection): Promise<TabSummary> {
+  return invoke<TabSummary>("split_tab", { windowId, tabId, direction });
+}
+
+/** Closes pane 1 or 2 of a split tab and stops its terminal. */
+export function closePane(windowId: string, tabId: string, pane: 1 | 2): Promise<TabSummary> {
+  return invoke<TabSummary>("close_pane", { windowId, tabId, pane });
+}
+
+/** The divider moved: the first pane's share of the tab. */
+export function setSplitRatio(tabId: string, ratio: number): Promise<TabSummary> {
+  return invoke<TabSummary>("set_split_ratio", { tabId, ratio });
 }
 
 export function renameTab(tabId: string, label: string): Promise<TabSummary> {

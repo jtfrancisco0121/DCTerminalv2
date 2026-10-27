@@ -39,6 +39,7 @@ beforeEach(() => {
 
 afterEach(() => {
   dropLivePty("t1");
+  dropLivePty("t1:p2");
   handlers.length = 0;
   vi.restoreAllMocks();
 });
@@ -179,5 +180,25 @@ describe("a first open whose tab closed meanwhile", () => {
     expect(await stale).toBe("superseded");
     expect(await reopened).toBe("opened");
     expect(ptyOpen).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a split tab's two terminals", () => {
+  it("keeps one session per terminal id: the second pane never replaces the first", () => {
+    const first = beginLivePty("t1");
+    const second = beginLivePty("t1:p2");
+    expect(livePty("t1")).toBe(first);
+    expect(livePty("t1:p2")).toBe(second);
+    expect(ptyRunning("t1") && ptyRunning("t1:p2")).toBe(true);
+    // The second pane's program exits: the first keeps running.
+    handlers[handlers.length - 1]({ kind: "exit", data: "", code: 0 });
+    expect(ptyRunning("t1:p2")).toBe(false);
+    expect(ptyExitCode("t1:p2")).toBe(0);
+    expect(ptyRunning("t1")).toBe(true);
+    expect(ptyExitCode("t1")).toBeNull();
+    // Dropping one leaves the other.
+    dropLivePty("t1:p2");
+    expect(livePty("t1:p2")).toBeUndefined();
+    expect(livePty("t1")).toBe(first);
   });
 });

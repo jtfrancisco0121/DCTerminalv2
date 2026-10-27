@@ -128,7 +128,65 @@ pub struct TabRecord {
     /// (docs/launch.md). Plain Claude tabs have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch: Option<TabLaunch>,
+    /// A second pane (a Shell) beside or below the tab's own terminal. At
+    /// most one; absent in a file from before split panes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split: Option<SplitPane>,
 }
+
+/// A terminal id's second-pane suffix: the tab's own terminal is the tab id,
+/// the second pane's is `<tab id>:p2`.
+pub const SECOND_PANE_SUFFIX: &str = ":p2";
+
+/// The terminal id of the second pane of `tab_id`.
+pub fn second_pane_id(tab_id: &str) -> String {
+    format!("{tab_id}{SECOND_PANE_SUFFIX}")
+}
+
+/// A terminal id split into its tab id and whether it is the second pane.
+pub fn pane_parts(terminal_id: &str) -> (&str, bool) {
+    match terminal_id.strip_suffix(SECOND_PANE_SUFFIX) {
+        Some(tab) => (tab, true),
+        None => (terminal_id, false),
+    }
+}
+
+/// Where the second pane sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SplitDirection {
+    /// Side by side.
+    Right,
+    /// One above the other.
+    Down,
+}
+
+fn half() -> f32 {
+    0.5
+}
+
+/// The second pane of a tab: always a Shell, with its own terminal and
+/// folder. `ratio` is the first pane's share of the tab (0.2 to 0.8).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SplitPane {
+    pub direction: SplitDirection,
+    #[serde(default = "half")]
+    pub ratio: f32,
+    /// `<tab id>:p2`.
+    pub id: String,
+    #[serde(default = "shell_kind")]
+    pub kind: TabKind,
+    pub cwd: String,
+}
+
+fn shell_kind() -> TabKind {
+    TabKind::Shell
+}
+
+/// The first pane's share is kept within this.
+pub const MIN_SPLIT_RATIO: f32 = 0.2;
+pub const MAX_SPLIT_RATIO: f32 = 0.8;
 
 /// What a dcv2 Claude tab adds to `claude` (docs/launch.md): env, flags and
 /// the first prompt. The prompt is sent on a fresh start only; a resumed

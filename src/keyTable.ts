@@ -25,11 +25,29 @@ export const MIN_FONT_SIZE = 8;
 export const MAX_FONT_SIZE = 32;
 export const DEFAULT_FONT_SIZE = 14;
 
+const ARROWS: Record<string, "left" | "right" | "up" | "down" | undefined> = {
+  ArrowLeft: "left",
+  ArrowRight: "right",
+  ArrowUp: "up",
+  ArrowDown: "down",
+};
+
 export function lookupShortcut(event: KeyEvent, platform: Platform): Binding | null {
   const mac = platform === "mac";
   // Ctrl+Tab cycles the tabs everywhere (the page handles it, no menu).
   if (event.key === "Tab" && event.ctrlKey && !event.metaKey && !event.altKey) {
     return { action: { kind: event.shiftKey ? "prev-tab" : "next-tab" }, menu: false };
+  }
+  // Moving focus between the two panes of a tab: Cmd+Option+Arrow (macOS),
+  // Ctrl+Shift+Alt+Arrow elsewhere. Split down elsewhere is Ctrl+Shift+Alt+D.
+  const withAlt = mac
+    ? event.metaKey && !event.ctrlKey && event.altKey
+    : event.ctrlKey && event.shiftKey && !event.metaKey && event.altKey;
+  if (withAlt) {
+    const direction = ARROWS[event.key];
+    if (direction) return { action: { kind: "focus-pane", direction }, menu: false };
+    if (!mac && event.key.toLowerCase() === "d") return { action: { kind: "split", direction: "down" }, menu: false };
+    return null;
   }
   const command = mac
     ? event.metaKey && !event.ctrlKey && !event.altKey
@@ -45,6 +63,10 @@ export function lookupShortcut(event: KeyEvent, platform: Platform): Binding | n
   if (key === "=" || key === "+") return { action: { kind: "zoom-in" }, menu: mac && key === "=" && plain };
   if (key === "-" || key === "_") return { action: { kind: "zoom-out" }, menu: mac && key === "-" && plain };
   if (key === "0" || key === ")") return { action: { kind: "zoom-reset" }, menu: mac && key === "0" && plain };
+  // Split: Cmd+D right, Cmd+Shift+D down (macOS); Ctrl+Shift+D right elsewhere.
+  if (key === "d") {
+    return { action: { kind: "split", direction: mac && event.shiftKey ? "down" : "right" }, menu: false };
+  }
   if (key === "t") {
     return { action: { kind: mac && event.shiftKey ? "reopen-closed-tab" : "new-tab" }, menu: mac };
   }
@@ -109,5 +131,20 @@ export const SHORTCUT_SAMPLES: ReadonlyArray<{
     { name: "zoom in (+)", action: { kind: "zoom-in" }, mac: cmd("+", { shiftKey: true }), other: cs("+"), macMenu: false },
     { name: "zoom out", action: { kind: "zoom-out" }, mac: cmd("-"), other: cs("_"), macMenu: true },
     { name: "zoom reset", action: { kind: "zoom-reset" }, mac: cmd("0"), other: cs(")"), macMenu: true },
+    { name: "split right", action: { kind: "split", direction: "right" }, mac: cmd("d"), other: cs("D"), macMenu: false },
+    {
+      name: "split down",
+      action: { kind: "split", direction: "down" },
+      mac: cmd("D", { shiftKey: true }),
+      other: ev("D", { ctrlKey: true, shiftKey: true, altKey: true }),
+      macMenu: false,
+    },
+    ...(["Left", "Right", "Up", "Down"] as const).map((name) => ({
+      name: `focus pane ${name.toLowerCase()}`,
+      action: { kind: "focus-pane", direction: name.toLowerCase() } as PageAction,
+      mac: cmd(`Arrow${name}`, { altKey: true }),
+      other: ev(`Arrow${name}`, { ctrlKey: true, shiftKey: true, altKey: true }),
+      macMenu: false,
+    })),
   ];
 })();

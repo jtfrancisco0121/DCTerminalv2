@@ -306,13 +306,17 @@ pub fn forget_tabs(app: &AppHandle, tab_ids: &[String]) {
 }
 
 impl ObserveState {
+    /// Forgets each tab's hook token, hook state and tracker, and those of
+    /// its second pane (`<tab id>:p2`). One tab's id never reaches another's.
     fn forget(&self, tab_ids: &[String]) {
         for tab_id in tab_ids {
-            if let Some(hooks) = &self.hooks {
-                hooks.forget_tab(tab_id);
-            }
-            if let Ok(mut trackers) = self.trackers.lock() {
-                trackers.remove(tab_id);
+            for id in [tab_id.clone(), crate::store::second_pane_id(tab_id)] {
+                if let Some(hooks) = &self.hooks {
+                    hooks.forget_tab(&id);
+                }
+                if let Ok(mut trackers) = self.trackers.lock() {
+                    trackers.remove(&id);
+                }
             }
         }
     }
@@ -516,6 +520,65 @@ mod tests {
         assert_eq!(hooks.accept("a", &tokens[0], b"{}"), 403);
         assert!(hooks.has_tab("keep") && hooks.state("keep").is_some());
         assert!(state.trackers.lock().unwrap().contains_key("keep"));
+    }
+
+    #[test]
+    fn forgetting_a_tab_forgets_both_panes_and_a_pane_never_touches_the_other() {
+        let state = ObserveState::start();
+        let hooks = state.hooks.as_ref().expect("listener").clone();
+        // The tab's own terminal and its second pane have separate tokens,
+        // hook states and trackers.
+        let first = hooks.register_tab("tab_1");
+        let second = hooks.register_tab("tab_1:p2");
+        assert_eq!(
+            hooks.accept(
+                "tab_1",
+                &first,
+                br#"{"hook_event_name":"PermissionRequest"}"#
+            ),
+            204
+        );
+        assert_eq!(
+            hooks.accept(
+                "tab_1:p2",
+                &second,
+                br#"{"hook_event_name":"UserPromptSubmit"}"#
+            ),
+            204
+        );
+        assert_eq!(
+            hooks.state("tab_1").unwrap().activity,
+            hooks::TabActivity::NeedsYou
+        );
+        assert_eq!(
+            hooks.state("tab_1:p2").unwrap().activity,
+            hooks::TabActivity::Working
+        );
+        // The second pane's token is not the first pane's.
+        assert_eq!(hooks.accept("tab_1", &second, b"{}"), 403);
+        // Opening the second pane again (a new token) leaves the first alone.
+        let again = hooks.register_tab("tab_1:p2");
+        assert_ne!(again, second);
+        assert_eq!(
+            hooks.state("tab_1").unwrap().activity,
+            hooks::TabActivity::NeedsYou
+        );
+        assert!(hooks.has_tab("tab_1"));
+        for id in ["tab_1", "tab_1:p2", "tab_2"] {
+            state
+                .trackers
+                .lock()
+                .unwrap()
+                .insert(id.to_string(), ("s".into(), Default::default()));
+        }
+        hooks.register_tab("tab_2");
+        state.forget(&["tab_1".to_string()]);
+        assert!(!hooks.has_tab("tab_1") && !hooks.has_tab("tab_1:p2"));
+        assert!(hooks.state("tab_1").is_none() && hooks.state("tab_1:p2").is_none());
+        let trackers = state.trackers.lock().unwrap();
+        assert!(!trackers.contains_key("tab_1") && !trackers.contains_key("tab_1:p2"));
+        assert!(trackers.contains_key("tab_2"), "another tab is untouched");
+        assert!(hooks.has_tab("tab_2"));
     }
 
     #[test]

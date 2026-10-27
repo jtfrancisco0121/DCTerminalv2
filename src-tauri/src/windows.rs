@@ -576,12 +576,34 @@ fn shutdown_processes(app: &AppHandle) {
 /// Terminals still running in window `label`, each lock taken and dropped
 /// in turn (StateStore, then the registry).
 fn live_work_in(app: &AppHandle, label: &str) -> usize {
-    let tab_ids = window_tab_ids(app, label);
+    let tab_ids = window_terminal_ids(app, label);
     app.try_state::<Mutex<crate::pty::PtyRegistry>>()
         .map_or(0, |registry| match registry.lock() {
             Ok(guard) => guard.live_count_of(&tab_ids),
             Err(poisoned) => poisoned.into_inner().live_count_of(&tab_ids),
         })
+}
+
+/// The terminal ids in window `label`: each open tab's, and its second
+/// pane's when the tab is split.
+fn window_terminal_ids(app: &AppHandle, label: &str) -> Vec<String> {
+    let Some(state) = app.try_state::<Mutex<StateStore>>() else {
+        return Vec::new();
+    };
+    let Ok(state) = state.lock() else {
+        return Vec::new();
+    };
+    terminal_ids(&state.data.tabs, label)
+}
+
+/// [`window_terminal_ids`] over a tab list.
+fn terminal_ids(tabs: &[crate::store::TabRecord], label: &str) -> Vec<String> {
+    tabs.iter()
+        .filter(|tab| crate::store::window_matches(&tab.window_id, label))
+        .flat_map(|tab| {
+            std::iter::once(tab.id.clone()).chain(tab.split.as_ref().map(|split| split.id.clone()))
+        })
+        .collect()
 }
 
 /// The ids of the open tabs in window `label`.
@@ -1375,7 +1397,42 @@ mod tests {
             claude_config_dir: None,
             closed_at: Some(at.into()),
             launch: None,
+            split: None,
         }
+    }
+
+    #[test]
+    fn a_windows_live_work_counts_a_split_tabs_second_terminal_too() {
+        let mut split = closed(
+            "tab_1",
+            "main",
+            "Claude · a",
+            "/w/a",
+            "2026-10-27T10:00:00Z",
+        );
+        split.split = Some(crate::store::SplitPane {
+            direction: crate::store::SplitDirection::Right,
+            ratio: 0.5,
+            id: "tab_1:p2".into(),
+            kind: crate::store::TabKind::Shell,
+            cwd: "/w/a".into(),
+        });
+        let plain = closed(
+            "tab_2",
+            "main",
+            "Claude · b",
+            "/w/b",
+            "2026-10-27T10:00:00Z",
+        );
+        let other = closed(
+            "tab_3",
+            "win-2",
+            "Claude · c",
+            "/w/c",
+            "2026-10-27T10:00:00Z",
+        );
+        let ids = terminal_ids(&[split, plain, other], "main");
+        assert_eq!(ids, ["tab_1", "tab_1:p2", "tab_2"]);
     }
 
     #[test]

@@ -108,6 +108,14 @@ export function selftestSteps(test: SelfTest): { label: string; ok: boolean }[] 
   ];
 }
 
+/** The most urgent of several panes' activities: needs-you, then working, then waiting. */
+export function urgentActivity(values: ReadonlyArray<string | undefined | null>): string | undefined {
+  for (const wanted of ["needs-you", "working", "waiting"]) {
+    if (values.includes(wanted)) return wanted;
+  }
+  return undefined;
+}
+
 export function activityText(activity: TabActivity | undefined | null): string | null {
   switch (activity) {
     case "working":

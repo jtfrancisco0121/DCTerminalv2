@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activityText, checkLogPr, costText, pollsActivity, tokensText, versionWarning } from "./observe";
+import { activityText, checkLogPr, costText, pollsActivity, tokensText, urgentActivity, versionWarning } from "./observe";
 
 describe("pollsActivity", () => {
   it("polls while any Claude tab exists, even with no run tab", () => {
@@ -29,5 +29,15 @@ describe("observe words", () => {
     expect(versionWarning({ ...base, range: "below" })).toContain("older than 2.1.287");
     expect(versionWarning({ ...base, range: "ok" })).toBeNull();
     expect(versionWarning({ ...base, range: "unknown" })).toBeNull();
+  });
+});
+
+describe("urgentActivity", () => {
+  it("picks needs-you over working over waiting, and nothing for unknown panes", () => {
+    expect(urgentActivity(["waiting", "needs-you"])).toBe("needs-you");
+    expect(urgentActivity(["waiting", "working"])).toBe("working");
+    expect(urgentActivity([undefined, "waiting"])).toBe("waiting");
+    expect(urgentActivity(["unknown", undefined])).toBeUndefined();
+    expect(urgentActivity([])).toBeUndefined();
   });
 });

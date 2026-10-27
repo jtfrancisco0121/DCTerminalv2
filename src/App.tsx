@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
+  closePane,
   closeTab,
   getAppState,
   attentionSummary,
@@ -14,13 +15,16 @@ import {
   renameTab,
   reopenClosedTab,
   selectTab,
+  setSplitRatio,
   setTerminalSettings,
   setWindowAccount,
+  splitTab,
   windowContext,
   type AppStateSnapshot,
   type AttentionSummary,
   type RateWindow,
   type SettingsView,
+  type TabSummary,
   type WindowContext,
 } from "./bridge";
 import { ActiveRuns } from "./components/ActiveRuns";
@@ -37,6 +41,7 @@ import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
 import { TabBar } from "./components/TabBar";
 import { UsagePopover } from "./components/UsagePopover";
+import { SplitTerminals } from "./components/SplitTerminals";
 import { destroyTerminal, TerminalView } from "./components/TerminalView";
 import { newTabDefaults, type NewTabDraft } from "./newTab";
 import { detectPlatform } from "./terminal/keys";
@@ -224,22 +229,120 @@ function App() {
     );
   };
 
+  // A closed tab's terminals go: its own and its second pane's.
+  const releaseTerminals = (tabId: string) => {
+    const split = state?.tabs.find((tab) => tab.id === tabId)?.split;
+    for (const id of split ? [tabId, split.id] : [tabId]) {
+      destroyTerminal(id);
+      dropLivePty(id);
+    }
+  };
+
+  const tabRuns = (tabId: string) => {
+    const split = state?.tabs.find((tab) => tab.id === tabId)?.split;
+    return ptyRunning(tabId) || (split ? ptyRunning(split.id) : false);
+  };
+
   const doClose = (tabId: string) => {
     setConfirmClose(null);
+    releaseTerminals(tabId);
     closeTab(windowId, tabId).then(
-      (next) => {
-        destroyTerminal(tabId);
-        dropLivePty(tabId);
-        setState(next);
-      },
+      (next) => setState(next),
       (err: unknown) => fail("Close tab", err),
     );
   };
 
   // A running terminal asks first; an exited one closes at once.
   const requestClose = (tabId: string) => {
-    if (ptyRunning(tabId)) setConfirmClose(tabId);
+    if (tabRuns(tabId)) setConfirmClose(tabId);
     else doClose(tabId);
+  };
+
+  // ---- split panes -------------------------------------------------------
+  // The pane the keyboard is in, per tab (1 is the tab's own terminal), and
+  // a counter that remounts a tab's terminals when its first pane closes.
+  const [focusedPanes, setFocusedPanes] = useState<Record<string, 1 | 2>>({});
+  const [epochs, setEpochs] = useState<Record<string, number>>({});
+  const [confirmPane, setConfirmPane] = useState<{ tabId: string; pane: 1 | 2 } | null>(null);
+  const paneOf = (tabId: string): 1 | 2 => focusedPanes[tabId] ?? 1;
+  const focusPane = (tabId: string, pane: 1 | 2) => {
+    setFocusedPanes((current) => (current[tabId] === pane ? current : { ...current, [tabId]: pane }));
+    const split = state?.tabs.find((tab) => tab.id === tabId)?.split;
+    focusParkedTerminal(pane === 2 && split ? split.id : tabId);
+  };
+
+  const splitActive = (tabId: string, direction: "right" | "down") => {
+    splitTab(windowId, tabId, direction).then(
+      () => {
+        setFocusedPanes((current) => ({ ...current, [tabId]: 2 }));
+        return reload();
+      },
+      (err: unknown) => fail("Split tab", err),
+    );
+  };
+
+  const closePaneNow = (tabId: string, pane: 1 | 2) => {
+    setConfirmPane(null);
+    const tab = state?.tabs.find((item) => item.id === tabId);
+    if (!tab?.split) return;
+    const gone = pane === 2 ? [tab.split.id] : [tab.id, tab.split.id];
+    for (const id of gone) {
+      destroyTerminal(id);
+      dropLivePty(id);
+    }
+    closePane(windowId, tabId, pane).then(
+      () => {
+        setFocusedPanes((current) => ({ ...current, [tabId]: 1 }));
+        if (pane === 1) setEpochs((current) => ({ ...current, [tabId]: (current[tabId] ?? 0) + 1 }));
+        return reload();
+      },
+      (err: unknown) => {
+        fail("Close pane", err);
+        void reload();
+      },
+    );
+  };
+
+  // Cmd+W: the focused pane when the tab has two, else the tab. A run's
+  // first pane is the run, so closing it closes the tab.
+  const closeFocusedPane = (tab: TabSummary) => {
+    if (!tab.split) return requestClose(tab.id);
+    const pane = paneOf(tab.id);
+    if (pane === 1 && tab.runDir) return requestClose(tab.id);
+    const running = ptyRunning(pane === 1 ? tab.id : tab.split.id);
+    if (running) setConfirmPane({ tabId: tab.id, pane });
+    else closePaneNow(tab.id, pane);
+  };
+
+  const terminalsOf = (tab: TabSummary, autoFocus: boolean) => {
+    const key = `${tab.id}-${epochs[tab.id] ?? 0}`;
+    return tab.split ? (
+      <SplitTerminals
+        key={key}
+        tab={tab}
+        fontSize={fontSize}
+        autoFocus={autoFocus}
+        focusedPane={paneOf(tab.id)}
+        onPaneFocus={(pane) => setFocusedPanes((current) => (current[tab.id] === pane ? current : { ...current, [tab.id]: pane }))}
+        onFolderChanged={() => void reload()}
+        onRatio={(ratio) => {
+          setState((current) =>
+            current
+              ? { ...current, tabs: current.tabs.map((t) => (t.id === tab.id && t.split ? { ...t, split: { ...t.split, ratio } } : t)) }
+              : current,
+          );
+          setSplitRatio(tab.id, ratio).catch((err: unknown) => fail("Resize panes", err));
+        }}
+      />
+    ) : (
+      <TerminalView
+        key={key}
+        tab={tab}
+        fontSize={fontSize}
+        autoFocus={autoFocus}
+        onFolderChanged={() => void reload()}
+      />
+    );
   };
 
   const reopen = (tabId?: string) => {
@@ -255,9 +358,8 @@ function App() {
     setConfirmCloseMany(null);
     for (const id of ids) {
       try {
+        releaseTerminals(id);
         const next = await closeTab(windowId, id);
-        destroyTerminal(id);
-        dropLivePty(id);
         setState(next);
       } catch (err) {
         fail("Close tab", err);
@@ -268,7 +370,7 @@ function App() {
 
   // Close others / Close to the right: one question when any terminal runs.
   const requestCloseMany = (ids: string[]) => {
-    if (ids.some((id) => ptyRunning(id))) setConfirmCloseMany(ids);
+    if (ids.some((id) => tabRuns(id))) setConfirmCloseMany(ids);
     else void closeNow(ids);
   };
 
@@ -321,8 +423,20 @@ function App() {
         setDialog("new-tab");
         break;
       case "close-tab":
-        if (active) requestClose(active.id);
+        if (active) closeFocusedPane(active);
         break;
+      case "split":
+        if (active && !active.split && !blocked) splitActive(active.id, action.direction);
+        break;
+      case "focus-pane": {
+        if (!active?.split) break;
+        const horizontal = active.split.direction === "right";
+        const towardFirst = horizontal ? action.direction === "left" : action.direction === "up";
+        const towardSecond = horizontal ? action.direction === "right" : action.direction === "down";
+        if (towardFirst) focusPane(active.id, 1);
+        else if (towardSecond) focusPane(active.id, 2);
+        break;
+      }
       case "reopen-closed-tab":
         reopen();
         break;
@@ -435,6 +549,7 @@ function App() {
           onDuplicate={duplicate}
           onReveal={reveal}
           onCloseMany={requestCloseMany}
+          onSplit={splitActive}
           onNew={() => {
             setPlainTab(false);
             setDialog("new-tab");
@@ -504,24 +619,10 @@ function App() {
             </button>
           </div>
         )}
-        {active && !blocked && !active.runDir && (
-          <TerminalView
-            key={active.id}
-            tab={active}
-            fontSize={fontSize}
-            autoFocus={!dialog}
-            onFolderChanged={() => void reload()}
-          />
-        )}
+        {active && !blocked && !active.runDir && terminalsOf(active, !dialog)}
         {active && !blocked && active.runDir && (
           <div className="run-layout">
-            <TerminalView
-            key={active.id}
-            tab={active}
-            fontSize={fontSize}
-            autoFocus={!dialog}
-            onFolderChanged={() => void reload()}
-          />
+            {terminalsOf(active, !dialog)}
             <RunPanel
               key={active.runDir}
               runDir={active.runDir}
@@ -630,8 +731,33 @@ function App() {
           }
         >
           <p>
-            {confirmCloseMany.filter((id) => ptyRunning(id)).length} of these tabs still run a terminal. They will be
+            {confirmCloseMany.filter((id) => tabRuns(id)).length} of these tabs still run a terminal. They will be
             stopped. You can reopen the tabs later.
+          </p>
+        </Dialog>
+      )}
+      {confirmPane && (
+        <Dialog
+          title="Close pane?"
+          onClose={() => setConfirmPane(null)}
+          footer={
+            <>
+              <button type="button" className="secondary-button" onClick={() => setConfirmPane(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="danger-button"
+                onClick={() => closePaneNow(confirmPane.tabId, confirmPane.pane)}
+              >
+                Close pane
+              </button>
+            </>
+          }
+        >
+          <p>
+            Its terminal is still running and will be stopped.
+            {confirmPane.pane === 1 ? " The other pane's shell restarts as the tab." : ""}
           </p>
         </Dialog>
       )}

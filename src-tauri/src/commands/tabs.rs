@@ -25,6 +25,21 @@ pub struct TabSummary {
     pub run_dir: Option<String>,
     /// dcv2 tabs: `eagle-eye`, `eagle-eye-resume`, or the role.
     pub role: Option<String>,
+    /// The second pane, when the tab is split.
+    pub split: Option<SplitSummary>,
+}
+
+/// A split tab's second pane, as the page needs it to draw and open it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SplitSummary {
+    pub direction: crate::store::SplitDirection,
+    /// The first pane's share (0.2 to 0.8).
+    pub ratio: f32,
+    /// The second pane's terminal id (`<tab id>:p2`).
+    pub id: String,
+    pub cwd: String,
+    pub folder_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -57,6 +72,13 @@ pub(crate) fn summary(tab: &TabRecord) -> TabSummary {
         has_session: tab.claude_session_id.is_some(),
         run_dir: tab.launch.as_ref().and_then(|l| l.run_dir.clone()),
         role: tab.launch.as_ref().map(|l| l.role.clone()),
+        split: tab.split.as_ref().map(|split| SplitSummary {
+            direction: split.direction,
+            ratio: split.ratio,
+            id: split.id.clone(),
+            cwd: split.cwd.clone(),
+            folder_status: folder_status_code(&split.cwd),
+        }),
     }
 }
 
@@ -232,6 +254,77 @@ pub(crate) fn keeps_session(tab: &TabRecord, new_cwd: &std::path::Path) -> bool 
         ),
         _ => false,
     }
+}
+
+/// Splits a tab: a second Shell pane, `right` of the tab's terminal or
+/// `down` (below it). Its terminal opens when the view shows it.
+#[tauri::command]
+pub fn split_tab(
+    window_id: Option<String>,
+    tab_id: String,
+    direction: crate::store::SplitDirection,
+    store: State<Mutex<StateStore>>,
+) -> Result<TabSummary, String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.bind_window(window_id.as_deref());
+    store.split_tab(&tab_id, direction)?;
+    store
+        .tab_by_id(&tab_id)
+        .map(summary)
+        .ok_or_else(|| format!("unknown tab: {tab_id}"))
+}
+
+/// The divider moved: the first pane's share of the tab.
+#[tauri::command]
+pub fn set_split_ratio(
+    tab_id: String,
+    ratio: f32,
+    store: State<Mutex<StateStore>>,
+) -> Result<TabSummary, String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.set_split_ratio(&tab_id, ratio)?;
+    store
+        .tab_by_id(&tab_id)
+        .map(summary)
+        .ok_or_else(|| format!("unknown tab: {tab_id}"))
+}
+
+/// Closes pane 1 or 2 of a split tab and stops its terminal. Closing the
+/// second pane leaves the tab as it was. Closing the first pane stops both
+/// terminals and the second pane's shell becomes the tab (in its folder,
+/// started fresh); a run's tab cannot lose its first pane that way.
+#[tauri::command]
+pub fn close_pane(
+    window_id: Option<String>,
+    tab_id: String,
+    pane: u8,
+    store: State<Mutex<StateStore>>,
+    registry: State<Mutex<PtyRegistry>>,
+) -> Result<TabSummary, String> {
+    let summary_of = |store: &StateStore| {
+        store
+            .tab_by_id(&tab_id)
+            .map(summary)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))
+    };
+    // The store first, the terminals second (as closing a tab does).
+    let result = {
+        let mut store = store.lock().map_err(|e| e.to_string())?;
+        store.bind_window(window_id.as_deref());
+        match pane {
+            2 => store.close_second_pane(&tab_id),
+            1 => store.promote_second_pane(&tab_id),
+            _ => Err("a tab has panes 1 and 2".to_string()),
+        }
+        .and_then(|()| summary_of(&store))
+    };
+    let tab = result?;
+    if pane == 2 {
+        crate::pty::kill_terminal(&registry, &crate::store::second_pane_id(&tab_id));
+    } else {
+        crate::pty::kill_tab_pty(&registry, &tab_id);
+    }
+    Ok(tab)
 }
 
 /// Points a tab whose folder is gone at another folder. The tab keeps its
