@@ -19,6 +19,7 @@ import { WorktreeSetup } from "./WorktreeSetup";
 import { relativeDate, stageText } from "../run/words";
 import { TextDialog } from "./RunPanel";
 import { Dialog } from "./Dialog";
+import { RecentFolderOptions, useRecentFolders } from "./RecentFolders";
 import { nearLimitWarning, type RateWindow } from "../usage/limits";
 import { errorText } from "./InlineNotice";
 import { MemoryPanel } from "./MemoryPanel";
@@ -106,6 +107,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   const [overview, setOverview] = useState<RunOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const recent = useRecentFolders();
   const [report, setReport] = useState<{ title: string; text: string } | null>(null);
   // The same unfinished request is already running: ask before starting it again.
   const [duplicate, setDuplicate] = useState<{ run: DuplicateRun; role: string } | null>(null);
@@ -204,9 +206,11 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           <input
             className="text-input"
             value={folder}
+            list="start-recent-folders"
             placeholder="/path/to/repo or folder of repos"
             onChange={(event) => setFolder(event.target.value)}
           />
+          <RecentFolderOptions id="start-recent-folders" folders={recent} />
           <button type="button" className="secondary-button" onClick={() => void choose()}>
             Choose…
           </button>

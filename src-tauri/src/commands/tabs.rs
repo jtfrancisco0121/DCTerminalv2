@@ -136,6 +136,88 @@ pub fn select_tab(
     store.set_active_tab(&tab_id)
 }
 
+/// How many recent folders are offered.
+pub const RECENT_FOLDERS: usize = 10;
+
+/// The folders to offer, newest first: `(folder, when)` candidates (when an
+/// RFC 3339 time; an unreadable one sorts last), folders that no longer
+/// exist dropped, the same folder (by canonical path) once, at most
+/// [`RECENT_FOLDERS`]. Pure but for `exists`/canonical, which the caller
+/// supplies so tests need no disk.
+pub(crate) fn recent_from(
+    mut candidates: Vec<(String, String)>,
+    canonical: impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    let when = |text: &str| {
+        chrono::DateTime::parse_from_rfc3339(text)
+            .map(|t| t.timestamp_millis())
+            .unwrap_or(i64::MIN)
+    };
+    candidates.sort_by_key(|(_, at)| std::cmp::Reverse(when(at)));
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for (folder, _) in candidates {
+        if folder.trim().is_empty() {
+            continue;
+        }
+        let Some(real) = canonical(&folder) else {
+            continue;
+        };
+        if seen.insert(real.clone()) {
+            out.push(real);
+            if out.len() == RECENT_FOLDERS {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Up to 10 existing folders for the New tab form and the start screen:
+/// from open and closed tabs and from the runs, newest first. The stores
+/// are copied out and released before any folder is looked at.
+#[tauri::command]
+pub async fn recent_folders(
+    app: tauri::AppHandle,
+    store: State<'_, Mutex<StateStore>>,
+) -> Result<Vec<String>, String> {
+    let mut candidates: Vec<(String, String)> = {
+        let state = store.lock().map_err(|e| e.to_string())?;
+        state
+            .data
+            .tabs
+            .iter()
+            .map(|tab| (tab.cwd.clone(), tab.created_at.clone()))
+            .chain(state.data.closed_tabs.iter().map(|tab| {
+                (
+                    tab.cwd.clone(),
+                    tab.closed_at
+                        .clone()
+                        .unwrap_or_else(|| tab.created_at.clone()),
+                )
+            }))
+            .collect()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = crate::data_dir::app_data_dir(&app).path;
+        for run in crate::run::folder::list_runs(&data) {
+            if let Some(folder) = run.folder {
+                let when = run.updated_at.or(run.created_at).unwrap_or_default();
+                candidates.push((folder, when));
+            }
+        }
+        Ok(recent_from(candidates, |folder| {
+            let path = std::path::Path::new(folder);
+            path.is_dir()
+                .then(|| path.canonicalize().ok())
+                .flatten()
+                .map(|real| real.display().to_string())
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Drags a tab to `index` among the window's tabs; the new order is saved.
 #[tauri::command]
 pub fn move_tab(
@@ -256,6 +338,39 @@ mod tests {
         let other = snapshot(&store);
         assert!(other.tabs.is_empty());
         assert_eq!(other.active_tab_id, None);
+    }
+
+    #[test]
+    fn recent_folders_are_newest_first_deduplicated_existing_and_capped() {
+        let t = |m: u32| format!("2026-10-27T10:{m:02}:00Z");
+        let exists = |folder: &str| {
+            // "/gone/..." does not exist; "/link" is another name for "/real".
+            if folder.starts_with("/gone") {
+                None
+            } else if folder == "/link" {
+                Some("/real".to_string())
+            } else {
+                Some(folder.to_string())
+            }
+        };
+        let list = recent_from(
+            vec![
+                ("/a".into(), t(1)),
+                ("/real".into(), t(2)),
+                ("/gone/x".into(), t(9)),
+                ("/b".into(), t(3)),
+                ("/link".into(), t(4)),
+                ("/a".into(), t(5)),
+                ("  ".into(), t(6)),
+                ("/unknown-time".into(), "garbage".into()),
+            ],
+            exists,
+        );
+        // /a (10:05), /link = /real (10:04), /b (10:03), then the one with no time.
+        assert_eq!(list, ["/a", "/real", "/b", "/unknown-time"]);
+        let many: Vec<(String, String)> = (0..40).map(|n| (format!("/f{n}"), t(n % 60))).collect();
+        assert_eq!(recent_from(many, exists).len(), RECENT_FOLDERS);
+        assert!(recent_from(Vec::new(), exists).is_empty());
     }
 
     #[test]

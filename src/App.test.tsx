@@ -59,6 +59,7 @@ vi.mock("./bridge", () => ({
   selectTab: vi.fn(async () => {}),
   renameTab: vi.fn(async () => tab),
   moveTab: vi.fn(async () => state),
+  recentFolders: vi.fn(async () => []),
   setTerminalSettings: vi.fn(async (terminal: unknown) => terminal),
   reopenClosedTab: vi.fn(async () => tab),
   openAccountWindow: vi.fn(async () => "win-2"),

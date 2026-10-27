@@ -216,6 +216,11 @@ export function moveTab(windowId: string, tabId: string, index: number): Promise
   return invoke<AppStateSnapshot>("move_tab", { windowId, tabId, index });
 }
 
+/** Up to 10 existing folders for the New tab and Start forms, newest first. */
+export function recentFolders(): Promise<string[]> {
+  return invoke<string[]>("recent_folders");
+}
+
 export function renameTab(tabId: string, label: string): Promise<TabSummary> {
   return invoke<TabSummary>("rename_tab", { tabId, label });
 }

@@ -28,6 +28,7 @@ vi.mock("../run/api", async () => ({
   resumeRun: vi.fn(),
   readRunFile: (dir: string, path: string) => readRunFile(dir, path),
 }));
+vi.mock("../bridge", () => ({ recentFolders: vi.fn(async () => ["/w/app", "/w/web"]) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
 vi.mock("@tauri-apps/plugin-opener", () => ({
   revealItemInDir: (path: string) => revealItemInDir(path),
@@ -144,5 +145,18 @@ describe("StartScreen near-limit warning", () => {
     );
     await screen.findByRole("button", { name: "Start Eagle-Eye" });
     expect(screen.queryByTestId("near-limit")).toBeNull();
+  });
+});
+
+describe("StartScreen recent folders", () => {
+  afterEach(cleanup);
+
+  it("offers the recent folders as suggestions for the folder field", async () => {
+    const { container } = render(
+      <StartScreen windowId="main" initialFolder="" onStarted={() => {}} onPlainTab={() => {}} />,
+    );
+    const input = screen.getByPlaceholderText("/path/to/repo or folder of repos");
+    const list = input.getAttribute("list")!;
+    await vi.waitFor(() => expect(container.querySelectorAll(`datalist#${list} option`)).toHaveLength(2));
   });
 });
