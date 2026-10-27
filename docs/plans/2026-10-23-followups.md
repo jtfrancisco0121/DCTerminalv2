@@ -19,3 +19,13 @@ LOW findings left from the phase reviews, plus checks not yet done.
 - P2b: stop hook skips checks slower than 30 s; memory topics updated in a run show stale on the default branch until the PR merges.
 - P3a: Start the same request twice gives two runs; memory files read-only in the app; `repos:` limit not offered in the UI.
 - P1: page-supplied window_id trust; settings.json concurrent overwrite.
+
+## From the review of #11 (afk-cleanup, 2026-10-27)
+
+LOWs left for later:
+- `git worktree prune` by `state.sh worktree` / `cleanup` prunes every stale worktree of the repo, not only the run's.
+- The cleanup trusts `gh pr view`'s `headRefName` + the recorded repo; a fork PR (`isCrossRepository`) with the same branch name is not checked separately.
+- `requests/` grows by two files per request and is never pruned.
+- A worktree that is "already gone" is recorded as gone without checking whether `git worktree list` still names it (prune happens later).
+- A copied-in `.env` (copyFiles) that the user edited in the worktree goes with the worktree (it is treated as a copy).
+- The orchestrator may still delete or reset a run worktree's files (`rm -rf <wt>`, `git clean`, `git reset --hard` in the worktree) and write files through interpreters (`python3 -c 'open(...)'`): the guard sees shell write targets only. Worth a rule that the orchestrator writes nothing in worktrees.
