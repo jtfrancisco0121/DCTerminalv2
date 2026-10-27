@@ -286,6 +286,27 @@ expect 0 "PR2 worktree" bash "$STATE" worktree "$RUN" "$RR" PR2 "$RBASE"
 WT2="$(dirname "$RR")/rr-worktrees/dcv2-r-t-pr2"
 git -C "$WT2" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "S2: x"
 
+echo "# worktree only for the run's repos (CAP-17)"
+OUT="$d/outside/orepo"; OUT2="$d/outside/orepo2"; mkdir -p "$OUT" "$OUT2"
+for repo in "$OUT" "$OUT2"; do git -C "$repo" init -q -b main; git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init; done
+OBASE="$(git -C "$OUT" rev-parse HEAD)"; OBASE2="$(git -C "$OUT2" rev-parse HEAD)"
+cp "$RUN/.guard.json" "$d/guard.before"
+expect 1 "a repo outside repos.json and the start folder is refused" bash "$STATE" worktree "$RUN" "$OUT" PR1 "$OBASE"
+has "  says why" "not one of this run's repos"
+cmp -s "$RUN/.guard.json" "$d/guard.before" && ok "  .guard.json is byte-identical" || bad "  .guard.json changed"
+[[ ! -d "$d/outside/orepo-worktrees" ]] && ok "  no worktree made" || bad "  a worktree was made"
+git -C "$OUT" branch --list 'dcv2/*' | grep -q . && bad "  a branch was made" || ok "  no branch made"
+ln -s "$OUT2" "$d/outside/lnk"
+printf '{"schema": 1, "repos": [{"name": "o", "path": "%s", "check": null}]}\n' "$d/outside/lnk" > "$RUN/repos.json"
+expect 1 "a repo not in repos.json is still refused when repos.json lists another" bash "$STATE" worktree "$RUN" "$OUT" PR1 "$OBASE"
+expect 0 "a repo listed in repos.json by a symlinked path is accepted" bash "$STATE" worktree "$RUN" "$OUT2" PR1 "$OBASE2"
+rm -rf "$RUN/repos.json" "$d/outside/orepo2-worktrees"; git -C "$OUT2" worktree prune; git -C "$OUT2" branch -q -D dcv2/r-t-pr1
+python3 - "$RUN/.guard.json" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1])); g["repos"] = [r for r in g["repos"] if not r.endswith("orepo2")]; g["worktrees"].pop("PR1", None); json.dump(g, open(sys.argv[1], "w"))
+PY
+expect 0 "a repo inside the start folder is accepted (PR1 again)" bash "$STATE" worktree "$RUN" "$R" PR1 "$BASE"
+
 echo "# ship (3, 4, 8, 10)"
 gh="$d/gh"; mkdir -p "$gh"
 cat > "$gh/gh" <<EOF

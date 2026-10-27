@@ -1076,12 +1076,26 @@ def run_setup(run, wt, pr_id, cmd):
     return ("ok" if rc == 0 else "failed"), log
 
 
+def run_owns_repo(run, repo):
+    """The repo is one the run is about: listed in repos.json (by real path, so a symlinked listing matches) or inside the
+    start folder named by request.md's folder: line."""
+    rj = load_json(os.path.join(run, "repos.json"))
+    for r in (rj.get("repos") if isinstance(rj, dict) else None) or []:
+        if isinstance(r, dict) and isinstance(r.get("path"), str) and same_path(r["path"], repo):
+            return True
+    folders = set(re.findall(r"^folder:\s*(\S.*?)\s*$", read(os.path.join(run, "request.md")), re.M))
+    return len(folders) == 1 and os.path.isabs(next(iter(folders))) and under(repo, next(iter(folders)))
+
+
 def cmd_worktree(run, repo, pr_id, base):
     run = os.path.realpath(run)
     run_id = os.path.basename(run)
     repo = os.path.realpath(repo)
     if not re.fullmatch(r"PR\d+", pr_id):
         die(f"pr id must be PR<n> (got {pr_id})")
+    if not run_owns_repo(run, repo):
+        die(f"NOT MADE: {repo} is not one of this run's repos (not in repos.json, and not inside the start folder in request.md); "
+            "nothing was recorded in .guard.json")
     if git("-C", repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}").returncode != 0:
         die(f"NOT MADE: base commit {base!r} is not a commit in {repo}; use baseCommit from status.json / state.sh base")
     branch, wt = canon(repo, run_id, pr_id)
