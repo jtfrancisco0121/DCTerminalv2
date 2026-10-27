@@ -438,6 +438,30 @@ impl StateStore {
         self.save()
     }
 
+    /// Moves the tab to `index` among its window's tabs (clamped to the
+    /// end) and numbers that window's tabs 0, 1, 2, … in one change, so the
+    /// order stays contiguous with no duplicates. Other windows' tabs are
+    /// not touched.
+    pub fn move_tab(&mut self, tab_id: &str, index: usize) -> Result<(), String> {
+        let window_id = self
+            .tab_by_id(tab_id)
+            .map(|tab| tab.window_id.clone())
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        let mut ids: Vec<String> = self
+            .tabs_in_window(&window_id)
+            .into_iter()
+            .map(|tab| tab.id.clone())
+            .collect();
+        ids.retain(|id| id != tab_id);
+        ids.insert(index.min(ids.len()), tab_id.to_string());
+        for tab in self.data.tabs.iter_mut() {
+            if let Some(at) = ids.iter().position(|id| id == &tab.id) {
+                tab.order = at as u32;
+            }
+        }
+        self.save()
+    }
+
     pub fn close_tab(&mut self, tab_id: &str) -> Result<(), String> {
         let idx = self
             .data
@@ -577,6 +601,88 @@ mod tests {
         assert_eq!(
             tab_label(TabKind::Shell, r"C:\Projects\DCTerminal"),
             "Shell · DCTerminal"
+        );
+    }
+
+    fn order_of(store: &StateStore, window: &str) -> Vec<(String, u32)> {
+        store
+            .tabs_in_window(window)
+            .into_iter()
+            .map(|t| (t.id.clone(), t.order))
+            .collect()
+    }
+
+    #[test]
+    fn moving_a_tab_renumbers_its_window_contiguously_and_leaves_others_alone() {
+        let dir = TempDir::new("state_move");
+        let mut store = store_in(&dir);
+        let ids: Vec<String> = (0..4)
+            .map(|n| {
+                store
+                    .create_tab(&format!("/w/{n}"), TabKind::Shell)
+                    .unwrap()
+            })
+            .collect();
+        // A gap from a closed tab, and a tab in another window.
+        store.close_tab(&ids[1]).unwrap();
+        store.bind_window(Some("win-2"));
+        let other = store.create_tab("/w/other", TabKind::Shell).unwrap();
+        let other_order = store.tab_by_id(&other).unwrap().order;
+        store.bind_window(None);
+        let main = |s: &StateStore| {
+            order_of(s, "main")
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            main(&store),
+            [ids[0].clone(), ids[2].clone(), ids[3].clone()]
+        );
+
+        // First -> last.
+        store.move_tab(&ids[0], 2).unwrap();
+        assert_eq!(
+            main(&store),
+            [ids[2].clone(), ids[3].clone(), ids[0].clone()]
+        );
+        let orders: Vec<u32> = order_of(&store, "main")
+            .into_iter()
+            .map(|(_, o)| o)
+            .collect();
+        assert_eq!(orders, [0, 1, 2], "contiguous, no duplicates");
+        // Last -> first.
+        store.move_tab(&ids[0], 0).unwrap();
+        assert_eq!(
+            main(&store),
+            [ids[0].clone(), ids[2].clone(), ids[3].clone()]
+        );
+        // The same index changes nothing; an index past the end is the end.
+        store.move_tab(&ids[2], 1).unwrap();
+        assert_eq!(
+            main(&store),
+            [ids[0].clone(), ids[2].clone(), ids[3].clone()]
+        );
+        store.move_tab(&ids[0], 99).unwrap();
+        assert_eq!(
+            main(&store),
+            [ids[2].clone(), ids[3].clone(), ids[0].clone()]
+        );
+        // The other window's tab kept its order.
+        assert_eq!(store.tab_by_id(&other).unwrap().order, other_order);
+        assert!(store.move_tab("nope", 0).is_err());
+        // It persists.
+        let again = store_in(&dir);
+        assert_eq!(
+            main(&again),
+            [ids[2].clone(), ids[3].clone(), ids[0].clone()]
+        );
+        assert_eq!(
+            order_of(&again, "main")
+                .iter()
+                .map(|(_, o)| *o)
+                .collect::<Vec<_>>(),
+            [0, 1, 2]
         );
     }
 

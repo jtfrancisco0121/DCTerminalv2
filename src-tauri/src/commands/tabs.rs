@@ -136,6 +136,20 @@ pub fn select_tab(
     store.set_active_tab(&tab_id)
 }
 
+/// Drags a tab to `index` among the window's tabs; the new order is saved.
+#[tauri::command]
+pub fn move_tab(
+    window_id: Option<String>,
+    tab_id: String,
+    index: usize,
+    store: State<Mutex<StateStore>>,
+) -> Result<AppStateSnapshot, String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.bind_window(window_id.as_deref());
+    store.move_tab(&tab_id, index)?;
+    Ok(snapshot(&store))
+}
+
 #[tauri::command]
 pub fn rename_tab(
     tab_id: String,

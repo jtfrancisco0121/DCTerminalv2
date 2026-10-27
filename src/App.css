@@ -506,6 +506,7 @@ body,
 }
 
 .tab-bar {
+  position: relative;
   display: flex;
   align-items: stretch;
   gap: 0.15rem;
@@ -514,6 +515,23 @@ body,
   background: var(--bg-elev);
   overflow-x: auto;
   flex: none;
+}
+
+.tab-insert-marker {
+  position: absolute;
+  top: 0.25rem;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.tab-dragging {
+  opacity: 0.6;
+  position: relative;
+  z-index: 3;
+  pointer-events: none;
 }
 
 .tab {
@@ -537,6 +555,7 @@ body,
 }
 
 .tab-label {
+  user-select: none;
   display: flex;
   align-items: center;
   gap: 0.35rem;

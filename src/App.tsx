@@ -7,6 +7,7 @@ import {
   attentionSummary,
   getClaudeUsage,
   getSettings,
+  moveTab,
   newTab,
   openAccountWindow,
   renameTab,
@@ -245,6 +246,10 @@ function App() {
     );
   };
 
+  const move = (tabId: string, index: number) => {
+    moveTab(windowId, tabId, index).then(setState, (err: unknown) => fail("Move tab", err));
+  };
+
   const rename = (tabId: string, label: string) => {
     renameTab(tabId, label).then(
       () => reload(),
@@ -351,6 +356,7 @@ function App() {
           onSelect={select}
           onClose={requestClose}
           onRename={rename}
+          onMove={move}
           onNew={() => {
             setPlainTab(false);
             setDialog("new-tab");

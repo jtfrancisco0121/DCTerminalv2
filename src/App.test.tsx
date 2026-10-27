@@ -58,6 +58,7 @@ vi.mock("./bridge", () => ({
   closeTab: (...args: unknown[]) => closeTab(...(args as [])),
   selectTab: vi.fn(async () => {}),
   renameTab: vi.fn(async () => tab),
+  moveTab: vi.fn(async () => state),
   reopenClosedTab: vi.fn(async () => tab),
   openAccountWindow: vi.fn(async () => "win-2"),
   ptySetScheme: vi.fn(async () => {}),

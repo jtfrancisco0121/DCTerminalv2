@@ -211,6 +211,11 @@ export function selectTab(windowId: string, tabId: string): Promise<void> {
   return invoke<void>("select_tab", { windowId, tabId });
 }
 
+/** Drags `tabId` to `index` among the window's tabs; resolves to the window's new state. */
+export function moveTab(windowId: string, tabId: string, index: number): Promise<AppStateSnapshot> {
+  return invoke<AppStateSnapshot>("move_tab", { windowId, tabId, index });
+}
+
 export function renameTab(tabId: string, label: string): Promise<TabSummary> {
   return invoke<TabSummary>("rename_tab", { tabId, label });
 }

@@ -23,9 +23,9 @@ mod windows;
 
 use commands::{
     claude_account_logins, claude_status, close_tab, get_app_state, get_claude_usage, get_settings,
-    new_tab, rename_tab, reopen_closed_tab, select_tab, set_claude_settings, set_notify_settings,
-    set_observe_settings, set_push_settings, set_run_settings, set_terminal_settings,
-    set_ui_settings,
+    move_tab, new_tab, rename_tab, reopen_closed_tab, select_tab, set_claude_settings,
+    set_notify_settings, set_observe_settings, set_push_settings, set_run_settings,
+    set_terminal_settings, set_ui_settings,
 };
 use pty::{
     pty_kill, pty_open, pty_resize, pty_set_scheme, pty_write, terminal_resume_id, PtyRegistry,
@@ -156,6 +156,7 @@ pub fn run() {
             new_tab,
             select_tab,
             rename_tab,
+            move_tab,
             close_tab,
             reopen_closed_tab,
             pty_open,
