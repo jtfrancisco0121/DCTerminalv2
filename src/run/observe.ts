@@ -147,11 +147,24 @@ export function checkLogPr(path: string): string | null {
   return match ? match[1] : null;
 }
 
+/** A self-test passed on exactly the detected version ("2.1.287 (Claude Code)" matches "2.1.287"). */
+function selftestPassedHere(status: ClaudeVersionStatus): boolean {
+  const test = status.selftest;
+  const detected = status.version?.trim().split(/\s+/)[0];
+  return Boolean(test && test.ok && test.version && detected && test.version === detected);
+}
+
+/** The quiet note for a newer-than-tested version whose self-test passed on it; else null. */
+export function versionNote(status: ClaudeVersionStatus): string | null {
+  if (status.range !== "above" || !selftestPassedHere(status)) return null;
+  return `Claude Code ${status.selftest?.version ?? ""} is newer than tested · self-test passed.`;
+}
+
 /** The version banner's text, or null when no banner is needed. */
 export function versionWarning(status: ClaudeVersionStatus): string | null {
   if (status.range === "below")
     return `Claude Code ${status.version ?? ""} is older than ${status.min}, the oldest this app supports. Update Claude Code.`;
-  if (status.range === "above")
+  if (status.range === "above" && !selftestPassedHere(status))
     return `Claude Code ${status.version ?? ""} is newer than ${status.maxTested}, the newest this app was tested with. Runs may misbehave; the self-test checks the basics.`;
   return null;
 }
