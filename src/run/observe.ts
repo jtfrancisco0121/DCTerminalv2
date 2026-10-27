@@ -16,6 +16,8 @@ export type TabHookState = {
   subagentsRunning: number;
   toolRunning: boolean;
   sessionId: string | null;
+  /** Unix ms when `activity` last changed. */
+  activitySinceMs?: number | null;
 };
 
 export type Tokens = { input: number; output: number; cacheWrite5m: number; cacheWrite1h: number; cacheRead: number };
@@ -46,6 +48,8 @@ export type SubagentInfo = {
 
 export type Stall = { minutes: number; threshold: number };
 
+export type Waiting = { minutes: number; threshold: number };
+
 export type TabObservation = {
   hook: TabHookState | null;
   hooksActive: boolean;
@@ -56,6 +60,8 @@ export type TabObservation = {
   subagents: SubagentInfo[];
   usage: UsageSummary | null;
   stall: Stall | null;
+  /** The run (or tab) has waited for you longer than the watchdog minutes. */
+  waiting?: Waiting | null;
 };
 
 export type SelfTest = {

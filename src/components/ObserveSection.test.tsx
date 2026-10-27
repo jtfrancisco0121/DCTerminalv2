@@ -48,6 +48,20 @@ describe("ObserveView", () => {
     expect(screen.getByTestId("run-cost").textContent).not.toMatch(/run total/i);
   });
 
+  it("says how long the run has waited for you, only once the watchdog threshold passed", () => {
+    const { rerender } = render(<ObserveView seen={seen} nudging={false} onNudge={vi.fn()} onResume={vi.fn()} />);
+    expect(screen.queryByTestId("run-waiting")).toBeNull();
+    rerender(
+      <ObserveView
+        seen={{ ...seen, waiting: { minutes: 14, threshold: 10 } }}
+        nudging={false}
+        onNudge={vi.fn()}
+        onResume={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("run-waiting").textContent).toBe("Waiting for you for 14 min.");
+  });
+
   it("offers Nudge and Resume only on a stall, and nudges only on click", () => {
     const onNudge = vi.fn();
     const onResume = vi.fn();

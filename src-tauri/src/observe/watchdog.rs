@@ -22,6 +22,8 @@ pub struct WatchInput {
     pub tool_running: bool,
     /// The last hook event.
     pub hook_updated: Option<SystemTime>,
+    /// When `activity` last changed (the start of a needs-you episode).
+    pub activity_since: Option<SystemTime>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -30,6 +32,36 @@ pub struct Stall {
     /// Whole minutes since the last sign of progress.
     pub minutes: u64,
     pub threshold: u32,
+}
+
+/// The run (or tab) has waited for you this long.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Waiting {
+    /// Whole minutes since the wait began.
+    pub minutes: u64,
+    pub threshold: u32,
+}
+
+/// "Waiting for you for N min": status.json's `waitingFor` is set (counted
+/// from the status change), or the tab is needs-you (counted from the
+/// activity change, not from any later hook event). With both, the older
+/// start counts. Finished runs and a threshold of 0 (off) say nothing.
+/// `now` is passed in so tests can move the clock.
+pub fn waiting(now: SystemTime, input: &WatchInput, threshold_minutes: u32) -> Option<Waiting> {
+    if input.finished || threshold_minutes == 0 {
+        return None;
+    }
+    let from_status = input.waiting_for.then_some(input.status_changed).flatten();
+    let from_tab = (input.activity == Some(TabActivity::NeedsYou))
+        .then_some(input.activity_since)
+        .flatten();
+    let since = [from_status, from_tab].into_iter().flatten().min()?;
+    let waited = now.duration_since(since).unwrap_or(Duration::ZERO);
+    (waited >= Duration::from_secs(u64::from(threshold_minutes) * 60)).then_some(Waiting {
+        minutes: waited.as_secs() / 60,
+        threshold: threshold_minutes,
+    })
 }
 
 /// `now` is passed in so tests can move the clock.
@@ -185,6 +217,69 @@ mod tests {
             None,
             "clock skew"
         );
+    }
+
+    #[test]
+    fn waiting_counts_from_the_start_of_the_wait() {
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let min = |m: u64| Duration::from_secs(m * 60);
+        let asking = WatchInput {
+            activity: Some(TabActivity::NeedsYou),
+            activity_since: Some(t0),
+            // Later hook events (a SubagentStop) do not restart it.
+            hook_updated: Some(t0 + min(9)),
+            ..Default::default()
+        };
+        assert_eq!(
+            waiting(t0 + min(9), &asking, 10),
+            None,
+            "below the threshold"
+        );
+        assert_eq!(
+            waiting(t0 + min(10), &asking, 10),
+            Some(Waiting {
+                minutes: 10,
+                threshold: 10
+            }),
+            "at the threshold"
+        );
+        assert_eq!(waiting(t0 + min(30), &asking, 0), None, "0 is off");
+        assert_eq!(
+            waiting(
+                t0 + min(30),
+                &WatchInput {
+                    finished: true,
+                    ..asking.clone()
+                },
+                10
+            ),
+            None,
+            "a finished run waits for nothing"
+        );
+        let approval = WatchInput {
+            waiting_for: true,
+            status_changed: Some(t0 + min(5)),
+            ..Default::default()
+        };
+        assert_eq!(waiting(t0 + min(20), &approval, 10).unwrap().minutes, 15);
+        let both = WatchInput {
+            waiting_for: true,
+            status_changed: Some(t0 + min(5)),
+            ..asking.clone()
+        };
+        assert_eq!(
+            waiting(t0 + min(20), &both, 10).unwrap().minutes,
+            20,
+            "the older start counts"
+        );
+        let working = WatchInput {
+            activity: Some(TabActivity::Working),
+            activity_since: Some(t0),
+            ..Default::default()
+        };
+        assert_eq!(waiting(t0 + min(60), &working, 10), None);
+        // The stall verdict is unchanged: a wait is never a stall.
+        assert_eq!(check(t0 + min(60), &approval, 10), None);
     }
 
     // Ticket 14yq6g30jek: a tool that never finished (the program crashed)

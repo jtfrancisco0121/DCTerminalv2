@@ -129,6 +129,8 @@ pub struct TabObservation {
     pub subagents: Vec<transcript::SubagentInfo>,
     pub usage: Option<transcript::UsageSummary>,
     pub stall: Option<watchdog::Stall>,
+    /// The run (or tab) has waited for you longer than the watchdog minutes.
+    pub waiting: Option<watchdog::Waiting>,
 }
 
 /// status.json's `stage` and `waitingFor`, and when it last changed.
@@ -173,28 +175,26 @@ pub fn observe(
         subagents: tracker.subagents(),
         ..Default::default()
     };
+    let at = |ms: u64| std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(ms);
+    let mut input = watchdog::WatchInput {
+        transcript_written: tracker.last_write,
+        activity: hook.map(|h| h.activity),
+        tool_running: hook.is_some_and(|h| h.tool_running),
+        hook_updated: hook.and_then(|h| h.updated_ms).map(at),
+        activity_since: hook.and_then(|h| h.activity_since_ms).map(at),
+        ..Default::default()
+    };
     if let Some(dir) = run_dir {
-        let (stage, waiting, changed) = status_signals(dir);
-        let finished = matches!(stage.as_deref(), None | Some("done") | Some("failed"));
+        let (stage, waiting_for, changed) = status_signals(dir);
+        input.status_changed = changed;
+        input.waiting_for = waiting_for;
+        input.finished = matches!(stage.as_deref(), None | Some("done") | Some("failed"));
         out.usage = Some(tracker.summary(&timeline(dir), stage.as_deref().unwrap_or("start")));
-        out.stall = watchdog::check(
-            now,
-            &watchdog::WatchInput {
-                status_changed: changed,
-                transcript_written: tracker.last_write,
-                waiting_for: waiting,
-                finished,
-                activity: hook.map(|h| h.activity),
-                tool_running: hook.is_some_and(|h| h.tool_running),
-                hook_updated: hook.and_then(|h| h.updated_ms).map(|ms| {
-                    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(ms)
-                }),
-            },
-            watchdog_minutes,
-        );
+        out.stall = watchdog::check(now, &input, watchdog_minutes);
     } else {
         out.usage = Some(tracker.summary(&[], "session"));
     }
+    out.waiting = watchdog::waiting(now, &input, watchdog_minutes);
     out
 }
 

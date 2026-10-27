@@ -41,6 +41,11 @@ export function ObserveView({ seen, nudging, onNudge, onResume }: ViewProps) {
           {seen.hook && seen.hook.subagentsRunning > 0 && ` · ${seen.hook.subagentsRunning} sub-agents running`}
         </p>
       )}
+      {seen.waiting && (
+        <p className="hint warn" role="status" data-testid="run-waiting">
+          Waiting for you for {seen.waiting.minutes} min.
+        </p>
+      )}
       {!seen.hooksInstalled && (
         <p className="hint" data-testid="hooks-missing">
           Hook status unavailable (dcv2-hook not found, or the tab started before this app run).
