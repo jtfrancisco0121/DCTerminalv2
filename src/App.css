@@ -1593,6 +1593,62 @@ body,
   cursor: pointer;
 }
 
+.error-count {
+  border: 0;
+  background: transparent;
+  color: var(--danger);
+  font: inherit;
+  cursor: pointer;
+}
+
+.errors-popover {
+  /* Fixed: the status bar clips its overflow. Sits just above the bar. */
+  position: fixed;
+  bottom: 2.2rem;
+  left: var(--space-3);
+  z-index: 30;
+  width: 28rem;
+  max-width: calc(100% - 2 * var(--space-3));
+  max-height: 18rem;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 30%);
+  font-size: var(--text-sm);
+  line-height: 1.3;
+}
+
+.errors-popover-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.errors-list {
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.errors-list li {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1) 0;
+  border-top: 1px solid var(--border);
+}
+
+.errors-source {
+  color: var(--fg-muted);
+  font-size: var(--text-2xs);
+}
+
+.errors-message {
+  overflow-wrap: anywhere;
+}
+
 .status-attention-needs {
   color: var(--warning);
   font-weight: 600;

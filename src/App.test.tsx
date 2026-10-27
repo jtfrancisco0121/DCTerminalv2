@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { AppStateSnapshot, TabSummary } from "./bridge";
+import { attentionSummary, type AppStateSnapshot, type TabSummary } from "./bridge";
+import { clearUiErrors, uiErrors } from "./uiErrors";
 
 const tab: TabSummary = {
   id: "tab_1",
@@ -414,5 +415,16 @@ describe("App split panes", () => {
       fireEvent.keyDown(window, { key: "W", ctrlKey: true, shiftKey: true });
     });
     await waitFor(() => expect(closeTabMock).toHaveBeenCalledWith("main", "tab_1"));
+  });
+
+  it("a rejected attention summary lands in the recent errors once", async () => {
+    clearUiErrors();
+    vi.mocked(attentionSummary).mockRejectedValue(new Error("summary down"));
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+    render(<App />);
+    await waitFor(() => expect(uiErrors().length).toBe(1));
+    expect(uiErrors()[0].source).toBe("Attention summary");
+    expect(await screen.findByTestId("error-count")).toBeTruthy();
+    vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
   });
 });

@@ -154,7 +154,9 @@ function App() {
   }, [refreshUsage]);
 
   const refreshAttention = useCallback(() => {
-    attentionSummary().then(setAttention, () => undefined);
+    attentionSummary().then(setAttention, (err: unknown) =>
+      reportError("Attention summary", err, { once: "attention-summary" }),
+    );
   }, []);
 
   // The detector runs in the backend whatever this window does; the summary
@@ -216,7 +218,7 @@ function App() {
     const timer = window.setInterval(() => {
       observeTabs().then(
         (states) => setActivity(Object.fromEntries(Object.entries(states).map(([id, s]) => [id, s.activity]))),
-        () => undefined,
+        (err: unknown) => reportError("Tab activity", err, { once: "observe-tabs" }),
       );
     }, 3000);
     return () => window.clearInterval(timer);

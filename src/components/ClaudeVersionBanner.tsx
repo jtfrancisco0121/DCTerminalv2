@@ -6,6 +6,7 @@ import {
   versionWarning,
   type ClaudeVersionStatus,
 } from "../run/observe";
+import { reportError } from "../uiErrors";
 import { errorText } from "./InlineNotice";
 
 type ViewProps = {
@@ -73,7 +74,10 @@ export function ClaudeVersionBanner({ windowId }: { windowId: string }) {
   const [ran, setRan] = useState(false);
 
   useEffect(() => {
-    claudeVersionStatus(windowId).then(setStatus, () => setStatus(null));
+    claudeVersionStatus(windowId).then(setStatus, (err: unknown) => {
+      reportError("Claude version check", err, { once: "claude-version" });
+      setStatus(null);
+    });
   }, [windowId]);
 
   const selftest = () => {
