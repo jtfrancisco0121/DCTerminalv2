@@ -496,4 +496,21 @@ for c in "git fetch origin" "git fetch origin main" "git fetch origin +refs/head
 done
 b 0 dcv2:pr-reviewer "git config user.name && git -C $WT log --oneline -3" "$WT"
 
+echo "# third review of #11: config values that look like options, git -c keys, git env"
+for c in "git config alias.x '-c alias.y=!touch /tmp/p y'" "git config core.sshCommand '-oProxyCommand=x'" "git config --global user.name x" \
+         "git -c core.sshCommand='rm -rf $O' fetch origin" "git -c core.pager=x -p log" "git -c core.editor=x commit" \
+         "git -c core.fsmonitor=x status" "git -c 'Alias.x=!rm -rf $O' x" "git -calias.x='!rm -rf $O' x" "git -c commit.gpgsign=true commit -m x" \
+         "git --config-env alias.x=EVIL x" "git --config-env=core.pager=EVIL log" "git --exec-path=/tmp/evil status" \
+         "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0='!rm -rf $O' git x" \
+         "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=x; git x" "GIT_SSH_COMMAND='rm -rf $O' git fetch" \
+         "export GIT_SSH=/tmp/x" "env GIT_EXEC_PATH=/tmp/e git status" "GIT_CONFIG_PARAMETERS=\"'alias.x=!x'\" git x"; do
+  b 2 dcv2:implementer "$c" "$WT"
+done
+b 2 "" "git -C $WT config remote.origin.url '--upload-pack=touch /tmp/p'"
+b 2 "" "GIT_SSH_COMMAND=x git -C $WT log"
+for c in "git -c user.name=t -c user.email=t@t commit -m x" "git -c color.ui=never log" "git -c advice.detachedHead=false status" \
+         "git -c commit.gpgsign=false commit -m x" "git -cuser.name=t commit -m x" "git --exec-path" "git config user.name"; do
+  b 0 dcv2:implementer "$c" "$WT"
+done
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

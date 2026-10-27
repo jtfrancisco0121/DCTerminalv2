@@ -346,14 +346,12 @@ def git_readonly(sub, rest):
         if any(a in ("--unset", "--unset-all", "--add", "--replace-all", "--rename-section", "--remove-section", "-e", "--edit")
                for a in rest):
             return False
-        if any(a in ("--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l", "--show-origin") for a in rest):
+        if any(a in ("--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l") for a in rest):
             return True
-        nonopt = [a for a in rest if not a.startswith("-")]
-        if nonopt[:1] in (["get"], ["list"]):
+        if rest[:1] in (["get"], ["list"]):
             return True
-        if nonopt[:1] in (["set"], ["unset"], ["rename-section"], ["remove-section"], ["edit"]):
-            return False
-        return len(nonopt) <= 1  # `git config <key>` reads
+        # `git config <key>` reads; a key and anything else (a value, even one starting with `-`) writes.
+        return len(rest) == 1 and not rest[0].startswith("-") and rest[0] not in ("set", "unset", "edit")
     if sub == "worktree":
         return rest[:1] == ["list"]
     if sub == "stash":
@@ -365,6 +363,22 @@ def git_readonly(sub, rest):
     if sub == "reflog":
         return not rest or rest[0] == "show"
     return False
+
+
+GIT_C_KEYS = ("user.name", "user.email", "core.quotepath", "init.defaultbranch", "commit.gpgsign")
+GIT_C_PREFIXES = ("color.", "advice.")
+
+
+def git_c_ok(kv):
+    key, _, value = kv.partition("=")
+    key = key.lower()
+    if key == "commit.gpgsign":
+        return value.lower() in ("false", "0", "no", "off")
+    return key in GIT_C_KEYS or key.startswith(GIT_C_PREFIXES)
+
+
+GIT_ENV_RE = re.compile(r"^(GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\w*|GIT_CONFIG_VALUE_\w*|GIT_CONFIG_PARAMETERS|GIT_CONFIG|GIT_CONFIG_GLOBAL|"
+                        r"GIT_CONFIG_SYSTEM|GIT_EXEC_PATH|GIT_SSH_COMMAND|GIT_SSH|GIT_ASKPASS|GIT_PROXY_COMMAND|GIT_EXTERNAL_DIFF)=")
 
 
 def own_branch(target):
@@ -423,9 +437,18 @@ def check_git(args, cwd):
             target = None if "$" in v else (os.path.realpath(v) if os.path.isabs(v) else (real(v, target) if target else None))
             i += 2
             continue
-        if (a in ("-c", "--config-env") and i + 1 < len(args) and args[i + 1].lower().startswith("alias.")) or \
-                a.lower().startswith("--config-env=alias."):
-            block("git aliases from the command line (`-c alias.…`) are never run in a dcv2 run: name the git command itself.")
+        if a == "--config-env" or a.startswith("--config-env="):
+            block("`git --config-env` is never used in a dcv2 run.")
+        if a.startswith("--exec-path="):
+            block("`git --exec-path=<dir>` is never used in a dcv2 run.")
+        if a == "-c" or (a.startswith("-c") and len(a) > 2):
+            kv = args[i + 1] if a == "-c" and i + 1 < len(args) else a[2:]
+            if not git_c_ok(kv):
+                block(f"`git -c {kv.split('=', 1)[0]}=…` is not allowed in a dcv2 run (only identity, colour, advice and "
+                      "similar harmless keys): it could run a program.")
+            if a != "-c":
+                i += 1
+                continue
         if a in ("-c", "--git-dir", "--work-tree", "--namespace", "--config-env") and i + 1 < len(args):
             if a in ("--git-dir", "--work-tree"):
                 target = real(args[i + 1], target or "/") if "$" not in args[i + 1] else None
@@ -773,6 +796,10 @@ def analyze(cmd, cwd, depth=0):
                 analyze(a or b, cwd, depth + 1)
         for t in targets:
             check_write(t, cwd)
+        if bound:
+            for w in words:
+                if GIT_ENV_RE.match(w):
+                    block(f"setting {w.split('=', 1)[0]} is not allowed in a dcv2 run: it changes which programs git runs.")
         words = unwrap(words)
         if not words:
             continue
