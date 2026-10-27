@@ -132,8 +132,12 @@ def atomic_write(dest, text):
         raise
 
 
-def last_log_text(run):
-    """The text of log.md's last line (without its time and stage), whitespace collapsed."""
+DEDUPE_SECONDS = 30
+
+
+def last_log_text(run, stage=None):
+    """The text of log.md's last line, whitespace collapsed, when it has this stage and was written in the last
+    DEDUPE_SECONDS (else None)."""
     try:
         with open(os.path.join(run, "log.md"), "rb") as f:
             f.seek(0, os.SEEK_END)
@@ -142,12 +146,22 @@ def last_log_text(run):
     except OSError:
         return None
     parts = lines[-1].split(" ", 2) if lines else []
-    return " ".join(parts[2].split()) if len(parts) == 3 else None
+    if len(parts) != 3 or (stage is not None and parts[1] != stage):
+        return None
+    try:
+        at = datetime.datetime.strptime(parts[0], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None
+    if (datetime.datetime.now(datetime.timezone.utc) - at).total_seconds() > DEDUPE_SECONDS:
+        return None
+    return " ".join(parts[2].split())
 
 
 def append_log(run, stage, text):
     text = " ".join(text.split())
-    if text == last_log_text(run):  # the same event logged twice in a row (e.g. by state.sh and the orchestrator)
+    # The same event logged twice in a row within seconds (state.sh logged it, then the orchestrator repeated it).
+    # Never a retry line: each retry counts in report.md.
+    if "retried" not in text and text == last_log_text(run, stage):
         return
     with open(os.path.join(run, "log.md"), "a") as f:
         f.write(f"{now()} {stage} {text}\n")
@@ -1192,14 +1206,60 @@ def neutral(text):
     return re.sub(r"(?<![\w/])([A-Za-z0-9][\w.-]*/[\w.-]+)#(?=\d)", r"\1#" + ZWJ, text)
 
 
+# Network git: only https / ssh (and local folders, for tests and mirrors) transports, no system config, no hooks,
+# and the URL after --end-of-options, so a recorded URL can never be an option (`--upload-pack=…`) or an ext:: helper.
+NET = ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always",
+       "-c", "protocol.file.allow=always", "-c", "core.hooksPath=/dev/null"]
+
+
+def safe_url(url):
+    """A remote URL the run may talk to: an owner/name https or ssh URL (SLUG), or an existing absolute folder."""
+    url = str(url or "")
+    if not url or url.startswith("-") or any(c in url for c in "\n\r\0 ") or "::" in url:
+        return False
+    return bool(SLUG.match(url)) or (url.startswith("/") and os.path.isdir(url))
+
+
+def net_git(url, args, cwd=None):
+    if not safe_url(url):
+        return subprocess.CompletedProcess(args, 128, "", "refused: not a safe remote URL")
+    env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0")
+    neutral = cwd or tempfile.mkdtemp(prefix="dcv2-net-")
+    try:
+        return subprocess.run(["git", *NET, *args], capture_output=True, text=True, cwd=neutral, env=env, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess(args, 128, "", str(e))
+    finally:
+        if not cwd:
+            shutil.rmtree(neutral, ignore_errors=True)
+
+
+def remote_tip(url, branch):
+    """(sha or None when the branch is not there, error or None). Run from a neutral folder: no repo config applies."""
+    r = net_git(url, ["ls-remote", "--heads", "--end-of-options", url, f"refs/heads/{branch}"])
+    if r.returncode != 0:
+        return None, first_line(r.stderr) or "ls-remote failed"
+    return (r.stdout.split() or [None])[0], None
+
+
 def remote_sha(url, branch):
-    r = git("ls-remote", "--heads", url, f"refs/heads/{branch}")
-    return (r.stdout.split() or [None])[0] if r.returncode == 0 else None
+    return remote_tip(url, branch)[0]
 
 
 def push_branch(wt, url, branch):
     """Push the branch to the recorded URL: never force, no hooks."""
-    return git("-c", "core.hooksPath=/dev/null", "-C", wt, "push", url, f"refs/heads/{branch}:refs/heads/{branch}")
+    return net_git(url, ["-C", wt, "push", "--end-of-options", url, f"refs/heads/{branch}:refs/heads/{branch}"], cwd=wt)
+
+
+def delete_remote_branch(url, branch, oid):
+    """Delete the remote branch only while it is still at oid (a lease, never a plain force), from an empty repo."""
+    tmp = tempfile.mkdtemp(prefix="dcv2-del-")
+    try:
+        subprocess.run(["git", "init", "-q", tmp], capture_output=True)
+        return net_git(url, ["-C", tmp, "push", f"--force-with-lease=refs/heads/{branch}:{oid}", "--end-of-options", url,
+                        f":refs/heads/{branch}"], cwd=tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def scan_secrets(text):
@@ -1925,8 +1985,17 @@ def merged_head(pr, rem, cwd, branch):
     return (oid, None) if re.fullmatch(r"[0-9a-f]{40}", oid) else (None, "gh pr view gave no head commit")
 
 
-def cmd_cleanup(run):
+def this_run(run, what):
+    """The run folder, refused when it is not the run claude was launched for (DCV2_RUN_DIR)."""
     run = os.path.realpath(run)
+    env = os.environ.get("DCV2_RUN_DIR", "")
+    if env and os.path.realpath(env) != run:
+        die(f"{what}: only this session's run ({os.path.realpath(env)}) can be asked about, not {run}")
+    return run
+
+
+def cmd_cleanup(run):
+    run = this_run(run, "NOT CLEANED")
     st = load_status(run)
     if st.get("stage") not in ("done", "failed"):
         die(f"NOT CLEANED: cleanup runs only at stage done or failed (stage {st.get('stage')})")
@@ -1970,13 +2039,15 @@ def cmd_cleanup(run):
         if not oid:
             parts.append(f"remote branch kept ({why})")
         else:
-            tip = remote_sha(rem["url"], branch)
-            if not tip:
+            tip, err = remote_tip(rem["url"], branch)
+            if err:
+                parts.append(f"remote branch kept ({err[:200]})")
+            elif not tip:
                 parts.append("remote branch already deleted")
             elif tip != oid:
                 parts.append("remote branch kept (its tip is not the merged PR's head)")
             else:
-                r = git("-c", "core.hooksPath=/dev/null", "-C", repo, "push", rem["url"], "--delete", f"refs/heads/{branch}")
+                r = delete_remote_branch(rem["url"], branch, oid)
                 gone = r.returncode == 0 or "remote ref does not exist" in (r.stderr or "")
                 parts.append("remote branch deleted" if gone else f"remote branch kept: {first_line(r.stderr)[:200]}")
         results.append(f"{pid}: " + "; ".join(parts))
@@ -1989,7 +2060,7 @@ def cmd_cleanup(run):
 
 
 def cmd_request(run, kind):
-    run = os.path.realpath(run)
+    run = this_run(run, "NOT REQUESTED")
     if kind not in REQUEST_KINDS:
         die(f"NOT REQUESTED: the app does only {', '.join(REQUEST_KINDS)} (got {kind!r})")
     if not os.path.isfile(os.path.join(run, "request.md")):
@@ -2006,7 +2077,7 @@ def cmd_request(run, kind):
 
 
 def cmd_request_wait(run, rid, rest):
-    run = os.path.realpath(run)
+    run = this_run(run, "NOT WAITED")
     if not REQUEST_ID.match(rid):
         die(f"not a request id: {rid!r} (use the id `state.sh request` printed)")
     timeout = REQUEST_WAIT_DEFAULT
@@ -2089,10 +2160,17 @@ except Exception: print("run")' "$run/status.json" 2>/dev/null || echo run)"
     [[ "$stage" =~ ^[a-z-]+$ ]] || { echo "log: stage must be a stage name" >&2; exit 2; }
     text="$(cat)"; text="${text//$'\r'/ }"; text="${text//$'\n'/ }"
     [[ -n "${text// /}" ]] || { echo "log: empty text on stdin" >&2; exit 2; }
-    # The same event twice in a row (state.sh already logged it, or a resumed step) is written once.
+    # The same event twice in a row, same stage, within 30 s (state.sh already logged it and the orchestrator repeated
+    # it) is written once. Retry lines always count.
     squash() { tr -s '[:space:]' ' ' <<<"$1" | sed -e 's/^ //' -e 's/ $//'; }
-    last="$(tail -n 1 "$run/log.md" 2>/dev/null | cut -d' ' -f3- || true)"
-    [[ -n "$last" && "$(squash "$last")" == "$(squash "$text")" ]] && exit 0
+    lastline="$(tail -n 1 "$run/log.md" 2>/dev/null || true)"
+    read -r lt ls _ <<<"$lastline" || true
+    last="$(cut -d' ' -f3- <<<"$lastline")"
+    lsec="$(date -u -j -f %Y-%m-%dT%H:%M:%SZ "${lt:-x}" +%s 2>/dev/null || date -u -d "${lt:-x}" +%s 2>/dev/null || echo 0)"
+    if [[ -n "$last" && "$ls" == "$stage" && "$text" != *retried* ]] && (( $(date -u +%s) - lsec <= 30 )) \
+       && [[ "$(squash "$last")" == "$(squash "$text")" ]]; then
+      exit 0
+    fi
     printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$stage" "$text" >> "$run/log.md"
     ;;
   preflight)

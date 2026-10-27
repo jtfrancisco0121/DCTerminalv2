@@ -227,6 +227,14 @@ bash "$STATE" log "$RUN" <<<'PR9  draft PR opened: https://github.com/o/r/pull/9
 bash "$STATE" log "$RUN" <<<'PR9 review round 1: APPROVED' >/dev/null
 bash "$STATE" log "$RUN" <<<'PR9 draft PR opened: https://github.com/o/r/pull/9' >/dev/null
 (( $(wc -l < "$RUN/log.md") == n0 + 3 )) && ok "  not a repeat when something came between" || bad "  log: $(tail -3 "$RUN/log.md")"
+bash "$STATE" log "$RUN" shipping <<<'PR9 draft PR opened: https://github.com/o/r/pull/9' >/dev/null
+(( $(wc -l < "$RUN/log.md") == n0 + 4 )) && ok "  another stage is not a repeat" || bad "  log: $(tail -3 "$RUN/log.md")"
+bash "$STATE" log "$RUN" <<<'PR9 implementer retried: no JSON block' >/dev/null
+bash "$STATE" log "$RUN" <<<'PR9 implementer retried: no JSON block' >/dev/null
+(( $(wc -l < "$RUN/log.md") == n0 + 6 )) && ok "  retry lines always count" || bad "  log: $(tail -3 "$RUN/log.md")"
+echo "2020-01-01T00:00:00Z building PR9 old event" >> "$RUN/log.md"
+bash "$STATE" log "$RUN" building <<<'PR9 old event' >/dev/null
+(( $(wc -l < "$RUN/log.md") == n0 + 8 )) && ok "  an old identical line is not a repeat" || bad "  log: $(tail -3 "$RUN/log.md")"
 
 echo "# plan sections (16)"
 expect 0 "plan prs" bash "$STATE" plan "$RUN" prs
@@ -622,7 +630,7 @@ json.dump({"schema": 1, "runId": "r-c", "stage": stage, "prs": prs}, open(f, "w"
 PY
 }
 cstatus shipping
-export GH_SHIM_DIR="$d/cgh"
+export GH_SHIM_DIR="$d/cgh" DCV2_RUN_DIR="$CRUN"
 expect 1 "cleanup refused before done" env PATH="$ROOT/scripts/skill-e2e/gh-shim:$PATH" bash "$STATE" cleanup "$CRUN"
 [[ -d "$CW/cr-worktrees/dcv2-r-c-pr1" ]] && ok "  nothing removed" || bad "  PR1 worktree gone"
 cstatus done
@@ -646,6 +654,36 @@ grep -q "pr view https://github.com/shim/repo/pull/1 --json state,mergeCommit,he
 tail -1 "$CRUN/log.md" | grep -q ' done cleanup: PR1: worktree removed' && ok "  logged once" || bad "  log: $(tail -1 "$CRUN/log.md")"
 expect 0 "cleanup again: nothing left to do" env PATH="$ROOT/scripts/skill-e2e/gh-shim:$PATH" bash "$STATE" cleanup "$CRUN"
 has "  PR1 already gone" "PR1: worktree already gone; remote branch already deleted"
+echo "# cleanup: a remote URL is never an option, and the delete is a lease"
+mkdir -p "$d/fakegit"; REALGIT="$(command -v git)"
+cat > "$d/fakegit/git" <<EOF
+#!/usr/bin/env bash
+if [[ -n "\${FAKE_TIP:-}" && " \$* " == *" ls-remote "* ]]; then echo "\$FAKE_TIP	refs/heads/x"; exit 0; fi
+exec "$REALGIT" "\$@"
+EOF
+chmod +x "$d/fakegit/git"
+python3 - "$CRUN/.guard.json" "$d" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1])); g["remotes"]["PR4"]["url"] = f"--upload-pack=touch {sys.argv[2]}/PWN;false"; json.dump(g, open(sys.argv[1], "w"))
+PY
+python3 - "$d/cgh/prs.json" "$T2" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1])); p[1]["state"] = "MERGED"; json.dump(p, open(sys.argv[1], "w"))
+PY
+# PR2's remote branch moves on after GitHub's answer (someone pushed): the lease must refuse the delete.
+git -C "$CW/cr-worktrees/dcv2-r-c-pr2" -c user.name=t -c user.email=t@t commit -q --allow-empty -m late
+git -C "$CW/cr-worktrees/dcv2-r-c-pr2" push -q "$CO" dcv2/r-c-pr2
+expect 0 "cleanup with a forged remote URL and a racing tip" env PATH="$d/fakegit:$ROOT/scripts/skill-e2e/gh-shim:$PATH" FAKE_TIP="$T2" bash "$STATE" cleanup "$CRUN"
+[[ ! -e "$d/PWN" ]] && ok "  --upload-pack URL never ran" || bad "  the URL ran a command"
+grep -q '^PR4: .*remote branch kept (refused: not a safe remote URL)$' <<<"$out" && ok "  refused as unsafe" || bad "  PR4: $(grep '^PR4' <<<"$out")"
+git -C "$CO" show-ref --verify --quiet refs/heads/dcv2/r-c-pr2 && ok "  PR2 kept: the lease failed (ls-remote said its head, the remote has moved on)" || bad "  PR2 deleted without the lease"
+grep -q '^PR2: .*remote branch kept: ' <<<"$out" && ok "  says it was kept" || bad "  PR2: $(grep '^PR2' <<<"$out")"
+python3 - "$CRUN/.guard.json" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1])); g["remotes"]["PR4"]["url"] = "ext::sh -c touch% /tmp/x"; json.dump(g, open(sys.argv[1], "w"))
+PY
+expect 0 "an ext:: URL is refused too" env PATH="$ROOT/scripts/skill-e2e/gh-shim:$PATH" bash "$STATE" cleanup "$CRUN"
+grep -q '^PR4: .*remote branch kept (refused: not a safe remote URL)$' <<<"$out" && ok "  refused" || bad "  PR4: $(grep '^PR4' <<<"$out")"
 python3 - "$CRUN/.guard.json" "$d/elsewhere" <<'PY'
 import json, sys
 g = json.load(open(sys.argv[1])); g["worktrees"]["PR2"] = sys.argv[2]; json.dump(g, open(sys.argv[1], "w"))
@@ -657,6 +695,11 @@ has "  says why" "PR2: worktree kept: not where this run's worktrees go"
 unset GH_SHIM_DIR
 
 echo "# requests to the app (0.5.0)"
+mkdir -p "$d/runs/r-other"; printf 'folder: %s\n' "$CW" > "$d/runs/r-other/request.md"; echo '{"stage": "done"}' > "$d/runs/r-other/status.json"
+expect 1 "request for another run than DCV2_RUN_DIR refused" bash "$STATE" request "$d/runs/r-other" selftest
+[[ ! -d "$d/runs/r-other/requests" ]] && ok "  nothing written there" || bad "  requests/ made"
+expect 1 "cleanup of another run refused" bash "$STATE" cleanup "$d/runs/r-other"
+expect 1 "request-wait on another run refused" bash "$STATE" request-wait "$d/runs/r-other" 20261027T000000Z-recheck
 expect 0 "request tickets" bash "$STATE" request "$CRUN" tickets
 rid="${out#request=}"
 [[ "$rid" =~ ^[0-9]{8}T[0-9]{6}Z-tickets$ ]] && ok "  id $rid" || bad "  id: $out"
