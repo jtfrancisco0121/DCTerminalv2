@@ -708,6 +708,12 @@ body,
   margin: 0;
 }
 
+.unsaved-marker {
+  color: var(--warning);
+  font-size: 0.75rem;
+  align-self: center;
+}
+
 .settings-section {
   margin: 1rem 0;
   padding: 1rem 1.25rem;
