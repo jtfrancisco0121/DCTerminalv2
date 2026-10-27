@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import process from "node:process";
 import {
+  envWithout,
+  PLUGIN_SUITES,
   quoteCmdArg,
   spawnCommand,
   steps,
+  stepsFor,
   usesCmdShim,
   windowsCmdPayload,
   windowsInvocation,
@@ -142,16 +145,53 @@ describe("spawnCommand", () => {
 });
 
 describe("check steps", () => {
-  it("runs fmt, clippy, cargo test, vitest and the build, in that order", () => {
-    expect(steps.map((step) => step.name)).toEqual([
-      "cargo fmt",
-      "cargo clippy",
-      "cargo test",
-      "npm test",
-      "npm run build",
-    ]);
+  it("runs fmt, clippy, cargo test, vitest and the build, in that order, then the plugin suites", () => {
+    const base = ["cargo fmt", "cargo clippy", "cargo test", "npm test", "npm run build"];
+    const suites = ["guard", "state", "memory", "github", "stop_check", "plugin"].map(
+      (name) => `plugin suite ${name}`,
+    );
+    expect(stepsFor("darwin").map((step) => step.name)).toEqual([...base, ...suites]);
+    expect(stepsFor("linux").map((step) => step.name)).toEqual([...base, ...suites]);
+    expect(steps.map((step) => step.name)).toEqual(stepsFor(process.platform).map((step) => step.name));
     const fmt = steps.find((step) => step.name === "cargo fmt");
     expect(fmt.args.slice(-2)).toEqual(["--", "--check"]);
+  });
+
+  it("runs the six hermetic bash suites and no live one", () => {
+    expect(PLUGIN_SUITES).toEqual(["guard", "state", "memory", "github", "stop_check", "plugin"]);
+    const scripts = stepsFor("darwin")
+      .filter((step) => step.cmd === "bash")
+      .map((step) => step.args.join(" "));
+    expect(scripts).toEqual(PLUGIN_SUITES.map((name) => `scripts/skill-e2e/${name}_test.sh`));
+    for (const live of ["run.sh", "golden.sh", "standalone.sh", "bmad_spike.sh"]) {
+      expect(stepsFor("darwin").some((step) => step.args.join(" ").includes(live))).toBe(false);
+    }
+  });
+
+  it("skips the bash suites on Windows", () => {
+    expect(stepsFor("win32").some((step) => step.cmd === "bash")).toBe(false);
+    expect(stepsFor("win32").map((step) => step.name)).toContain("npm run build");
+  });
+
+  it("gives the suites an environment with no DCV2_ variable", () => {
+    expect(envWithout("DCV2_", { DCV2_RUN_DIR: "/x", DCV2_TAB_ID: "t", PATH: "/bin", DCTV2_KEEP: "1" })).toEqual({
+      PATH: "/bin",
+      DCTV2_KEEP: "1",
+    });
+    for (const step of stepsFor("darwin").filter((step) => step.cmd === "bash")) {
+      expect(step.removeEnvPrefix).toBe("DCV2_");
+    }
+    process.env.DCV2_CHECK_LEAK_PROBE = "leaked";
+    try {
+      const result = spawnCommand(
+        process.execPath,
+        ["-e", "process.stdout.write(`${process.env.DCV2_CHECK_LEAK_PROBE}|${!!process.env.PATH}`)"],
+        { stdio: "pipe", encoding: "utf8", removeEnvPrefix: "DCV2_" },
+      );
+      expect(result.stdout).toBe("undefined|true");
+    } finally {
+      delete process.env.DCV2_CHECK_LEAK_PROBE;
+    }
   });
 
   it("adds a step's env to the child's environment", () => {
