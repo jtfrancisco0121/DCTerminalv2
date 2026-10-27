@@ -16,6 +16,7 @@ import {
   type StartedRun,
 } from "../run/api";
 import { WorktreeSetup } from "./WorktreeSetup";
+import { estimate, estimateText } from "../run/estimate";
 import { relativeDate, stageText } from "../run/words";
 import { TextDialog } from "./RunPanel";
 import { Dialog } from "./Dialog";
@@ -260,6 +261,15 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   const choosable = (found?.repos.length ?? 0) > 1;
   const tickedRepos = choosable ? (found?.repos ?? []).filter((r) => !unticked.has(r.name)).map((r) => r.name) : null;
   const implementersValue = clampImplementers(implementers ?? String(defaultImplementers), defaultImplementers);
+  // The estimate never affects `disabled`: it only informs.
+  const costEstimate =
+    overview && found && found.repos.length > 0
+      ? estimate(
+          overview.runs,
+          tickedRepos ? tickedRepos.length : found.repos.length,
+          bmadMode === "auto" ? null : bmadMode === "on",
+        )
+      : undefined;
   const startReason = disabledReason({
     folder,
     found,
@@ -406,6 +416,11 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
         </p>
       )}
       {overview && !overview.pluginDir && <p className="hint warn">The dcv2 plugin was not found.</p>}
+      {costEstimate !== undefined && (
+        <p className="hint estimate-line" data-testid="estimate-line">
+          {estimateText(costEstimate)}
+        </p>
+      )}
       <div className="button-row">
         <button
           type="button"

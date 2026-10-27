@@ -391,6 +391,46 @@ pub struct RunListItem {
     /// report.md exists.
     #[serde(default)]
     pub has_report: bool,
+    /// How many repos the run works on: request.md's `repos:` limit when it
+    /// has one, else repos.json's count (None when neither is readable).
+    #[serde(default)]
+    pub repo_count: Option<u32>,
+    /// Whether BMAD planning was applied: status.json `bmad.applied`; else
+    /// mode `on` is true and `off` is false (None for `auto` not yet decided).
+    #[serde(default)]
+    pub bmad_applied: Option<bool>,
+}
+
+/// The repos of a run: request.md's `repos:` names, else repos.json's.
+fn repo_count_of(run_dir: &Path) -> Option<u32> {
+    let limited = std::fs::read_to_string(run_dir.join("request.md"))
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .take_while(|line| !line.starts_with("## "))
+                .find_map(|line| line.strip_prefix("repos:").map(str::to_string))
+        })
+        .map(|names| names.split(',').filter(|n| !n.trim().is_empty()).count() as u32)
+        .filter(|n| *n > 0);
+    limited.or_else(|| {
+        read_json_value(&run_dir.join("repos.json"))?
+            .get("repos")?
+            .as_array()
+            .map(|repos| repos.len() as u32)
+    })
+}
+
+fn bmad_applied_of(run_dir: &Path, status: &Option<Value>) -> Option<bool> {
+    let recorded = status
+        .as_ref()
+        .and_then(|v| v.get("bmad"))
+        .and_then(|b| b.get("applied"))
+        .and_then(Value::as_bool);
+    recorded.or_else(|| match bmad_mode_of(run_dir).as_str() {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    })
 }
 
 /// What the Runs view shows from the run record.
@@ -495,6 +535,8 @@ pub fn list_runs(data_dir: &Path) -> Vec<RunListItem> {
                         .map(|prs| prs.len() as u32),
                     ticket_ids: ticket_ids(&dir),
                     has_report: dir.join("report.md").is_file(),
+                    repo_count: repo_count_of(&dir),
+                    bmad_applied: bmad_applied_of(&dir, &status),
                     run_id,
                     run_dir: dir.display().to_string(),
                     adopted,
@@ -551,6 +593,58 @@ mod tests {
             .to_ascii_lowercase()
             .lines()
             .any(|l| l.starts_with("test-mode")));
+    }
+
+    #[test]
+    fn list_runs_fills_repo_count_and_bmad_applied() {
+        let dir = TempDir::new("run_list_estimate");
+        let repo = |name: &str| Repo {
+            name: name.into(),
+            path: format!("/w/{name}"),
+            check: None,
+            setup: None,
+            copy_files: vec![],
+            live_tests: false,
+        };
+        let repos = vec![repo("a"), repo("b"), repo("c")];
+        let meta = |mode: Option<&str>| RunMeta {
+            account_id: "default".into(),
+            bmad_mode: mode.map(String::from),
+            ..Default::default()
+        };
+        let all = create_run(
+            dir.path(),
+            Path::new("/w"),
+            &repos,
+            &[],
+            "all",
+            &meta(Some("on")),
+        )
+        .unwrap();
+        let some = create_run(
+            dir.path(),
+            Path::new("/w"),
+            &repos,
+            &["a".to_string(), "b".to_string()],
+            "some",
+            &meta(Some("auto")),
+        )
+        .unwrap();
+        std::fs::write(
+            Path::new(&some.run_dir).join("status.json"),
+            r#"{"schema":1,"bmad":{"applied":true}}"#,
+        )
+        .unwrap();
+        let list = list_runs(dir.path());
+        let of = |id: &str| list.iter().find(|r| r.run_id == id).unwrap();
+        assert_eq!(of(&all.run_id).repo_count, Some(3));
+        assert_eq!(of(&all.run_id).bmad_applied, Some(true), "mode on");
+        assert_eq!(of(&some.run_id).repo_count, Some(2));
+        assert_eq!(
+            of(&some.run_id).bmad_applied,
+            Some(true),
+            "status.json says applied"
+        );
     }
 
     #[test]

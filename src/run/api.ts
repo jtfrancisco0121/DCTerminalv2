@@ -65,6 +65,10 @@ export type RunListItem = {
   /** ClickUp ticket ids and custom ids of the run. */
   ticketIds?: string[];
   hasReport?: boolean;
+  /** Repos the run works on (request.md `repos:` or repos.json). */
+  repoCount?: number | null;
+  /** BMAD planning was applied (null: not decided yet). */
+  bmadApplied?: boolean | null;
 };
 
 export type RunOverview = {

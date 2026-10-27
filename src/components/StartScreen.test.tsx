@@ -279,3 +279,29 @@ describe("StartScreen repos and implementers", () => {
     expect(startRun.mock.calls[0].slice(8)).toEqual([["api", "web"], null]);
   });
 });
+
+describe("StartScreen cost estimate", () => {
+  afterEach(cleanup);
+
+  it("shows the range or the not-enough line and never blocks Start", async () => {
+    const api = await import("../run/api");
+    (api.detectFolderRepos as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: "repo",
+      repos: [{ name: "app", path: "/w/app", check: null }],
+    });
+    const overview = api.runOverview as unknown as ReturnType<typeof vi.fn>;
+    const finished = (usd: number): RunListItem =>
+      run(1, { repoCount: 1, bmadApplied: false, record: { outcome: "done", totalTokens: 1, estimateUsd: usd, minutes: 1, prUrls: [], firstActivity: null, lastActivity: null } });
+    overview.mockResolvedValueOnce({ pluginDir: "/p", pluginVersion: null, roles: [], runs: [finished(4), finished(9), finished(6)] });
+    const { unmount } = render(<StartScreen windowId="main" initialFolder="/w/app" onStarted={() => {}} onPlainTab={() => {}} />);
+    fireEvent.click(await screen.findByLabelText("Off")); // BMAD off: matches the finished runs
+    expect((await screen.findByTestId("estimate-line")).textContent).toBe("Similar runs: $4–$9 (3 runs)");
+    unmount();
+
+    overview.mockResolvedValueOnce({ pluginDir: "/p", pluginVersion: null, roles: [], runs: [finished(4)] });
+    render(<StartScreen windowId="main" initialFolder="/w/app" onStarted={() => {}} onPlainTab={() => {}} />);
+    expect((await screen.findByTestId("estimate-line")).textContent).toBe("Not enough earlier runs for an estimate.");
+    fireEvent.change(screen.getByPlaceholderText(/Describe the feature/), { target: { value: "Do it" } });
+    expect((screen.getByRole("button", { name: "Start Eagle-Eye" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
