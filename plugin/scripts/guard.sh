@@ -334,8 +334,64 @@ def check_write(t, cwd):
         block(f"{who} may not write {p} from Bash: it is in a git checkout outside {where}.")
 
 
-def write_targets(name, args):
+def link_operands(args):
+    """(operands, target dir) of cp / ln / install style args: the value of -t and -S is not an operand."""
+    ops, tdir, i = [], None, 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            ops += args[i + 1:]
+            break
+        if a in ("-t", "--target-directory") and i + 1 < len(args):
+            tdir, i = args[i + 1], i + 2
+            continue
+        if a.startswith("--target-directory="):
+            tdir, i = a.split("=", 1)[1], i + 1
+            continue
+        if a in ("-S", "--suffix") and i + 1 < len(args):
+            i += 2
+            continue
+        if a.startswith("-") and a != "-":
+            i += 1
+            continue
+        ops.append(a)
+        i += 1
+    return ops, tdir
+
+
+def link_targets(name, args, cwd):
+    """`ln` and `cp -l|-s|--link|--symbolic-link` make a name that later writes follow to the source, so every operand
+    is a write target (ln -s <repo>/a <run>/l && echo x > <run>/l writes the repo's a). A relative soft-link source
+    is resolved against the link's folder (against the cwd with -r), as the link will be."""
+    clusters = [a[1:] for a in args if re.match(r"^-[A-Za-z]+$", a)]
+    longs = [a for a in args if a.startswith("--")]
+    letters = "".join(clusters)
+    if name == "cp" and not ("l" in letters or "s" in letters or "--link" in longs or "--symbolic-link" in longs):
+        return None
+    soft = "s" in letters or "--symbolic" in longs or "--symbolic-link" in longs
+    relative = "r" in letters or "--relative" in longs
+    ops, tdir = link_operands(args)
+    links = [tdir] if tdir else ops[-1:]
+    sources = ops if tdir else ops[:-1]
+    if tdir is None and len(ops) == 1:  # `ln -s <target>` makes ./<basename> in the cwd
+        links, sources = [os.path.join(cwd, os.path.basename(ops[0].rstrip("/")))] if cwd else [], ops
+    out = list(links)
+    folder = None
+    if soft and not relative and links and "$" not in links[0] and (os.path.isabs(os.path.expanduser(links[0])) or cwd):
+        p = real(links[0], cwd or "/")
+        folder = p if (tdir or os.path.isdir(p)) else os.path.dirname(p)
+    for src in sources:
+        s0 = os.path.expanduser(src)
+        out.append(os.path.join(folder, s0) if folder and soft and not relative and not os.path.isabs(s0) and "$" not in src else src)
+    return out
+
+
+def write_targets(name, args, cwd=None):
     nonopt = [a for a in args if a and not a.startswith("-")]
+    if name in ("ln", "cp"):
+        linked = link_targets(name, args, cwd)
+        if linked is not None:
+            return linked
     if name in ("tee", "rm", "rmdir", "touch", "mkdir", "truncate", "unlink", "shred", "mv"):
         return nonopt
     if name in ("chmod", "chown", "chgrp"):
@@ -894,7 +950,7 @@ def analyze(cmd, cwd, depth=0):
             if rest:
                 analyze(" ".join(rest), cwd, depth + 1)
         else:
-            for t in write_targets(name, args):
+            for t in write_targets(name, args, cwd):
                 check_write(t, cwd)
     return cwd
 
