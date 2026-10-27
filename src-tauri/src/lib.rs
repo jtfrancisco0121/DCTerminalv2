@@ -51,6 +51,24 @@ const STARTUP_ENV_STEPS: [(&str, fn()); 2] = [
     ("apply_login_path", shell_env::apply_login_path),
 ];
 
+/// Another copy runs on this data folder: say so, then exit. The dialog does
+/// not block (setup runs on the main thread); its answer ends the process.
+/// No window is declared, none is built, and no store is managed, so nothing
+/// else runs meanwhile (the run-event handlers use `try_state`).
+fn quit_for_running_copy(app: &tauri::AppHandle, data_dir: &std::path::Path) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    let message = format!(
+        "DCTerminalv2: another copy is already running on {}; quitting.",
+        data_dir.display()
+    );
+    eprintln!("{message}");
+    app.dialog()
+        .message(message)
+        .title("DCTerminalv2 is already running")
+        .kind(MessageDialogKind::Warning)
+        .show(|_| std::process::exit(1));
+}
+
 /// `<app data>/app.lock`, flock'd for the app's whole life.
 static APP_LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
 
@@ -80,8 +98,19 @@ pub fn run() {
             }
             let data_dir = resolved.path;
             // Held until exit: another build can tell this one is running.
-            if let Some(lock) = import_dev::hold_app_lock(&data_dir) {
-                let _ = APP_LOCK.set(lock);
+            match import_dev::hold_app_lock(&data_dir) {
+                import_dev::AppLock::Acquired(lock) => {
+                    let _ = APP_LOCK.set(lock);
+                }
+                import_dev::AppLock::HeldElsewhere => {
+                    // Before any store is opened or any window exists: two
+                    // copies must never share one data folder.
+                    quit_for_running_copy(app.handle(), &data_dir);
+                    return Ok(());
+                }
+                import_dev::AppLock::Unavailable(why) => {
+                    eprintln!("DCTerminalv2: could not take the app lock: {why}");
+                }
             }
             let state_store = StateStore::load_or_default(app.handle())?;
             let settings_store = SettingsStore::open(&data_dir)?;

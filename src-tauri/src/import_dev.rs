@@ -430,20 +430,43 @@ pub const APP_LOCK: &str = "app.lock";
 pub const LIVE_WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
 pub const QUIT_DEV_FIRST: &str = "Quit the dev app first";
 
-/// Takes this app's lock at startup; keep the file open until exit.
-pub fn hold_app_lock(data: &Path) -> Option<std::fs::File> {
+/// What taking this app's lock came to.
+#[derive(Debug)]
+pub enum AppLock {
+    /// Ours; keep the file open until exit.
+    Acquired(std::fs::File),
+    /// Another process runs on this data folder.
+    HeldElsewhere,
+    /// The lock file could not be created, opened or locked (not a running copy).
+    Unavailable(String),
+}
+
+/// Takes this app's lock at startup.
+pub fn hold_app_lock(data: &Path) -> AppLock {
     use std::io::Write;
-    std::fs::create_dir_all(data).ok()?;
-    let mut file = std::fs::OpenOptions::new()
+    if let Err(err) = std::fs::create_dir_all(data) {
+        return AppLock::Unavailable(format!("{}: {err}", data.display()));
+    }
+    let path = data.join(APP_LOCK);
+    let mut file = match std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(data.join(APP_LOCK))
-        .ok()?;
-    file.try_lock().ok()?;
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(err) => return AppLock::Unavailable(format!("{}: {err}", path.display())),
+    };
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return AppLock::HeldElsewhere,
+        Err(std::fs::TryLockError::Error(err)) => {
+            return AppLock::Unavailable(format!("{}: {err}", path.display()))
+        }
+    }
     let _ = file.set_len(0);
     let _ = writeln!(file, "{}", std::process::id());
-    Some(file)
+    AppLock::Acquired(file)
 }
 
 /// Another process holds `<dir>/app.lock`. Opened read-only: nothing in
@@ -1088,7 +1111,9 @@ mod tests {
         assert!(refuse_live_session("00000000-0000-4000-8000-000000000000").is_ok());
         let before = snapshot(&dev);
         // The app lock of a running build (another open file holds it).
-        let held = hold_app_lock(&root.join("other-app")).unwrap();
+        let AppLock::Acquired(held) = hold_app_lock(&root.join("other-app")) else {
+            panic!("the first lock is ours");
+        };
         assert!(lock_held(&root.join("other-app")));
         drop(held);
         assert!(crate::test_support::eventually(|| !lock_held(
@@ -1097,6 +1122,29 @@ mod tests {
         assert!(!lock_held(&dev), "no lock file in an old dev build");
         assert_eq!(snapshot(&dev), before);
         let _ = config;
+    }
+
+    #[test]
+    fn the_lock_tells_a_running_copy_from_a_folder_that_cannot_be_used() {
+        let root = crate::test_support::TempDir::new("app_lock_outcomes");
+        let data = root.join("data");
+        let AppLock::Acquired(first) = hold_app_lock(&data) else {
+            panic!("a free folder is locked");
+        };
+        // A second hold while the first file is alive: another copy runs.
+        assert!(matches!(hold_app_lock(&data), AppLock::HeldElsewhere));
+        drop(first);
+        assert!(crate::test_support::eventually(|| matches!(
+            hold_app_lock(&data),
+            AppLock::Acquired(_)
+        )));
+        // A folder that cannot be created (a path under a regular file).
+        let file = root.join("plain-file");
+        std::fs::write(&file, "x").unwrap();
+        match hold_app_lock(&file.join("data")) {
+            AppLock::Unavailable(why) => assert!(why.contains("plain-file"), "{why}"),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
     }
 
     #[test]
