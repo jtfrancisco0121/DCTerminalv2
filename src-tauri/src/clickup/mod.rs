@@ -26,6 +26,7 @@
 //! - `secret_scan`: memory.sh's secret rules, for the auto-posted comments.
 
 pub mod autopost;
+pub mod backoff;
 pub(crate) mod client;
 pub mod commands;
 pub mod intake;

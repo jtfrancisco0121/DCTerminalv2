@@ -32,7 +32,7 @@ export function ClickUpTokens({ accounts, autoPost = {} }: { accounts: Account[]
       <h3>After ship approval</h3>
       <ul className="account-list">
         {accounts.map((account) => (
-          <AutoPostRow key={account.id} account={account} initial={autoPost[account.id] ?? true} />
+          <AutoPostRow key={account.id} account={account} initial={autoPost[account.id] ?? false} />
         ))}
       </ul>
     </section>
@@ -118,8 +118,9 @@ function TokenRow({ account }: { account: Account }) {
 }
 
 /**
- * "Post ClickUp comments automatically after ship approval" (per account,
- * default on): only the comment drafts, never statuses (those stay ticks).
+ * "Post ClickUp comments after ship approval, after one click in the run
+ * panel" (per account, default off): only the comment drafts, never
+ * statuses (those stay ticks).
  */
 function AutoPostRow({ account, initial }: { account: Account; initial: boolean }) {
   const [on, setOn] = useState(initial);
@@ -136,9 +137,9 @@ function AutoPostRow({ account, initial }: { account: Account; initial: boolean 
     <li className="account-row">
       <label className="check-label">
         <input type="checkbox" checked={on} onChange={(event) => change(event.target.checked)} />
-        {account.name}: post ClickUp comments automatically after ship approval
+        {account.name}: post ClickUp comments after ship approval, after one click in the run panel
       </label>
-      <span className="hint">Comments only; status changes stay ticks in the run panel.</span>
+      <span className="hint">Off unless you turn it on. Comments only; status changes stay ticks.</span>
       {problem && <span className="error">{problem}</span>}
     </li>
   );

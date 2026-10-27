@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse guard for the eagle-eye run (plugin hook: Edit, Write, NotebookEdit, MultiEdit, Bash).
+# PreToolUse guard for the eagle-eye run (plugin hook: Edit, Write, NotebookEdit, MultiEdit, Bash, Monitor, PowerShell, mcp__*).
 #
 # The run it guards is the one named by the env DCV2_RUN_DIR, set when claude is launched
 # (the app and the e2e test set it; `state.sh preflight` refuses to start a run without it).
@@ -52,19 +52,30 @@
 input="$(cat)"
 PIPE_RE='"agent_type"[[:space:]]*:[[:space:]]*"(dcv2:)?(implementer|planner|plan-reviewer|pr-reviewer|memory-updater)"'
 
+# The plugin folder this script lives in (pure bash: no dirname, the PATH may be broken).
+gdir="${BASH_SOURCE[0]%/*}"; [[ "$gdir" != "${BASH_SOURCE[0]}" ]] || gdir="."
+GUARD_PLUGIN="$(cd "$gdir/.." 2>/dev/null && pwd -P)" || GUARD_PLUGIN=""
+
 fallback() { # python3 missing or broken, or the payload did not parse: fail closed where it matters
   if grep -Eq "$PIPE_RE" <<<"$input"; then
     echo "Blocked by the dcv2 guard: this call could not be checked (python3 missing or broken, or an unreadable hook payload)." >&2
     exit 2
   fi
-  if [[ -n "${DCV2_RUN_DIR:-}" ]] && grep -Eq 'git[^"]*push|gh[^"]*pr' <<<"$input"; then
-    echo "Blocked by the dcv2 guard: push / PR commands cannot be checked (python3 missing or broken)." >&2
+  if [[ -n "${DCV2_RUN_DIR:-}" ]]; then  # a bound run: nothing is let through unchecked
+    echo "Blocked by the dcv2 guard: this call could not be checked (python3 missing or broken, or an unreadable hook payload) and a run is bound." >&2
     exit 2
   fi
+  local p
+  for p in "${DCV2_MEMORY_DIR:-}" "${CLAUDE_PLUGIN_ROOT:-}" "$GUARD_PLUGIN"; do  # a dcv2 tab: memory and the plugin stay closed
+    if [[ -n "$p" ]] && grep -qiF -- "$p" <<<"$input"; then
+      echo "Blocked by the dcv2 guard: this call names the codebase memory or the plugin folder and could not be checked (python3 missing or broken)." >&2
+      exit 2
+    fi
+  done
   exit 0
 }
 
-command -v python3 >/dev/null 2>&1 || fallback
+python3 -c 'import sys' >/dev/null 2>&1 || fallback
 
 IFS= read -r -d '' PY <<'PY' || true
 import json, os, re, shlex, sys
@@ -84,6 +95,16 @@ tool = str(data.get("tool_name") or "")
 inp = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
 cwd0 = str(data.get("cwd") or "/")
 
+def norm(p):
+    """The identity of a path for every allow / deny decision: the real path (symlinks and .. resolved), casefolded
+    (the default macOS volume ignores case, so STATUS.json is status.json and /Users/X is /Users/x)."""
+    return os.path.realpath(p).casefold() if p else ""
+
+
+def same(a, b):
+    return bool(a) and bool(b) and norm(a) == norm(b)
+
+
 run = os.environ.get("DCV2_RUN_DIR") or ""
 run = os.path.realpath(run) if run else ""
 # The app's signed ClickUp records of each run: <app data>/run-trust (the run is <app data>/runs/<id>).
@@ -95,13 +116,13 @@ worktrees, repos, status, copied, mode = [], [], {}, set(), "local"
 if run:
     try:
         g = json.load(open(os.path.join(run, ".guard.json")))
-        if os.path.realpath(str(g.get("runDir") or "")) == run:
+        if norm(str(g.get("runDir") or "")) == norm(run):
             wmap = {k: os.path.realpath(w) for k, w in (g.get("worktrees") or {}).items() if isinstance(w, str) and os.path.isabs(w)}
             worktrees = list(wmap.values())
             repos = [os.path.realpath(r) for r in g.get("repos") or [] if isinstance(r, str) and os.path.isabs(r)]
             for k, files in (g.get("copied") or {}).items():  # files copied in from the main checkout (never committed)
                 if k in wmap and isinstance(files, list):
-                    copied.update(os.path.normpath(os.path.join(wmap[k], str(f))) for f in files)
+                    copied.update(norm(os.path.join(wmap[k], str(f))) for f in files)
     except Exception:
         pass
     try:
@@ -132,7 +153,10 @@ def real(p, base):
 
 
 def inside(p, root):
-    return bool(root) and (p == root or p.startswith(root.rstrip(os.sep) + os.sep))
+    if not root:
+        return False
+    p, root = norm(p), norm(root)
+    return p == root or p.startswith(root.rstrip(os.sep) + os.sep)
 
 
 def git_user_config(p):
@@ -140,22 +164,51 @@ def git_user_config(p):
     helpers run from there), so nothing in a run writes it."""
     home = os.path.realpath(os.path.expanduser("~"))
     xdg = os.path.realpath(os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"))
-    return p == os.path.join(home, ".gitconfig") or inside(p, os.path.join(xdg, "git"))
+    return same(p, os.path.join(home, ".gitconfig")) or inside(p, os.path.join(xdg, "git"))
 
 
 GITCONFIG_MSG = "the user's git config (~/.gitconfig, ~/.config/git/) is never written from a dcv2 run."
 
 
+PROTECTED_CF = frozenset(n.casefold() for n in PROTECTED)
+
+
+def has_request_md(d):
+    """d is a run folder: it holds a request.md (any case, as the volume may ignore case)."""
+    try:
+        return any(n.casefold() == "request.md" for n in os.listdir(d))
+    except OSError:
+        return False
+
+
 def protected(p):
     q = p
     while q and q != os.path.dirname(q):  # requests/ of any run folder: state.sh request and the app only
-        if os.path.basename(q) == "requests" and (os.path.dirname(q) == run or os.path.isfile(os.path.join(os.path.dirname(q), "request.md"))):
+        if os.path.basename(q).casefold() == "requests" and (same(os.path.dirname(q), run) or has_request_md(os.path.dirname(q))):
             return True
         q = os.path.dirname(q)
-    if os.path.basename(p) not in PROTECTED:
+    if os.path.basename(p).casefold() not in PROTECTED_CF:
         return False
     d = os.path.dirname(p)
-    return d == run or os.path.isfile(os.path.join(d, "request.md"))
+    return same(d, run) or has_request_md(d)
+
+
+def no_write_zone(p):
+    """Bound runs (everyone, the orchestrator too) never write the plugin (its guard and hooks), Claude's own
+    configuration, or the app's data outside the run folder (and, for the implementer, its worktrees)."""
+    if not run:
+        return None
+    home = os.path.realpath(os.path.expanduser("~"))
+    plugin_roots = [r for r in (os.environ.get("CLAUDE_PLUGIN_ROOT") or "", GUARD_PLUGIN) if r]
+    if any(inside(p, r) for r in plugin_roots):
+        return "the dcv2 plugin (its guard, hooks and scripts)"
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR") or ""
+    if inside(p, cfg) or (inside(p, home) and os.path.relpath(norm(p), norm(home)).split(os.sep)[0].startswith(".claude")):
+        return "Claude's own configuration (~/.claude*)"
+    roots = [os.path.dirname(os.path.dirname(run))] + ([os.path.dirname(mem)] if mem else [])
+    if any(inside(p, r) for r in roots if r and norm(r) not in (norm(home), os.sep)) and not write_allowed(p):
+        return "the app's data folder"
+    return None
 
 
 def bmad_config(p):
@@ -163,12 +216,15 @@ def bmad_config(p):
     if not run:
         return False
     b = os.path.join(run, "bmad", "_bmad")
-    if os.path.dirname(p) == b and re.fullmatch(r"config[\w.-]*\.toml", os.path.basename(p)):
+    if same(os.path.dirname(p), b) and re.fullmatch(r"config[\w.-]*\.toml", os.path.basename(p), re.I):
         return True
     return inside(p, os.path.join(b, "custom"))
 
 
 BMAD_CFG_MSG = "BMAD's config under <run>/bmad/_bmad is written only by `state.sh bmad-init`, never with Edit, Write or a shell write."
+
+
+GUARD_PLUGIN = os.path.realpath(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1] else ""
 
 
 def write_allowed(p):
@@ -185,7 +241,7 @@ def main_checkout(p):
 
 
 def in_checkout(p):
-    if any(inside(p, r) for r in repos) or any(c.endswith("-worktrees") for c in p.split(os.sep)):
+    if any(inside(p, r) for r in repos) or any(c.casefold().endswith("-worktrees") for c in p.split(os.sep)):
         return True
     d = p
     while True:
@@ -219,6 +275,9 @@ if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
     if inside(p, mem):
         block("codebase memory is written only with `bash <plugin>/scripts/memory.sh write <repo id> <file> <<'EOF'` "
               "(it checks size caps, secrets and pinned lines), never with Edit or Write.")
+    zone = no_write_zone(p)
+    if zone:
+        block(f"{p} is {zone}: it is never written from a bound run.")
     if not pipeline and run and main_checkout(p):
         block(f"the orchestrator never edits a repo's main checkout ({p}); sub-agents work in the run's worktrees.")
     if not pipeline or write_allowed(p):
@@ -228,10 +287,29 @@ if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
     block(f"{who} may only write inside {where}, not {p}. Never edit a repo main checkout; use the exact worktree path you were given.")
 
 bound = pipeline or bool(run)
-if tool != "Bash" or not (bound or mem):
+
+# ---- MCP tools -----------------------------------------------------------------------------
+# Their effects cannot be seen from here, so in a bound run a pipeline sub-agent calls none, and the orchestrator
+# calls only read-verb tools (the last `__` segment starts with get / list / read / search / fetch / view / query /
+# find / describe). Unbound sessions are not affected.
+MCP_READ_RE = re.compile(r"^(get|list|read|search|fetch|view|query|find|describe)", re.I)
+if tool.startswith("mcp__"):
+    if pipeline:
+        block(f"{who} calls no MCP tool ({tool}): their effects cannot be checked.")
+    if run and not MCP_READ_RE.match(tool.rsplit("__", 1)[-1]):
+        block(f"the orchestrator calls only read-verb MCP tools (get / list / read / search / fetch / view / query / find / "
+              f"describe), not {tool}: their effects cannot be checked. Writes go through state.sh.")
     sys.exit(0)
 
-# ---- Bash --------------------------------------------------------------------------------
+# ---- Bash, Monitor, PowerShell: the shell text in tool_input.command ------------------------
+if tool == "PowerShell" and bound:
+    block("PowerShell is not used in a run (its writes, such as Set-Content, Out-File, Remove-Item and Copy-Item, cannot be "
+          "checked here); use Bash.")
+if tool not in ("Bash", "Monitor", "PowerShell") or not (bound or mem):
+    sys.exit(0)
+if bound and not str(inp.get("command") or "").strip():
+    block(f"{tool} without a command text: it cannot be checked.")
+
 GIT_RO = {"status", "log", "diff", "show", "rev-parse", "rev-list", "ls-files", "ls-tree", "cat-file", "grep",
           "blame", "annotate", "describe", "shortlog", "merge-base", "name-rev", "for-each-ref", "show-ref",
           "whatchanged", "help", "version", "var", "check-ignore", "count-objects", "show-branch", "range-diff",
@@ -281,7 +359,7 @@ def check_write(t, cwd):
     if bound and re.search(r"[$`*?]", t) and re.search(r"\.gitconfig|\.config/git|/git/config\b", t):
         block(GITCONFIG_MSG)
     if re.search(r"[$`*?]", t) or (cwd is None and not os.path.isabs(os.path.expanduser(t))):
-        if trust_root and "run-trust" in t:
+        if trust_root and "run-trust" in t.lower():
             block(TRUST_MSG)
         if mem and re.search(r"\$\{?DCV2_MEMORY_DIR\b", t):
             block("codebase memory is written only with memory.sh write, never with a shell redirect.")
@@ -300,6 +378,9 @@ def check_write(t, cwd):
         return
     if git_user_config(p):
         block(GITCONFIG_MSG)
+    zone = no_write_zone(p)
+    if zone:
+        block(f"{p} is {zone}: it is never written from a bound run.")
     if protected(p):
         block("write run-folder state only with scripts/state.sh, never with a shell redirect or copy.")
     if bmad_config(p):
@@ -310,8 +391,64 @@ def check_write(t, cwd):
         block(f"{who} may not write {p} from Bash: it is in a git checkout outside {where}.")
 
 
-def write_targets(name, args):
+def link_operands(args):
+    """(operands, target dir) of cp / ln / install style args: the value of -t and -S is not an operand."""
+    ops, tdir, i = [], None, 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            ops += args[i + 1:]
+            break
+        if a in ("-t", "--target-directory") and i + 1 < len(args):
+            tdir, i = args[i + 1], i + 2
+            continue
+        if a.startswith("--target-directory="):
+            tdir, i = a.split("=", 1)[1], i + 1
+            continue
+        if a in ("-S", "--suffix") and i + 1 < len(args):
+            i += 2
+            continue
+        if a.startswith("-") and a != "-":
+            i += 1
+            continue
+        ops.append(a)
+        i += 1
+    return ops, tdir
+
+
+def link_targets(name, args, cwd):
+    """`ln` and `cp -l|-s|--link|--symbolic-link` make a name that later writes follow to the source, so every operand
+    is a write target (ln -s <repo>/a <run>/l && echo x > <run>/l writes the repo's a). A relative soft-link source
+    is resolved against the link's folder (against the cwd with -r), as the link will be."""
+    clusters = [a[1:] for a in args if re.match(r"^-[A-Za-z]+$", a)]
+    longs = [a for a in args if a.startswith("--")]
+    letters = "".join(clusters)
+    if name == "cp" and not ("l" in letters or "s" in letters or "--link" in longs or "--symbolic-link" in longs):
+        return None
+    soft = "s" in letters or "--symbolic" in longs or "--symbolic-link" in longs
+    relative = "r" in letters or "--relative" in longs
+    ops, tdir = link_operands(args)
+    links = [tdir] if tdir else ops[-1:]
+    sources = ops if tdir else ops[:-1]
+    if tdir is None and len(ops) == 1:  # `ln -s <target>` makes ./<basename> in the cwd
+        links, sources = [os.path.join(cwd, os.path.basename(ops[0].rstrip("/")))] if cwd else [], ops
+    out = list(links)
+    folder = None
+    if soft and not relative and links and "$" not in links[0] and (os.path.isabs(os.path.expanduser(links[0])) or cwd):
+        p = real(links[0], cwd or "/")
+        folder = p if (tdir or os.path.isdir(p)) else os.path.dirname(p)
+    for src in sources:
+        s0 = os.path.expanduser(src)
+        out.append(os.path.join(folder, s0) if folder and soft and not relative and not os.path.isabs(s0) and "$" not in src else src)
+    return out
+
+
+def write_targets(name, args, cwd=None):
     nonopt = [a for a in args if a and not a.startswith("-")]
+    if name in ("ln", "cp"):
+        linked = link_targets(name, args, cwd)
+        if linked is not None:
+            return linked
     if name in ("tee", "rm", "rmdir", "touch", "mkdir", "truncate", "unlink", "shred", "mv"):
         return nonopt
     if name in ("chmod", "chown", "chgrp"):
@@ -521,7 +658,7 @@ def check_git(args, cwd):
             for a in rest:
                 if a.startswith("-") or "$" in a:
                     continue
-                p = os.path.normpath(os.path.join(target, os.path.expanduser(a)))
+                p = norm(os.path.join(target, os.path.expanduser(a)))
                 if p in copied or (force and any(c.startswith(p.rstrip(os.sep) + os.sep) for c in copied)):
                     block(f"`git {sub}` would include {a!r}, a file copied in from the main checkout (repos.json copyFiles): "
                           "it is never staged or committed. Stage only the files your story changed.")
@@ -616,7 +753,7 @@ def check_state_sh(args):
     if sub in ("cleanup", "request", "request-wait") and run:
         rest = [a for a in args[1:] if not a.startswith("-")]
         target = re.sub(r"\$\{?DCV2_RUN_DIR\}?", lambda _: run, rest[1] if len(rest) > 1 else "")
-        if "$" not in target and os.path.realpath(os.path.expanduser(target)) != run:
+        if "$" not in target and not same(os.path.expanduser(target), run):
             block(f"`state.sh {sub}` acts only on this run's folder ({run}), not {target or 'none'}.")
 
 
@@ -653,7 +790,7 @@ def live_tests_on(wt):
     except Exception:
         return False
     for r in (rj.get("repos") if isinstance(rj, dict) else None) or []:
-        if isinstance(r, dict) and isinstance(r.get("path"), str) and os.path.realpath(r["path"]) == os.path.realpath(repo):
+        if isinstance(r, dict) and isinstance(r.get("path"), str) and same(r["path"], repo):
             return r.get("liveTests") is True
     return False
 
@@ -666,7 +803,7 @@ def check_live(script, cwd):
         block(f"cannot tell where {script!r} is: run it as `cd <worktree> && bash scripts/skill-e2e/{os.path.basename(script)} ...`")
     p = real(script, cwd or "/")
     wt = next((w for w in worktrees if inside(p, w)), None)
-    if not wt or os.path.relpath(p, wt) != os.path.join("scripts", "skill-e2e", os.path.basename(p)):
+    if not wt or os.path.relpath(norm(p), norm(wt)) != os.path.join("scripts", "skill-e2e", os.path.basename(norm(p))):
         block(f"live Claude tests run only as your worktree's scripts/skill-e2e/{os.path.basename(script)}.")
     if not live_tests_on(wt):
         block("live Claude tests are off for this repo (the app setting \"Allow live Claude tests in checks\"); "
@@ -681,6 +818,67 @@ RUNNERS = {"nohup": (), "caffeinate": (), "stdbuf": (), "command": (), "exec": (
            "doas": ("-u",), "time": (), "env": ("-u", "--unset", "-C", "--chdir", "-S", "--split-string"),
            "nice": ("-n", "--adjustment"), "timeout": ("-s", "--signal", "-k", "--kill-after"), "npx": ("-p", "--package"),
            "bunx": (), "unbuffer": (), "chronic": ()}
+
+
+ASSIGN_ANY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
+PROTECTED_ENV_RE = re.compile(r"^(DCV2_\w*|CLAUDE_PLUGIN_ROOT|CLAUDE_CONFIG_DIR)\+?=(.*)$", re.S)
+DECLARERS = ("export", "declare", "typeset", "readonly", "local")
+
+
+def prefix_assignments(words, depth=0):
+    """The NAME=value words that set the environment for what a segment runs: bare prefixes, after env / sudo / nice …,
+    and the arguments of export / declare / typeset / readonly / local."""
+    out, i = [], 0
+    while i < len(words):
+        w, b = words[i], os.path.basename(words[i])
+        if ASSIGN_ANY.match(w):
+            out.append(w)
+            i += 1
+        elif b in DECLARERS:
+            out += [x for x in words[i + 1:] if ASSIGN_ANY.match(x) or re.match(r"^[^=\s]*\$[^=\s]*=", x)]
+            break
+        elif b in RUNNERS or w in WRAPPERS:
+            i += 1
+            while i < len(words) and words[i].startswith("-"):
+                opt, i = words[i], i + 1
+                if b == "env" and (opt in ("-S", "--split-string") or opt.startswith("--split-string=")) and depth < 3:
+                    text = opt.split("=", 1)[1] if "=" in opt else (words[i] if i < len(words) else "")
+                    i += 0 if "=" in opt else 1
+                    try:
+                        out += prefix_assignments(shlex.split(text), depth + 1)
+                    except ValueError:
+                        pass
+                elif opt in RUNNERS.get(b, ()) and i < len(words):
+                    i += 1
+            if b == "timeout" and i < len(words):
+                i += 1
+        else:
+            break
+    return out
+
+
+def check_env(w):
+    """DCV2_*, CLAUDE_PLUGIN_ROOT and CLAUDE_CONFIG_DIR decide what the guard, state.sh, memory.sh and the BMAD runtime
+    trust, so nothing in a dcv2 session (a bound run, or any tab with DCV2_MEMORY_DIR) sets them. Allowed: DCV2_E2E_*
+    (live-suite knobs) and DCV2_RUN_DIR / DCV2_MEMORY_DIR given the session's own value (the planner prefixes runtime
+    calls with its own run folder). `env -u NAME` and `unset` are not assignments."""
+    m = PROTECTED_ENV_RE.match(w)
+    if not m:
+        if re.match(r"^[^=\s]*\$[^=\s]*=", w):
+            block(f"cannot tell which variable `{w.split('=', 1)[0]}=…` sets in a dcv2 session; name it literally.")
+        return
+    name, val = m.group(1), m.group(2)
+    if name.startswith("DCV2_E2E_"):
+        return
+    own = {"DCV2_RUN_DIR": run, "DCV2_MEMORY_DIR": mem}.get(name)
+    if own and not w.startswith(name + "+="):
+        if val in ("$" + name, "${" + name + "}"):
+            return
+        v = os.path.expanduser(val)
+        if os.path.isabs(v) and "$" not in v and same(v, own):
+            return
+    block(f"setting {name} is not allowed in a dcv2 session: it redirects what the guard, state.sh, memory.sh and the plugin trust "
+          f"(use `env -u {name} …` to unset it for one command; a plain terminal is unaffected).")
 
 
 def unwrap(words):
@@ -820,6 +1018,9 @@ def analyze(cmd, cwd, depth=0):
                 if GIT_ENV_RE.match(w):
                     block(f"setting {w.split('=', 1)[0]} is not allowed in a dcv2 run: it changes which repo git works on "
                           "or which programs it runs.")
+        if run or mem:
+            for w in prefix_assignments(words):
+                check_env(w)
         words = unwrap(words)
         if not words:
             continue
@@ -870,7 +1071,7 @@ def analyze(cmd, cwd, depth=0):
             if rest:
                 analyze(" ".join(rest), cwd, depth + 1)
         else:
-            for t in write_targets(name, args):
+            for t in write_targets(name, args, cwd):
                 check_write(t, cwd)
     return cwd
 
@@ -878,12 +1079,12 @@ def analyze(cmd, cwd, depth=0):
 CMD = str(inp.get("command") or "")
 if bound and "DCV2_TEST_LOCAL_REMOTES" in CMD:
     block("DCV2_TEST_LOCAL_REMOTES is set only by the test suites, never from inside a run.")
-MEM_MENTIONED = bool(mem) and ("DCV2_MEMORY_DIR" in CMD or mem in CMD)
+MEM_MENTIONED = bool(mem) and ("DCV2_MEMORY_DIR" in CMD or mem.casefold() in CMD.casefold())
 analyze(CMD, cwd0)
 sys.exit(0)
 PY
 
-python3 -c "$PY" <<<"$input"
+python3 -c "$PY" "$GUARD_PLUGIN" <<<"$input"
 rc=$?
 case $rc in
   0|2) exit $rc ;;

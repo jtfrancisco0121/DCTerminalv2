@@ -87,6 +87,7 @@ struct AppActions {
 
 fn stage_of(dir: &Path) -> Option<String> {
     folder::read_json_value(&dir.join("status.json"))
+        .filter(super::status::has_known_schema)
         .and_then(|v| v.get("stage").and_then(|s| s.as_str()).map(str::to_string))
 }
 

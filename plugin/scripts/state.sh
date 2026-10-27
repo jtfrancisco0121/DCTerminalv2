@@ -7,7 +7,7 @@
 #                                             print folder= / repos= / tickets= / reposJson= / testmode= /
 #                                             maxImplementers= / memory= / reviewMode= / bmad= / node=
 #   state.sh testmode                         print the test mode, from the env DCV2_TEST_MODE only
-#   state.sh put <run>/status.json  < json    validate the whole document, then write it
+#   state.sh put <run>/status.json  < json    validate the whole document, then write it (only $DCV2_RUN_DIR/status.json)
 #   state.sh log <run> [<stage>]    < text    append "<UTC time> <stage> <text>" to log.md (text on stdin;
 #                                             stage defaults to status.json's)
 #   state.sh now                              print the UTC time (ISO-8601)
@@ -32,7 +32,10 @@
 #                                             (exit 0 pass, 3 fail). plan-approval is refused until it passes on
 #                                             the current documents (put and approve)
 #   state.sh ship-check <run>                 per PR: remote, and whether its base is on the remote
-#   state.sh ship-pr <run> <pr id>            local mode: push the PR's branch and open its GitHub PR
+#   state.sh ship-pr <run> <pr id>            local mode: push the PR's branch and open its GitHub PR, with the
+#                                             github-mode protections (canonical worktree, no copied file, push to the
+#                                             recorded URL without hooks, gh -R <owner/name>); a recorded remote the run
+#                                             may not push (not an owner/name https/ssh URL) ends needs-attention.
 #                                             (stage shipping + ship approval only); updates status.json
 # github review mode only (meta.json reviewMode "github"; after the plan approval):
 #   state.sh draft-pr <run> <pr id>           push the branch (never force) and open a DRAFT PR (or find
@@ -72,7 +75,7 @@ set -euo pipefail
 py_works() { command -v python3 >/dev/null 2>&1 && python3 -c 'import json, sys; sys.exit(0)' >/dev/null 2>&1; }
 
 IFS= read -r -d '' PY <<'PY' || true
-import datetime, json, os, re, shutil, signal, subprocess, sys, tempfile, time
+import datetime, glob, json, os, re, shutil, signal, subprocess, sys, tempfile, time
 
 STAGES = ["planning", "plan-approval", "building", "ship-approval", "shipping", "done", "failed"]
 STATES = ["pending", "building", "drafted", "reviewing", "fixing", "reviewed", "needs-attention", "opened", "pushed", "local-only"]
@@ -115,6 +118,22 @@ def load_json(path):
             return json.load(f)
     except (OSError, ValueError):
         return None
+
+
+def norm(p):
+    """A path's identity for every allow / deny decision: the real path, casefolded (the default macOS volume ignores case)."""
+    return os.path.realpath(p).casefold() if p else ""
+
+
+def same_path(a, b):
+    return bool(a) and bool(b) and norm(a) == norm(b)
+
+
+def under(p, root):
+    if not p or not root:
+        return False
+    p, root = norm(p), norm(root)
+    return p == root or p.startswith(root.rstrip(os.sep) + os.sep)
 
 
 def atomic_write(dest, text):
@@ -291,13 +310,35 @@ def bmad_frontmatter(text):
     return d
 
 
-def bmad_placeholders(text):
-    """Unfilled template leftovers outside code: {name} tokens and template guide comments."""
+BRACE_TOKEN = re.compile(r"\{[A-Za-z][^{}\n]*\}")
+_TEMPLATE_TOKENS = []
+
+
+def bmad_text_outside_code(text):
     t = re.sub(r"(```|~~~).*?\1", "", text, flags=re.S)
-    guide = bool(re.search(r"<!--\s*TEMPLATE GUIDE", t))
     t = re.sub(r"<!--.*?-->", "", t, flags=re.S)
-    t = re.sub(r"`[^`\n]*`", "", t)
-    hits = re.findall(r"\{[A-Za-z][^{}\n]*\}", t)
+    return re.sub(r"`[^`\n]*`", "", t)
+
+
+def bmad_template_tokens():
+    """The {Word…} tokens the vendored templates (plugin/bmad/skills/*/assets/*template*.md) contain, collected at check
+    time: only these count as unfilled, so prose such as a REST path with a brace-wrapped parameter passes."""
+    if not _TEMPLATE_TOKENS:
+        tokens = set()
+        for path in glob.glob(os.path.join(PLUGIN_ROOT, "bmad", "skills", "*", "assets", "*template*.md")) if PLUGIN_ROOT else []:
+            tokens.update(BRACE_TOKEN.findall(read(path)))  # the whole template: its tokens sit in prose, comments and examples
+        _TEMPLATE_TOKENS.append(tokens)
+    return _TEMPLATE_TOKENS[0]
+
+
+def bmad_placeholders(text):
+    """Unfilled template leftovers outside code: tokens taken from the vendored templates, any double-brace token, and
+    template guide comments."""
+    guide = bool(re.search(r"<!--\s*TEMPLATE GUIDE", re.sub(r"(```|~~~).*?\1", "", text, flags=re.S)))
+    t = bmad_text_outside_code(text)
+    known = bmad_template_tokens()
+    hits = [h for h in BRACE_TOKEN.findall(t) if h in known]
+    hits += re.findall(r"\{\{[^{}\n]*\}\}", t)
     return (["<!-- TEMPLATE GUIDE -->"] if guide else []) + hits[:3]
 
 
@@ -341,8 +382,9 @@ def check_approval(v, name, problems):
 
 def validate_status(doc, run):
     p = []
-    if doc.get("schema") != 1:
-        p.append("schema must be 1")
+    schema = doc.get("schema")
+    if not (type(schema) is int and schema == 1):  # the integer 1 only: not 1.0, true or "1"
+        p.append("schema must be the integer 1")
     stage = doc.get("stage")
     if stage not in STAGES:
         p.append(f"stage {stage!r} not one of {STAGES}")
@@ -660,21 +702,23 @@ def load_status(run):
 
 def cmd_put(dest):
     name = os.path.basename(dest)
-    if name in ("writeback.json", ".guard.json"):
+    low = name.casefold()
+    if low in ("writeback.json", ".guard.json"):
         die(f"NOT WRITTEN: {name} is written only by its own state.sh command")
-    if name in APP_FILES:
+    if low in [a.casefold() for a in APP_FILES]:
         die(f"NOT WRITTEN: {name} is written only by the app")
-    if os.path.basename(os.path.dirname(os.path.abspath(dest))) == "requests":
+    if os.path.basename(os.path.dirname(os.path.abspath(dest))).casefold() == "requests":
         die("NOT WRITTEN: requests/ is written only by `state.sh request` and the app")
+    run_env = os.environ.get("DCV2_RUN_DIR", "")
+    if not run_env:
+        die("NOT WRITTEN: put writes the run's status.json, and DCV2_RUN_DIR (the run folder, set when claude is launched) is not set")
+    if name != "status.json" or not same_path(dest, os.path.join(run_env, "status.json")):
+        die(f"NOT WRITTEN: put writes only <DCV2_RUN_DIR>/status.json ({os.path.join(run_env, 'status.json')}), not {dest}")
     text = sys.stdin.read()
     try:
         doc = json.loads(text)
     except ValueError as e:
         die(f"NOT WRITTEN: invalid JSON for {dest}: {e}")
-    if name != "status.json":
-        atomic_write(dest, json.dumps(doc, indent=2) + "\n")
-        print(f"wrote {dest}")
-        return
     if not isinstance(doc, dict):
         die(f"NOT WRITTEN: {dest} must be a JSON object")
     run = os.path.dirname(os.path.abspath(dest))
@@ -903,7 +947,7 @@ def bmad_check_docs(run, docs):
         for need in ("DESIGN.md", "EXPERIENCE.md"):
             if need not in names:
                 reasons.append(f"UX is missing {need}")
-    return reasons, found
+    return list(dict.fromkeys(reasons)), found  # each reason once, in order
 
 
 def cmd_bmad_check(run):
@@ -999,7 +1043,8 @@ def record_guard(run, repo, pr_id, wt, copied=None, remote=None, base=None):
     atomic_write(path, json.dumps(g, indent=2) + "\n")
 
 
-SLUG = re.compile(r"^(?:https?://[^/\s]+/|ssh://[^/\s]+/|[\w.-]+@[^:/\s]+:)([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
+# https / ssh URLs, user@host:owner/name, and an ssh host alias (alias:owner/name, e.g. github-work:o/rr; the alias cannot start with -).
+SLUG = re.compile(r"^(?:https?://[^/\s]+/|ssh://[^/\s]+/|[\w.-]+@[^:/\s]+:|[A-Za-z0-9_][\w.-]*:)([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
 
 
 def remote_record(run, repo):
@@ -1084,7 +1129,12 @@ def run_setup(run, wt, pr_id, cmd):
         return "none", None
     os.makedirs(os.path.dirname(log), exist_ok=True)
     timeout = int(os.environ.get("DCV2_SETUP_TIMEOUT", "") or 600)
-    with open(log, "w") as out:
+    try:  # never through a link planted at the log's name
+        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    except OSError as e:
+        print(f"note: the setup log {log} could not be opened ({e.strerror}); the setup did not run", file=sys.stderr)
+        return "failed", log
+    with os.fdopen(fd, "w") as out:
         out.write(f"$ {cmd}\n(in {wt})\n")
         out.flush()
         try:
@@ -1107,12 +1157,26 @@ def run_setup(run, wt, pr_id, cmd):
     return ("ok" if rc == 0 else "failed"), log
 
 
+def run_owns_repo(run, repo):
+    """The repo is one the run is about: listed in repos.json (by real path, so a symlinked listing matches) or inside the
+    start folder named by request.md's folder: line."""
+    rj = load_json(os.path.join(run, "repos.json"))
+    for r in (rj.get("repos") if isinstance(rj, dict) else None) or []:
+        if isinstance(r, dict) and isinstance(r.get("path"), str) and same_path(r["path"], repo):
+            return True
+    folders = set(re.findall(r"^folder:\s*(\S.*?)\s*$", read(os.path.join(run, "request.md")), re.M))
+    return len(folders) == 1 and os.path.isabs(next(iter(folders))) and under(repo, next(iter(folders)))
+
+
 def cmd_worktree(run, repo, pr_id, base):
     run = os.path.realpath(run)
     run_id = os.path.basename(run)
     repo = os.path.realpath(repo)
     if not re.fullmatch(r"PR\d+", pr_id):
         die(f"pr id must be PR<n> (got {pr_id})")
+    if not run_owns_repo(run, repo):
+        die(f"NOT MADE: {repo} is not one of this run's repos (not in repos.json, and not inside the start folder in request.md); "
+            "nothing was recorded in .guard.json")
     if git("-C", repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}").returncode != 0:
         die(f"NOT MADE: base commit {base!r} is not a commit in {repo}; use baseCommit from status.json / state.sh base")
     branch, wt = canon(repo, run_id, pr_id)
@@ -1158,17 +1222,31 @@ def cmd_worktree(run, repo, pr_id, base):
     print(f"setup={result} log={log or '-'}")
 
 
+def recorded_remote(run, pr):
+    """The push remote of a PR as ship-pr will use it: the one recorded in .guard.json when its worktree was made
+    ({name, url, repo}), else the repo's current one; None when the repo has no remote."""
+    rem = (guard_rec(run).get("remotes") or {}).get(pr.get("id"))
+    if isinstance(rem, dict) and rem.get("url"):
+        return rem
+    repo = os.path.realpath(pr["repoPath"]) if pr.get("repoPath") else ""
+    return remote_record(run, repo) if repo and os.path.isdir(repo) else None
+
+
 def cmd_ship_check(run):
     st = load_status(run)
     for pr in st.get("prs") or []:
-        repo = pr.get("repoPath") or ""
-        remote = remote_of(repo) if repo else None
-        if not remote:
-            print(f"{pr.get('id')} {pr.get('repo')}: no git remote: will not push or open a PR")
-        elif on_remote(repo, remote, pr.get("base") or ""):
-            print(f"{pr.get('id')} {pr.get('repo')}: remote {remote}, base {pr.get('base')} is on the remote")
+        who = f"{pr.get('id')} {pr.get('repo')}"
+        rem = recorded_remote(run, pr)
+        if not rem:
+            print(f"{who}: no git remote: will not push or open a PR")
+            continue
+        why = url_problem(rem["url"])
+        if why:
+            print(f"{who}: remote {rem['url']} cannot be pushed by the run ({why}): needs attention")
+        elif remote_sha(rem["url"], pr.get("base") or ""):
+            print(f"{who}: remote {rem['url']}, base {pr.get('base')} is on the remote")
         else:
-            print(f"{pr.get('id')} {pr.get('repo')}: remote {remote}, base {pr.get('base')} is NOT on the remote: needs attention")
+            print(f"{who}: remote {rem['url']}, base {pr.get('base')} is NOT on the remote: needs attention")
 
 
 def pr_body(run, st, pr):
@@ -1208,25 +1286,40 @@ def cmd_ship_pr(run, pid):
 
     if pr.get("state") not in ("reviewed", "pushed"):
         die(f"NOT SHIPPED: {pid} is {pr.get('state')}; only reviewed PRs ship")
-    repo, wt, branch, base = pr.get("repoPath"), pr.get("worktree"), pr.get("branch"), pr.get("base")
-    remote = remote_of(repo)
-    if not remote:
+    # The same protections as github mode: the canonical branch and worktree recorded in .guard.json, no copied file in the
+    # commits, a push to the URL recorded when the worktree was made (no hooks, no remote name), `gh -R <owner/name>`.
+    pr, rem = canonical_pr(run, st, pid, "NOT SHIPPED")
+    wt, branch, base = pr["worktree"], pr["branch"], pr.get("base")
+    if not rem:
         return save("local-only", "no git remote: nothing pushed, no PR opened")
+    url = rem["url"]
+    why = url_problem(url)
+    if why:
+        return save("needs-attention", f"remote {url} is not an owner/name https or ssh URL: nothing pushed; "
+                    f"push {branch} by hand and open the PR")
     if pr["state"] == "reviewed":
-        if not on_remote(repo, remote, base):
-            return save("needs-attention", f"base {base} is not on {remote}")
-        r = git("-C", wt, "push", "-u", remote, branch)
+        no_copied(run, st, pr, "NOT SHIPPED")
+    slug = rem.get("repo")
+    if not slug:  # e.g. a local mirror (test suites): ask gh which repo this is
+        q = run_cmd(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], cwd=wt, timeout=60)
+        slug = q.stdout.strip() if q.returncode == 0 and re.fullmatch(r"[\w.-]+/[\w.-]+", q.stdout.strip()) else None
+    if not slug:
+        return save("needs-attention", f"cannot tell which GitHub repo {url} is: nothing pushed; push {branch} by hand and open the PR")
+    if pr["state"] == "reviewed":
+        if not remote_sha(url, base):
+            return save("needs-attention", f"base {base} is not on {url}")
+        r = push_branch(wt, url, branch)
         if r.returncode != 0:
             return save("needs-attention", "push refused: " + first_line(r.stderr)[:200])
         save("pushed", "pushed; opening the PR")
-    v = run_cmd(["gh", "pr", "view", branch, "--json", "url", "-q", ".url"], cwd=wt, timeout=60)
+    v = gh(["pr", "view", branch, "--json", "url", "-q", ".url"], wt, slug, 60)
     if v.returncode == 0 and v.stdout.strip().startswith("http"):
         return save("opened", None, v.stdout.strip())
     body = os.path.join(run, "pr-bodies", f"{pid}.md")
     os.makedirs(os.path.dirname(body), exist_ok=True)
     atomic_write(body, pr_body(run, st, pr))
     title = str(pr.get("title") or pid)
-    c = run_cmd(["gh", "pr", "create", "--base", base, "--head", branch, "--title", title, "--body-file", body], cwd=wt, timeout=120)
+    c = gh(["pr", "create", "--base", base, "--head", branch, "--title", title, "--body-file", body], wt, slug)
     url = next((l.strip() for l in reversed(c.stdout.splitlines()) if l.strip().startswith("http")), None)
     if c.returncode == 0 and url:
         return save("opened", None, url)
@@ -1361,17 +1454,25 @@ def github_pr(run, pid, stages=GITHUB_STAGES):
         die("NOT DONE: GitHub writes need the plan approval first (stop #1: `state.sh approve <run> plan user`)")
     if st.get("stage") not in stages:
         die(f"NOT DONE: stage {st.get('stage')}: this command runs only at stage {' / '.join(stages)}")
+    pr, rem = canonical_pr(run, st, pid)
+    return st, pr, rem
+
+
+def canonical_pr(run, st, pid, what="NOT DONE"):
+    """(the PR entry, its recorded remote or None) for a push / PR write, local or github mode: the PR must be on its
+    canonical branch in its canonical worktree (made by state.sh worktree) and recorded in .guard.json. status.json's
+    own worktree / branch fields are never trusted on their own."""
     pr = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == pid), None)
     if pr is None:
-        die(f"NOT DONE: no {pid} in status.json")
+        die(f"{what}: no {pid} in status.json")
     branch, wt = canon(pr.get("repoPath") or "/", st.get("runId"), pid)
     if pr.get("branch") != branch or os.path.realpath(str(pr.get("worktree") or "")) != wt or not os.path.isdir(wt):
-        die(f"NOT DONE: {pid} must be on {branch} in its worktree {wt} (made by state.sh worktree)")
+        die(f"{what}: {pid} must be on {branch} in its worktree {wt} (made by state.sh worktree)")
     if git("-C", wt, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() != branch:
-        die(f"NOT DONE: {wt} is not on {branch}")
+        die(f"{what}: {wt} is not on {branch}")
     g = guard_rec(run)
     if (g.get("worktrees") or {}).get(pid) != wt:
-        die(f"NOT DONE: {pid}'s worktree is not recorded in .guard.json (run `state.sh worktree` for it)")
+        die(f"{what}: {pid}'s worktree is not recorded in .guard.json (run `state.sh worktree` for it)")
     if pid not in (g.get("remotes") or {}):
         # A worktree made before 0.3.0 has no recorded remote. A github-mode run is always a 0.3.0 run (the app
         # writes reviewMode only then), whose worktrees were recorded when made; this fallback records the
@@ -1383,7 +1484,7 @@ def github_pr(run, pid, stages=GITHUB_STAGES):
     rem = (g.get("remotes") or {}).get(pid)
     if rem and not (isinstance(rem, dict) and rem.get("url")):
         rem = None
-    return st, pr, rem
+    return pr, rem
 
 
 def save_pr(run, st, pr, msg):
@@ -2000,7 +2101,11 @@ def verify_wt(run_id, pid, repo, wt):
     common = git("-C", wt, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
     if not gd or not common or os.path.realpath(gd) == os.path.realpath(common):
         return "not a linked worktree"
-    if os.path.realpath(os.path.dirname(common)) != repo:
+    # Same git common dir as the recorded repo: right for a repo that is itself a linked worktree, a submodule
+    # (common dir under the superproject's .git/modules/) and a --separate-git-dir repo, where the common dir's parent
+    # is not the checkout.
+    repo_common = git("-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+    if not repo_common or same_path(common, "") or not same_path(common, repo_common):
         return "not a worktree of its recorded repo"
     head = git("-C", wt, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
     if head != branch:

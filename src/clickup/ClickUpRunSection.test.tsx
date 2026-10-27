@@ -9,6 +9,8 @@ const api = {
   pull: vi.fn<(runDir: string, ids: string[]) => Promise<{ pulled: string[]; updateFile: string }>>(),
   post: vi.fn<(runDir: string, version: string, requests: PostRequest[]) => Promise<PostReply>>(),
   retry: vi.fn<(runDir: string, ticketId: string) => Promise<unknown>>(),
+  consent: vi.fn<(runDir: string, sha: string) => Promise<void>>(),
+  now: vi.fn<(runDir: string) => Promise<void>>(),
 };
 vi.mock("./api", () => ({
   clickupRunState: (d: string) => api.state(d),
@@ -16,6 +18,8 @@ vi.mock("./api", () => ({
   clickupPullTickets: (d: string, ids: string[]) => api.pull(d, ids),
   clickupPostWriteback: (d: string, v: string, r: PostRequest[]) => api.post(d, v, r),
   clickupAutoPostRetry: (d: string, id: string) => api.retry(d, id),
+  clickupAutoPostConsent: (d: string, sha: string) => api.consent(d, sha),
+  clickupAutoPostNow: (d: string) => api.now(d),
 }));
 
 import { ClickUpRunSection, draftDone, tellClaude } from "./ClickUpRunSection";
@@ -116,7 +120,7 @@ describe("ClickUpRunSection", () => {
     fireEvent.click(screen.getByText("Post ticked (1)"));
     await waitFor(() => expect(screen.getByTestId("post-outcomes")).toBeTruthy());
     expect(api.post).toHaveBeenCalledWith("/r", "v1", [
-      { ticketId: "86a", comment: "Edited", status: null, confirmResend: false },
+      { ticketId: "86a", comment: "Edited", status: null, confirmResend: false, confirmSecret: false },
     ]);
   });
 
@@ -130,7 +134,7 @@ describe("ClickUpRunSection", () => {
     fireEvent.click(screen.getByText("Post ticked (1)"));
     await waitFor(() => expect(api.post).toHaveBeenCalled());
     expect(api.post.mock.calls[0][2]).toEqual([
-      { ticketId: "86a", comment: null, status: "in review", confirmResend: false },
+      { ticketId: "86a", comment: null, status: "in review", confirmResend: false, confirmSecret: false },
     ]);
   });
 
@@ -199,5 +203,178 @@ describe("comments posted automatically", () => {
     fireEvent.click(within(failed).getByText("Retry"));
     await waitFor(() => expect(api.retry).toHaveBeenCalledWith("/runs/r-1", "86a2"));
     expect(list.textContent).toContain("Status changes are never posted on their own");
+  });
+});
+
+describe("the click before comments post on their own", () => {
+  const offer = {
+    writebackSha: "sha-1",
+    comments: [
+      { ticketId: "86a1", label: "QA-86a1", text: "Done: S1" },
+      { ticketId: "86a2", label: "QA-86a2", text: "Done: S2" },
+      { ticketId: "86a3", label: "QA-86a3", text: "Done: S3" },
+    ],
+    notIncluded: [{ ticketId: "86a4", label: "QA-86a4", reason: "blocked: looks like a secret (a JWT)." }],
+  };
+  const view = (over: Partial<NonNullable<RunClickUp["autoPost"]>> = {}): RunClickUp => ({
+    ...base,
+    drafts: [draft("86a1"), draft("86a2"), draft("86a3"), draft("86a4")],
+    autoPost: { enabled: true, running: false, problem: null, record: null, offer, ...over },
+  });
+
+  it("shows every comment collapsed, then one click sends the sha it showed", async () => {
+    api.state.mockResolvedValue(view());
+    api.consent.mockResolvedValue();
+    render(<ClickUpRunSection runDir="/runs/r-1" stage="shipping" updatedAt="t" />);
+    const block = await screen.findByRole("region", { name: "Comments ready to post" });
+    expect(within(block).getByText("Comment for QA-86a1")).toBeTruthy();
+    expect(block.querySelectorAll("details")).toHaveLength(3);
+    expect(block.querySelector("details")?.hasAttribute("open")).toBe(false);
+    expect(block.querySelector("details pre")?.textContent).toBe("Done: S1");
+    const notIncluded = within(block).getByTestId("consent-not-included");
+    expect(notIncluded.textContent).toContain("QA-86a4");
+    expect(notIncluded.textContent).toContain("looks like a secret");
+    expect(api.consent).not.toHaveBeenCalled();
+    fireEvent.click(within(block).getByRole("button", { name: "Post 3 comments" }));
+    await waitFor(() => expect(api.consent).toHaveBeenCalledWith("/runs/r-1", "sha-1"));
+    await waitFor(() => expect(api.state.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it("offers no button when nothing can be posted on its own", async () => {
+    api.state.mockResolvedValue(view({ offer: { ...offer, comments: [] } }));
+    render(<ClickUpRunSection runDir="/r" stage="shipping" updatedAt="t" />);
+    const block = await screen.findByRole("region", { name: "Comments ready to post" });
+    expect(within(block).queryByRole("button")).toBeNull();
+    expect(block.textContent).toContain("Nothing to include");
+    expect(within(block).getByTestId("consent-not-included").textContent).toContain("QA-86a4");
+  });
+
+  it("says plainly when the click could not be recorded and leaves the button enabled", async () => {
+    api.state.mockResolvedValue(view());
+    api.consent.mockRejectedValue("The ship approval is not in status.json.");
+    render(<ClickUpRunSection runDir="/r" stage="shipping" updatedAt="t" />);
+    const button = await screen.findByRole("button", { name: "Post 3 comments" });
+    fireEvent.click(button);
+    await screen.findByText(/The click could not be recorded: The ship approval is not in status.json\. Nothing was posted\./);
+    expect((screen.getByRole("button", { name: "Post 3 comments" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("shows no consent block once the click is recorded", async () => {
+    api.state.mockResolvedValue(view({ offer: null, running: true }));
+    render(<ClickUpRunSection runDir="/r" stage="shipping" updatedAt="t" />);
+    await screen.findByText("Posting the comments…");
+    expect(screen.queryByRole("region", { name: "Comments ready to post" })).toBeNull();
+  });
+});
+
+describe("a comment that looks like it holds a secret", () => {
+  it("warns under the comment, sends the confirm for that ticket only, and clears it after the post", async () => {
+    api.state.mockResolvedValue({
+      ...base,
+      drafts: [
+        draft("86a", { comment: "key ghp_abcdefghijklmnopqrstuvwxyz0123", secretKind: "a GitHub token" }),
+        draft("86b"),
+      ],
+    });
+    api.post.mockResolvedValue({
+      outcomes: [
+        { ticketId: "86a", result: "posted", message: "comment posted" },
+        { ticketId: "86b", result: "posted", message: "comment posted" },
+      ],
+      error: null,
+    });
+    render(<ClickUpRunSection runDir="/r" stage="done" updatedAt="1" />);
+    const warning = await screen.findByText("This comment looks like it contains a GitHub token.");
+    expect(warning.className).toContain("secret-warning");
+    expect(screen.getByLabelText("Comment for QA-86a").getAttribute("aria-describedby")).toBe(warning.id);
+    // Only the flagged ticket has the confirm box.
+    const confirms = screen.getAllByLabelText("I checked this comment: post it anyway.") as HTMLInputElement[];
+    expect(confirms).toHaveLength(1);
+    expect(confirms[0].checked).toBe(false);
+    expect(screen.queryByText("This comment looks like it contains", { exact: false })?.id).toBe("secret-86a");
+    fireEvent.click(screen.getByLabelText("Post comment on QA-86a"));
+    fireEvent.click(screen.getByLabelText("Post comment on QA-86b"));
+    fireEvent.click(confirms[0]);
+    fireEvent.click(screen.getByText("Post ticked (2)"));
+    await waitFor(() => expect(api.post).toHaveBeenCalled());
+    expect(api.post.mock.calls[0][2]).toEqual([
+      { ticketId: "86a", comment: "key ghp_abcdefghijklmnopqrstuvwxyz0123", status: null, confirmResend: false, confirmSecret: true },
+      { ticketId: "86b", comment: "Comment 86b", status: null, confirmResend: false, confirmSecret: false },
+    ]);
+    await waitFor(() => expect(screen.getByTestId("post-outcomes")).toBeTruthy());
+    expect((screen.getByLabelText("I checked this comment: post it anyway.") as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("shows the confirm after a secret refusal even when the text was edited, and no warning when it is clean", async () => {
+    api.state.mockResolvedValue({ ...base, drafts: [draft("86a", { secretKind: "a Bearer token" }), draft("86b")] });
+    api.post.mockResolvedValue({
+      outcomes: [
+        {
+          ticketId: "86b",
+          result: "not-sent",
+          message: "Comment not sent: looks like it contains a webhook URL. Check the comment, tick the confirm box, then post again.",
+        },
+      ],
+      error: null,
+    });
+    render(<ClickUpRunSection runDir="/r" stage="done" updatedAt="1" />);
+    await screen.findByTestId("draft-86b");
+    expect(within(screen.getByTestId("draft-86b")).queryByLabelText("I checked this comment: post it anyway.")).toBeNull();
+    // Editing the flagged text away drops the warning (the post-time scan decides).
+    fireEvent.change(screen.getByLabelText("Comment for QA-86a"), { target: { value: "clean now" } });
+    expect(screen.queryByText(/looks like it contains a Bearer token/)).toBeNull();
+    expect(within(screen.getByTestId("draft-86a")).queryByLabelText("I checked this comment: post it anyway.")).toBeNull();
+    fireEvent.click(screen.getByLabelText("Post comment on QA-86b"));
+    fireEvent.click(screen.getByText("Post ticked (1)"));
+    await waitFor(() =>
+      expect(within(screen.getByTestId("draft-86b")).getByLabelText("I checked this comment: post it anyway.")).toBeTruthy(),
+    );
+    expect(screen.getByTestId("post-outcomes").textContent).toContain("looks like it contains a webhook URL");
+  });
+});
+
+describe("an automatic attempt that failed before anything was recorded", () => {
+  const waitingView = (waiting: NonNullable<NonNullable<RunClickUp["autoPost"]>["waiting"]>): RunClickUp => ({
+    ...base,
+    drafts: [draft("86a1")],
+    autoPost: { enabled: true, running: false, problem: null, record: null, offer: null, waiting },
+  });
+
+  it("says why, when the next try is, and Try now makes one attempt", async () => {
+    api.state.mockResolvedValue(waitingView({ reason: "The posted record could not be saved: disk full.", nextAt: "2026-10-27T14:32:00Z", noToken: false }));
+    api.now.mockResolvedValue();
+    render(<ClickUpRunSection runDir="/runs/r-1" stage="shipping" updatedAt="t" />);
+    const notice = await screen.findByRole("status");
+    expect(notice.textContent).toContain("Not posted yet: The posted record could not be saved: disk full.");
+    expect(notice.textContent).toMatch(/Next try at \d{2}:\d{2}\./);
+    fireEvent.click(within(notice).getByText("Try now"));
+    await waitFor(() => expect(api.now).toHaveBeenCalledWith("/runs/r-1"));
+    await waitFor(() => expect(api.state.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it("with no token there is no time: it waits for Settings", async () => {
+    api.state.mockResolvedValue(waitingView({ reason: "no ClickUp token for this account", nextAt: null, noToken: true }));
+    render(<ClickUpRunSection runDir="/r" stage="shipping" updatedAt="t" />);
+    const notice = await screen.findByTestId("backoff-notice");
+    expect(notice.textContent).toContain(
+      "Not posted yet: no ClickUp token for this account. Next try after you set one in Settings.",
+    );
+    expect(notice.textContent).not.toMatch(/\d{2}:\d{2}/);
+  });
+
+  it("hides the notice while an attempt runs", async () => {
+    api.state.mockResolvedValue({
+      ...waitingView({ reason: "x", nextAt: "2026-10-27T14:32:00Z", noToken: false }),
+      autoPost: {
+        enabled: true,
+        running: true,
+        problem: null,
+        record: null,
+        waiting: { reason: "x", nextAt: "2026-10-27T14:32:00Z", noToken: false },
+      },
+    });
+    render(<ClickUpRunSection runDir="/r" stage="shipping" updatedAt="t" />);
+    await screen.findByText("Posting the comments…");
+    expect(screen.queryByTestId("backoff-notice")).toBeNull();
   });
 });

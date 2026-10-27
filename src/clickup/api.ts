@@ -46,6 +46,8 @@ export type DraftView = {
   statusNote: string | null;
   posted: { comment?: PartResult; status?: PartResult };
   needsConfirm: boolean;
+  /** What the app's secret scan finds in the unedited comment ("a GitHub token"), if anything. */
+  secretKind?: string | null;
   /** From the app's own snapshot; null: not in it, never posted. */
   trusted: { customId: string | null; name: string; url: string; list: string | null } | null;
 };
@@ -82,6 +84,16 @@ export type AutoPostView = {
   problem: string | null;
   /** A dev-app run used in place: only the app that owns it posts on its own. */
   adopted?: boolean;
+  /** Waiting for the user's click: what would go, and what never goes on its own. */
+  offer?: ConsentOffer | null;
+  /** The last automatic attempt failed before anything was recorded; the next one waits. */
+  waiting?: { reason: string; nextAt: string | null; noToken: boolean } | null;
+};
+export type ConsentOffer = {
+  /** The writeback.json version shown; the click covers exactly this. */
+  writebackSha: string;
+  comments: { ticketId: string; label: string; text: string }[];
+  notIncluded: { ticketId: string; label: string; reason: string }[];
 };
 
 export type ChangedTicket = {
@@ -100,6 +112,8 @@ export type PostRequest = {
   /** The status as shown (the draft's); null: not ticked. */
   status: string | null;
   confirmResend: boolean;
+  /** This comment was flagged by the secret scan and you checked it: send it anyway. */
+  confirmSecret: boolean;
 };
 export type PostOutcome = { ticketId: string; result: string; message: string };
 export type PostReply = { outcomes: PostOutcome[]; error: string | null };
@@ -119,5 +133,10 @@ export const clickupPostWriteback = (runDir: string, draftsVersion: string, requ
   invoke<PostReply>("clickup_post_writeback", { runDir, draftsVersion, requests });
 export const clickupAutoPostRetry = (runDir: string, ticketId: string) =>
   invoke<NonNullable<AutoPostView["record"]>>("clickup_auto_post_retry", { runDir, ticketId });
+/** The one click: records consent for the writeback.json version shown, then the app posts. */
+export const clickupAutoPostConsent = (runDir: string, writebackSha: string) =>
+  invoke<void>("clickup_auto_post_consent", { runDir, writebackSha });
+/** "Try now": ends the run's wait and makes one attempt (consent and secret rules unchanged). */
+export const clickupAutoPostNow = (runDir: string) => invoke<void>("clickup_auto_post_now", { runDir });
 export const clickupSetAutoPost = (accountId: string, on: boolean) =>
   invoke<void>("clickup_set_auto_post", { accountId, on });
