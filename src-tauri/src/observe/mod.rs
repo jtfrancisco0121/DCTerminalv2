@@ -51,10 +51,43 @@ impl ObserveState {
     }
 }
 
-/// The `hooks` settings value and the env for one dcv2 tab launch. None
+/// The sink for new session ids (`HookServer::set_session_sink`): saves a
+/// tab's new session (a `/clear`) so a restart resumes it. Holds the state
+/// store's lock only, never the hook server's.
+pub fn session_sink(app: &AppHandle) -> hooks::SessionSink {
+    let app = app.clone();
+    Box::new(move |tab_id, session_id| {
+        let Some(store) = app.try_state::<Mutex<StateStore>>() else {
+            return;
+        };
+        if let Err(err) = save_session(&store, tab_id, session_id) {
+            eprintln!("DCTerminalv2: could not save the new session of a tab: {err}");
+        }
+    })
+}
+
+/// Saves `session_id` as the tab's session, under the account folder the
+/// tab already has. A tab that is gone or has no folder (it never ran
+/// Claude) is left alone.
+fn save_session(store: &Mutex<StateStore>, tab_id: &str, session_id: &str) -> Result<(), String> {
+    let mut state = store.lock().map_err(|err| err.to_string())?;
+    let Some(config_dir) = state
+        .tab_by_id(tab_id)
+        .and_then(|tab| tab.claude_config_dir.clone())
+    else {
+        return Ok(());
+    };
+    state.remember_claude_session(tab_id, session_id, &config_dir)
+}
+
+/// The `hooks` settings value, the env, and the token of one dcv2 tab launch
+/// (for `HookServer::launch_exited`).
+pub type LaunchHooks = (Value, Vec<(String, String)>, String);
+
+/// The hooks for one dcv2 tab launch. None
 /// when the listener or the `dcv2-hook` binary is missing (the tab then
 /// runs without per-tab state; nothing else changes).
-pub fn launch_hooks(app: &AppHandle, tab_id: &str) -> Option<(Value, Vec<(String, String)>)> {
+pub fn launch_hooks(app: &AppHandle, tab_id: &str) -> Option<LaunchHooks> {
     let state = app.try_state::<ObserveState>()?;
     let server = state.hooks.as_ref()?;
     let exe = std::env::current_exe().ok();
@@ -66,9 +99,9 @@ pub fn launch_hooks(app: &AppHandle, tab_id: &str) -> Option<(Value, Vec<(String
     let env = vec![
         (forward::TAB_ENV.to_string(), tab_id.to_string()),
         (forward::PORT_ENV.to_string(), server.port.to_string()),
-        (forward::TOKEN_ENV.to_string(), token),
+        (forward::TOKEN_ENV.to_string(), token.clone()),
     ];
-    Some((hooks::hook_settings(&hooks::quoted(&bin)), env))
+    Some((hooks::hook_settings(&hooks::quoted(&bin)), env, token))
 }
 
 /// The app's `--settings` keys: the status line (when any) plus `hooks`.
@@ -233,12 +266,26 @@ pub async fn observe_tab(app: AppHandle, tab_id: String) -> Result<TabObservatio
 
 /// A closed tab's token and session tracker go.
 pub fn forget_tab(app: &AppHandle, tab_id: &str) {
+    forget_tabs(app, &[tab_id.to_string()]);
+}
+
+/// The tabs' hook tokens, hook states and session trackers go (a closed
+/// tab, or every tab of a destroyed window). Takes no store lock.
+pub fn forget_tabs(app: &AppHandle, tab_ids: &[String]) {
     if let Some(state) = app.try_state::<ObserveState>() {
-        if let Some(hooks) = &state.hooks {
-            hooks.forget_tab(tab_id);
-        }
-        if let Ok(mut trackers) = state.trackers.lock() {
-            trackers.remove(tab_id);
+        state.forget(tab_ids);
+    }
+}
+
+impl ObserveState {
+    fn forget(&self, tab_ids: &[String]) {
+        for tab_id in tab_ids {
+            if let Some(hooks) = &self.hooks {
+                hooks.forget_tab(tab_id);
+            }
+            if let Ok(mut trackers) = self.trackers.lock() {
+                trackers.remove(tab_id);
+            }
         }
     }
 }
@@ -413,6 +460,65 @@ mod tests {
     use crate::test_support::TempDir;
     use serde_json::json;
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn forgetting_tabs_drops_their_token_state_and_tracker() {
+        let state = ObserveState::start();
+        let hooks = state.hooks.as_ref().expect("listener");
+        let mut tokens = Vec::new();
+        for tab in ["a", "b", "keep"] {
+            let token = hooks.register_tab(tab);
+            assert_eq!(
+                hooks.accept(tab, &token, br#"{"hook_event_name":"UserPromptSubmit"}"#),
+                204
+            );
+            state
+                .trackers
+                .lock()
+                .unwrap()
+                .insert(tab.to_string(), ("s".into(), Default::default()));
+            tokens.push(token);
+        }
+        state.forget(&["a".to_string(), "b".to_string()]);
+        for tab in ["a", "b"] {
+            assert!(!hooks.has_tab(tab));
+            assert!(hooks.state(tab).is_none());
+            assert!(!state.trackers.lock().unwrap().contains_key(tab));
+        }
+        assert_eq!(hooks.accept("a", &tokens[0], b"{}"), 403);
+        assert!(hooks.has_tab("keep") && hooks.state("keep").is_some());
+        assert!(state.trackers.lock().unwrap().contains_key("keep"));
+    }
+
+    #[test]
+    fn a_new_session_is_saved_under_the_tabs_account_folder() {
+        use crate::store::TabKind;
+        let dir = TempDir::new("observe_session_sink");
+        let mut state = StateStore::open_path(dir.join("state.json")).unwrap();
+        let tab = state
+            .create_tab(&dir.path().display().to_string(), TabKind::Claude)
+            .unwrap();
+        let old = "11111111-2222-4333-8444-555555555555";
+        let new = "66666666-7777-4888-8999-000000000000";
+        state.remember_claude_session(&tab, old, "/cfg/a").unwrap();
+        let store = Mutex::new(state);
+        save_session(&store, &tab, new).unwrap();
+        let state = store.lock().unwrap();
+        let record = state.tab_by_id(&tab).unwrap();
+        assert_eq!(record.claude_session_id.as_deref(), Some(new));
+        assert_eq!(record.claude_config_dir.as_deref(), Some("/cfg/a"));
+        drop(state);
+        // A tab that is gone, or never had a folder, is left alone.
+        save_session(&store, "gone", new).unwrap();
+        let mut state = store.lock().unwrap();
+        let bare = state
+            .create_tab(&dir.path().display().to_string(), TabKind::Claude)
+            .unwrap();
+        drop(state);
+        save_session(&store, &bare, new).unwrap();
+        let state = store.lock().unwrap();
+        assert_eq!(state.tab_by_id(&bare).unwrap().claude_session_id, None);
+    }
 
     #[test]
     fn hooks_are_laid_over_the_status_line_settings() {

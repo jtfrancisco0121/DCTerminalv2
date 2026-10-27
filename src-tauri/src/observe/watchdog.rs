@@ -37,10 +37,20 @@ pub fn check(now: SystemTime, input: &WatchInput, threshold_minutes: u32) -> Opt
     if input.waiting_for || input.finished || threshold_minutes == 0 {
         return None;
     }
+    let threshold = Duration::from_secs(u64::from(threshold_minutes) * 60);
     match input.activity {
         // Claude asks you something in the tab: that is not a stall.
         Some(TabActivity::NeedsYou) => return None,
-        Some(TabActivity::Working) if input.tool_running => return None,
+        // A running tool is work, but a tool whose last hook event is older
+        // than twice the threshold is stuck (a crash never sent PostToolUse).
+        Some(TabActivity::Working) if input.tool_running => {
+            let age = input
+                .hook_updated
+                .map(|at| now.duration_since(at).unwrap_or(Duration::ZERO));
+            if age.is_none_or(|age| age < threshold * 2) {
+                return None;
+            }
+        }
         _ => {}
     }
     let last = [
@@ -52,7 +62,6 @@ pub fn check(now: SystemTime, input: &WatchInput, threshold_minutes: u32) -> Opt
     .flatten()
     .max()?;
     let idle = now.duration_since(last).unwrap_or(Duration::ZERO);
-    let threshold = Duration::from_secs(u64::from(threshold_minutes) * 60);
     (idle >= threshold).then_some(Stall {
         minutes: idle.as_secs() / 60,
         threshold: threshold_minutes,
@@ -176,5 +185,29 @@ mod tests {
             None,
             "clock skew"
         );
+    }
+
+    // Ticket 14yq6g30jek: a tool that never finished (the program crashed)
+    // held the watchdog off for good.
+    #[test]
+    fn a_tool_running_for_twice_the_threshold_stops_holding_off_the_watchdog() {
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let secs = Duration::from_secs;
+        // Threshold 10 min = 600 s. The last hook event is at t0.
+        let input = WatchInput {
+            status_changed: Some(t0),
+            transcript_written: Some(t0),
+            activity: Some(TabActivity::Working),
+            tool_running: true,
+            hook_updated: Some(t0),
+            ..Default::default()
+        };
+        assert_eq!(
+            check(t0 + secs(1140), &input, 10),
+            None,
+            "1.9 x: still work"
+        );
+        assert!(check(t0 + secs(1200), &input, 10).is_some(), "2 x: a stall");
+        assert!(check(t0 + secs(3000), &input, 10).is_some());
     }
 }

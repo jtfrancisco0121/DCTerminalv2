@@ -27,6 +27,9 @@ vi.mock("@xterm/xterm", () => ({
     getSelection() {
       return "selected text";
     }
+    onData() {
+      return { dispose() {} };
+    }
     open() {}
   },
 }));

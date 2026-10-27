@@ -11,3 +11,12 @@ export function formatDroppedPaths(paths: readonly string[], windows: boolean): 
   const quoted = paths.filter(Boolean).map((path) => quoteDroppedPath(path, windows));
   return quoted.length > 0 ? `${quoted.join(" ")} ` : "";
 }
+
+/**
+ * Tauri reports a drop position in physical pixels; `elementFromPoint` wants
+ * CSS pixels. `scale` is `window.devicePixelRatio`; 0 or NaN counts as 1.
+ */
+export function dropPointToCss(position: { x: number; y: number }, scale: number): { x: number; y: number } {
+  const factor = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  return { x: position.x / factor, y: position.y / factor };
+}

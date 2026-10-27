@@ -6,8 +6,9 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 
 // The gate for every change: `npm run check`. Rust first (format, lints,
-// tests), then the page (unit tests, then tsc and the production build).
-const steps = [
+// tests), then the page (unit tests, then tsc and the production build), then
+// the plugin's hermetic bash suites. There is no hosted CI: this is the gate.
+const baseSteps = [
   {
     name: "cargo fmt",
     cmd: "cargo",
@@ -35,6 +36,34 @@ const steps = [
   // `tsc && vite build`: the type check, then the bundle.
   { name: "npm run build", cmd: "npm", args: ["run", "build"] },
 ];
+
+// Hermetic suites (each says "no Claude call"): stdlib bash and python only.
+// The live suites (run.sh, golden.sh, standalone.sh, bmad_spike.sh) call
+// Claude and are never part of the gate.
+export const PLUGIN_SUITES = ["guard", "state", "memory", "github", "stop_check", "plugin"];
+
+// A developer's own DCV2_* variables (a run's folder, a hook token, ...) must
+// not leak into the suites: they would pass or fail by the machine they run on.
+export const SUITE_ENV_PREFIX = "DCV2_";
+
+const pluginSteps = PLUGIN_SUITES.map((name) => ({
+  name: `plugin suite ${name}`,
+  cmd: "bash",
+  args: [`scripts/skill-e2e/${name}_test.sh`],
+  removeEnvPrefix: SUITE_ENV_PREFIX,
+}));
+
+/** The gate's steps on `platform`: the bash suites do not run on Windows. */
+export function stepsFor(platform) {
+  return platform === "win32" ? [...baseSteps] : [...baseSteps, ...pluginSteps];
+}
+
+const steps = stepsFor(process.platform);
+
+/** `source` without the variables that start with `prefix`. */
+export function envWithout(prefix, source = process.env) {
+  return Object.fromEntries(Object.entries(source).filter(([key]) => !key.startsWith(prefix)));
+}
 
 function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, "utf8"));
@@ -170,12 +199,14 @@ export function usesCmdShim(command) {
 
 /**
  * Run a command. Clippy's `-- -D warnings` stays separate arguments.
- * `options.env` is added to this process's environment.
+ * `options.env` is added to this process's environment;
+ * `options.removeEnvPrefix` first drops this process's variables with that prefix.
  * On Windows only `.cmd`/`.bat` shims go through `cmd.exe /d /s /c`.
  */
 export function spawnCommand(command, args, options = {}) {
   const stdio = options.stdio ?? "inherit";
-  const env = options.env ? { ...process.env, ...options.env } : undefined;
+  const base = options.removeEnvPrefix ? envWithout(options.removeEnvPrefix) : process.env;
+  const env = options.env || options.removeEnvPrefix ? { ...base, ...options.env } : undefined;
   if (process.platform === "win32" && usesCmdShim(command)) {
     const invocation = windowsInvocation(command, args);
     return spawnSync(invocation.file, invocation.args, {
@@ -194,7 +225,10 @@ export function spawnCommand(command, args, options = {}) {
 
 function runStep(step) {
   console.log(`\n==> ${step.name}`);
-  const result = spawnCommand(step.cmd, step.args, { env: step.env });
+  const result = spawnCommand(step.cmd, step.args, {
+    env: step.env,
+    removeEnvPrefix: step.removeEnvPrefix,
+  });
   if (result.error) {
     console.error(`\n${step.name} failed to start: ${result.error.message}`);
     process.exit(1);

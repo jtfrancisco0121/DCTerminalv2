@@ -15,6 +15,7 @@ import { cachedTheme, isLightTheme, terminalTheme } from "../theme";
 import { detectPlatform } from "./keys";
 import { isLinkModifier } from "./links";
 import { reportError } from "../uiErrors";
+import { livePty, sendPtyInput, subscribeLivePty, type LivePty } from "./live";
 
 export type ParkedTerminal = {
   host: HTMLDivElement;
@@ -26,6 +27,8 @@ export type ParkedTerminal = {
 const parked = new Map<string, ParkedTerminal>();
 let parkRoot: HTMLDivElement | null = null;
 let focusedId = "";
+/** Stops what feeds a parked terminal: its input and its PTY output. */
+const streams = new Map<string, () => void>();
 const searchOpeners = new Map<string, () => void>();
 const refitters = new Map<string, () => void>();
 
@@ -175,10 +178,40 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
     }, 200);
   });
   term.open(host);
+  streams.set(id, connectStreams(id, term));
   parkHost().appendChild(host);
   const created = { host, term, fit, search };
   parked.set(id, created);
   return created;
+}
+
+/**
+ * The parked terminal, not a mounted view, owns its streams: keystrokes go
+ * to the PTY through `live.ts`, and output goes in from the tab's live
+ * buffer, so a hidden tab keeps draining into xterm's scrollback and still
+ * answers terminal queries (DSR) instead of piling bytes up. Subscribed
+ * before output is replayed: ConPTY's first bytes are often a cursor query,
+ * and xterm answers only through onData. A Restart or Resume replaces the
+ * live session, so the output is re-attached whenever it changes.
+ */
+function connectStreams(id: string, term: Terminal): () => void {
+  const input = term.onData((data) => sendPtyInput(id, data));
+  let attached: LivePty | undefined;
+  let detach: (() => void) | undefined;
+  const sync = () => {
+    const live = livePty(id);
+    if (live === attached) return;
+    detach?.();
+    attached = live;
+    detach = live?.buffer.attach({ data: (bytes) => term.write(bytes), exit: () => {} });
+  };
+  sync();
+  const unsubscribe = subscribeLivePty(sync);
+  return () => {
+    unsubscribe();
+    detach?.();
+    input.dispose();
+  };
 }
 
 /** False once the terminal was released (its tab closed). */
@@ -189,6 +222,8 @@ export function isParkedHost(id: string, host: HTMLElement): boolean {
 export function releaseParkedTerminal(id: string): void {
   const entry = parked.get(id);
   if (!entry) return;
+  streams.get(id)?.();
+  streams.delete(id);
   entry.term.dispose();
   entry.host.remove();
   parked.delete(id);

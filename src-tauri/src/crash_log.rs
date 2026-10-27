@@ -1,7 +1,9 @@
 //! Crash log: a panic hook that appends what panicked, where, and a
 //! backtrace to `<data dir>/logs/crash.log`. Release builds use
-//! `panic = "abort"`; the hook still runs first, so the file is written
-//! before the process goes away.
+//! `panic = "abort"` and keep their symbols (`strip = "debuginfo"`): the
+//! hook writes the entry first, then the process aborts, so the backtrace
+//! names functions. Nothing catches a panic to carry on; a panic that
+//! reaches an `extern "C"` boundary (the macOS quit handler) aborts too.
 
 use std::any::Any;
 use std::io::Write;

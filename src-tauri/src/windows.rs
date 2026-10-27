@@ -596,6 +596,9 @@ fn on_window_destroyed(app: &AppHandle, label: &str) {
             }
         }
     }
+    // Hook tokens, hook states and session trackers of the window's tabs
+    // (no store lock is held here).
+    crate::observe::forget_tabs(app, &tab_ids);
     let Some(state) = app.try_state::<Mutex<StateStore>>() else {
         return;
     };
