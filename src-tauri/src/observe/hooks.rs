@@ -6,7 +6,7 @@
 use super::forward::{PATH, TAB_HEADER, TOKEN_HEADER};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -38,8 +38,16 @@ pub struct TabHookState {
     /// Sub-agents started and not stopped (foreground or background).
     pub subagents_running: u32,
     /// A tool started (`PreToolUse`) and has not finished yet: a long Bash
-    /// is work, not a stall.
+    /// is work, not a stall. Derived: some tool id is running, or an event
+    /// without an id set the legacy flag.
     pub tool_running: bool,
+    /// Ids (`tool_use_id`) of the tools started and not finished, so parallel
+    /// tools stay running until the last one ends. At most [`MAX_RUNNING_TOOLS`].
+    #[serde(skip)]
+    pub running_tools: BTreeSet<String>,
+    /// A `PreToolUse` without an id: the old one-flag behaviour.
+    #[serde(skip)]
+    pub legacy_flag: bool,
     /// The session the events are for (a `/clear` or resume starts a new one).
     pub session_id: Option<String>,
     /// Unix milliseconds when `activity` last changed. Unlike `updated_ms`
@@ -47,6 +55,10 @@ pub struct TabHookState {
     /// of an episode: how long the tab has been needs-you, say.
     pub activity_since_ms: Option<u64>,
 }
+
+/// More running tool ids than this is a runaway (lost `Post` events): the
+/// set is cleared instead of growing.
+pub const MAX_RUNNING_TOOLS: usize = 64;
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -56,6 +68,23 @@ fn now_ms() -> u64 {
 }
 
 impl TabHookState {
+    /// Nothing runs any more: no tool, no flag.
+    fn clear_tools(&mut self) {
+        self.running_tools.clear();
+        self.legacy_flag = false;
+        self.tool_running = false;
+    }
+
+    fn sync_tool_running(&mut self) {
+        self.tool_running = !self.running_tools.is_empty() || self.legacy_flag;
+    }
+
+    /// The launch's program exited: nothing runs, nothing is working.
+    pub fn exited(&mut self) {
+        self.clear_tools();
+        self.subagents_running = 0;
+    }
+
     /// One reduced hook event (`forward::reduce`).
     pub fn apply(&mut self, event: &Value, at_ms: u64) {
         let name = event
@@ -67,10 +96,14 @@ impl TabHookState {
             .and_then(Value::as_u64)
             .unwrap_or(0) as u32;
         let before = self.activity;
+        let tool_id = event
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty());
         match name {
             "SessionStart" => {
                 self.activity = TabActivity::Waiting;
-                self.tool_running = false;
+                self.clear_tools();
                 // Only SessionStart moves the session (a /clear or a resume
                 // starts a new one). Any other event may come from a
                 // sub-agent or an old session.
@@ -83,11 +116,27 @@ impl TabHookState {
             "UserPromptSubmit" => self.activity = TabActivity::Working,
             "PreToolUse" => {
                 self.activity = TabActivity::Working;
-                self.tool_running = true;
+                match tool_id {
+                    Some(_) if self.running_tools.len() >= MAX_RUNNING_TOOLS => {
+                        // A runaway (Post events lost): start over rather than grow.
+                        self.clear_tools();
+                    }
+                    Some(id) => {
+                        self.running_tools.insert(id.to_string());
+                    }
+                    None => self.legacy_flag = true,
+                }
+                self.sync_tool_running();
             }
             "PostToolUse" | "PostToolUseFailure" => {
                 self.activity = TabActivity::Working;
-                self.tool_running = false;
+                match tool_id {
+                    Some(id) => {
+                        self.running_tools.remove(id);
+                    }
+                    None => self.legacy_flag = false,
+                }
+                self.sync_tool_running();
             }
             "SubagentStart" => {
                 self.subagents_running += 1;
@@ -106,11 +155,12 @@ impl TabHookState {
                     _ => self.activity = TabActivity::NeedsYou,
                 }
             }
-            "Stop" => {
-                // The orchestrator's turn ended while background sub-agents
-                // still run: it is waiting on them, not on you.
+            "Stop" | "StopFailure" => {
+                // The orchestrator's turn ended (a failed turn too) while
+                // background sub-agents may still run: it is waiting on
+                // them, not on you.
                 self.subagents_running = background;
-                self.tool_running = false;
+                self.clear_tools();
                 self.activity = if background > 0 {
                     TabActivity::Working
                 } else {
@@ -120,7 +170,7 @@ impl TabHookState {
             "SessionEnd" => {
                 self.activity = TabActivity::Unknown;
                 self.subagents_running = 0;
-                self.tool_running = false;
+                self.clear_tools();
             }
             _ => return,
         }
@@ -308,8 +358,7 @@ impl HookServer {
             state.activity_since_ms = Some(now_ms());
         }
         state.activity = TabActivity::Unknown;
-        state.subagents_running = 0;
-        state.tool_running = false;
+        state.exited();
         state.last_event = Some("PtyExit".to_string());
         state.updated_ms = Some(now_ms());
     }
@@ -412,6 +461,7 @@ pub const EVENTS: &[&str] = &[
     "SubagentStart",
     "SubagentStop",
     "Stop",
+    "StopFailure",
     "Notification",
     "PermissionRequest",
     "SessionEnd",
@@ -507,6 +557,14 @@ mod tests {
         let stop = forward::reduce(&fixture("SubagentStop.json"));
         assert!(stop.get("last_assistant_message").is_none());
         assert_eq!(stop["background_running"], 0);
+        let long = forward::reduce(
+            &json!({"hook_event_name": "PreToolUse", "tool_use_id": "x".repeat(500)}),
+        );
+        assert_eq!(
+            long["tool_use_id"].as_str().unwrap().len(),
+            200,
+            "truncated"
+        );
     }
 
     #[test]
@@ -565,6 +623,100 @@ mod tests {
         );
         state.apply(&json!({"hook_event_name": "Unheard"}), 7);
         assert_eq!(state.updated_ms, Some(6), "unknown events change nothing");
+    }
+
+    #[test]
+    fn overlapping_tools_stay_running_until_both_end() {
+        let mut state = TabHookState::default();
+        let pre = |id: &str| json!({"hook_event_name": "PreToolUse", "tool_use_id": id});
+        let post = |id: &str| json!({"hook_event_name": "PostToolUse", "tool_use_id": id});
+        state.apply(&pre("a"), 1);
+        state.apply(&pre("b"), 2);
+        assert!(state.tool_running);
+        state.apply(&post("a"), 3);
+        assert!(state.tool_running, "b still runs");
+        state.apply(
+            &json!({"hook_event_name": "PostToolUseFailure", "tool_use_id": "b"}),
+            4,
+        );
+        assert!(!state.tool_running);
+        // An end for an unknown id changes nothing.
+        state.apply(&post("zzz"), 5);
+        assert!(!state.tool_running);
+    }
+
+    #[test]
+    fn failure_session_end_and_pty_exit_clear_every_running_tool() {
+        let running = || {
+            let mut state = TabHookState::default();
+            for id in ["a", "b"] {
+                state.apply(
+                    &json!({"hook_event_name": "PreToolUse", "tool_use_id": id}),
+                    1,
+                );
+            }
+            state.apply(&json!({"hook_event_name": "PreToolUse"}), 1);
+            assert!(state.tool_running);
+            state
+        };
+        for event in ["Stop", "StopFailure", "SessionEnd", "SessionStart"] {
+            let mut state = running();
+            state.apply(&json!({"hook_event_name": event}), 2);
+            assert!(!state.tool_running, "{event}");
+            assert!(
+                state.running_tools.is_empty() && !state.legacy_flag,
+                "{event}"
+            );
+        }
+        let mut state = running();
+        state.exited();
+        assert!(!state.tool_running);
+        // Through the server: the PTY exit of the current launch.
+        let server = HookServer::start().unwrap();
+        let token = server.register_tab("tab-t");
+        let pre = br#"{"hook_event_name":"PreToolUse","tool_use_id":"a"}"#;
+        assert_eq!(server.accept("tab-t", &token, pre), 204);
+        assert!(server.state("tab-t").unwrap().tool_running);
+        server.launch_exited("tab-t", &token);
+        assert!(!server.state("tab-t").unwrap().tool_running);
+    }
+
+    #[test]
+    fn an_event_without_an_id_uses_the_one_flag_and_the_65th_id_clears() {
+        let mut state = TabHookState::default();
+        state.apply(&json!({"hook_event_name": "PreToolUse"}), 1);
+        assert!(state.tool_running);
+        state.apply(&json!({"hook_event_name": "PostToolUse"}), 2);
+        assert!(!state.tool_running);
+        for n in 0..MAX_RUNNING_TOOLS {
+            state.apply(
+                &json!({"hook_event_name": "PreToolUse", "tool_use_id": format!("t{n}")}),
+                3,
+            );
+        }
+        assert!(state.tool_running);
+        assert_eq!(state.running_tools.len(), MAX_RUNNING_TOOLS);
+        state.apply(
+            &json!({"hook_event_name": "PreToolUse", "tool_use_id": "t-extra"}),
+            4,
+        );
+        assert!(state.running_tools.is_empty(), "the 65th clears");
+        assert!(!state.tool_running);
+    }
+
+    #[test]
+    fn stop_failure_is_registered_and_the_old_fixtures_still_parse() {
+        assert!(EVENTS.contains(&"StopFailure"));
+        let settings = hook_settings("x");
+        assert!(settings["hooks"]["StopFailure"].is_array());
+        // The recorded 2.1.287 PostToolUse has an id the reducer keeps.
+        let post = forward::reduce(&fixture("PostToolUse.json"));
+        assert!(post["tool_use_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty() && id.len() <= 200));
+        let mut state = TabHookState::default();
+        state.apply(&post, 1);
+        assert!(!state.tool_running);
     }
 
     #[test]
