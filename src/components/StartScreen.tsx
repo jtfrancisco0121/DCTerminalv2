@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   detectFolderRepos,
+  readRunFile,
   resumeRun,
   runOverview,
   startRun,
@@ -12,7 +14,8 @@ import {
   type StartedRun,
 } from "../run/api";
 import { WorktreeSetup } from "./WorktreeSetup";
-import { stageText } from "../run/words";
+import { relativeDate, stageText } from "../run/words";
+import { TextDialog } from "./RunPanel";
 import { errorText } from "./InlineNotice";
 import { MemoryPanel } from "./MemoryPanel";
 import { ClickUpIntake } from "../clickup/ClickUpIntake";
@@ -24,7 +27,12 @@ type Props = {
   onStarted: (started: StartedRun) => void;
   /** Open a plain Claude or shell tab instead. */
   onPlainTab: () => void;
+  /** Open the Runs view (every run, with search). */
+  onShowAllRuns?: () => void;
 };
+
+/** How many earlier runs the start screen lists; the Runs view has them all. */
+export const EARLIER_RUNS = 8;
 
 function reposText(found: FolderRepos | null): string {
   if (!found) return "";
@@ -85,13 +93,14 @@ function rememberBmadMode(folder: string, mode: BmadMode): void {
  * New run: a folder, what to do, and Start Eagle-Eye. One role on its own
  * is one tile. Earlier runs can be resumed.
  */
-export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: Props) {
+export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, onShowAllRuns }: Props) {
   const [folder, setFolder] = useState(initialFolder);
   const [found, setFound] = useState<FolderRepos | null>(null);
   const [request, setRequest] = useState("");
   const [overview, setOverview] = useState<RunOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [report, setReport] = useState<{ title: string; text: string } | null>(null);
   const [tickets, setTickets] = useState<ClickUpStart | null>(null);
   const [reviewOnGitHub, setReviewOnGitHub] = useState(() => rememberedReviewOnGitHub(windowId));
   const [bmadMode, setBmadMode] = useState<BmadMode>(() => rememberedBmadMode(initialFolder.trim()));
@@ -168,8 +177,14 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
     }
   };
 
+  const showReport = (run: { runDir: string; title: string | null; runId: string }) =>
+    readRunFile(run.runDir, "report.md").then(
+      (text) => setReport({ title: `Report: ${run.title ?? run.runId}`, text }),
+      (err: unknown) => setError(errorText(err)),
+    );
+
   const canEagle = found !== null && found.repos.length > 0;
-  const runs = (overview?.runs ?? []).slice(0, 8);
+  const runs = (overview?.runs ?? []).slice(0, EARLIER_RUNS);
 
   return (
     <div className="run-start">
@@ -305,7 +320,24 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
                   {" "}
                   — {stageText(run.stage)}
                   {run.folder ? ` · ${run.folder}` : ""}
+                  {relativeDate(run.createdAt ?? run.updatedAt) ? ` · ${relativeDate(run.createdAt ?? run.updatedAt)}` : ""}
                 </span>
+                {run.stage === "done" && (
+                  <>
+                    {run.hasReport && (
+                      <button type="button" className="link-button" onClick={() => void showReport(run)}>
+                        Report
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() => void revealItemInDir(run.runDir).catch((err: unknown) => setError(errorText(err)))}
+                    >
+                      Open folder
+                    </button>
+                  </>
+                )}
                 {run.stage !== "done" && (
                   <button
                     type="button"
@@ -319,8 +351,14 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
               </li>
             ))}
           </ul>
+          {onShowAllRuns && (
+            <button type="button" className="link-button" onClick={onShowAllRuns}>
+              Show all{(overview?.runs.length ?? 0) > EARLIER_RUNS ? ` (${overview!.runs.length})` : ""}
+            </button>
+          )}
         </section>
       )}
+      {report && <TextDialog title={report.title} text={report.text} onClose={() => setReport(null)} />}
       {overview?.pluginVersion && <p className="hint run-version">dcv2 roles {overview.pluginVersion}</p>}
     </div>
   );

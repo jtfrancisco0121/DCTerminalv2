@@ -353,6 +353,7 @@ function App() {
                 initialFolder={newTabDefaults(state, lastFolder).cwd}
                 onStarted={(run) => void started(run)}
                 onPlainTab={() => setPlainTab(true)}
+                onShowAllRuns={() => setDialog("runs")}
               />
             )}
             {state.closedTabs.length > 0 && (
@@ -416,6 +417,7 @@ function App() {
               initialFolder={newTabDefaults(state, lastFolder).cwd}
               onStarted={(run) => void started(run)}
               onPlainTab={() => setPlainTab(true)}
+                onShowAllRuns={() => setDialog("runs")}
             />
           )}
         </Dialog>
