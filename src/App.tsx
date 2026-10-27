@@ -245,9 +245,11 @@ function App() {
 
   const doClose = (tabId: string) => {
     setConfirmClose(null);
-    releaseTerminals(tabId);
     closeTab(windowId, tabId).then(
-      (next) => setState(next),
+      (next) => {
+        releaseTerminals(tabId);
+        setState(next);
+      },
       (err: unknown) => fail("Close tab", err),
     );
   };
@@ -358,8 +360,8 @@ function App() {
     setConfirmCloseMany(null);
     for (const id of ids) {
       try {
-        releaseTerminals(id);
         const next = await closeTab(windowId, id);
+        releaseTerminals(id);
         setState(next);
       } catch (err) {
         fail("Close tab", err);

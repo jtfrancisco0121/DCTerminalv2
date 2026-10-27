@@ -559,7 +559,12 @@ impl Reader {
                         &format!("attention: could not read the auto-post record: {err}"),
                     );
                 }
-                last.unwrap_or_default()
+                // Remember the mtime: a failed read is retried only when the
+                // record file changes, not every tick.
+                let kept = last.unwrap_or_default();
+                self.autopost
+                    .insert(run_id.to_string(), (mtime, kept.clone()));
+                kept
             }
         }
     }
