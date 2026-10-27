@@ -94,3 +94,5 @@ Debug builds keep their data in `<identifier>.dev`, release builds in `<identifi
 - **Refused while the dev app is live**: its `app.lock` is held (every build now flocks `<app data>/app.lock` for its whole life, pid inside), a `claude` process runs one of its tabs' sessions (`ps`), or a session log was written in the last 2 min → "Quit the dev app first".
 - Resuming an adopted run's tab is refused while another `claude` process runs that session.
 - Keychain items (ClickUp tokens, the trust key) have the same service names in both builds; macOS asks once to let the built app use them.
+
+Guard no-write zones (run-safety hardening): in a bound run (`DCV2_RUN_DIR` set) nobody, the orchestrator included, writes with Edit/Write or a shell redirect/copy/move into the plugin folder, `CLAUDE_CONFIG_DIR` or `~/.claude*`, or the app's data folder outside the run folder (run-folder.md, Run-safety hardening). A session with no `DCV2_RUN_DIR` is not affected.

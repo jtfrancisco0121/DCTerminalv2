@@ -8,7 +8,7 @@ d="$(mktemp -d)"; d="$(cd "$d" && pwd -P)"
 trap 'rm -rf "$d"' EXIT
 
 # A repo, a bound run with PR1's worktree recorded by state.sh, and look-alikes that are not recorded.
-RUN="$d/runs/r-x"; R="$d/ws/r"; WT="$d/ws/r-worktrees/dcv2-r-x-pr1"
+APPD="$d/app"; RUN="$APPD/runs/r-x"; R="$d/ws/r"; WT="$d/ws/r-worktrees/dcv2-r-x-pr1"
 mkdir -p "$RUN" "$R" "$d/fake"
 git -C "$R" init -q -b main && git -C "$R" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 base="$(git -C "$R" rev-parse HEAD)"
@@ -44,7 +44,7 @@ w 2 dcv2:implementer "$d/ws/r-worktrees/dcv2-other-pr1/a.js"
 w 2 dcv2:implementer "$d/fake/plan.md"
 w 2 dcv2:implementer "$WT/link/a.js"
 w 2 dcv2:implementer "$WT/../../r/a.js"
-w 2 dcv2:implementer "$RUN/../../ws/r/a.js"
+w 2 dcv2:implementer "$RUN/../../../ws/r/a.js"
 w 2 implementer "$R/a.js"
 w 0 implementer "$WT/a.js"
 w 2 pr-reviewer "$WT/a.js"
@@ -60,13 +60,13 @@ w 2 "" "$RUN/status.json"
 w 2 "" "$RUN/.guard.json"
 w 2 dcv2:implementer "$RUN/writeback.json"
 w 2 "" "$d/fake/status.json"
-TRUST="$d/run-trust/r-x"; mkdir -p "$TRUST"                                                   # <app data>/run-trust (RUN is <d>/runs/r-x)
+TRUST="$APPD/run-trust/r-x"; mkdir -p "$TRUST"                                                   # <app data>/run-trust (RUN is <app data>/runs/r-x)
 for who in "" dcv2:implementer dcv2:planner dcv2:pr-reviewer; do
   w 2 "$who" "$TRUST/trust.json"
   w 2 "$who" "$TRUST/../r-other/tickets.json"
   b 2 "$who" "echo {} > $TRUST/posted.json"
   b 2 "$who" "cp /dev/null $TRUST/tickets.json.mac"
-  b 2 "$who" "rm -rf $d/run-trust"
+  b 2 "$who" "rm -rf $APPD/run-trust"
 done
 b 2 "" 'echo x > "$HOME/x/run-trust/r-x/trust.json"'
 expect 0 "user session (no run) may write run-trust" "$(payload "" Write file_path "$TRUST/trust.json")" -u DCV2_RUN_DIR
@@ -92,13 +92,13 @@ w 0 dcv2:implementer "$(UP "$WT")/a.js"          # the same worktree, spelled in
 b 2 "" "git -C $(UP "$R") reset --hard"
 b 2 "" "echo x > $(UP "$R")/a.js"
 b 0 "" "git -C $R status"
-MEMU="$d/mem"; mkdir -p "$MEMU/x/topics"
+MEMU="$APPD/memory"; mkdir -p "$MEMU/x/topics"
 expect 2 "planner Write into the upper-cased memory dir" "$(payload dcv2:planner Write file_path "$(UP "$MEMU")/x/index.md")" DCV2_MEMORY_DIR="$MEMU"
 expect 2 "orchestrator redirect into the upper-cased memory dir" "$(payload "" Bash command "echo x > $(UP "$MEMU")/x/index.md")" DCV2_MEMORY_DIR="$MEMU"
 w 0 dcv2:implementer "$WT/Sub/A.js"
 
 echo "# codebase memory: only memory.sh write (D9)"
-MEMD="$d/mem"; mkdir -p "$MEMD/x/topics"
+MEMD="$APPD/memory"; mkdir -p "$MEMD/x/topics"
 expect 2 "orchestrator Write into memory" "$(payload "" Write file_path "$MEMD/x/index.md")" DCV2_MEMORY_DIR="$MEMD"
 expect 2 "user session Write into memory" "$(payload "" Edit file_path "$MEMD/x/topics/a.md")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMD"
 expect 2 "implementer Write into memory" "$(payload dcv2:implementer Write file_path "$MEMD/x/index.md")" DCV2_MEMORY_DIR="$MEMD"
@@ -182,8 +182,8 @@ for who in "" dcv2:implementer; do
   b 2 "$who" "ln $R/a.txt $RUN/h && echo evil >> $RUN/h"
   b 2 "$who" "ln -s $RUN/.guard.json $RUN/x"
   b 2 "$who" "ln -sf $RUN/status.json $RUN/x"
-  b 2 "$who" "ln -s ../../../ws/r/a.txt $RUN/sub/l" "$d"
-  b 2 "$who" "ln -s ../../../ws/r/a.txt l" "$RUN/sub"
+  b 2 "$who" "ln -s ../../../../ws/r/a.txt $RUN/sub/l" "$d"
+  b 2 "$who" "ln -s ../../../../ws/r/a.txt l" "$RUN/sub"
   b 2 "$who" "ln -s $R/a.txt -t $RUN"
   b 2 "$who" "cp -s $R/a.txt $RUN/c"
   b 2 "$who" "cp -sf $R/a.txt $RUN/c"
@@ -201,6 +201,41 @@ b 0 dcv2:implementer "cp $WT/a.js $WT/c.js"
 b 0 dcv2:implementer "cp -r $R/a.txt $WT/c.txt"
 b 0 "" "cp $R/a.txt $RUN/copy.txt"
 b 0 "" "ln -s a b" "$RUN"
+
+echo "# no-write zones in a bound run: plugin, Claude config, app data (CAP-4)"
+ZH="$d/home"; ZP="$d/plug"; ZC="$d/cfg"; mkdir -p "$ZH/.claude" "$ZP/scripts" "$ZP/hooks" "$ZC" "$APPD/launch"
+zenv=(HOME="$ZH" CLAUDE_PLUGIN_ROOT="$ZP" CLAUDE_CONFIG_DIR="$ZC")
+zw() { expect "$1" "$2 Write ${3//$d/}" "$(payload "$2" Write file_path "$3")" "${zenv[@]}"; }
+zb() { expect "$1" "$2 Bash: ${3//$d/}" "$(payload "$2" Bash command "$3")" "${zenv[@]}"; }
+for who in "" dcv2:implementer dcv2:planner; do
+  zw 2 "$who" "$ZP/scripts/guard.sh"
+  zw 2 "$who" "$ZP/hooks/hooks.json"
+  zw 2 "$who" "$ZH/.claude/settings.json"
+  zw 2 "$who" "$ZH/.claude.json"
+  zw 2 "$who" "$ZH/.claude-account1/settings.json"
+  zw 2 "$who" "$ZC/settings.json"
+  zw 2 "$who" "$APPD/launch/settings.json"
+  zw 2 "$who" "$APPD/runs/r-other/plan.md"
+  zb 2 "$who" "printf 'exit 0' > $ZP/scripts/guard.sh"
+  zb 2 "$who" "cp /dev/null $ZH/.claude/settings.json"
+  zb 2 "$who" "echo x >> $APPD/launch/settings.json"
+  zb 2 "$who" "sed -i '' s/a/b/ $ZP/hooks/hooks.json"
+done
+expect 2 "orchestrator Edit of the running plugin (no CLAUDE_PLUGIN_ROOT: the guard's own folder)" "$(payload "" Edit file_path "$ROOT/plugin/scripts/guard.sh")" HOME="$ZH"
+zw 0 "" "$RUN/plan.md"
+zw 0 dcv2:planner "$RUN/plan.md"
+zw 0 dcv2:implementer "$WT/a.js"
+zw 0 "" "$d/elsewhere/notes.md"
+zw 0 "" "$ZH/notes.md"
+zb 0 dcv2:implementer "echo x > $WT/a.js"
+zb 0 "" "echo x > $RUN/notes.md"
+expect 0 "unbound session writes ~/.claude/settings.json" "$(payload "" Write file_path "$ZH/.claude/settings.json")" -u DCV2_RUN_DIR "${zenv[@]}"
+expect 0 "unbound session writes the plugin folder" "$(payload "" Write file_path "$ZP/scripts/guard.sh")" -u DCV2_RUN_DIR "${zenv[@]}"
+# an adopted dev run: the run folder is under a different data folder than DCV2_MEMORY_DIR's parent
+DEVD="$d/dev"; DRUN="$DEVD/runs/r-y"; mkdir -p "$DRUN" "$DEVD/launch" "$APPD/memory"; printf 'folder: %s/ws\n' "$d" > "$DRUN/request.md"
+expect 2 "adopted run: the memory folder's parent (the other data folder) is not written" "$(payload "" Write file_path "$APPD/launch/x")" DCV2_RUN_DIR="$DRUN" DCV2_MEMORY_DIR="$APPD/memory" "${zenv[@]}"
+expect 2 "adopted run: the run's own data folder is not written" "$(payload "" Write file_path "$DEVD/launch/x")" DCV2_RUN_DIR="$DRUN" DCV2_MEMORY_DIR="$APPD/memory" "${zenv[@]}"
+expect 0 "adopted run: its own run folder is" "$(payload "" Write file_path "$DRUN/plan.md")" DCV2_RUN_DIR="$DRUN" DCV2_MEMORY_DIR="$APPD/memory" "${zenv[@]}"
 
 echo "# Bash: the orchestrator"
 b 2 "" "git -C $WT push -u origin dcv2/r-x-pr1"
@@ -493,7 +528,7 @@ done
 b 0 "" "git -C $WT config --get remote.origin.url && git -C $WT remote -v"
 
 echo "# other runs' requests (review of #11)"
-RB="$d/runs/r-b"; mkdir -p "$RB"; printf 'folder: %s/ws\n' "$d" > "$RB/request.md"
+RB="$APPD/runs/r-b"; mkdir -p "$RB"; printf 'folder: %s/ws\n' "$d" > "$RB/request.md"
 for who in "" dcv2:implementer; do
   w 2 "$who" "$RB/requests/20261027T000000Z-selftest.json"
   w 2 "$who" "$RB/app-cleanup.json"

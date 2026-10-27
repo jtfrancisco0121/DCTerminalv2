@@ -182,6 +182,24 @@ def protected(p):
     return same(d, run) or has_request_md(d)
 
 
+def no_write_zone(p):
+    """Bound runs (everyone, the orchestrator too) never write the plugin (its guard and hooks), Claude's own
+    configuration, or the app's data outside the run folder (and, for the implementer, its worktrees)."""
+    if not run:
+        return None
+    home = os.path.realpath(os.path.expanduser("~"))
+    plugin_roots = [r for r in (os.environ.get("CLAUDE_PLUGIN_ROOT") or "", GUARD_PLUGIN) if r]
+    if any(inside(p, r) for r in plugin_roots):
+        return "the dcv2 plugin (its guard, hooks and scripts)"
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR") or ""
+    if inside(p, cfg) or (inside(p, home) and os.path.relpath(norm(p), norm(home)).split(os.sep)[0].startswith(".claude")):
+        return "Claude's own configuration (~/.claude*)"
+    roots = [os.path.dirname(os.path.dirname(run))] + ([os.path.dirname(mem)] if mem else [])
+    if any(inside(p, r) for r in roots if r and norm(r) not in (norm(home), os.sep)) and not write_allowed(p):
+        return "the app's data folder"
+    return None
+
+
 def bmad_config(p):
     """<run>/bmad/_bmad/config*.toml and _bmad/custom/: BMAD's config is made only by `state.sh bmad-init`."""
     if not run:
@@ -193,6 +211,9 @@ def bmad_config(p):
 
 
 BMAD_CFG_MSG = "BMAD's config under <run>/bmad/_bmad is written only by `state.sh bmad-init`, never with Edit, Write or a shell write."
+
+
+GUARD_PLUGIN = os.path.realpath(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1] else ""
 
 
 def write_allowed(p):
@@ -243,6 +264,9 @@ if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
     if inside(p, mem):
         block("codebase memory is written only with `bash <plugin>/scripts/memory.sh write <repo id> <file> <<'EOF'` "
               "(it checks size caps, secrets and pinned lines), never with Edit or Write.")
+    zone = no_write_zone(p)
+    if zone:
+        block(f"{p} is {zone}: it is never written from a bound run.")
     if not pipeline and run and main_checkout(p):
         block(f"the orchestrator never edits a repo's main checkout ({p}); sub-agents work in the run's worktrees.")
     if not pipeline or write_allowed(p):
@@ -324,6 +348,9 @@ def check_write(t, cwd):
         return
     if git_user_config(p):
         block(GITCONFIG_MSG)
+    zone = no_write_zone(p)
+    if zone:
+        block(f"{p} is {zone}: it is never written from a bound run.")
     if protected(p):
         block("write run-folder state only with scripts/state.sh, never with a shell redirect or copy.")
     if bmad_config(p):
@@ -963,7 +990,7 @@ analyze(CMD, cwd0)
 sys.exit(0)
 PY
 
-python3 -c "$PY" <<<"$input"
+python3 -c "$PY" "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P)" <<<"$input"
 rc=$?
 case $rc in
   0|2) exit $rc ;;
