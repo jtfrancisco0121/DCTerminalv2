@@ -1437,6 +1437,21 @@ body,
   padding: 2px var(--space-1);
 }
 
+.selftest-steps {
+  list-style: none;
+  margin: var(--space-1) 0;
+  padding: 0;
+  font-size: var(--text-xs);
+}
+
+.selftest-pass {
+  color: var(--success);
+}
+
+.selftest-fail {
+  color: var(--danger);
+}
+
 .version-banner {
   padding: 0 var(--space-3);
 }

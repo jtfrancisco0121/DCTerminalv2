@@ -99,6 +99,15 @@ export function pollsActivity(tabs: ReadonlyArray<{ kind: string; role?: string 
   return tabs.some((tab) => tab.kind === "claude" || Boolean(tab.role));
 }
 
+/** The self-test's three steps, in order, each pass or fail. */
+export function selftestSteps(test: SelfTest): { label: string; ok: boolean }[] {
+  return [
+    { label: "Plugin loaded", ok: test.pluginLoaded },
+    { label: "Agent spawned", ok: test.agentSpawned },
+    { label: "Agent completed", ok: test.agentCompleted },
+  ];
+}
+
 export function activityText(activity: TabActivity | undefined | null): string | null {
   switch (activity) {
     case "working":

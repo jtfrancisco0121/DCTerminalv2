@@ -121,4 +121,23 @@ describe("ClaudeVersionBannerView", () => {
     fireEvent.click(screen.getByText(/Run the 30 s self-test/));
     expect(onSelftest).toHaveBeenCalledTimes(1);
   });
+
+  it("lists the three self-test steps with pass or fail and the seconds when it failed", () => {
+    const failed: ClaudeVersionStatus = {
+      ...ok,
+      selftest: { ...ok.selftest!, ok: false, agentCompleted: false, detail: "the agent did not finish", seconds: 44.6 },
+    };
+    render(<ClaudeVersionBannerView status={failed} running={false} problem={null} onSelftest={vi.fn()} />);
+    const steps = screen.getByTestId("selftest-steps");
+    const items = Array.from(steps.querySelectorAll("li")).map((li) => li.textContent);
+    expect(items).toEqual(["✓ Plugin loaded", "✓ Agent spawned", "✗ Agent completed"]);
+    expect(steps.querySelector(".selftest-fail")?.textContent).toBe("✗ Agent completed");
+    expect(steps.textContent).toContain("took 45 s");
+  });
+
+  it("shows the steps of a self-test that just passed", () => {
+    render(<ClaudeVersionBannerView status={ok} running={false} problem={null} onSelftest={vi.fn()} showResult />);
+    expect(screen.getByTestId("selftest-steps").textContent).toContain("✓ Agent completed");
+    expect(screen.getByTestId("selftest-steps").textContent).toContain("took 7 s");
+  });
 });
