@@ -117,6 +117,16 @@ pub struct PrView {
     pub draft: Option<bool>,
     /// `prs[].comments`: one review comment per round, posted on the PR.
     pub comments: Vec<PrComment>,
+    /// GitHub CI from `app-github.json` (app-written): `pass`, `fail`,
+    /// `pending`, `none` or `unknown` (the last `gh` call failed); None when
+    /// the PR was never read.
+    pub ci: Option<String>,
+    /// When the app read the PR on GitHub (UTC).
+    pub ci_at: Option<String>,
+    /// The last failed `gh` call's reason.
+    pub ci_error: Option<String>,
+    /// The PR's state on GitHub: `OPEN`, `MERGED` or `CLOSED`; None until read.
+    pub pr_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -626,9 +636,16 @@ pub fn read_run(run_dir: &Path, checks_running: bool) -> RunView {
         view.folder = super::folder::run_folder_of(run_dir);
     }
     let checks = read_app_checks(run_dir);
+    let github = super::github::read_github(run_dir);
     let repo_checks = repo_checks(run_dir);
     for pr in &mut view.prs {
         pr.gate = read_gate(run_dir, &pr.id);
+        if let Some(gh) = github.prs.get(&pr.id) {
+            pr.ci = Some(gh.ci.clone());
+            pr.ci_at = Some(gh.at.clone()).filter(|at| !at.is_empty());
+            pr.ci_error = gh.error.clone();
+            pr.pr_state = Some(gh.pr_state.clone()).filter(|s| !s.is_empty());
+        }
         pr.app_check = checks.get(&pr.id).cloned().map(|mut check| {
             if check.result == "running" && !checks_running {
                 check.result = "interrupted".into();
@@ -689,6 +706,43 @@ mod tests {
     use super::*;
     use crate::test_support::TempDir;
     use serde_json::json;
+
+    #[test]
+    fn github_ci_and_pr_state_come_from_the_app_written_file_only() {
+        let dir = TempDir::new("status_github");
+        std::fs::write(
+            dir.join("status.json"),
+            json!({"schema": 1, "stage": "building", "prs": [
+                {"id": "PR1", "prUrl": "https://github.com/o/r/pull/1", "ci": "pass", "prState": "MERGED"},
+                {"id": "PR2"}]})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("app-github.json"),
+            json!({"schema": 1, "prs": {
+                "PR1": {"ci": "fail", "prState": "OPEN", "at": "2026-10-27T14:00:00Z"},
+                "PR2": {"ci": "unknown", "prState": "", "at": "2026-10-27T14:01:00Z", "error": "gh pr view: timed out"}}})
+            .to_string(),
+        )
+        .unwrap();
+        let view = read_run(dir.path(), false);
+        let (one, two) = (&view.prs[0], &view.prs[1]);
+        // status.json's own `ci` / `prState` keys are ignored; the app's file is the source.
+        assert_eq!(one.ci.as_deref(), Some("fail"));
+        assert_eq!(one.pr_state.as_deref(), Some("OPEN"));
+        assert_eq!(one.ci_at.as_deref(), Some("2026-10-27T14:00:00Z"));
+        assert_eq!(two.ci.as_deref(), Some("unknown"));
+        assert_eq!(two.pr_state, None);
+        assert_eq!(two.ci_error.as_deref(), Some("gh pr view: timed out"));
+        let none = TempDir::new("status_github_none");
+        std::fs::write(
+            none.join("status.json"),
+            json!({"schema": 1, "prs": [{"id": "PR1"}]}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(read_run(none.path(), false).prs[0].ci, None);
+    }
 
     #[test]
     fn a_partial_status_with_unknown_fields_still_reads() {

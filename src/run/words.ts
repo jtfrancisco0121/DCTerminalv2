@@ -27,13 +27,14 @@ export const ATTENTION_KINDS: ReadonlyArray<{ key: string; label: string }> = [
   { key: "run-done", label: "A run finished" },
   { key: "run-failed", label: "A run failed" },
   { key: "check-failed", label: "A PR's check failed" },
+  { key: "ci-failed", label: "A PR's CI failed on GitHub" },
   { key: "autopost-failed", label: "A ClickUp auto-post failed" },
   { key: "merged-cleaned", label: "A merged PR was cleaned up" },
 ];
 
 /** The events the phone gets (src-tauri/src/observe/push.rs PUSH_KINDS). */
 export const PUSH_KINDS: ReadonlyArray<{ key: string; label: string }> = ATTENTION_KINDS.filter((kind) =>
-  ["stall", "check-failed", "merged-cleaned", "autopost-failed"].includes(kind.key),
+  ["stall", "check-failed", "ci-failed", "merged-cleaned", "autopost-failed"].includes(kind.key),
 );
 
 const PR_STATES: Record<string, string> = {
@@ -131,6 +132,30 @@ export function approvalTitle(waitingFor: string): string {
 
 export function isKnownApproval(waitingFor: string): boolean {
   return waitingFor in APPROVALS;
+}
+
+/** The GitHub CI chip of a PR: null without a PR URL or a CI reading. */
+export function ciChip(pr: {
+  prUrl: string | null;
+  ci?: string | null;
+  ciAt?: string | null;
+  ciError?: string | null;
+}): { text: string; tone: "success" | "danger" | "muted"; title: string } | null {
+  if (!pr.prUrl || !pr.ci) return null;
+  const read = pr.ciAt ? localTime(pr.ciAt) : null;
+  const title = [pr.ciError, read ? `read ${read.short}` : null].filter(Boolean).join(" · ");
+  switch (pr.ci) {
+    case "pass":
+      return { text: "CI pass", tone: "success", title };
+    case "fail":
+      return { text: "CI failed", tone: "danger", title };
+    case "pending":
+      return { text: "CI pending", tone: "muted", title };
+    case "none":
+      return { text: "CI none", tone: "muted", title };
+    default:
+      return { text: "CI unknown", tone: "muted", title };
+  }
 }
 
 /** The app's own check result for a PR (R1), in words. */

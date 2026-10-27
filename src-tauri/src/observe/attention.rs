@@ -23,7 +23,7 @@
 use super::hooks::{TabActivity, TabHookState};
 use super::watchdog::{self, WatchInput};
 use crate::clickup::{autopost, trust};
-use crate::run::{cleanup, folder, record, status};
+use crate::run::{cleanup, folder, github, record, status};
 use crate::store::{StateStore, TabKind, TabRecord};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -56,6 +56,7 @@ pub enum Kind {
     RunDone,
     RunFailed,
     CheckFailed,
+    CiFailed,
     AutopostFailed,
     WaitingReminder,
     MergedCleaned,
@@ -67,13 +68,14 @@ impl Kind {
         Kind::ALL.into_iter().find(|kind| kind.key() == key)
     }
 
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 10] = [
         Kind::NeedsYou,
         Kind::ApprovalWait,
         Kind::Stall,
         Kind::RunDone,
         Kind::RunFailed,
         Kind::CheckFailed,
+        Kind::CiFailed,
         Kind::AutopostFailed,
         Kind::WaitingReminder,
         Kind::MergedCleaned,
@@ -94,6 +96,7 @@ impl Kind {
             Kind::RunDone => "run-done",
             Kind::RunFailed => "run-failed",
             Kind::CheckFailed => "check-failed",
+            Kind::CiFailed => "ci-failed",
             Kind::AutopostFailed => "autopost-failed",
             Kind::WaitingReminder => "waiting-reminder",
             Kind::MergedCleaned => "merged-cleaned",
@@ -138,6 +141,7 @@ impl Event {
             Kind::RunDone => format!("dcv2: run finished{run}"),
             Kind::RunFailed => format!("dcv2: run failed{run}"),
             Kind::CheckFailed => format!("dcv2: {detail} check failed{run}"),
+            Kind::CiFailed => format!("dcv2: {detail} CI failed on GitHub{run}"),
             Kind::AutopostFailed => format!("dcv2: ClickUp auto-post failed for {detail}{run}"),
             Kind::WaitingReminder => format!("dcv2: {tab} is still waiting for you"),
             Kind::MergedCleaned => format!("dcv2: {detail} merged and cleaned up{run}"),
@@ -180,6 +184,26 @@ pub struct RunFacts {
     pub cleaned: BTreeMap<String, String>,
     /// Tickets whose signed auto-post result is `failed`.
     pub autopost_failed: BTreeSet<String>,
+    /// PRs whose GitHub CI (`app-github.json`) is `fail`.
+    pub ci_failed: BTreeSet<String>,
+    /// Per PR: its state, app check result, GitHub CI and PR state, for the
+    /// `run-state` push.
+    pub prs: Vec<PrFact>,
+}
+
+/// One PR of a run as the `run-state` push tells it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrFact {
+    pub id: String,
+    /// status.json's PR state (`building`, `reviewed`, `opened`, …).
+    pub state: Option<String>,
+    /// The app's own check result.
+    pub app_check: Option<String>,
+    /// `pass`, `fail`, `pending`, `none`, `unknown`; None until read.
+    pub ci: Option<String>,
+    /// `OPEN`, `MERGED`, `CLOSED`; None until read.
+    pub pr_state: Option<String>,
 }
 
 /// One tick's reading.
@@ -244,6 +268,9 @@ impl Detector {
                 }
                 for pr in run.failed_checks.difference(&prev.failed_checks) {
                     push(Kind::CheckFailed, Some(pr.clone()));
+                }
+                for pr in run.ci_failed.difference(&prev.ci_failed) {
+                    push(Kind::CiFailed, Some(pr.clone()));
                 }
                 for ticket in run.autopost_failed.difference(&prev.autopost_failed) {
                     push(Kind::AutopostFailed, Some(ticket.clone()));
@@ -361,6 +388,8 @@ pub struct RunStatePush {
     pub prs_total: u32,
     /// PR ids whose app check failed, timed out or errored.
     pub failed_checks: Vec<String>,
+    /// Each PR's state, app check, CI and GitHub state.
+    pub prs: Vec<PrFact>,
 }
 
 impl RunStatePush {
@@ -373,6 +402,7 @@ impl RunStatePush {
             prs_done: run.prs_done,
             prs_total: run.prs_total,
             failed_checks: run.failed_checks.iter().cloned().collect(),
+            prs: run.prs.clone(),
         }
     }
 }
@@ -729,11 +759,25 @@ impl Reader {
         let view = value.as_ref().and_then(|v| status::parse_status(v).ok());
         let prs = view.as_ref().map(|v| v.prs.as_slice()).unwrap_or_default();
         let checks = status::read_app_checks(run_dir);
+        let github = github::read_github(run_dir);
         let cleaned = cleanup::read_cleanup(run_dir)
             .prs
             .into_iter()
             .filter(|(_, rec)| !rec.retry && matches!(rec.outcome.as_str(), "cleaned" | "kept"))
             .map(|(id, rec)| (id, rec.outcome))
+            .collect();
+        let pr_facts: Vec<PrFact> = prs
+            .iter()
+            .map(|pr| {
+                let gh = github.prs.get(&pr.id);
+                PrFact {
+                    id: pr.id.clone(),
+                    state: pr.state.clone(),
+                    app_check: checks.get(&pr.id).map(|c| c.result.clone()),
+                    ci: gh.map(|g| g.ci.clone()),
+                    pr_state: gh.map(|g| g.pr_state.clone()).filter(|s| !s.is_empty()),
+                }
+            })
             .collect();
         Some(RunFacts {
             run_dir: run_dir.display().to_string(),
@@ -758,6 +802,13 @@ impl Reader {
                 .map(|(id, _)| id)
                 .collect(),
             cleaned,
+            ci_failed: github
+                .prs
+                .iter()
+                .filter(|(_, rec)| rec.ci == "fail")
+                .map(|(id, _)| id.clone())
+                .collect(),
+            prs: pr_facts,
             autopost_failed: self.autopost_failed(data, run_dir, &run_id, keys),
             run_id,
         })
@@ -1154,6 +1205,58 @@ mod tests {
     }
 
     #[test]
+    fn ci_failed_is_raised_once_on_the_edge_to_fail_per_pr() {
+        let mut d = Detector::default();
+        let tabs = vec![run_tab("t1", "r-1")];
+        d.diff(observed(tabs.clone(), vec![run("r-1")]), T);
+        let mut failing = run("r-1");
+        failing.ci_failed.insert("PR1".into());
+        let fired = d.diff(observed(tabs.clone(), vec![failing.clone()]), T + 2_000);
+        assert_eq!(kinds(&fired), [Kind::CiFailed]);
+        assert_eq!(fired[0].detail.as_deref(), Some("PR1"));
+        assert!(fired[0].text().contains("PR1 CI failed"));
+        assert!(
+            d.diff(observed(tabs.clone(), vec![failing.clone()]), T + 4_000)
+                .is_empty(),
+            "once"
+        );
+        // Another PR failing is its own event; the first stays quiet.
+        failing.ci_failed.insert("PR2".into());
+        let fired = d.diff(observed(tabs.clone(), vec![failing]), T + 6_000);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].detail.as_deref(), Some("PR2"));
+        // A run first seen already failing is seeded silently.
+        let mut seeded = run("r-2");
+        seeded.ci_failed.insert("PR1".into());
+        assert!(d.diff(observed(vec![], vec![seeded]), T + 8_000).is_empty());
+    }
+
+    #[test]
+    fn a_ci_change_is_one_run_state_with_the_per_pr_fields() {
+        let mut p = PushDiff::default();
+        let mut r = run("r-1");
+        r.prs = vec![PrFact {
+            id: "PR1".into(),
+            state: Some("opened".into()),
+            app_check: Some("pass".into()),
+            ci: Some("pending".into()),
+            pr_state: Some("OPEN".into()),
+        }];
+        p.diff(&observed(vec![], vec![r.clone()]));
+        assert!(p.diff(&observed(vec![], vec![r.clone()])).is_empty());
+        r.prs[0].ci = Some("fail".into());
+        let pushes = p.diff(&observed(vec![], vec![r.clone()]));
+        assert_eq!(push_kinds(&pushes), ["run-state"]);
+        let json = match &pushes[0] {
+            Push::RunState(r) => serde_json::to_value(r).unwrap(),
+            _ => unreachable!(),
+        };
+        assert_eq!(json["prs"][0]["ci"], "fail");
+        assert_eq!(json["prs"][0]["prState"], "OPEN");
+        assert_eq!(json["prs"][0]["appCheck"], "pass");
+    }
+
+    #[test]
     fn push_diff_is_silent_first_and_when_nothing_changed() {
         let mut p = PushDiff::default();
         let now = observed(vec![run_tab("t1", "r-1")], vec![run("r-1")]);
@@ -1482,6 +1585,7 @@ mod tests {
         r.waiting_for = Some("plan-approval".into());
         r.stage = Some("done".into());
         r.failed_checks.insert("PR1".into());
+        r.ci_failed.insert("PR1".into());
         r.autopost_failed.insert("T1".into());
         r.cleaned.insert("PR1".into(), "cleaned".into());
         let fired = d.diff(observed(vec![t.clone()], vec![r.clone()]), T + 2_000);
@@ -1495,11 +1599,18 @@ mod tests {
             Kind::Stall,
             Kind::RunDone,
             Kind::CheckFailed,
+            Kind::CiFailed,
             Kind::AutopostFailed,
             Kind::WaitingReminder,
             Kind::MergedCleaned,
         ];
         want.sort();
+        // Every kind is here but RunFailed, which has its own transition below.
+        assert_eq!(
+            want.len() + 1,
+            Kind::ALL.len(),
+            "every kind is in this test"
+        );
         assert_eq!(got, want);
         // The failed kind too, from its own transition.
         let mut f = run("r-1");

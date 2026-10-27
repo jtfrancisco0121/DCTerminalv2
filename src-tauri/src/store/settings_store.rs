@@ -314,7 +314,7 @@ pub struct PushSettings {
     #[serde(default = "default_ntfy_server")]
     pub ntfy_server: String,
     /// App-only event kinds → on (missing: on): stall, check-failed,
-    /// merged-cleaned, autopost-failed.
+    /// ci-failed, merged-cleaned, autopost-failed.
     #[serde(default)]
     pub events: std::collections::BTreeMap<String, bool>,
 }

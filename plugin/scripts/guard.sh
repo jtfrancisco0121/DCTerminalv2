@@ -40,7 +40,7 @@
 # a shell write. Repo and worktree rules are unchanged.
 # Cleanup (0.5.0): the orchestrator never runs `git worktree <anything but list>` or a changing `git branch`
 # anywhere in a bound run (and never `git push --delete`): `state.sh cleanup` does it, at done / failed only.
-# <run>/requests/ is written only by `state.sh request` and the app; app-cleanup.json only by the app.
+# <run>/requests/ is written only by `state.sh request` and the app; app-cleanup.json and app-github.json only by the app.
 # Live tests: a pipeline sub-agent never runs `claude`; `scripts/skill-e2e/golden.sh` / `bmad_spike.sh` (which
 # launch claude) only the implementer or pr-reviewer runs, inside its recorded worktree, when repos.json gives
 # that repo `liveTests: true` (the app setting "Allow live Claude tests in checks"). Best effort, like the rest.
@@ -138,7 +138,7 @@ if run:
 # (the ClickUp snapshot and records, meta.json, the app's own check results).
 PROTECTED = ("status.json", "writeback.json", ".guard.json",
              "tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json", "app-usage.json",
-             "app-cleanup.json")
+             "app-cleanup.json", "app-github.json")
 who = agent or "the orchestrator"
 where = "your worktree or the run folder" if role == "implementer" else "the run folder"
 

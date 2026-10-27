@@ -330,7 +330,7 @@ fn now_text() -> String {
 }
 
 /// The PRs of a run status.json lists with a `prUrl`.
-fn prs_with_url(run_dir: &Path) -> (Option<String>, Option<String>, Vec<PrView>) {
+pub(super) fn prs_with_url(run_dir: &Path) -> (Option<String>, Option<String>, Vec<PrView>) {
     let Some(value) = read_json_value(&run_dir.join("status.json")) else {
         return (None, None, Vec::new());
     };
@@ -375,31 +375,37 @@ fn untouched(pr: &PrView, url: &str, why: String) -> CleanupRecord {
     }
 }
 
+/// The recorded remote URL and `owner/name` a PR of the run may be asked
+/// about: the PR URL must be `https://<github.com or the remote's host>/<owner/name>/pull/<n>`
+/// for the repo `.guard.json` `remotes` recorded. `Err` is the one-line reason it is not.
+pub(super) fn pr_target(
+    run_dir: &Path,
+    pr_id: &str,
+    url: &str,
+) -> Result<(String, String), String> {
+    let Some((remote_url, Some(slug))) = recorded_remote(run_dir, pr_id) else {
+        return Err("untouched: no recorded GitHub remote".into());
+    };
+    let mut hosts = vec!["github.com".to_string()];
+    hosts.extend(remote_host(&remote_url));
+    match pr_url_parts(url) {
+        Some((host, repo)) if repo.eq_ignore_ascii_case(&slug) && hosts.contains(&host) => {
+            Ok((remote_url, slug))
+        }
+        _ => Err(format!("untouched: not a pull request of {slug}")),
+    }
+}
+
 /// One PR: `None` when it should be asked about again (open, or GitHub
 /// could not be asked), else the final record.
 fn clean_pr(run_dir: &Path, pr: &PrView, lookup: &dyn PrLookup) -> Option<CleanupRecord> {
     let url = pr.pr_url.clone()?;
     let run_id = run_id_of(run_dir);
     let branch = janitor::expected_branch(&run_id, &pr.id);
-    let Some((remote_url, Some(slug))) = recorded_remote(run_dir, &pr.id) else {
-        return Some(untouched(
-            pr,
-            &url,
-            "untouched: no recorded GitHub remote".into(),
-        ));
+    let (remote_url, slug) = match pr_target(run_dir, &pr.id, &url) {
+        Ok(target) => target,
+        Err(why) => return Some(untouched(pr, &url, why)),
     };
-    let mut hosts = vec!["github.com".to_string()];
-    hosts.extend(remote_host(&remote_url));
-    match pr_url_parts(&url) {
-        Some((host, repo)) if repo.eq_ignore_ascii_case(&slug) && hosts.contains(&host) => {}
-        _ => {
-            return Some(untouched(
-                pr,
-                &url,
-                format!("untouched: not a pull request of {slug}"),
-            ))
-        }
-    }
     let info = match lookup.view(&url, &slug) {
         Ok(info) => info,
         Err(err) => {
@@ -544,7 +550,7 @@ fn clean_pr(run_dir: &Path, pr: &PrView, lookup: &dyn PrLookup) -> Option<Cleanu
 
 /// One process-wide lock, so a run is never cleaned twice at once (the
 /// sweep and a typed request) and only one `gh` call of the cleanup runs.
-static CLEANUP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(super) static CLEANUP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Asks about each PR of the run with a `prUrl` and no final record; saves
 /// and logs the new records. Returns them.

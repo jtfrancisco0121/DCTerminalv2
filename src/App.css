@@ -1378,6 +1378,22 @@ body,
 
 .run-pr-repo,
 .run-pr-title,
+.ci-chip {
+  font-weight: 600;
+}
+
+.ci-chip-success {
+  color: var(--success);
+}
+
+.ci-chip-danger {
+  color: var(--danger);
+}
+
+.ci-chip-muted {
+  color: var(--fg-muted);
+}
+
 .run-time {
   color: var(--fg-muted);
 }

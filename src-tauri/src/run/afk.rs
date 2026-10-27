@@ -4,6 +4,7 @@
 //! in `cleanup` and `requests`; this module only wires them to the app.
 
 use super::cleanup::{self, GhCli};
+use super::github::{self, GhCi};
 use super::requests::{self, Actions, Limiter};
 use super::{data_dir, folder, janitor, status};
 use crate::store::SettingsStore;
@@ -33,10 +34,13 @@ pub fn spawn_afk_sweeps(app: &AppHandle) {
     let cleanup_app = app.clone();
     std::thread::spawn(move || {
         let mut asked: HashMap<PathBuf, Instant> = HashMap::new();
+        let mut github_asked: HashMap<PathBuf, Instant> = HashMap::new();
         loop {
             let data = data_dir(&cleanup_app);
             let enabled = auto_cleanup_on(&cleanup_app);
             cleanup::sweep(&data, enabled, &GhCli, &mut asked, cleanup::ASK_EVERY);
+            // CI and PR state, whatever the clean-up setting says.
+            github::sweep(&data, &GhCi, &mut github_asked, github::ASK_EVERY);
             std::thread::sleep(CLEANUP_TICK);
         }
     });

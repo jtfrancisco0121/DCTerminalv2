@@ -19,6 +19,7 @@ import {
 import {
   checkMark,
   checkSignature,
+  ciChip,
   draftBadge,
   localTime,
   prStateText,
@@ -37,6 +38,7 @@ import { RunPanelShell } from "./RunPanelShell";
 import { ApprovalCard } from "./ApprovalCard";
 import { ObserveSection } from "./ObserveSection";
 import { errorText } from "./InlineNotice";
+import { reportError } from "../uiErrors";
 
 /** How often the panel reads the run folder again. */
 const POLL_MS = 2000;
@@ -98,6 +100,7 @@ function PrRow({
   const review = reviewText(pr);
   const gate = pr.gateStatus;
   const badge = draftBadge(pr);
+  const ci = ciChip(pr);
   const comments = (pr.comments ?? []).filter((c) => safeUrl(c.url));
   return (
     <li className="run-pr" data-testid={`pr-${pr.id}`}>
@@ -131,6 +134,11 @@ function PrRow({
                 output
               </button>
             )}
+          </span>
+        )}
+        {ci && (
+          <span className={`ci-chip ci-chip-${ci.tone}`} title={ci.title || undefined} data-testid={`ci-${pr.id}`}>
+            {ci.text}
           </span>
         )}
         {pr.checkKnown && pr.check.command && pr.check.command !== pr.appCommand && (
@@ -465,6 +473,13 @@ export function RunPanel({
   // The next read starts only after the last one answered; `run-state`
   // events refresh it at once and slow the polling down.
   usePushRefresh(RUN_STATE_EVENT, load, { fastMs: POLL_MS });
+
+  // A failed `gh` call shows "CI unknown"; its reason is reported once per kind of failure.
+  useEffect(() => {
+    for (const pr of view?.prs ?? []) {
+      if (pr.ciError) reportError(`CI of ${pr.id}`, pr.ciError, { once: `ci:${runDir}:${pr.id}:${pr.ciError}` });
+    }
+  }, [view, runDir]);
 
   const rerun = useCallback(() => {
     setChecking(true);

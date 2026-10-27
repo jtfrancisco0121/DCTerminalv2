@@ -14,6 +14,7 @@ pub mod cleanup;
 pub mod duplicate;
 pub mod folder;
 pub mod git;
+pub mod github;
 pub mod janitor;
 pub mod launch;
 pub mod memory;

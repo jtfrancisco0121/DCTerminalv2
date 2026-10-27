@@ -281,6 +281,19 @@ describe("RunPanelView", () => {
     expect(items[0].textContent).toContain("waiting for ship approval");
   });
 
+  it("shows a CI chip beside the app check only with a PR URL and a reading", () => {
+    const prs = view.prs.map((pr, i) => ({
+      ...pr,
+      prUrl: i === 0 ? "https://github.com/o/r/pull/1" : pr.prUrl,
+      ci: i === 0 ? "fail" : null,
+      ciAt: "2026-10-27T14:04:27Z",
+    }));
+    renderPanel({ prs });
+    expect(screen.getByTestId(`ci-${prs[0].id}`).textContent).toBe("CI failed");
+    expect(screen.getByTestId(`ci-${prs[0].id}`).className).toContain("ci-chip-danger");
+    expect(screen.queryByTestId(`ci-${prs[1].id}`)).toBeNull();
+  });
+
   it("shows timeline times in the local zone with the UTC time on hover", () => {
     vi.stubEnv("TZ", "Asia/Manila");
     try {

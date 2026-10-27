@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { localTime, minutesText, relativeDate, runMatches } from "./words";
+import pushRs from "../../src-tauri/src/observe/push.rs?raw";
+import { ATTENTION_KINDS, ciChip, localTime, minutesText, PUSH_KINDS, relativeDate, runMatches } from "./words";
 
 describe("runs list words", () => {
   const run = { title: "Add multiply()", folder: "/w/App", runId: "r-20261027-0900-abcd", ticketIds: ["86b1aa001", "QA-129"] };
@@ -54,5 +55,33 @@ describe("localTime", () => {
 
   it("returns null for garbage", () => {
     expect(localTime("not a time")).toBeNull();
+  });
+});
+
+describe("attention kinds", () => {
+  it("lists ci-failed in the Settings toggles and the phone push list, matching push.rs", () => {
+    expect(ATTENTION_KINDS.map((k) => k.key)).toContain("ci-failed");
+    expect(PUSH_KINDS.map((k) => k.key)).toContain("ci-failed");
+    const body = /PUSH_KINDS: \[&str; \d+\] = \[([^\]]*)\]/.exec(pushRs)?.[1] ?? "";
+    const rust = [...body.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]).sort();
+    expect(PUSH_KINDS.map((k) => k.key).sort()).toEqual(rust);
+  });
+});
+
+describe("ciChip", () => {
+  const pr = { prUrl: "https://github.com/o/r/pull/1", ciAt: "2026-10-27T14:04:27Z" };
+  it("words each state with its tone, and hides without a URL or a reading", () => {
+    vi.stubEnv("TZ", "UTC");
+    expect(ciChip({ ...pr, ci: "pass" })).toEqual({ text: "CI pass", tone: "success", title: "read 14:04" });
+    expect(ciChip({ ...pr, ci: "fail" })?.text).toBe("CI failed");
+    expect(ciChip({ ...pr, ci: "fail" })?.tone).toBe("danger");
+    expect(ciChip({ ...pr, ci: "pending" })?.text).toBe("CI pending");
+    expect(ciChip({ ...pr, ci: "none" })?.text).toBe("CI none");
+    const unknown = ciChip({ ...pr, ci: "unknown", ciError: "gh pr view: timed out" });
+    expect(unknown?.text).toBe("CI unknown");
+    expect(unknown?.title).toContain("timed out");
+    expect(ciChip({ ...pr, ci: null })).toBeNull();
+    expect(ciChip({ prUrl: null, ci: "pass" })).toBeNull();
+    vi.unstubAllEnvs();
   });
 });

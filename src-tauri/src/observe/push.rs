@@ -22,7 +22,13 @@ pub const TIMEOUT: Duration = Duration::from_secs(10);
 const RETRY_AFTER: Duration = Duration::from_secs(2);
 /// The events that go to the phone: the ones that matter when nobody is
 /// at the Mac.
-pub const PUSH_KINDS: [&str; 4] = ["stall", "check-failed", "merged-cleaned", "autopost-failed"];
+pub const PUSH_KINDS: [&str; 5] = [
+    "stall",
+    "check-failed",
+    "ci-failed",
+    "merged-cleaned",
+    "autopost-failed",
+];
 /// The secret slots (the item's account field in the keychain).
 pub const SECRET_NAMES: [&str; 4] = [
     "ntfy-topic",
@@ -516,6 +522,7 @@ mod tests {
         for kind in [
             Kind::Stall,
             Kind::CheckFailed,
+            Kind::CiFailed,
             Kind::MergedCleaned,
             Kind::AutopostFailed,
         ] {

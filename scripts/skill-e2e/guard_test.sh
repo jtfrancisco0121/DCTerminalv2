@@ -557,6 +557,8 @@ for who in "" dcv2:implementer; do                                  # requests/ 
   w 2 "$who" "$RUN/requests/20261027T100000Z-recheck.result.json"
   w 2 "$who" "$RUN/requests/x.json"
   w 2 "$who" "$RUN/app-cleanup.json"
+  w 2 "$who" "$RUN/app-github.json"
+  b 2 "$who" "echo '{}' > $RUN/app-github.json"
   b 2 "$who" "echo '{}' > $RUN/requests/20261027T100000Z-recheck.result.json"
   b 2 "$who" "mkdir -p $RUN/requests/a"
   b 2 "$who" "cp /dev/null $RUN/app-cleanup.json"

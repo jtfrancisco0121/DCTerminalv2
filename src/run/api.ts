@@ -136,6 +136,14 @@ export type PrView = {
   draft?: boolean | null;
   /** One PR comment per review round. */
   comments?: { round: number | null; url: string }[];
+  /** GitHub CI (app-github.json): `pass`, `fail`, `pending`, `none`, `unknown`; null until read. */
+  ci?: string | null;
+  /** When the app read the PR on GitHub (UTC ISO). */
+  ciAt?: string | null;
+  /** Why the last `gh` call failed. */
+  ciError?: string | null;
+  /** The PR's state on GitHub: `OPEN`, `MERGED`, `CLOSED`; null until read. */
+  prState?: string | null;
 };
 
 /** BMAD planning of a run (auto or on); absent for older runs and runs with it off. */
