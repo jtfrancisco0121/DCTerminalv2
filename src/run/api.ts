@@ -36,6 +36,19 @@ export type FolderRepos = {
 
 export type RoleTile = { id: string; label: string };
 
+/** What the Runs view shows from a finished run's record (`app-usage.json`). */
+export type RecordTotals = {
+  outcome: string | null;
+  totalTokens: number;
+  /** An estimate at list prices; null when a model has no price. */
+  estimateUsd: number | null;
+  /** Active minutes over all stages. */
+  minutes: number;
+  prUrls: string[];
+  firstActivity: string | null;
+  lastActivity: string | null;
+};
+
 export type RunListItem = {
   runId: string;
   runDir: string;
@@ -46,6 +59,12 @@ export type RunListItem = {
   title: string | null;
   /** A dev-app run used in place (Import from dev app). */
   adopted?: boolean;
+  /** Absent for a run without a record (old, or not finished). */
+  record?: RecordTotals | null;
+  prCount?: number | null;
+  /** ClickUp ticket ids and custom ids of the run. */
+  ticketIds?: string[];
+  hasReport?: boolean;
 };
 
 export type RunOverview = {

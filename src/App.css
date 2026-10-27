@@ -1476,6 +1476,48 @@ body,
   cursor: not-allowed;
 }
 
+.runs-dialog {
+  width: min(56rem, 94vw);
+}
+
+.runs-filters {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.runs-filters .text-input:first-child {
+  flex: 1;
+}
+
+.runs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.runs-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.runs-main {
+  flex: 1 1 100%;
+}
+
+.runs-facts,
+.runs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: baseline;
+}
+
 .approval-card {
   margin: var(--space-2) 0;
   padding: var(--space-2) var(--space-3);

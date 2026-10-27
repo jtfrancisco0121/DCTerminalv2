@@ -23,6 +23,7 @@ import { Dialog } from "./components/Dialog";
 import { InlineNotice } from "./components/InlineNotice";
 import { NewTabForm } from "./components/NewTabForm";
 import { RunPanel } from "./components/RunPanel";
+import { RunsView } from "./components/RunsView";
 import { StartScreen } from "./components/StartScreen";
 import { resumeRun, type StartedRun } from "./run/api";
 import { SettingsPage } from "./components/SettingsPage";
@@ -72,7 +73,7 @@ function App() {
   const [state, setState] = useState<AppStateSnapshot | null>(null);
   const [usage, setUsage] = useState<RateWindow[] | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<"new-tab" | "new-window" | "pick-account" | "settings" | null>(null);
+  const [dialog, setDialog] = useState<"new-tab" | "new-window" | "pick-account" | "settings" | "runs" | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
   const [lastFolder, setLastFolder] = useState("");
   const devImport = useDevImport(windowId);
@@ -448,6 +449,13 @@ function App() {
             windowContext().then(setCtx, (err: unknown) => fail("Window", err));
           }}
           onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === "runs" && (
+        <RunsView
+          windowId={windowId}
+          onClose={() => setDialog(null)}
+          onStarted={(run) => void started(run)}
         />
       )}
       {confirmClose && (

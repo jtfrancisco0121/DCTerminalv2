@@ -138,3 +138,36 @@ export function appCheckText(pr: PrView): string {
   if (!pr.checkKnown) return "no check known";
   return `${checkMark(pr.appCheck?.result)} ${pr.appCheck?.result ?? "not run"}`;
 }
+
+/** The runs list: a run matches when `query` is in its title, folder, id or a ticket id (case-insensitive). */
+export function runMatches(
+  run: { title: string | null; folder: string | null; runId: string; ticketIds?: string[] },
+  query: string,
+): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return [run.title, run.folder, run.runId, ...(run.ticketIds ?? [])].some((text) =>
+    (text ?? "").toLowerCase().includes(needle),
+  );
+}
+
+/** "today", "yesterday", "3 days ago", else the date; "" for a missing or unreadable time. */
+export function relativeDate(iso: string | null | undefined, now: Date = new Date()): string {
+  if (!iso) return "";
+  const then = new Date(iso);
+  if (Number.isNaN(then.getTime())) return "";
+  const day = (d: Date) => Math.floor((d.getTime() - d.getTimezoneOffset() * 60_000) / 86_400_000);
+  const days = day(now) - day(then);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+  return iso.slice(0, 10);
+}
+
+/** "35 min", "2 h 5 min"; "—" with no figure. */
+export function minutesText(minutes: number | null | undefined): string {
+  if (minutes == null || !Number.isFinite(minutes)) return "—";
+  const total = Math.round(minutes);
+  if (total < 60) return `${total} min`;
+  return `${Math.floor(total / 60)} h ${total % 60} min`;
+}
