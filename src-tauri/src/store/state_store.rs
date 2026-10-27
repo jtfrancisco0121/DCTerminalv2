@@ -1,7 +1,8 @@
 use crate::store::json_io::{read_json_or_recover, set_aside_other_version, write_json_atomic};
 use crate::store::state_types::{
-    window_matches, AppStateFile, ArchivedWindow, TabKind, TabRecord, WindowRecord,
-    DEFAULT_ACCOUNT_ID, MAIN_WINDOW_ID, STATE_SCHEMA_VERSION,
+    second_pane_id, window_matches, AppStateFile, ArchivedWindow, SplitDirection, SplitPane,
+    TabKind, TabRecord, WindowRecord, DEFAULT_ACCOUNT_ID, MAIN_WINDOW_ID, MAX_SPLIT_RATIO,
+    MIN_SPLIT_RATIO, STATE_SCHEMA_VERSION,
 };
 use chrono::Utc;
 use std::collections::HashMap;
@@ -375,6 +376,7 @@ impl StateStore {
             claude_config_dir: None,
             closed_at: None,
             launch: None,
+            split: None,
         });
         self.remember_active(&window_id, Some(tab_id.clone()));
         self.save()?;
@@ -435,6 +437,108 @@ impl StateStore {
         }
         tab.claude_session_id = session;
         tab.claude_config_dir = config;
+        self.save()
+    }
+
+    /// Points the tab at another folder. The label follows the folder unless
+    /// the tab was renamed; the saved Claude session is kept only when
+    /// `keep_session` (its log is under the new folder), else forgotten so
+    /// the tab starts a new conversation there.
+    pub fn set_tab_folder(
+        &mut self,
+        tab_id: &str,
+        cwd: &str,
+        keep_session: bool,
+    ) -> Result<(), String> {
+        let tab = self.tab_mut(tab_id)?;
+        tab.cwd = cwd.to_string();
+        if !tab.custom_label {
+            tab.label = tab_label(tab.kind, cwd);
+        }
+        if !keep_session {
+            tab.claude_session_id = None;
+            tab.claude_config_dir = None;
+        }
+        self.save()
+    }
+
+    /// Splits the tab: a second Shell pane in the tab's folder, `direction`
+    /// of the first. A tab has at most two panes.
+    pub fn split_tab(&mut self, tab_id: &str, direction: SplitDirection) -> Result<(), String> {
+        let tab = self.tab_mut(tab_id)?;
+        if tab.split.is_some() {
+            return Err("This tab is already split in two.".to_string());
+        }
+        tab.split = Some(SplitPane {
+            direction,
+            ratio: 0.5,
+            id: second_pane_id(tab_id),
+            kind: TabKind::Shell,
+            cwd: tab.cwd.clone(),
+        });
+        self.save()
+    }
+
+    /// The first pane's share of the split, kept within 0.2..0.8.
+    pub fn set_split_ratio(&mut self, tab_id: &str, ratio: f32) -> Result<(), String> {
+        let tab = self.tab_mut(tab_id)?;
+        let split = tab.split.as_mut().ok_or("This tab is not split.")?;
+        let ratio = if ratio.is_finite() { ratio } else { 0.5 };
+        split.ratio = ratio.clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
+        self.save()
+    }
+
+    /// Drops the second pane (its terminal is stopped by the caller).
+    pub fn close_second_pane(&mut self, tab_id: &str) -> Result<(), String> {
+        let tab = self.tab_mut(tab_id)?;
+        if tab.split.take().is_none() {
+            return Err("This tab is not split.".to_string());
+        }
+        self.save()
+    }
+
+    /// Closes the tab's own (first) pane: the second pane's shell becomes the
+    /// tab, in its folder, with a new conversation-less start. Not for a
+    /// run's tab, whose first pane is the run.
+    pub fn promote_second_pane(&mut self, tab_id: &str) -> Result<(), String> {
+        let tab = self.tab_mut(tab_id)?;
+        if tab.launch.is_some() {
+            return Err(
+                "The first pane of a run is the run; close the tab to stop it.".to_string(),
+            );
+        }
+        let split = tab.split.take().ok_or("This tab is not split.")?;
+        tab.kind = split.kind;
+        tab.cwd = split.cwd;
+        if !tab.custom_label {
+            tab.label = tab_label(tab.kind, &tab.cwd);
+        }
+        tab.claude_session_id = None;
+        tab.claude_config_dir = None;
+        self.save()
+    }
+
+    /// Moves the tab to `index` among its window's tabs (clamped to the
+    /// end) and numbers that window's tabs 0, 1, 2, … in one change, so the
+    /// order stays contiguous with no duplicates. Other windows' tabs are
+    /// not touched.
+    pub fn move_tab(&mut self, tab_id: &str, index: usize) -> Result<(), String> {
+        let window_id = self
+            .tab_by_id(tab_id)
+            .map(|tab| tab.window_id.clone())
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        let mut ids: Vec<String> = self
+            .tabs_in_window(&window_id)
+            .into_iter()
+            .map(|tab| tab.id.clone())
+            .collect();
+        ids.retain(|id| id != tab_id);
+        ids.insert(index.min(ids.len()), tab_id.to_string());
+        for tab in self.data.tabs.iter_mut() {
+            if let Some(at) = ids.iter().position(|id| id == &tab.id) {
+                tab.order = at as u32;
+            }
+        }
         self.save()
     }
 
@@ -577,6 +681,185 @@ mod tests {
         assert_eq!(
             tab_label(TabKind::Shell, r"C:\Projects\DCTerminal"),
             "Shell · DCTerminal"
+        );
+    }
+
+    #[test]
+    fn a_split_survives_a_reload_and_an_old_file_without_one_loads() {
+        let dir = TempDir::new("state_split");
+        let mut store = store_in(&dir);
+        let id = store.create_tab("/w/app", TabKind::Claude).unwrap();
+        store.split_tab(&id, SplitDirection::Down).unwrap();
+        store.set_split_ratio(&id, 0.35).unwrap();
+        let again = store_in(&dir);
+        let split = again.tab_by_id(&id).unwrap().split.clone().unwrap();
+        assert_eq!(split.direction, SplitDirection::Down);
+        assert_eq!(split.id, format!("{id}:p2"));
+        assert_eq!(split.kind, TabKind::Shell);
+        assert_eq!(split.cwd, "/w/app");
+        assert!((split.ratio - 0.35).abs() < f32::EPSILON);
+
+        // An old state.json has no `split`; a split without a ratio gets 0.5.
+        let old = r#"{"schemaVersion":1,"tabs":[{"id":"tab_9","label":"Claude · old","cwd":"/w/old","order":1,"createdAt":"2026-10-22T00:00:00Z"},
+            {"id":"tab_8","label":"x","cwd":"/w/x","order":2,"createdAt":"2026-10-22T00:00:00Z","split":{"direction":"right","id":"tab_8:p2","cwd":"/w/x"}}]}"#;
+        let parsed: AppStateFile = serde_json::from_str(old).unwrap();
+        assert!(parsed.tabs[0].split.is_none());
+        let loaded = parsed.tabs[1].split.as_ref().unwrap();
+        assert_eq!((loaded.ratio, loaded.kind), (0.5, TabKind::Shell));
+        let json = serde_json::to_value(&parsed.tabs[0]).unwrap();
+        assert!(
+            json.get("split").is_none(),
+            "an unsplit tab writes no split"
+        );
+    }
+
+    #[test]
+    fn a_tab_has_at_most_two_panes_and_the_ratio_stays_in_range() {
+        let dir = TempDir::new("state_split_rules");
+        let mut store = store_in(&dir);
+        let id = store.create_tab("/w/app", TabKind::Shell).unwrap();
+        assert!(store.close_second_pane(&id).is_err(), "not split yet");
+        assert!(store.set_split_ratio(&id, 0.5).is_err());
+        store.split_tab(&id, SplitDirection::Right).unwrap();
+        assert!(
+            store.split_tab(&id, SplitDirection::Down).is_err(),
+            "at most two panes"
+        );
+        store.set_split_ratio(&id, 0.01).unwrap();
+        assert_eq!(
+            store.tab_by_id(&id).unwrap().split.as_ref().unwrap().ratio,
+            MIN_SPLIT_RATIO
+        );
+        store.set_split_ratio(&id, 9.0).unwrap();
+        assert_eq!(
+            store.tab_by_id(&id).unwrap().split.as_ref().unwrap().ratio,
+            MAX_SPLIT_RATIO
+        );
+        store.set_split_ratio(&id, f32::NAN).unwrap();
+        assert_eq!(
+            store.tab_by_id(&id).unwrap().split.as_ref().unwrap().ratio,
+            0.5
+        );
+        store.close_second_pane(&id).unwrap();
+        assert!(store.tab_by_id(&id).unwrap().split.is_none());
+        assert!(store.split_tab("nope", SplitDirection::Right).is_err());
+    }
+
+    #[test]
+    fn closing_the_first_pane_makes_the_shell_the_tab_but_never_for_a_run() {
+        let dir = TempDir::new("state_promote");
+        let mut store = store_in(&dir);
+        let id = store.create_tab("/w/app", TabKind::Claude).unwrap();
+        store
+            .remember_claude_session(&id, "0b6c1d2e-aaaa-4bbb-8ccc-1234567890ab", "/cfg")
+            .unwrap();
+        store.split_tab(&id, SplitDirection::Right).unwrap();
+        store.promote_second_pane(&id).unwrap();
+        let tab = store.tab_by_id(&id).unwrap();
+        assert_eq!(
+            (tab.kind, tab.cwd.as_str(), tab.label.as_str()),
+            (TabKind::Shell, "/w/app", "Shell · app")
+        );
+        assert!(
+            tab.split.is_none()
+                && tab.claude_session_id.is_none()
+                && tab.claude_config_dir.is_none()
+        );
+
+        let run = store
+            .create_launch_tab(
+                "/w/ws",
+                "Eagle-Eye · ws",
+                crate::store::TabLaunch::default(),
+            )
+            .unwrap();
+        store.split_tab(&run, SplitDirection::Down).unwrap();
+        assert!(store.promote_second_pane(&run).is_err());
+        assert!(
+            store.tab_by_id(&run).unwrap().split.is_some(),
+            "the run's tab keeps both panes"
+        );
+    }
+
+    fn order_of(store: &StateStore, window: &str) -> Vec<(String, u32)> {
+        store
+            .tabs_in_window(window)
+            .into_iter()
+            .map(|t| (t.id.clone(), t.order))
+            .collect()
+    }
+
+    #[test]
+    fn moving_a_tab_renumbers_its_window_contiguously_and_leaves_others_alone() {
+        let dir = TempDir::new("state_move");
+        let mut store = store_in(&dir);
+        let ids: Vec<String> = (0..4)
+            .map(|n| {
+                store
+                    .create_tab(&format!("/w/{n}"), TabKind::Shell)
+                    .unwrap()
+            })
+            .collect();
+        // A gap from a closed tab, and a tab in another window.
+        store.close_tab(&ids[1]).unwrap();
+        store.bind_window(Some("win-2"));
+        let other = store.create_tab("/w/other", TabKind::Shell).unwrap();
+        let other_order = store.tab_by_id(&other).unwrap().order;
+        store.bind_window(None);
+        let main = |s: &StateStore| {
+            order_of(s, "main")
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            main(&store),
+            [ids[0].clone(), ids[2].clone(), ids[3].clone()]
+        );
+
+        // First -> last.
+        store.move_tab(&ids[0], 2).unwrap();
+        assert_eq!(
+            main(&store),
+            [ids[2].clone(), ids[3].clone(), ids[0].clone()]
+        );
+        let orders: Vec<u32> = order_of(&store, "main")
+            .into_iter()
+            .map(|(_, o)| o)
+            .collect();
+        assert_eq!(orders, [0, 1, 2], "contiguous, no duplicates");
+        // Last -> first.
+        store.move_tab(&ids[0], 0).unwrap();
+        assert_eq!(
+            main(&store),
+            [ids[0].clone(), ids[2].clone(), ids[3].clone()]
+        );
+        // The same index changes nothing; an index past the end is the end.
+        store.move_tab(&ids[2], 1).unwrap();
+        assert_eq!(
+            main(&store),
+            [ids[0].clone(), ids[2].clone(), ids[3].clone()]
+        );
+        store.move_tab(&ids[0], 99).unwrap();
+        assert_eq!(
+            main(&store),
+            [ids[2].clone(), ids[3].clone(), ids[0].clone()]
+        );
+        // The other window's tab kept its order.
+        assert_eq!(store.tab_by_id(&other).unwrap().order, other_order);
+        assert!(store.move_tab("nope", 0).is_err());
+        // It persists.
+        let again = store_in(&dir);
+        assert_eq!(
+            main(&again),
+            [ids[2].clone(), ids[3].clone(), ids[0].clone()]
+        );
+        assert_eq!(
+            order_of(&again, "main")
+                .iter()
+                .map(|(_, o)| *o)
+                .collect::<Vec<_>>(),
+            [0, 1, 2]
         );
     }
 

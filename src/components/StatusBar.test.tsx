@@ -2,7 +2,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ConfigDirInfo } from "../bridge";
-import { accountFolderWarning, StatusBar } from "./StatusBar";
+import { accountFolderWarning, attentionText, StatusBar } from "./StatusBar";
 
 const config = (over: Partial<ConfigDirInfo> = {}): ConfigDirInfo => ({
   path: "/Users/jt/.claude-account2",
@@ -32,6 +32,30 @@ describe("StatusBar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(onNewWindow).toHaveBeenCalledOnce();
     expect(onSettings).toHaveBeenCalledOnce();
+  });
+
+  it("words the attention control and hides it at 0", () => {
+    expect(attentionText({ needsYou: 0, activeRuns: 0 })).toBeNull();
+    expect(attentionText({ needsYou: 1, activeRuns: 0 })).toBe("1 needs you");
+    expect(attentionText({ needsYou: 2, activeRuns: 3 })).toBe("2 need you · 3 runs");
+    expect(attentionText({ needsYou: 0, activeRuns: 1 })).toBe("1 run");
+    const { rerender } = render(
+      <StatusBar account={null} attention={{ needsYou: 0, activeRuns: 0 }} onNewWindow={() => {}} onSettings={() => {}} />,
+    );
+    expect(screen.queryByTestId("status-attention")).toBeNull();
+    const onAttention = vi.fn();
+    rerender(
+      <StatusBar
+        account={null}
+        attention={{ needsYou: 2, activeRuns: 3 }}
+        onAttention={onAttention}
+        onNewWindow={() => {}}
+        onSettings={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("status-attention").textContent).toBe("2 need you · 3 runs");
+    fireEvent.click(screen.getByTestId("status-attention"));
+    expect(onAttention).toHaveBeenCalledOnce();
   });
 
   it("warns when an account's folder you set does not exist", () => {

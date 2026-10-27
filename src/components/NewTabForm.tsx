@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type { TabKind } from "../bridge";
 import type { NewTabDraft } from "../newTab";
 import { errorText } from "./InlineNotice";
+import { RecentFolderOptions, useRecentFolders } from "./RecentFolders";
 
 type Props = {
   initial: NewTabDraft;
@@ -17,6 +18,7 @@ export function NewTabForm({ initial, onCreate, onCancel }: Props) {
   const [kind, setKind] = useState<TabKind>(initial.kind);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const recent = useRecentFolders();
 
   const choose = async () => {
     try {
@@ -57,9 +59,11 @@ export function NewTabForm({ initial, onCreate, onCancel }: Props) {
           <input
             className="text-input"
             value={cwd}
+            list="new-tab-recent-folders"
             placeholder="/path/to/project"
             onChange={(event) => setCwd(event.target.value)}
           />
+          <RecentFolderOptions id="new-tab-recent-folders" folders={recent} />
           <button type="button" className="secondary-button" onClick={() => void choose()}>
             Choose…
           </button>

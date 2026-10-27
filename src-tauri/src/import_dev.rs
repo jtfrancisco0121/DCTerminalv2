@@ -854,6 +854,7 @@ mod tests {
             claude_config_dir: Some(config.display().to_string()),
             closed_at: None,
             launch,
+            split: None,
         })
         .unwrap();
         t["extraFieldFromNewerBuild"] = json!(1);

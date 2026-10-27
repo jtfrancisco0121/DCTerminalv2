@@ -54,6 +54,18 @@ describe("app shortcuts in a terminal", () => {
     expect(isAppShortcut(ev({ type: "keyup", key: "t", metaKey: true }), "mac")).toBe(false);
   });
 
+  it("keeps Ctrl+Tab, Ctrl+Shift+Tab and the zoom keys for the app", () => {
+    for (const platform of ["mac", "linux", "windows"] as const) {
+      expect(isAppShortcut(ev({ key: "Tab", ctrlKey: true }), platform), platform).toBe(true);
+      expect(isAppShortcut(ev({ key: "Tab", ctrlKey: true, shiftKey: true }), platform), platform).toBe(true);
+    }
+    expect(isAppShortcut(ev({ key: "=", metaKey: true }), "mac")).toBe(true);
+    expect(isAppShortcut(ev({ key: "-", metaKey: true }), "mac")).toBe(true);
+    expect(isAppShortcut(ev({ key: "0", metaKey: true }), "mac")).toBe(true);
+    expect(isAppShortcut(ev({ key: "}", metaKey: true, shiftKey: true }), "mac")).toBe(true);
+    expect(isAppShortcut(ev({ key: "Tab" }), "linux")).toBe(false);
+  });
+
   it("reads the platform from navigator.platform", () => {
     expect(detectPlatform("MacIntel")).toBe("mac");
     expect(detectPlatform("Win32")).toBe("windows");

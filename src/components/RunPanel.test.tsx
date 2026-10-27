@@ -20,6 +20,69 @@ function renderPanel(overrides: Partial<RunView> = {}) {
   return handlers;
 }
 
+describe("PR card actions", () => {
+  const handlers = () => ({
+    onRerunChecks: vi.fn(),
+    onOpenFile: vi.fn(),
+    onOpenUrl: vi.fn(),
+    onCleanUp: vi.fn(),
+    onPrAction: vi.fn(),
+    onCopyBranch: vi.fn(),
+  });
+
+  it("copies the branch and acts on a verified worktree", () => {
+    const h = handlers();
+    render(
+      <RunPanelView
+        view={view}
+        checking={false}
+        worktrees={{ PR1: { prId: "PR1", verified: true, reason: null } }}
+        {...h}
+      />,
+    );
+    const actions = within(screen.getByTestId("actions-PR1"));
+    fireEvent.click(actions.getByText("Copy branch"));
+    expect(h.onCopyBranch).toHaveBeenCalledWith("dcv2/r-20261022-1304-pr1");
+    fireEvent.click(actions.getByText("Reveal"));
+    fireEvent.click(actions.getByText("Open in editor"));
+    fireEvent.click(actions.getByText("Shell here"));
+    expect(h.onPrAction.mock.calls).toEqual([
+      ["PR1", "reveal"],
+      ["PR1", "editor"],
+      ["PR1", "shell"],
+    ]);
+    // A PR with no branch or worktree has no actions.
+    expect(within(screen.getByTestId("actions-PR2")).queryByText("Copy branch")).toBeNull();
+    expect(within(screen.getByTestId("actions-PR2")).queryByText("Reveal")).toBeNull();
+  });
+
+  it("disables the worktree actions with the reason when the worktree is not verified", () => {
+    const h = handlers();
+    render(
+      <RunPanelView
+        view={view}
+        checking={false}
+        worktrees={{ PR1: { prId: "PR1", verified: false, reason: "not where this run's worktrees go" } }}
+        {...h}
+      />,
+    );
+    const reveal = within(screen.getByTestId("actions-PR1")).getByText("Reveal") as HTMLButtonElement;
+    expect(reveal.disabled).toBe(true);
+    expect(reveal.title).toBe("not where this run's worktrees go");
+    fireEvent.click(reveal);
+    expect(h.onPrAction).not.toHaveBeenCalled();
+    // Copying the branch needs no worktree.
+    expect((within(screen.getByTestId("actions-PR1")).getByText("Copy branch") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("waits for the check before enabling anything", () => {
+    render(<RunPanelView view={view} checking={false} {...handlers()} />);
+    const reveal = within(screen.getByTestId("actions-PR1")).getByText("Reveal") as HTMLButtonElement;
+    expect(reveal.disabled).toBe(true);
+    expect(reveal.title).toBe("Checking the worktree…");
+  });
+});
+
 describe("RunPanelView", () => {
   it("shows a draft/ready badge and a link per review-round comment", () => {
     const handlers = renderPanel();
@@ -113,11 +176,54 @@ describe("RunPanelView", () => {
     expect(screen.queryByTestId("bmad")).toBeNull();
   });
 
-  it("shows the stage, that Claude is asking in the tab, and the plan", () => {
+  it("shows the stage, the approval card, and the plan", () => {
     renderPanel();
     expect(screen.getByTestId("run-stage").textContent).toBe("Waiting for your go to open the PRs");
-    expect(screen.getByText("Claude is asking you in the tab.")).toBeTruthy();
+    expect(screen.getByTestId("approval-title").textContent).toBe("Ship approval");
     expect(screen.getByText(/Plan ✓ approved/)).toBeTruthy();
+  });
+
+  it("the approval card shows the PR count, each PR's gate, app check and open findings, and the plan review", () => {
+    renderPanel({
+      waitingFor: "plan-approval",
+      plan: { approved: false, verdict: "APPROVED WITH CHANGES", reviewRound: 2, openFindings: 1 },
+    });
+    expect(screen.getByTestId("approval-title").textContent).toBe("Plan approval");
+    expect(screen.getByTestId("approval-prs").textContent).toBe(
+      `${view.prs.length} PRs · plan review round 2 · 1 open plan findings`,
+    );
+    const row = within(screen.getByTestId("approval-PR2"));
+    expect(row.getByText(/✗ fail/)).toBeTruthy();
+    expect(row.getAllByRole("cell")).toHaveLength(5);
+    expect(screen.queryByRole("button", { name: /approve|yes|go ahead/i })).toBeNull();
+  });
+
+  it("Read plan opens the plan, Go to prompt focuses the terminal, and nothing is typed", () => {
+    const onOpenFile = vi.fn();
+    const onGoToPrompt = vi.fn();
+    render(
+      <RunPanelView
+        view={view}
+        checking={false}
+        onRerunChecks={vi.fn()}
+        onOpenFile={onOpenFile}
+        onOpenUrl={vi.fn()}
+        onCleanUp={vi.fn()}
+        onGoToPrompt={onGoToPrompt}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Read plan" }));
+    expect(onOpenFile).toHaveBeenCalledWith("plan.md", "Plan");
+    fireEvent.click(screen.getByRole("button", { name: "Go to prompt" }));
+    expect(onGoToPrompt).toHaveBeenCalledOnce();
+  });
+
+  it("an unknown approval value is shown as it is, with Go to prompt only", () => {
+    renderPanel({ waitingFor: "deploy-approval" });
+    expect(screen.getByTestId("approval-title").textContent).toBe("deploy-approval");
+    expect(screen.queryByRole("button", { name: "Read plan" })).toBeNull();
+    expect(screen.queryByTestId("approval-prs")).toBeNull();
+    expect(screen.getByRole("button", { name: "Go to prompt" })).toBeTruthy();
   });
 
   it("shows each PR with repo, state, stories, both checks, review and gate", () => {

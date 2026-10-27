@@ -1,10 +1,14 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   detectFolderRepos,
+  duplicateOf,
+  readRunFile,
   resumeRun,
   runOverview,
   startRun,
+  type DuplicateRun,
   type FolderRepos,
   type BmadMode,
   type ReviewMode,
@@ -12,7 +16,11 @@ import {
   type StartedRun,
 } from "../run/api";
 import { WorktreeSetup } from "./WorktreeSetup";
-import { stageText } from "../run/words";
+import { relativeDate, stageText } from "../run/words";
+import { TextDialog } from "./RunPanel";
+import { Dialog } from "./Dialog";
+import { RecentFolderOptions, useRecentFolders } from "./RecentFolders";
+import { nearLimitWarning, type RateWindow } from "../usage/limits";
 import { errorText } from "./InlineNotice";
 import { MemoryPanel } from "./MemoryPanel";
 import { ClickUpIntake } from "../clickup/ClickUpIntake";
@@ -24,7 +32,14 @@ type Props = {
   onStarted: (started: StartedRun) => void;
   /** Open a plain Claude or shell tab instead. */
   onPlainTab: () => void;
+  /** Open the Runs view (every run, with search). */
+  onShowAllRuns?: () => void;
+  /** Claude's limit windows, for the near-limit warning (never blocks starting). */
+  usageWindows?: RateWindow[] | null;
 };
+
+/** How many earlier runs the start screen lists; the Runs view has them all. */
+export const EARLIER_RUNS = 8;
 
 function reposText(found: FolderRepos | null): string {
   if (!found) return "";
@@ -85,13 +100,17 @@ function rememberBmadMode(folder: string, mode: BmadMode): void {
  * New run: a folder, what to do, and Start Eagle-Eye. One role on its own
  * is one tile. Earlier runs can be resumed.
  */
-export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: Props) {
+export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, onShowAllRuns, usageWindows }: Props) {
   const [folder, setFolder] = useState(initialFolder);
   const [found, setFound] = useState<FolderRepos | null>(null);
   const [request, setRequest] = useState("");
   const [overview, setOverview] = useState<RunOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const recent = useRecentFolders();
+  const [report, setReport] = useState<{ title: string; text: string } | null>(null);
+  // The same unfinished request is already running: ask before starting it again.
+  const [duplicate, setDuplicate] = useState<{ run: DuplicateRun; role: string } | null>(null);
   const [tickets, setTickets] = useState<ClickUpStart | null>(null);
   const [reviewOnGitHub, setReviewOnGitHub] = useState(() => rememberedReviewOnGitHub(windowId));
   const [bmadMode, setBmadMode] = useState<BmadMode>(() => rememberedBmadMode(initialFolder.trim()));
@@ -132,7 +151,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
     }
   };
 
-  const launch = async (role: string) => {
+  const launch = async (role: string, force = false) => {
     if (!folder.trim()) {
       setError("Choose a folder.");
       return;
@@ -148,9 +167,11 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
       const said = request.trim() || (eagleTickets ? "Do the ClickUp tickets below." : request);
       const mode: ReviewMode | null = role === "eagle-eye" ? (reviewOnGitHub ? "github" : "local") : null;
       const bmad: BmadMode | null = role === "eagle-eye" ? bmadMode : null;
-      onStarted(await startRun(windowId, folder.trim(), said, role, eagleTickets, mode, bmad));
+      onStarted(await startRun(windowId, folder.trim(), said, role, eagleTickets, mode, bmad, force));
     } catch (err) {
-      setError(errorText(err));
+      const same = duplicateOf(err);
+      if (same) setDuplicate({ run: same, role });
+      else setError(errorText(err));
     } finally {
       setBusy(false);
     }
@@ -168,8 +189,14 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
     }
   };
 
+  const showReport = (run: { runDir: string; title: string | null; runId: string }) =>
+    readRunFile(run.runDir, "report.md").then(
+      (text) => setReport({ title: `Report: ${run.title ?? run.runId}`, text }),
+      (err: unknown) => setError(errorText(err)),
+    );
+
   const canEagle = found !== null && found.repos.length > 0;
-  const runs = (overview?.runs ?? []).slice(0, 8);
+  const runs = (overview?.runs ?? []).slice(0, EARLIER_RUNS);
 
   return (
     <div className="run-start">
@@ -179,9 +206,11 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
           <input
             className="text-input"
             value={folder}
+            list="start-recent-folders"
             placeholder="/path/to/repo or folder of repos"
             onChange={(event) => setFolder(event.target.value)}
           />
+          <RecentFolderOptions id="start-recent-folders" folders={recent} />
           <button type="button" className="secondary-button" onClick={() => void choose()}>
             Choose…
           </button>
@@ -262,6 +291,11 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
           {error}
         </p>
       )}
+      {nearLimitWarning(usageWindows) && (
+        <p className="hint warn" role="status" data-testid="near-limit">
+          {nearLimitWarning(usageWindows)}
+        </p>
+      )}
       {overview && !overview.pluginDir && <p className="hint warn">The dcv2 plugin was not found.</p>}
       <div className="button-row">
         <button
@@ -305,7 +339,24 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
                   {" "}
                   — {stageText(run.stage)}
                   {run.folder ? ` · ${run.folder}` : ""}
+                  {relativeDate(run.createdAt ?? run.updatedAt) ? ` · ${relativeDate(run.createdAt ?? run.updatedAt)}` : ""}
                 </span>
+                {run.stage === "done" && (
+                  <>
+                    {run.hasReport && (
+                      <button type="button" className="link-button" onClick={() => void showReport(run)}>
+                        Report
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() => void revealItemInDir(run.runDir).catch((err: unknown) => setError(errorText(err)))}
+                    >
+                      Open folder
+                    </button>
+                  </>
+                )}
                 {run.stage !== "done" && (
                   <button
                     type="button"
@@ -319,8 +370,56 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab }: 
               </li>
             ))}
           </ul>
+          {onShowAllRuns && (
+            <button type="button" className="link-button" onClick={onShowAllRuns}>
+              Show all{(overview?.runs.length ?? 0) > EARLIER_RUNS ? ` (${overview!.runs.length})` : ""}
+            </button>
+          )}
         </section>
       )}
+      {duplicate && (
+        <Dialog
+          title="This run is already in progress"
+          onClose={() => setDuplicate(null)}
+          footer={
+            <>
+              <button type="button" className="secondary-button" onClick={() => setDuplicate(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={busy}
+                onClick={() => {
+                  const role = duplicate.role;
+                  setDuplicate(null);
+                  void launch(role, true);
+                }}
+              >
+                Start anyway
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busy}
+                onClick={() => {
+                  const dir = duplicate.run.runDir;
+                  setDuplicate(null);
+                  void resume(dir);
+                }}
+              >
+                Resume that run
+              </button>
+            </>
+          }
+        >
+          <p>
+            An unfinished run has the same request in the same folder{tickets ? " and the same tickets" : ""}.
+            Resume it, or start a new one anyway.
+          </p>
+        </Dialog>
+      )}
+      {report && <TextDialog title={report.title} text={report.text} onClose={() => setReport(null)} />}
       {overview?.pluginVersion && <p className="hint run-version">dcv2 roles {overview.pluginVersion}</p>}
     </div>
   );

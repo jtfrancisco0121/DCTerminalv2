@@ -4,6 +4,14 @@ import {
   claudeAccountLogins,
   claudeStatus,
   setClaudeSettings,
+  notificationPermission,
+  pushSendTest,
+  pushSetSecret,
+  pushStatus,
+  setPushSettings,
+  sendTestNotification,
+  setNotifySettings,
+  setObserveSettings,
   setRunSettings,
   setTerminalSettings,
   setUiSettings,
@@ -11,11 +19,14 @@ import {
   type ClaudeAccountLogin,
   type ClaudeStatus,
   type LoginStatus,
+  type NotifySettings,
+  type PushSettings,
   type RunSettings,
   type SettingsView,
   type TerminalSettings,
 } from "../bridge";
 import { accountsProblem, addAccount, MAX_ACCOUNTS } from "../settings/accounts";
+import { ATTENTION_KINDS, PUSH_KINDS } from "../run/words";
 import { THEME_CHOICES } from "../theme";
 import { errorText, InlineNotice } from "./InlineNotice";
 import { ClickUpTokens } from "../clickup/ClickUpTokens";
@@ -121,9 +132,120 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
     }
   };
 
+  const notify = view.notify ?? { master: true, events: {} };
+  const [permission, setPermission] = useState<string | null>(null);
+  const [testFailed, setTestFailed] = useState(false);
+
+  useEffect(() => {
+    let current = true;
+    notificationPermission().then(
+      (state) => current && setPermission(state),
+      () => undefined,
+    );
+    return () => {
+      current = false;
+    };
+  }, []);
+
+  const saveNotify = async (next: NotifySettings) => {
+    try {
+      const saved = await setNotifySettings(next);
+      onSaved({ ...view, notify: saved });
+    } catch (err) {
+      setNotice({ tone: "error", text: errorText(err) });
+    }
+  };
+
+  const sendTest = async () => {
+    setTestFailed(false);
+    try {
+      await sendTestNotification();
+      setNotice({ tone: "info", text: "Test notification sent." });
+    } catch (err) {
+      setTestFailed(true);
+      setNotice({ tone: "error", text: errorText(err) });
+    }
+  };
+
+  const push: PushSettings = view.push ?? { target: "none", ntfyServer: "https://ntfy.sh", events: {} };
+  const [pushSaved, setPushSaved] = useState<string[]>([]);
+  const [pushSecret, setPushSecret] = useState<Record<string, string>>({});
+  const [pushResult, setPushResult] = useState<{ tone: "info" | "error"; text: string } | null>(null);
+
+  useEffect(() => {
+    let current = true;
+    pushStatus().then(
+      (status) => current && setPushSaved(status.saved),
+      () => undefined,
+    );
+    return () => {
+      current = false;
+    };
+  }, []);
+
+  const savePush = async (next: PushSettings) => {
+    try {
+      const saved = await setPushSettings(next);
+      onSaved({ ...view, push: saved });
+    } catch (err) {
+      setNotice({ tone: "error", text: errorText(err) });
+    }
+  };
+
+  const saveSecret = async (name: string) => {
+    try {
+      const status = await pushSetSecret(name, pushSecret[name] ?? "");
+      setPushSaved(status.saved);
+      setPushSecret((current) => ({ ...current, [name]: "" }));
+    } catch (err) {
+      setNotice({ tone: "error", text: errorText(err) });
+    }
+  };
+
+  const sendPushTest = async () => {
+    setPushResult(null);
+    try {
+      await pushSendTest();
+      setPushResult({ tone: "info", text: "Test push sent." });
+    } catch (err) {
+      setPushResult({ tone: "error", text: errorText(err) });
+    }
+  };
+
+  const secretFields: Record<string, { name: string; label: string }[]> = {
+    ntfy: [{ name: "ntfy-topic", label: "ntfy topic" }],
+    pushover: [
+      { name: "pushover-token", label: "Pushover app token" },
+      { name: "pushover-user", label: "Pushover user key" },
+    ],
+    webhook: [{ name: "webhook-url", label: "Webhook URL" }],
+  };
+
+  const [editor, setEditor] = useState(view.ui.editorCommand ?? "");
+
+  const saveEditor = async () => {
+    try {
+      const ui = await setUiSettings({ ...view.ui, editorCommand: editor });
+      setEditor(ui.editorCommand ?? "");
+      onSaved({ ...view, ui });
+    } catch (err) {
+      setNotice({ tone: "error", text: errorText(err) });
+    }
+  };
+
+  const saveHooksAllTabs = async (hooksAllTabs: boolean) => {
+    try {
+      const observe = await setObserveSettings({ hooksAllTabs });
+      setNotice({ tone: "info", text: "Saved. New Claude tabs use it; open ones keep what they started with." });
+      onSaved({ ...view, observe });
+    } catch (err) {
+      setNotice({ tone: "error", text: errorText(err) });
+    }
+  };
+
   const saveTheme = async (theme: string) => {
     try {
-      const ui = await setUiSettings({ theme });
+      const ui = await setUiSettings({ ...view.ui, theme });
       onSaved({ ...view, ui });
     } catch (err) {
       setNotice({ tone: "error", text: errorText(err) });
@@ -377,6 +499,147 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
             Save run settings
           </button>
         </div>
+        <label className="field-label">
+          Editor for “Open in editor” on a PR (program and arguments; empty: code)
+          <input
+            className="text-input"
+            aria-label="Editor command"
+            placeholder="code"
+            value={editor}
+            onChange={(event) => setEditor(event.target.value)}
+            onBlur={() => void saveEditor()}
+          />
+        </label>
+      </section>
+
+      <section className="settings-section" aria-label="Activity">
+        <h2>Activity</h2>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={view.observe?.hooksAllTabs ?? true}
+            onChange={(event) => void saveHooksAllTabs(event.target.checked)}
+          />{" "}
+          Track activity in every Claude tab
+        </label>
+        <p className="hint">
+          Adds a small hook to every Claude tab so its dot shows working, waiting or needs you.
+        </p>
+      </section>
+
+      <section className="settings-section" aria-label="Notifications">
+        <h2>Notifications</h2>
+        <p className="hint">
+          Tells you when a tab needs you, a run waits, stalls or finishes, or an app check fails. The dock shows how
+          many tabs need you.
+        </p>
+        {(permission === "denied" || testFailed) && (
+          <InlineNotice tone="warning">
+            macOS blocks notifications for DCTerminalv2: allow them in System Settings &gt; Notifications.
+          </InlineNotice>
+        )}
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={notify.master}
+            onChange={(event) => void saveNotify({ ...notify, master: event.target.checked })}
+          />{" "}
+          Notify me (master switch: notices, system notifications, dock badge and bounce)
+        </label>
+        {ATTENTION_KINDS.map((kind) => (
+          <label key={kind.key} className="check-label">
+            <input
+              type="checkbox"
+              disabled={!notify.master}
+              checked={notify.events[kind.key] ?? true}
+              onChange={(event) =>
+                void saveNotify({ ...notify, events: { ...notify.events, [kind.key]: event.target.checked } })
+              }
+            />{" "}
+            {kind.label}
+          </label>
+        ))}
+        <div className="button-row">
+          <button type="button" className="secondary-button" onClick={() => void sendTest()}>
+            Send a test notification
+          </button>
+        </div>
+      </section>
+
+      <section className="settings-section" aria-label="Phone push">
+        <h2>Phone push</h2>
+        <p className="hint">
+          Sends the run id and the event kind (nothing else) to your phone when you are away from the Mac. The topic,
+          tokens and URL are kept in the system keychain, not in settings.
+        </p>
+        <label className="field-label">
+          Send to
+          <select
+            className="text-input text-input-narrow"
+            value={push.target}
+            onChange={(event) => void savePush({ ...push, target: event.target.value })}
+          >
+            <option value="none">Off</option>
+            <option value="ntfy">ntfy</option>
+            <option value="pushover">Pushover</option>
+            <option value="webhook">Webhook</option>
+          </select>
+        </label>
+        {push.target === "ntfy" && (
+          <label className="field-label">
+            ntfy server
+            <input
+              className="text-input"
+              defaultValue={push.ntfyServer}
+              onBlur={(event) => void savePush({ ...push, ntfyServer: event.target.value })}
+            />
+          </label>
+        )}
+        {(secretFields[push.target] ?? []).map((field) => (
+          <div key={field.name} className="field-row">
+            <label className="field-label">
+              {field.label}
+              <input
+                className="text-input"
+                type="password"
+                autoComplete="off"
+                placeholder={pushSaved.includes(field.name) ? "Saved in the keychain" : ""}
+                value={pushSecret[field.name] ?? ""}
+                onChange={(event) => setPushSecret({ ...pushSecret, [field.name]: event.target.value })}
+              />
+            </label>
+            <button
+              type="button"
+              className="secondary-button"
+              aria-label={`Save ${field.label}`}
+              onClick={() => void saveSecret(field.name)}
+            >
+              {(pushSecret[field.name] ?? "") === "" && pushSaved.includes(field.name) ? "Clear" : "Save"}
+            </button>
+          </div>
+        ))}
+        {push.target !== "none" && (
+          <>
+            {PUSH_KINDS.map((kind) => (
+              <label key={kind.key} className="check-label">
+                <input
+                  type="checkbox"
+                  checked={push.events[kind.key] ?? true}
+                  onChange={(event) =>
+                    void savePush({ ...push, events: { ...push.events, [kind.key]: event.target.checked } })
+                  }
+                />{" "}
+                {kind.label}
+              </label>
+            ))}
+            <div className="button-row">
+              <button type="button" className="secondary-button" onClick={() => void sendPushTest()}>
+                Send test
+              </button>
+            </div>
+            {pushResult && <InlineNotice tone={pushResult.tone}>{pushResult.text}</InlineNotice>}
+          </>
+        )}
       </section>
 
       <section className="settings-section" aria-label="Appearance">

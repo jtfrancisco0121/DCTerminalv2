@@ -223,7 +223,14 @@ fn clean_optional_path(value: Option<String>, what: &str) -> Result<Option<Strin
 pub struct UiSettings {
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// "Open in editor" on a PR card: a program and its arguments, run
+    /// without a shell with the worktree last. Empty: `code`.
+    #[serde(default)]
+    pub editor_command: String,
 }
+
+/// The editor when the setting is empty.
+pub const DEFAULT_EDITOR: &str = "code";
 
 pub const UI_THEMES: &[&str] = &[
     "github-dark",
@@ -243,6 +250,89 @@ impl Default for UiSettings {
     fn default() -> Self {
         Self {
             theme: default_theme(),
+            editor_command: String::new(),
+        }
+    }
+}
+
+/// Activity tracking (docs/launch.md, "Which tabs get hooks").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ObserveSettings {
+    /// "Track activity in every Claude tab": the hook forwarder is attached
+    /// to plain Claude tabs too, not only to tabs a run launched.
+    #[serde(default = "default_true")]
+    pub hooks_all_tabs: bool,
+}
+
+impl Default for ObserveSettings {
+    fn default() -> Self {
+        Self {
+            hooks_all_tabs: true,
+        }
+    }
+}
+
+/// Notifications (docs/launch.md, "Attention"): a master switch and one
+/// switch per event kind. Missing: all on.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifySettings {
+    #[serde(default = "default_true")]
+    pub master: bool,
+    /// Event kind (`needs-you`, `stall`, …) → on. A kind not listed is on.
+    #[serde(default)]
+    pub events: std::collections::BTreeMap<String, bool>,
+}
+
+impl Default for NotifySettings {
+    fn default() -> Self {
+        Self {
+            master: true,
+            events: Default::default(),
+        }
+    }
+}
+
+impl NotifySettings {
+    /// The master switch and the event's own switch are both on.
+    pub fn enabled(&self, kind: &str) -> bool {
+        self.master && self.events.get(kind).copied().unwrap_or(true)
+    }
+}
+
+/// Where phone pushes go (`observe/push.rs`). The ntfy topic, the Pushover
+/// token and user key and the webhook URL are secrets: they live in the
+/// keychain, never here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PushSettings {
+    /// `none`, `ntfy`, `pushover` or `webhook`.
+    #[serde(default = "default_push_target")]
+    pub target: String,
+    /// The ntfy server (the topic is the secret).
+    #[serde(default = "default_ntfy_server")]
+    pub ntfy_server: String,
+    /// App-only event kinds → on (missing: on): stall, check-failed,
+    /// merged-cleaned, autopost-failed.
+    #[serde(default)]
+    pub events: std::collections::BTreeMap<String, bool>,
+}
+
+fn default_push_target() -> String {
+    "none".to_string()
+}
+
+fn default_ntfy_server() -> String {
+    "https://ntfy.sh".to_string()
+}
+
+impl Default for PushSettings {
+    fn default() -> Self {
+        Self {
+            target: default_push_target(),
+            ntfy_server: default_ntfy_server(),
+            events: Default::default(),
         }
     }
 }
@@ -259,6 +349,12 @@ pub struct SettingsFile {
     pub ui: UiSettings,
     #[serde(default)]
     pub run: RunSettings,
+    #[serde(default)]
+    pub observe: ObserveSettings,
+    #[serde(default)]
+    pub notify: NotifySettings,
+    #[serde(default)]
+    pub push: PushSettings,
     /// ClickUp: per-account switches (auto-post after ship approval).
     #[serde(default)]
     pub clickup: ClickUpSettings,
@@ -407,6 +503,9 @@ impl Default for SettingsFile {
             claude: ClaudeSettings::default(),
             ui: UiSettings::default(),
             run: RunSettings::default(),
+            observe: ObserveSettings::default(),
+            notify: NotifySettings::default(),
+            push: PushSettings::default(),
             clickup: ClickUpSettings::default(),
             worktree_setup: Default::default(),
         }
@@ -485,6 +584,48 @@ impl SettingsStore {
         self.save()
     }
 
+    pub fn observe(&self) -> &ObserveSettings {
+        &self.data.observe
+    }
+
+    pub fn set_observe(&mut self, next: ObserveSettings) -> Result<(), String> {
+        self.data.observe = next;
+        self.save()
+    }
+
+    pub fn notify(&self) -> &NotifySettings {
+        &self.data.notify
+    }
+
+    /// Only known event kinds are kept.
+    pub fn set_notify(&mut self, mut next: NotifySettings) -> Result<(), String> {
+        next.events
+            .retain(|kind, _| crate::observe::attention::Kind::from_key(kind).is_some());
+        self.data.notify = next;
+        self.save()
+    }
+
+    pub fn push(&self) -> &PushSettings {
+        &self.data.push
+    }
+
+    /// The target must be known, the ntfy server a clean URL, and only the
+    /// four app-only kinds are kept.
+    pub fn set_push(&mut self, mut next: PushSettings) -> Result<(), String> {
+        if !["none", "ntfy", "pushover", "webhook"].contains(&next.target.as_str()) {
+            return Err("unknown push target".into());
+        }
+        next.ntfy_server = next.ntfy_server.trim().trim_end_matches('/').to_string();
+        if next.ntfy_server.is_empty() {
+            next.ntfy_server = default_ntfy_server();
+        }
+        crate::observe::push::check_url(&next.ntfy_server)?;
+        next.events
+            .retain(|kind, _| crate::observe::push::PUSH_KINDS.contains(&kind.as_str()));
+        self.data.push = next;
+        self.save()
+    }
+
     pub fn clickup(&self) -> &ClickUpSettings {
         &self.data.clickup
     }
@@ -530,7 +671,14 @@ impl SettingsStore {
         } else {
             default_theme()
         };
-        self.data.ui = UiSettings { theme };
+        let editor_command = next.editor_command.trim().to_string();
+        if editor_command.chars().count() > 300 || editor_command.contains(['\n', '\r', '\0']) {
+            return Err("The editor command must be one line (at most 300 characters).".into());
+        }
+        self.data.ui = UiSettings {
+            theme,
+            editor_command,
+        };
         self.save()
     }
 }
@@ -539,6 +687,76 @@ impl SettingsStore {
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
+
+    #[test]
+    fn an_old_settings_file_loads_with_hooks_on_and_the_same_schema() {
+        let dir = TempDir::new("settings_observe_default");
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{"schemaVersion":1,"terminal":{"fontSize":15}}"#,
+        )
+        .unwrap();
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        assert!(store.observe().hooks_all_tabs);
+        assert_eq!(store.data.schema_version, SETTINGS_SCHEMA_VERSION);
+        store
+            .set_observe(ObserveSettings {
+                hooks_all_tabs: false,
+            })
+            .unwrap();
+        let again = SettingsStore::open(dir.path()).unwrap();
+        assert!(!again.observe().hooks_all_tabs);
+    }
+
+    #[test]
+    fn the_editor_command_defaults_empty_and_is_kept_with_the_theme() {
+        let dir = TempDir::new("settings_editor");
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(store.ui().editor_command, "");
+        store
+            .set_ui(UiSettings {
+                theme: "nord".into(),
+                editor_command: "  cursor --new-window ".into(),
+            })
+            .unwrap();
+        assert_eq!(store.ui().editor_command, "cursor --new-window");
+        assert!(store
+            .set_ui(UiSettings {
+                theme: "nord".into(),
+                editor_command: "code\nrm -rf".into(),
+            })
+            .is_err());
+        let again = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(again.ui().editor_command, "cursor --new-window");
+    }
+
+    #[test]
+    fn notifications_default_on_and_an_old_file_keeps_its_schema() {
+        let dir = TempDir::new("settings_notify_default");
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{"schemaVersion":1,"terminal":{"fontSize":15}}"#,
+        )
+        .unwrap();
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(store.data.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert!(store.notify().master);
+        assert!(store.notify().enabled("needs-you"));
+        let mut next = store.notify().clone();
+        next.events.insert("stall".into(), false);
+        next.events.insert("made-up".into(), false);
+        store.set_notify(next).unwrap();
+        assert!(!store.notify().enabled("stall"));
+        assert!(store.notify().enabled("needs-you"));
+        assert!(!store.notify().events.contains_key("made-up"));
+        let mut off = store.notify().clone();
+        off.master = false;
+        store.set_notify(off).unwrap();
+        assert!(
+            !store.notify().enabled("needs-you"),
+            "the master switch wins"
+        );
+    }
 
     #[test]
     fn worktree_setup_is_checked_and_auto_post_defaults_off() {
@@ -783,6 +1001,7 @@ mod tests {
         store
             .set_ui(UiSettings {
                 theme: "no-such-theme".into(),
+                ..UiSettings::default()
             })
             .unwrap();
         let again = SettingsStore::open(dir.path()).unwrap();

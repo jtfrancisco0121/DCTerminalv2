@@ -22,9 +22,11 @@ mod usage;
 mod windows;
 
 use commands::{
-    claude_account_logins, claude_status, close_tab, get_app_state, get_claude_usage, get_settings,
-    new_tab, rename_tab, reopen_closed_tab, select_tab, set_claude_settings, set_run_settings,
-    set_terminal_settings, set_ui_settings,
+    claude_account_logins, claude_status, close_pane, close_tab, get_app_state, get_claude_usage,
+    get_settings, move_tab, new_tab, recent_folders, rename_tab, reopen_closed_tab, select_tab,
+    set_claude_settings, set_notify_settings, set_observe_settings, set_push_settings,
+    set_run_settings, set_split_ratio, set_tab_folder, set_terminal_settings, set_ui_settings,
+    split_tab,
 };
 use pty::{
     pty_kill, pty_open, pty_resize, pty_set_scheme, pty_write, terminal_resume_id, PtyRegistry,
@@ -89,6 +91,7 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let resolved = data_dir::app_data_dir(app.handle());
             // First, so a panic anywhere below lands in logs/crash.log.
@@ -123,6 +126,7 @@ pub fn run() {
                 hooks.set_session_sink(observe::session_sink(app.handle()));
             }
             app.manage(observe_state);
+            app.manage(observe::attention::AttentionState::default());
             for note in store::take_recovery_notes() {
                 eprintln!("DCTerminalv2: {note}");
             }
@@ -136,6 +140,12 @@ pub fn run() {
             run::spawn_prune_launch_prompts(app.handle());
             clickup::commands::spawn_auto_post_sweep(app.handle());
             run::afk::spawn_afk_sweeps(app.handle());
+            let push = std::sync::Arc::new(observe::push::PushClient::real());
+            app.manage(observe::notify::PushHandle(push.clone()));
+            observe::attention::spawn(
+                app.handle(),
+                Box::new(observe::notify::AppNotifier::new(app.handle(), push)),
+            );
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -147,6 +157,12 @@ pub fn run() {
             new_tab,
             select_tab,
             rename_tab,
+            move_tab,
+            recent_folders,
+            set_tab_folder,
+            split_tab,
+            close_pane,
+            set_split_ratio,
             close_tab,
             reopen_closed_tab,
             pty_open,
@@ -163,6 +179,19 @@ pub fn run() {
             claude_status,
             get_claude_usage,
             set_run_settings,
+            set_observe_settings,
+            set_notify_settings,
+            set_push_settings,
+            observe::push::push_status,
+            observe::push::push_set_secret,
+            observe::push::push_send_test,
+            observe::notify::send_test_notification,
+            observe::notify::notification_permission,
+            observe::attention::active_runs,
+            observe::attention::attention_summary,
+            run::focus_tab_command,
+            run::actions::pr_worktree_checks,
+            run::actions::pr_worktree_action,
             run::run_overview,
             run::detect_folder_repos,
             run::set_repo_setup,

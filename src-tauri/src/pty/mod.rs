@@ -512,10 +512,16 @@ fn pty_open_blocking(
         }
     };
     let window = crate::store::window_label(&tab.window_id).to_string();
+    let second_pane = crate::store::pane_parts(&input.id).1;
     let still_wanted = || {
+        // The tab is open, and for its second pane it is still split.
         let tab_open = store
             .lock()
-            .map(|state| state.tab_by_id(&tab.id).is_some())
+            .map(|state| {
+                state
+                    .tab_by_id(&tab.id)
+                    .is_some_and(|open| !second_pane || open.split.is_some())
+            })
             .unwrap_or(false);
         tab_open && app.get_webview_window(&window).is_some()
     };
@@ -530,10 +536,19 @@ fn pty_open_blocking(
     };
     let after_spawn = || match remember {
         Some((session_id, config_dir)) => {
-            let mut state = store.lock().map_err(|err| err.to_string())?;
-            if state.tab_by_id(&tab.id).is_some() {
-                state.remember_claude_session(&tab.id, &session_id, &config_dir)?;
+            {
+                let mut state = store.lock().map_err(|err| err.to_string())?;
+                if state.tab_by_id(&tab.id).is_some() {
+                    state.remember_claude_session(&tab.id, &session_id, &config_dir)?;
+                }
             }
+            // No store lock held: the run's record lists every session.
+            crate::run::record::note_session(
+                &crate::data_dir::app_data_dir(app).path,
+                &tab,
+                &session_id,
+                &config_dir,
+            );
             Ok(())
         }
         None => Ok(()),
@@ -554,7 +569,7 @@ fn pty_open_blocking(
     };
     let pid = open_session_with(
         &registry,
-        &tab.id,
+        &input.id,
         token,
         spec,
         on_output,
@@ -588,25 +603,40 @@ fn spawn_spec(
     settings: &Mutex<SettingsStore>,
     store: &Mutex<StateStore>,
 ) -> Result<SpawnPlan, String> {
+    // `<tab id>:p2` is the tab's second pane: a Shell in its own folder.
+    let (tab_id, second) = crate::store::pane_parts(&input.id);
     let (tab, account) = {
         let state = store.lock().map_err(|err| err.to_string())?;
         let tab = state
-            .tab_by_id(&input.id)
+            .tab_by_id(tab_id)
             .cloned()
             .ok_or_else(|| format!("unknown tab: {}", input.id))?;
         let account = state.account_for_tab(&tab.id);
         (tab, account)
     };
-    let (shell, claude) = {
-        let settings = settings.lock().map_err(|err| err.to_string())?;
-        (settings.terminal().shell.clone(), settings.claude().clone())
+    let (pane_kind, pane_cwd) = if second {
+        let split = tab
+            .split
+            .as_ref()
+            .ok_or_else(|| format!("no second pane: {}", input.id))?;
+        (split.kind, split.cwd.clone())
+    } else {
+        (tab.kind, tab.cwd.clone())
     };
-    let cwd = validate_working_folder(&tab.cwd).map_err(|err| err.message())?;
+    let (shell, claude, hooks_all_tabs) = {
+        let settings = settings.lock().map_err(|err| err.to_string())?;
+        (
+            settings.terminal().shell.clone(),
+            settings.claude().clone(),
+            settings.observe().hooks_all_tabs,
+        )
+    };
+    let cwd = validate_working_folder(&pane_cwd).map_err(|err| err.message())?;
     // `None` once the window's account was removed from Settings.
     let account_config = known_account_config(&claude, &account);
     let mut remember = None;
     let mut hook_token = None;
-    let (program, args, env, env_remove) = match tab.kind {
+    let (program, args, env, env_remove) = match pane_kind {
         TabKind::Shell => {
             let resolved = resolve_shell_for_host(&shell);
             let (env, env_remove) = shell_account_env(account_config.as_ref());
@@ -636,8 +666,11 @@ fn spawn_spec(
             };
             let usage = usage_status_line(app, &tab.id, &current, &cwd);
             let launch = tab.launch.as_ref();
-            // A2: dcv2 tabs also get the hook forwarder (per-launch token).
-            let hooks = launch.and_then(|_| crate::observe::launch_hooks(app, &tab.id));
+            // A2: dcv2 tabs also get the hook forwarder (per-launch token);
+            // so does every Claude tab while `observe.hooksAllTabs` is on.
+            let hooks = wants_hooks(pane_kind, launch.is_some(), hooks_all_tabs)
+                .then(|| crate::observe::launch_hooks(app, &tab.id))
+                .flatten();
             hook_token = hooks.as_ref().map(|h| h.2.clone());
             let app_settings = crate::observe::with_hooks(usage, hooks.as_ref().map(|h| &h.0));
             let settings = crate::run::launch::merged_settings(
@@ -673,6 +706,12 @@ fn spawn_spec(
         remember,
         hook_token,
     })
+}
+
+/// Whether a Claude tab gets the hook forwarder: a run's launched tab always,
+/// any other Claude tab while the setting is on. A Shell tab never does.
+fn wants_hooks(kind: TabKind, has_launch: bool, hooks_all_tabs: bool) -> bool {
+    kind == TabKind::Claude && (has_launch || hooks_all_tabs)
 }
 
 /// The id after `--resume` in a Claude command line.
@@ -794,14 +833,36 @@ pub fn pty_kill(id: String, registry: State<Mutex<PtyRegistry>>) -> Result<(), S
     Ok(())
 }
 
+/// Stops a tab's terminals: its own and its second pane's (`<tab id>:p2`).
 pub fn kill_tab_pty(registry: &Mutex<PtyRegistry>, tab_id: &str) {
     if let Ok(mut registry) = registry.lock() {
         registry.kill(tab_id);
+        registry.kill(&crate::store::second_pane_id(tab_id));
+    }
+}
+
+/// Stops one terminal by its id.
+pub fn kill_terminal(registry: &Mutex<PtyRegistry>, terminal_id: &str) {
+    if let Ok(mut registry) = registry.lock() {
+        registry.kill(terminal_id);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hooks_follow_the_launch_the_setting_and_the_kind() {
+        use super::wants_hooks;
+        use crate::store::TabKind::{Claude, Shell};
+        // (kind, launched, setting on) -> hooks
+        assert!(wants_hooks(Claude, true, false));
+        assert!(wants_hooks(Claude, true, true));
+        assert!(wants_hooks(Claude, false, true));
+        assert!(!wants_hooks(Claude, false, false));
+        assert!(!wants_hooks(Shell, true, true));
+        assert!(!wants_hooks(Shell, false, true));
+    }
+
     use super::*;
 
     #[test]
@@ -1534,6 +1595,48 @@ mod tests {
             "an ended program is not live"
         );
         registry.lock().unwrap().kill("b");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn closing_a_tab_stops_both_its_terminals_and_only_those() {
+        let dir = crate::test_support::TempDir::new("pty_two_panes");
+        let registry = Mutex::new(PtyRegistry::new());
+        open_slow_stopper(&registry, dir.path(), "tab_1");
+        open_slow_stopper(&registry, dir.path(), "tab_1:p2");
+        open_slow_stopper(&registry, dir.path(), "tab_2");
+        assert_eq!(registry.lock().unwrap().live_count(), 3);
+        kill_tab_pty(&registry, "tab_1");
+        let ids = [
+            "tab_1".to_string(),
+            "tab_1:p2".to_string(),
+            "tab_2".to_string(),
+        ];
+        assert_eq!(registry.lock().unwrap().live_count_of(&ids[..2]), 0);
+        assert_eq!(
+            registry.lock().unwrap().live_count_of(&ids[2..]),
+            1,
+            "another tab keeps running"
+        );
+        // Closing only the second pane leaves the first.
+        open_slow_stopper(&registry, dir.path(), "tab_3");
+        open_slow_stopper(&registry, dir.path(), "tab_3:p2");
+        kill_terminal(&registry, "tab_3:p2");
+        assert_eq!(
+            registry
+                .lock()
+                .unwrap()
+                .live_count_of(&["tab_3".to_string()]),
+            1
+        );
+        assert_eq!(
+            registry
+                .lock()
+                .unwrap()
+                .live_count_of(&["tab_3:p2".to_string()]),
+            0
+        );
+        registry.lock().unwrap().shutdown_all();
     }
 
     // Review: quit walked only live sessions, so a replaced program still

@@ -42,6 +42,10 @@ pub struct TabHookState {
     pub tool_running: bool,
     /// The session the events are for (a `/clear` or resume starts a new one).
     pub session_id: Option<String>,
+    /// Unix milliseconds when `activity` last changed. Unlike `updated_ms`
+    /// (any recognised event, a `SubagentStop` included) this is the start
+    /// of an episode: how long the tab has been needs-you, say.
+    pub activity_since_ms: Option<u64>,
 }
 
 fn now_ms() -> u64 {
@@ -62,6 +66,7 @@ impl TabHookState {
             .get("background_running")
             .and_then(Value::as_u64)
             .unwrap_or(0) as u32;
+        let before = self.activity;
         match name {
             "SessionStart" => {
                 self.activity = TabActivity::Waiting;
@@ -121,6 +126,9 @@ impl TabHookState {
         }
         self.last_event = Some(name.to_string());
         self.updated_ms = Some(at_ms);
+        if self.activity != before {
+            self.activity_since_ms = Some(at_ms);
+        }
     }
 }
 
@@ -296,6 +304,9 @@ impl HookServer {
             return;
         }
         let state = shared.states.entry(tab_id.to_string()).or_default();
+        if state.activity != TabActivity::Unknown {
+            state.activity_since_ms = Some(now_ms());
+        }
         state.activity = TabActivity::Unknown;
         state.subagents_running = 0;
         state.tool_running = false;
@@ -554,6 +565,25 @@ mod tests {
         );
         state.apply(&json!({"hook_event_name": "Unheard"}), 7);
         assert_eq!(state.updated_ms, Some(6), "unknown events change nothing");
+    }
+
+    #[test]
+    fn a_background_agent_ending_does_not_restart_the_needs_you_clock() {
+        let mut state = TabHookState::default();
+        let event = |name: &str| serde_json::json!({ "hook_event_name": name });
+        state.apply(&event("UserPromptSubmit"), 1_000);
+        state.apply(&event("PermissionRequest"), 2_000);
+        assert_eq!(state.activity_since_ms, Some(2_000));
+        state.apply(&event("SubagentStop"), 9_000);
+        assert_eq!(state.updated_ms, Some(9_000), "any event moves updated_ms");
+        assert_eq!(state.activity, TabActivity::NeedsYou);
+        assert_eq!(
+            state.activity_since_ms,
+            Some(2_000),
+            "the episode started at the permission request"
+        );
+        state.apply(&event("PostToolUse"), 10_000);
+        assert_eq!(state.activity_since_ms, Some(10_000));
     }
 
     #[test]

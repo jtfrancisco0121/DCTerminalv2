@@ -7,14 +7,17 @@
 //! thread with no store lock held; the stores are locked only to copy
 //! settings out and to add the tab.
 
+pub mod actions;
 pub mod afk;
 pub mod check;
 pub mod cleanup;
+pub mod duplicate;
 pub mod folder;
 pub mod git;
 pub mod janitor;
 pub mod launch;
 pub mod memory;
+pub mod record;
 pub mod repos;
 pub mod requests;
 pub mod status;
@@ -105,12 +108,33 @@ pub fn trust_data_dir(data: &Path, run_dir: &Path) -> PathBuf {
         .unwrap_or_else(|| data.to_path_buf())
 }
 
-async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
+async fn blocking<T: Send + 'static, E: From<String> + Send + 'static>(
+    work: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Result<T, E> {
     tauri::async_runtime::spawn_blocking(work)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| E::from(e.to_string()))?
+}
+
+/// Why `start_run` started nothing: a message, or (typed) the unfinished run
+/// that has the same request, folder and tickets.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum StartError {
+    Message(String),
+    Duplicate { duplicate: duplicate::DuplicateRun },
+}
+
+impl From<String> for StartError {
+    fn from(message: String) -> Self {
+        StartError::Message(message)
+    }
+}
+
+impl From<&str> for StartError {
+    fn from(message: &str) -> Self {
+        StartError::Message(message.to_string())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -289,11 +313,31 @@ fn focus_live_run_tab(app: &AppHandle, run_dir: &Path) -> Result<Option<TabSumma
     let Some(tab) = live_run_tab(&tabs, run_dir, |id| live.contains(id)).cloned() else {
         return Ok(None);
     };
-    {
+    focus_tab(app, &tab.id)
+}
+
+/// The in-app "Go to tab" (the attention notice, the overview): the same
+/// path as the landing. Resolves to the tab, or null when it is gone.
+#[tauri::command]
+pub fn focus_tab_command(app: AppHandle, tab_id: String) -> Result<Option<TabSummary>, String> {
+    crate::observe::attention::clear_landing(&app);
+    focus_tab(&app, &tab_id)
+}
+
+/// Selects the tab in its window and brings that window to the front. The
+/// one path every "go to this tab" takes: a resumed run's live tab, the
+/// in-app Go to tab button, and the landing after a notification.
+/// `None` when the tab no longer exists.
+pub fn focus_tab(app: &AppHandle, tab_id: &str) -> Result<Option<TabSummary>, String> {
+    let tab = {
         let state = app.state::<Mutex<StateStore>>();
         let mut state = state.lock().map_err(|e| e.to_string())?;
+        let Some(tab) = state.tab_by_id(tab_id).cloned() else {
+            return Ok(None);
+        };
         state.set_active_tab(&tab.id)?;
-    }
+        tab
+    };
     let label = crate::store::window_label(&tab.window_id).to_string();
     if let Some(window) = app.get_webview_window(&label) {
         let _ = window.unminimize();
@@ -407,7 +451,8 @@ pub async fn start_run(
     clickup: Option<ClickUpStart>,
     review_mode: Option<String>,
     bmad_mode: Option<String>,
-) -> Result<StartedRun, String> {
+    force: Option<bool>,
+) -> Result<StartedRun, StartError> {
     blocking(move || {
         let folder = start_folder(&folder)?;
         let ctx = launch_context(&app, window_id.as_deref())?;
@@ -426,13 +471,31 @@ pub async fn start_run(
             memory_prompt: None,
         };
         if role == "eagle-eye" {
+            if !force.unwrap_or(false) {
+                let wanted: std::collections::BTreeSet<String> = clickup
+                    .as_ref()
+                    .map(|c| c.ticket_ids.iter().cloned().collect())
+                    .unwrap_or_default();
+                let earlier = duplicate::earlier_runs(&folder::list_runs(&data));
+                if let Some(same) =
+                    duplicate::find(&earlier, &folder::neutralise(&request), &folder, &wanted)
+                {
+                    return Err(StartError::Duplicate {
+                        duplicate: duplicate::DuplicateRun {
+                            run_id: same.run_id.clone(),
+                            run_dir: same.run_dir.clone(),
+                        },
+                    });
+                }
+            }
             let mut found = repos::detect(&folder);
             found.repos = with_repo_setup(found.repos, &ctx.worktree_setup);
             if found.repos.is_empty() {
                 return Err(format!(
                     "{} is not a git repo or a folder of git repos.",
                     folder.display()
-                ));
+                )
+                .into());
             }
             let meta = folder::RunMeta {
                 plugin_version: launch::plugin_version(&plugin),
@@ -461,7 +524,7 @@ pub async fn start_run(
                 if let Err(err) = save_tickets(&data, &run_dir, &ctx.account_id, snapshot) {
                     crate::clickup::trust::remove(&data, &run_dir);
                     let _ = std::fs::remove_dir_all(&run_dir);
-                    return Err(err);
+                    return Err(err.into());
                 }
             }
             let prompt_file = memory::compose(

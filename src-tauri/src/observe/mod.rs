@@ -10,10 +10,13 @@
 //! Nothing here writes under the account's config folder.
 
 // The `dcv2-hook` binary's code; the app uses its constants and its tests.
+pub mod attention;
 #[allow(dead_code)]
 pub mod forward;
 pub mod hooks;
+pub mod notify;
 pub mod price;
+pub mod push;
 pub mod tail;
 pub mod transcript;
 pub mod trim;
@@ -62,6 +65,18 @@ pub fn session_sink(app: &AppHandle) -> hooks::SessionSink {
         };
         if let Err(err) = save_session(&store, tab_id, session_id) {
             eprintln!("DCTerminalv2: could not save the new session of a tab: {err}");
+            return;
+        }
+        // A run tab's new session also goes in the run's record (no store
+        // lock held while the file is written).
+        let tab = store
+            .lock()
+            .ok()
+            .and_then(|state| state.tab_by_id(tab_id).cloned());
+        if let Some(tab) = tab {
+            if let Some(config_dir) = tab.claude_config_dir.clone() {
+                crate::run::record::note_session(&data_dir(&app), &tab, session_id, &config_dir);
+            }
         }
     })
 }
@@ -129,6 +144,8 @@ pub struct TabObservation {
     pub subagents: Vec<transcript::SubagentInfo>,
     pub usage: Option<transcript::UsageSummary>,
     pub stall: Option<watchdog::Stall>,
+    /// The run (or tab) has waited for you longer than the watchdog minutes.
+    pub waiting: Option<watchdog::Waiting>,
 }
 
 /// status.json's `stage` and `waitingFor`, and when it last changed.
@@ -173,28 +190,26 @@ pub fn observe(
         subagents: tracker.subagents(),
         ..Default::default()
     };
+    let at = |ms: u64| std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(ms);
+    let mut input = watchdog::WatchInput {
+        transcript_written: tracker.last_write,
+        activity: hook.map(|h| h.activity),
+        tool_running: hook.is_some_and(|h| h.tool_running),
+        hook_updated: hook.and_then(|h| h.updated_ms).map(at),
+        activity_since: hook.and_then(|h| h.activity_since_ms).map(at),
+        ..Default::default()
+    };
     if let Some(dir) = run_dir {
-        let (stage, waiting, changed) = status_signals(dir);
-        let finished = matches!(stage.as_deref(), None | Some("done") | Some("failed"));
+        let (stage, waiting_for, changed) = status_signals(dir);
+        input.status_changed = changed;
+        input.waiting_for = waiting_for;
+        input.finished = matches!(stage.as_deref(), None | Some("done") | Some("failed"));
         out.usage = Some(tracker.summary(&timeline(dir), stage.as_deref().unwrap_or("start")));
-        out.stall = watchdog::check(
-            now,
-            &watchdog::WatchInput {
-                status_changed: changed,
-                transcript_written: tracker.last_write,
-                waiting_for: waiting,
-                finished,
-                activity: hook.map(|h| h.activity),
-                tool_running: hook.is_some_and(|h| h.tool_running),
-                hook_updated: hook.and_then(|h| h.updated_ms).map(|ms| {
-                    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(ms)
-                }),
-            },
-            watchdog_minutes,
-        );
+        out.stall = watchdog::check(now, &input, watchdog_minutes);
     } else {
         out.usage = Some(tracker.summary(&[], "session"));
     }
+    out.waiting = watchdog::waiting(now, &input, watchdog_minutes);
     out
 }
 
@@ -216,52 +231,65 @@ pub async fn observe_tab(app: AppHandle, tab_id: String) -> Result<TabObservatio
             let settings = settings.lock().map_err(|e| e.to_string())?;
             settings.run().watchdog_minutes
         };
-        let observe_state = app.state::<ObserveState>();
-        let hook = observe_state.hooks.as_ref().and_then(|h| h.state(&tab_id));
-        let installed = observe_state
-            .hooks
-            .as_ref()
-            .is_some_and(|h| h.has_tab(&tab_id));
-        let run_dir = tab
-            .launch
-            .as_ref()
-            .and_then(|l| l.run_dir.as_deref())
-            .and_then(|d| crate::run::checked_run_dir(&data_dir(&app), d).ok());
-        // A `/clear` (or a resume that forks) moves Claude to a new session;
-        // SessionStart's session id says which log to follow.
-        let session = hook
-            .as_ref()
-            .and_then(|h| h.session_id.clone())
-            .or_else(|| tab.claude_session_id.clone())
-            .unwrap_or_default();
-        let mut trackers = observe_state.trackers.lock().map_err(|e| e.to_string())?;
-        let fresh = trackers
-            .get(&tab_id)
-            .is_none_or(|(id, t)| id != &session || t.session_file.is_none());
-        if fresh {
-            let file = tab.claude_config_dir.as_deref().and_then(|config| {
-                crate::claude_session_log::find_session_log(Path::new(config), &session)
-            });
-            let tracker = file
-                .map(transcript::SessionTracker::for_file)
-                .unwrap_or_default();
-            trackers.insert(tab_id.clone(), (session, tracker));
-        }
-        let (_, tracker) = trackers.get_mut(&tab_id).expect("inserted");
-        let mut out = observe(
-            tracker,
-            run_dir.as_deref(),
-            hook.as_ref(),
-            minutes,
-            std::time::SystemTime::now(),
-        );
-        out.hooks_active = hook.is_some();
-        out.hooks_installed = installed;
-        out.hook = hook;
-        Ok(out)
+        observe_tab_now(&app, &tab, minutes)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Everything `observe_tab` shows for `tab`, read now (blocking: it follows
+/// the session log). No store lock is held by the caller. The attention
+/// detector (`attention.rs`) calls this too, so the panel and the detector
+/// share one verdict and one set of trackers.
+pub fn observe_tab_now(
+    app: &AppHandle,
+    tab: &crate::store::TabRecord,
+    minutes: u32,
+) -> Result<TabObservation, String> {
+    let tab_id = tab.id.clone();
+    let observe_state = app.state::<ObserveState>();
+    let hook = observe_state.hooks.as_ref().and_then(|h| h.state(&tab_id));
+    let installed = observe_state
+        .hooks
+        .as_ref()
+        .is_some_and(|h| h.has_tab(&tab_id));
+    let run_dir = tab
+        .launch
+        .as_ref()
+        .and_then(|l| l.run_dir.as_deref())
+        .and_then(|d| crate::run::checked_run_dir(&data_dir(app), d).ok());
+    // A `/clear` (or a resume that forks) moves Claude to a new session;
+    // SessionStart's session id says which log to follow.
+    let session = hook
+        .as_ref()
+        .and_then(|h| h.session_id.clone())
+        .or_else(|| tab.claude_session_id.clone())
+        .unwrap_or_default();
+    let mut trackers = observe_state.trackers.lock().map_err(|e| e.to_string())?;
+    let fresh = trackers
+        .get(&tab_id)
+        .is_none_or(|(id, t)| id != &session || t.session_file.is_none());
+    if fresh {
+        let file = tab.claude_config_dir.as_deref().and_then(|config| {
+            crate::claude_session_log::find_session_log(Path::new(config), &session)
+        });
+        let tracker = file
+            .map(transcript::SessionTracker::for_file)
+            .unwrap_or_default();
+        trackers.insert(tab_id.clone(), (session, tracker));
+    }
+    let (_, tracker) = trackers.get_mut(&tab_id).expect("inserted");
+    let mut out = observe(
+        tracker,
+        run_dir.as_deref(),
+        hook.as_ref(),
+        minutes,
+        std::time::SystemTime::now(),
+    );
+    out.hooks_active = hook.is_some();
+    out.hooks_installed = installed;
+    out.hook = hook;
+    Ok(out)
 }
 
 /// A closed tab's token and session tracker go.
@@ -278,13 +306,17 @@ pub fn forget_tabs(app: &AppHandle, tab_ids: &[String]) {
 }
 
 impl ObserveState {
+    /// Forgets each tab's hook token, hook state and tracker, and those of
+    /// its second pane (`<tab id>:p2`). One tab's id never reaches another's.
     fn forget(&self, tab_ids: &[String]) {
         for tab_id in tab_ids {
-            if let Some(hooks) = &self.hooks {
-                hooks.forget_tab(tab_id);
-            }
-            if let Ok(mut trackers) = self.trackers.lock() {
-                trackers.remove(tab_id);
+            for id in [tab_id.clone(), crate::store::second_pane_id(tab_id)] {
+                if let Some(hooks) = &self.hooks {
+                    hooks.forget_tab(&id);
+                }
+                if let Ok(mut trackers) = self.trackers.lock() {
+                    trackers.remove(&id);
+                }
             }
         }
     }
@@ -488,6 +520,65 @@ mod tests {
         assert_eq!(hooks.accept("a", &tokens[0], b"{}"), 403);
         assert!(hooks.has_tab("keep") && hooks.state("keep").is_some());
         assert!(state.trackers.lock().unwrap().contains_key("keep"));
+    }
+
+    #[test]
+    fn forgetting_a_tab_forgets_both_panes_and_a_pane_never_touches_the_other() {
+        let state = ObserveState::start();
+        let hooks = state.hooks.as_ref().expect("listener").clone();
+        // The tab's own terminal and its second pane have separate tokens,
+        // hook states and trackers.
+        let first = hooks.register_tab("tab_1");
+        let second = hooks.register_tab("tab_1:p2");
+        assert_eq!(
+            hooks.accept(
+                "tab_1",
+                &first,
+                br#"{"hook_event_name":"PermissionRequest"}"#
+            ),
+            204
+        );
+        assert_eq!(
+            hooks.accept(
+                "tab_1:p2",
+                &second,
+                br#"{"hook_event_name":"UserPromptSubmit"}"#
+            ),
+            204
+        );
+        assert_eq!(
+            hooks.state("tab_1").unwrap().activity,
+            hooks::TabActivity::NeedsYou
+        );
+        assert_eq!(
+            hooks.state("tab_1:p2").unwrap().activity,
+            hooks::TabActivity::Working
+        );
+        // The second pane's token is not the first pane's.
+        assert_eq!(hooks.accept("tab_1", &second, b"{}"), 403);
+        // Opening the second pane again (a new token) leaves the first alone.
+        let again = hooks.register_tab("tab_1:p2");
+        assert_ne!(again, second);
+        assert_eq!(
+            hooks.state("tab_1").unwrap().activity,
+            hooks::TabActivity::NeedsYou
+        );
+        assert!(hooks.has_tab("tab_1"));
+        for id in ["tab_1", "tab_1:p2", "tab_2"] {
+            state
+                .trackers
+                .lock()
+                .unwrap()
+                .insert(id.to_string(), ("s".into(), Default::default()));
+        }
+        hooks.register_tab("tab_2");
+        state.forget(&["tab_1".to_string()]);
+        assert!(!hooks.has_tab("tab_1") && !hooks.has_tab("tab_1:p2"));
+        assert!(hooks.state("tab_1").is_none() && hooks.state("tab_1:p2").is_none());
+        let trackers = state.trackers.lock().unwrap();
+        assert!(!trackers.contains_key("tab_1") && !trackers.contains_key("tab_1:p2"));
+        assert!(trackers.contains_key("tab_2"), "another tab is untouched");
+        assert!(hooks.has_tab("tab_2"));
     }
 
     #[test]

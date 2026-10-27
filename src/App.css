@@ -32,6 +32,7 @@ body,
   --fg-subtle: #6e7681;
   --accent: #388bfd;
   --accent-fg: #58a6ff;
+  --activity-waiting: var(--accent-fg);
   --accent-bright: #79c0ff;
   --accent-emphasis: #1f6feb;
   --accent-subtle: #15253a;
@@ -123,6 +124,7 @@ body,
   --fg-subtle: #6e7781;
   --accent: #0969da;
   --accent-fg: #0969da;
+  --activity-waiting: var(--accent-fg);
   --accent-bright: #0550ae;
   --accent-emphasis: #0969da;
   --accent-subtle: #ddf4ff;
@@ -173,6 +175,7 @@ body,
   --fg-subtle: #6272a4;
   --accent: #bd93f9;
   --accent-fg: #bd93f9;
+  --activity-waiting: var(--accent-fg);
   --accent-bright: #d6acff;
   --accent-emphasis: #bd93f9;
   --accent-subtle: #3a3354;
@@ -223,6 +226,7 @@ body,
   --fg-subtle: #7b88a1;
   --accent: #88c0d0;
   --accent-fg: #88c0d0;
+  --activity-waiting: var(--accent-fg);
   --accent-bright: #8fbcbb;
   --accent-emphasis: #5e81ac;
   --accent-subtle: #34404e;
@@ -273,6 +277,7 @@ body,
   --fg-subtle: #737aa2;
   --accent: #7aa2f7;
   --accent-fg: #7aa2f7;
+  --activity-waiting: var(--accent-fg);
   --accent-bright: #7dcfff;
   --accent-emphasis: #3d59a1;
   --accent-subtle: #24304f;
@@ -323,6 +328,7 @@ body,
   --fg-subtle: #7f849c;
   --accent: #89b4fa;
   --accent-fg: #89b4fa;
+  --activity-waiting: var(--accent-fg);
   --accent-bright: #b4befe;
   --accent-emphasis: #74c7ec;
   --accent-subtle: #263046;
@@ -483,6 +489,7 @@ body,
 
 /* ---- Window layout: tab bar, terminal, status bar ---- */
 .workspace {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -499,6 +506,7 @@ body,
 }
 
 .tab-bar {
+  position: relative;
   display: flex;
   align-items: stretch;
   gap: 0.15rem;
@@ -507,6 +515,23 @@ body,
   background: var(--bg-elev);
   overflow-x: auto;
   flex: none;
+}
+
+.tab-insert-marker {
+  position: absolute;
+  top: 0.25rem;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.tab-dragging {
+  opacity: 0.6;
+  position: relative;
+  z-index: 3;
+  pointer-events: none;
 }
 
 .tab {
@@ -530,6 +555,7 @@ body,
 }
 
 .tab-label {
+  user-select: none;
   display: flex;
   align-items: center;
   gap: 0.35rem;
@@ -1206,9 +1232,75 @@ body,
   gap: var(--space-2);
 }
 
-.run-panel {
-  width: 20rem;
+.run-panel-frame {
+  position: relative;
+  display: flex;
   flex-shrink: 0;
+  min-width: 0;
+}
+
+.run-panel-handle {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.run-panel-handle:hover,
+.run-panel-handle:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+
+.run-panel-collapse {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  z-index: 6;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.run-rail {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  width: 1.75rem;
+  border-left: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+
+.run-rail-button {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  padding: var(--space-1) 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.run-rail-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.run-rail-attention .run-rail-dot {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px var(--warning-subtle);
+}
+
+.run-panel {
+  flex: 1;
+  min-width: 0;
   overflow-y: auto;
   padding: var(--space-2) var(--space-3);
   border-left: 1px solid var(--border);
@@ -1364,6 +1456,21 @@ body,
   padding: 2px var(--space-1);
 }
 
+.selftest-steps {
+  list-style: none;
+  margin: var(--space-1) 0;
+  padding: 0;
+  font-size: var(--text-xs);
+}
+
+.selftest-pass {
+  color: var(--success);
+}
+
+.selftest-fail {
+  color: var(--danger);
+}
+
 .version-banner {
   padding: 0 var(--space-3);
 }
@@ -1377,12 +1484,256 @@ body,
   background: var(--border);
 }
 
+.run-pr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.run-pr-actions .link-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.split {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.split-right {
+  flex-direction: row;
+}
+
+.split-down {
+  flex-direction: column;
+}
+
+.split-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid transparent;
+}
+
+.split-pane-focused {
+  border-color: var(--accent);
+}
+
+.split-divider {
+  flex: none;
+  background: var(--border);
+  touch-action: none;
+}
+
+.split-right > .split-divider {
+  width: 5px;
+  cursor: col-resize;
+}
+
+.split-down > .split-divider {
+  height: 5px;
+  cursor: row-resize;
+}
+
+.split-divider:hover,
+.split-divider:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+
+.runs-dialog {
+  width: min(56rem, 94vw);
+}
+
+.runs-filters {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.runs-filters .text-input:first-child {
+  flex: 1;
+}
+
+.runs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.runs-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.runs-main {
+  flex: 1 1 100%;
+}
+
+.runs-facts,
+.runs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: baseline;
+}
+
+.status-attention {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.status-attention-needs {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.active-runs {
+  position: fixed;
+  left: var(--space-3);
+  bottom: 2.2rem;
+  z-index: 40;
+  min-width: 20rem;
+  max-width: 32rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 30%);
+  font-size: var(--text-sm);
+}
+
+.active-runs h3 {
+  margin: 0 0 var(--space-1);
+}
+
+.active-runs ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.active-runs li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+}
+
+.active-flag-wait {
+  color: var(--warning);
+}
+
+.active-flag-stall {
+  color: var(--danger);
+}
+
+.active-runs-footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--space-2);
+}
+
+.approval-card {
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--attention);
+  border-radius: var(--radius-md);
+  background: var(--warning-subtle);
+}
+
+.approval-card h3 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-md);
+}
+
+.approval-prs {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.approval-prs th,
+.approval-prs td {
+  text-align: left;
+  padding: 2px var(--space-1);
+}
+
+.tab-activity-button {
+  padding: 0;
+  border: 0;
+  flex: none;
+  align-self: center;
+  cursor: pointer;
+}
+
+.usage-popover {
+  position: absolute;
+  top: 2.4rem;
+  left: var(--space-3);
+  z-index: 20;
+  min-width: 12rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 30%);
+  font-size: var(--text-sm);
+}
+
+.usage-popover p {
+  margin: var(--space-1) 0;
+}
+
+.usage-popover-close {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.tab-activity-waiting {
+  background: var(--activity-waiting);
+}
+
 .tab-activity-working {
   background: var(--success);
 }
 
 .tab-activity-needs-you {
   background: var(--warning);
+}
+
+/* The detector's notices: over the status bar, in every window. */
+.attention-notices {
+  position: fixed;
+  right: var(--space-3);
+  bottom: 2.2rem;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 28rem;
+}
+
+.attention-notices .inline-notice {
+  margin: 0;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 30%);
+  background: var(--bg-elev);
 }
 
 /* Review on GitHub: the PR's draft / ready badge and its review-round comment links. */

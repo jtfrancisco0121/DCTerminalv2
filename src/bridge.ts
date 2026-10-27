@@ -6,6 +6,7 @@
  */
 
 import { Channel, invoke } from "@tauri-apps/api/core";
+import type { WindowHistory } from "./usage/limits";
 
 export type TabKind = "claude" | "shell";
 
@@ -23,6 +24,20 @@ export type TabSummary = {
   runDir?: string | null;
   /** dcv2 tabs: `eagle-eye`, `eagle-eye-resume`, or the role. */
   role?: string | null;
+  /** The second pane (a Shell) when the tab is split. */
+  split?: SplitSummary | null;
+};
+
+export type SplitDirection = "right" | "down";
+
+export type SplitSummary = {
+  direction: SplitDirection;
+  /** The first pane's share of the tab, 0.2 to 0.8. */
+  ratio: number;
+  /** The second pane's terminal id (`<tab id>:p2`). */
+  id: string;
+  cwd: string;
+  folderStatus: string;
 };
 
 export type ClosedTabSummary = {
@@ -65,7 +80,11 @@ export type TerminalSettings = {
   copyOnSelect: boolean;
 };
 
-export type UiSettings = { theme: string };
+export type UiSettings = {
+  theme: string;
+  /** "Open in editor" on a PR card: program and arguments, no shell. Empty: `code`. */
+  editorCommand?: string;
+};
 
 export type ClaudeAccount = {
   id: string;
@@ -94,12 +113,36 @@ export type RunSettings = {
   autoCleanup?: boolean;
 };
 
+export type ObserveSettings = {
+  /** "Track activity in every Claude tab" (default on). */
+  hooksAllTabs: boolean;
+};
+
+/** Notifications: a master switch and one switch per event kind (missing: on). */
+export type NotifySettings = {
+  master: boolean;
+  events: Record<string, boolean>;
+};
+
+/** Phone push: where it goes. The secrets live in the keychain and are never here. */
+export type PushSettings = {
+  /** `none`, `ntfy`, `pushover` or `webhook`. */
+  target: string;
+  ntfyServer: string;
+  events: Record<string, boolean>;
+};
+
+export type PushStatus = { saved: string[] };
+
 export type SettingsView = {
   terminal: TerminalSettings;
   ui: UiSettings;
   claude: ClaudeSettings;
   /** Eagle-Eye launch settings; absent from older test fixtures. */
   run?: RunSettings;
+  observe?: ObserveSettings;
+  notify?: NotifySettings;
+  push?: PushSettings;
   /** Per account: auto-post ClickUp comments after ship approval and the user's click (missing: off). */
   clickup?: { autoPost: Record<string, boolean> };
   accounts: ResolvedClaudeAccount[];
@@ -141,6 +184,8 @@ export type RateWindow = {
 export type UsageSnapshot = {
   configDir: string;
   windows: RateWindow[];
+  /** The saved readings per window type, oldest first (at most 48 each). Absent in older fixtures. */
+  history?: WindowHistory[];
 };
 
 export type PtyPacket = {
@@ -178,6 +223,36 @@ export function newTab(windowId: string, cwd: string, kind: TabKind): Promise<Ta
 
 export function selectTab(windowId: string, tabId: string): Promise<void> {
   return invoke<void>("select_tab", { windowId, tabId });
+}
+
+/** Drags `tabId` to `index` among the window's tabs; resolves to the window's new state. */
+export function moveTab(windowId: string, tabId: string, index: number): Promise<AppStateSnapshot> {
+  return invoke<AppStateSnapshot>("move_tab", { windowId, tabId, index });
+}
+
+/** Up to 10 existing folders for the New tab and Start forms, newest first. */
+export function recentFolders(): Promise<string[]> {
+  return invoke<string[]>("recent_folders");
+}
+
+/** Points a tab whose folder is gone at another folder; it keeps its id (and its name unless it follows the folder). */
+export function setTabFolder(tabId: string, cwd: string): Promise<TabSummary> {
+  return invoke<TabSummary>("set_tab_folder", { tabId, cwd });
+}
+
+/** Splits the tab: a second Shell pane, right of it or below it. */
+export function splitTab(windowId: string, tabId: string, direction: SplitDirection): Promise<TabSummary> {
+  return invoke<TabSummary>("split_tab", { windowId, tabId, direction });
+}
+
+/** Closes pane 1 or 2 of a split tab and stops its terminal. */
+export function closePane(windowId: string, tabId: string, pane: 1 | 2): Promise<TabSummary> {
+  return invoke<TabSummary>("close_pane", { windowId, tabId, pane });
+}
+
+/** The divider moved: the first pane's share of the tab. */
+export function setSplitRatio(tabId: string, ratio: number): Promise<TabSummary> {
+  return invoke<TabSummary>("set_split_ratio", { tabId, ratio });
 }
 
 export function renameTab(tabId: string, label: string): Promise<TabSummary> {
@@ -251,6 +326,73 @@ export function setUiSettings(ui: UiSettings): Promise<UiSettings> {
 
 export function setRunSettings(run: RunSettings): Promise<RunSettings> {
   return invoke<RunSettings>("set_run_settings", { run });
+}
+
+export function setObserveSettings(observe: ObserveSettings): Promise<ObserveSettings> {
+  return invoke<ObserveSettings>("set_observe_settings", { observe });
+}
+
+export function setNotifySettings(notify: NotifySettings): Promise<NotifySettings> {
+  return invoke<NotifySettings>("set_notify_settings", { notify });
+}
+
+/** One system notification and one in-app notice. Rejects when the system refuses. */
+export function sendTestNotification(): Promise<void> {
+  return invoke<void>("send_test_notification");
+}
+
+/** `granted`, `denied` or `prompt`. */
+export function notificationPermission(): Promise<string> {
+  return invoke<string>("notification_permission");
+}
+
+/** Selects the tab in its window and brings that window forward (null: the tab is gone). */
+export function focusTab(tabId: string): Promise<TabSummary | null> {
+  return invoke<TabSummary | null>("focus_tab_command", { tabId });
+}
+
+export function setPushSettings(push: PushSettings): Promise<PushSettings> {
+  return invoke<PushSettings>("set_push_settings", { push });
+}
+
+/** Which push secrets are saved (names only). */
+export function pushStatus(): Promise<PushStatus> {
+  return invoke<PushStatus>("push_status");
+}
+
+/** Saves one push secret in the keychain; an empty value clears it. */
+export function pushSetSecret(name: string, value: string): Promise<PushStatus> {
+  return invoke<PushStatus>("push_set_secret", { name, value });
+}
+
+/** Sends one push; rejects with the reason when it did not arrive. */
+export function pushSendTest(): Promise<void> {
+  return invoke<void>("push_send_test");
+}
+
+/** One unfinished run tab, from the attention detector (any window). */
+export type ActiveRun = {
+  windowLabel: string;
+  tabId: string;
+  label: string;
+  activity: string;
+  runId: string | null;
+  runDir: string | null;
+  stage: string | null;
+  waitingFor: string | null;
+  stalled: boolean;
+  prsDone: number;
+  prsTotal: number;
+};
+
+export type AttentionSummary = { needsYou: number; activeRuns: number };
+
+export function activeRuns(): Promise<ActiveRun[]> {
+  return invoke<ActiveRun[]>("active_runs");
+}
+
+export function attentionSummary(): Promise<AttentionSummary> {
+  return invoke<AttentionSummary>("attention_summary");
 }
 
 export function setClaudeSettings(claude: ClaudeSettings): Promise<SettingsView> {

@@ -36,6 +36,19 @@ export type FolderRepos = {
 
 export type RoleTile = { id: string; label: string };
 
+/** What the Runs view shows from a finished run's record (`app-usage.json`). */
+export type RecordTotals = {
+  outcome: string | null;
+  totalTokens: number;
+  /** An estimate at list prices; null when a model has no price. */
+  estimateUsd: number | null;
+  /** Active minutes over all stages. */
+  minutes: number;
+  prUrls: string[];
+  firstActivity: string | null;
+  lastActivity: string | null;
+};
+
 export type RunListItem = {
   runId: string;
   runDir: string;
@@ -46,6 +59,12 @@ export type RunListItem = {
   title: string | null;
   /** A dev-app run used in place (Import from dev app). */
   adopted?: boolean;
+  /** Absent for a run without a record (old, or not finished). */
+  record?: RecordTotals | null;
+  prCount?: number | null;
+  /** ClickUp ticket ids and custom ids of the run. */
+  ticketIds?: string[];
+  hasReport?: boolean;
 };
 
 export type RunOverview = {
@@ -221,13 +240,33 @@ export const startRun = (
   clickup: ClickUpStart | null = null,
   reviewMode: ReviewMode | null = null,
   bmadMode: BmadMode | null = null,
-) => invoke<StartedRun>("start_run", { windowId, folder, request, role, clickup, reviewMode, bmadMode });
+  force = false,
+) => invoke<StartedRun>("start_run", { windowId, folder, request, role, clickup, reviewMode, bmadMode, force });
+
+/** An unfinished run with the same request, folder and tickets (what `start_run` answers instead of starting). */
+export type DuplicateRun = { runId: string; runDir: string };
+
+/** The duplicate a failed `startRun` names, else null. */
+export function duplicateOf(err: unknown): DuplicateRun | null {
+  if (!err || typeof err !== "object") return null;
+  const dup = (err as { duplicate?: Partial<DuplicateRun> }).duplicate;
+  return dup && typeof dup.runId === "string" && typeof dup.runDir === "string"
+    ? { runId: dup.runId, runDir: dup.runDir }
+    : null;
+}
 export const setRepoSetup = (repoPath: string, setup: RepoSetup) =>
   invoke<RepoSetup>("set_repo_setup", { repoPath, setup });
 export const resumeRun = (windowId: string, runDir: string) => invoke<StartedRun>("resume_run", { windowId, runDir });
 export const readRun = (runDir: string) => invoke<RunView>("read_run", { runDir });
 export const rerunChecks = (runDir: string) => invoke<void>("rerun_checks", { runDir });
 export const runWorktrees = (runDir: string) => invoke<WorktreeItem[]>("run_worktrees", { runDir });
+/** Whether each PR's worktree passes the backend's check (where the contract puts it, on the run's branch). */
+export type WorktreeCheck = { prId: string; verified: boolean; reason: string | null };
+export const prWorktreeChecks = (runDir: string) => invoke<WorktreeCheck[]>("pr_worktree_checks", { runDir });
+export type PrWorktreeAction = "reveal" | "editor" | "shell";
+/** `shell` opens a Shell tab in `windowId` and resolves to it. */
+export const prWorktreeAction = (runDir: string, prId: string, action: PrWorktreeAction, windowId?: string) =>
+  invoke<TabSummary | null>("pr_worktree_action", { runDir, prId, action, windowId });
 export const removeRunWorktrees = (runDir: string, prIds: string[]) =>
   invoke<RemoveResult[]>("remove_run_worktrees", { runDir, prIds });
 export const readRunFile = (runDir: string, path: string) => invoke<string>("read_run_file", { runDir, path });

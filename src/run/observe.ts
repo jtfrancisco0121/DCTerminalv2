@@ -16,6 +16,8 @@ export type TabHookState = {
   subagentsRunning: number;
   toolRunning: boolean;
   sessionId: string | null;
+  /** Unix ms when `activity` last changed. */
+  activitySinceMs?: number | null;
 };
 
 export type Tokens = { input: number; output: number; cacheWrite5m: number; cacheWrite1h: number; cacheRead: number };
@@ -46,6 +48,8 @@ export type SubagentInfo = {
 
 export type Stall = { minutes: number; threshold: number };
 
+export type Waiting = { minutes: number; threshold: number; sinceMs: number };
+
 export type TabObservation = {
   hook: TabHookState | null;
   hooksActive: boolean;
@@ -56,6 +60,8 @@ export type TabObservation = {
   subagents: SubagentInfo[];
   usage: UsageSummary | null;
   stall: Stall | null;
+  /** The run (or tab) has waited for you longer than the watchdog minutes. */
+  waiting?: Waiting | null;
 };
 
 export type SelfTest = {
@@ -87,6 +93,28 @@ export const nudgeTab = (tabId: string) => invoke<void>("nudge_tab", { tabId });
 export const claudeVersionStatus = (windowId: string) => invoke<ClaudeVersionStatus>("claude_version_status", { windowId });
 export const runClaudeSelftest = (windowId: string) => invoke<SelfTest>("run_claude_selftest", { windowId });
 export const readCheckLog = (runDir: string, prId: string) => invoke<string>("read_check_log", { runDir, prId });
+
+/** The tab bar reads hook state while any Claude tab (or run tab) exists. */
+export function pollsActivity(tabs: ReadonlyArray<{ kind: string; role?: string | null }>): boolean {
+  return tabs.some((tab) => tab.kind === "claude" || Boolean(tab.role));
+}
+
+/** The self-test's three steps, in order, each pass or fail. */
+export function selftestSteps(test: SelfTest): { label: string; ok: boolean }[] {
+  return [
+    { label: "Plugin loaded", ok: test.pluginLoaded },
+    { label: "Agent spawned", ok: test.agentSpawned },
+    { label: "Agent completed", ok: test.agentCompleted },
+  ];
+}
+
+/** The most urgent of several panes' activities: needs-you, then working, then waiting. */
+export function urgentActivity(values: ReadonlyArray<string | undefined | null>): string | undefined {
+  for (const wanted of ["needs-you", "working", "waiting"]) {
+    if (values.includes(wanted)) return wanted;
+  }
+  return undefined;
+}
 
 export function activityText(activity: TabActivity | undefined | null): string | null {
   switch (activity) {

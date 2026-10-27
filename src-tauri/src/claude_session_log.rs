@@ -24,6 +24,33 @@ pub fn find_session_log(config_dir: &Path, session_id: &str) -> Option<PathBuf> 
         .find(|path| path.is_file())
 }
 
+/// Claude Code's folder name for a working folder under `projects/`: every
+/// character that is not a letter or a digit becomes `-`
+/// (`/work/toy` is `-work-toy`).
+pub fn project_dir_name(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// The session's log is under the project folder of `cwd` (the folder as
+/// given or its real path), so `claude --resume <id>` finds it there.
+pub fn session_in_folder(config_dir: &Path, session_id: &str, cwd: &Path) -> bool {
+    let id = session_id.trim();
+    if !crate::provider::claude::valid_session_id(id) {
+        return false;
+    }
+    let name = format!("{id}.jsonl");
+    let real = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    [cwd, real.as_path()].iter().any(|folder| {
+        config_dir
+            .join("projects")
+            .join(project_dir_name(&folder.display().to_string()))
+            .join(&name)
+            .is_file()
+    })
+}
+
 /// The session a tab may resume: its saved session, when that session's log
 /// exists under the folder it was written in, and that folder is still the
 /// one the tab's window uses (another account cannot see the log).
@@ -65,6 +92,32 @@ mod tests {
         let path = write_log(&account);
         assert_eq!(find_session_log(account.path(), SID), Some(path));
         assert!(find_session_log(account.path(), "../../etc/passwd").is_none());
+    }
+
+    #[test]
+    fn a_session_belongs_to_the_project_folder_of_its_working_folder() {
+        assert_eq!(project_dir_name("/work/toy"), "-work-toy");
+        assert_eq!(
+            project_dir_name("/Users/jt/My App.v2"),
+            "-Users-jt-My-App-v2"
+        );
+        let account = TempDir::new("session_in_folder");
+        let work = TempDir::new("session_in_folder_work");
+        let elsewhere = TempDir::new("session_in_folder_else");
+        let real = work.path().canonicalize().unwrap();
+        let project = account
+            .join("projects")
+            .join(project_dir_name(&real.display().to_string()));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join(format!("{SID}.jsonl")), "{}\n").unwrap();
+        assert!(session_in_folder(account.path(), SID, work.path()));
+        assert!(!session_in_folder(account.path(), SID, elsewhere.path()));
+        assert!(!session_in_folder(account.path(), "../../x", work.path()));
+        assert!(!session_in_folder(
+            &elsewhere.join("none"),
+            SID,
+            work.path()
+        ));
     }
 
     #[test]

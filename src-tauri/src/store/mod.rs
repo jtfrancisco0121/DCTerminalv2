@@ -23,7 +23,10 @@ pub use settings_store::{
     ClaudeSettings, RepoSetup, RunSettings, SettingsStore, TerminalSettings, UiSettings,
 };
 pub use state_store::StateStore;
+#[cfg(test)]
+pub use state_types::SplitPane;
 pub use state_types::{
-    window_label, window_matches, AppStateFile, ArchivedWindow, TabKind, TabLaunch, TabRecord,
-    WindowRecord, DEFAULT_ACCOUNT_ID, MAIN_WINDOW_ID,
+    pane_parts, second_pane_id, window_label, window_matches, AppStateFile, ArchivedWindow,
+    SplitDirection, TabKind, TabLaunch, TabRecord, WindowRecord, DEFAULT_ACCOUNT_ID,
+    MAIN_WINDOW_ID,
 };

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { AppStateSnapshot, TabSummary } from "./bridge";
 
@@ -58,23 +58,44 @@ vi.mock("./bridge", () => ({
   closeTab: (...args: unknown[]) => closeTab(...(args as [])),
   selectTab: vi.fn(async () => {}),
   renameTab: vi.fn(async () => tab),
+  moveTab: vi.fn(async () => state),
+  splitTab: vi.fn(async () => tab),
+  closePane: vi.fn(async () => tab),
+  setSplitRatio: vi.fn(async () => tab),
+  recentFolders: vi.fn(async () => []),
+  setTerminalSettings: vi.fn(async (terminal: unknown) => terminal),
   reopenClosedTab: vi.fn(async () => tab),
   openAccountWindow: vi.fn(async () => "win-2"),
   ptySetScheme: vi.fn(async () => {}),
+  focusTab: vi.fn(async () => null),
+  attentionSummary: vi.fn(async () => ({ needsYou: 0, activeRuns: 0 })),
+  activeRuns: vi.fn(async () => []),
 }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 // The terminal itself is xterm in a real webview; here it is a marker.
 vi.mock("./components/TerminalView", () => ({
   TerminalView: ({ tab: shown }: { tab: TabSummary }) => <div data-testid="terminal">{shown.label}</div>,
   destroyTerminal: vi.fn(),
 }));
 vi.mock("./terminal/park", () => ({
+  focusParkedTerminal: vi.fn(),
+  refitTerminal: vi.fn(),
   requestTerminalSearch: vi.fn(),
   setCopyOnSelect: vi.fn(),
   setOptionAsMeta: vi.fn(),
   setTerminalTheme: vi.fn(),
 }));
+vi.mock("./run/observe", async () => {
+  const actual = await vi.importActual<typeof import("./run/observe")>("./run/observe");
+  return {
+    ...actual,
+    observeTabs: vi.fn(async () => ({})),
+    observeTab: vi.fn(async () => Promise.reject(new Error("no hook state"))),
+    claudeVersionStatus: vi.fn(async () => ({ version: null, range: "ok", min: "", maxTested: "", selftest: null, selftestWanted: false })),
+  };
+});
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
-vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn(async () => {}) }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn(async () => {}), revealItemInDir: vi.fn(async () => {}) }));
 
 const runTab: TabSummary = { ...tab, id: "tab_run", label: "Eagle-Eye · ws", cwd: "/w/ws", runDir: "/d/runs/r-1", role: "eagle-eye" };
 const startRun = vi.fn(async () => {
@@ -112,11 +133,19 @@ vi.mock("./run/api", () => ({
     hasReport: false,
   })),
   rerunChecks: vi.fn(async () => {}),
+  prWorktreeChecks: vi.fn(async () => []),
+  prWorktreeAction: vi.fn(async () => null),
   runWorktrees: vi.fn(async () => []),
   removeRunWorktrees: vi.fn(async () => []),
   readRunFile: vi.fn(async () => ""),
   memoryStatus: vi.fn(async () => ({ available: false, problem: "memory.sh is not in this plugin yet" })),
   readMemoryFile: vi.fn(async () => ""),
+}));
+
+const running = new Set<string>();
+vi.mock("./terminal/live", async (original) => ({
+  ...(await original<typeof import("./terminal/live")>()),
+  ptyRunning: (id: string) => running.has(id),
 }));
 
 const { default: App } = await import("./App");
@@ -158,7 +187,7 @@ describe("App", () => {
       fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
     });
     // Review on GitHub is on by default, and so is BMAD Auto.
-    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null, "github", "auto");
+    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null, "github", "auto", false);
     expect((await screen.findByTestId("terminal")).textContent).toBe("Eagle-Eye · ws");
     expect(await screen.findByTestId("run-stage")).toBeTruthy();
     expect(screen.getByTestId("run-stage").textContent).toBe("Planning");
@@ -183,7 +212,7 @@ describe("App", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
     });
-    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null, "github", "on");
+    expect(startRun).toHaveBeenCalledWith("main", "/w/ws", "Add multiply()", "eagle-eye", null, "github", "on", false);
     state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
     localStorage.removeItem("dcv2.bmadMode./w/ws");
   });
@@ -204,5 +233,186 @@ describe("App", () => {
     expect(setWindowAccount).toHaveBeenCalledWith("default");
     expect((await screen.findByTestId("terminal")).textContent).toBe("Claude · app");
     context = personal;
+  });
+});
+
+describe("App attention control", () => {
+  it("reads the attention summary again when the detector announces something", async () => {
+    const bridge = await import("./bridge");
+    const events = await import("@tauri-apps/api/event");
+    const summary = bridge.attentionSummary as unknown as ReturnType<typeof vi.fn>;
+    const listen = events.listen as unknown as ReturnType<typeof vi.fn>;
+    summary.mockResolvedValue({ needsYou: 0, activeRuns: 0 });
+    render(<App />);
+    expect(await screen.findByTestId("status-account")).toBeTruthy();
+    expect(screen.queryByTestId("status-attention")).toBeNull();
+    const calls = summary.mock.calls.length;
+    summary.mockResolvedValue({ needsYou: 2, activeRuns: 1 });
+    const payload = { kind: "needs-you", tabId: null, windowLabel: null, runId: null, text: "dcv2: a tab needs you" };
+    const handlers = listen.mock.calls.filter(([name]) => name === "attention").map(([, fn]) => fn as (e: unknown) => void);
+    await act(async () => handlers.forEach((fn) => fn({ payload })));
+    expect(summary.mock.calls.length).toBeGreaterThan(calls);
+    expect((await screen.findByTestId("status-attention")).textContent).toBe("2 need you · 1 run");
+    fireEvent.click(screen.getByTestId("status-attention"));
+    expect(await screen.findByRole("dialog", { name: "Active runs" })).toBeTruthy();
+  });
+});
+
+describe("App tab cycling and font zoom", () => {
+  it("Ctrl+Tab selects the next tab and wraps; Ctrl+Shift+plus raises the font size by one", async () => {
+    const bridge = await import("./bridge");
+    const selectTab = bridge.selectTab as unknown as ReturnType<typeof vi.fn>;
+    const setTerminalSettings = bridge.setTerminalSettings as unknown as ReturnType<typeof vi.fn>;
+    const second: TabSummary = { ...tab, id: "tab_2", label: "Claude · two" };
+    state = { windowId: "main", activeTabId: tab.id, tabs: [tab, second], closedTabs: [] };
+    render(<App />);
+    expect(await screen.findAllByRole("tab")).toHaveLength(2);
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
+    });
+    expect(selectTab).toHaveBeenLastCalledWith("main", "tab_2");
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
+    });
+    expect(selectTab).toHaveBeenLastCalledWith("main", "tab_1");
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "+", ctrlKey: true, shiftKey: true });
+    });
+    expect(setTerminalSettings).toHaveBeenCalledWith(expect.objectContaining({ fontSize: 15 }));
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
+});
+
+describe("App recently closed", () => {
+  it("lists the window's closed tabs on the start screen and reopens the chosen one", async () => {
+    const bridge = await import("./bridge");
+    const reopenClosedTab = bridge.reopenClosedTab as unknown as ReturnType<typeof vi.fn>;
+    state = {
+      windowId: "main",
+      activeTabId: null,
+      tabs: [],
+      closedTabs: [
+        { id: "tab_9", label: "Claude · nine", cwd: "/w/nine", kind: "claude" },
+        { id: "tab_8", label: "Shell · eight", cwd: "/w/eight", kind: "shell" },
+      ],
+    };
+    render(<App />);
+    const list = await screen.findByRole("region", { name: "Recently closed" });
+    fireEvent.click(within(list).getByRole("button", { name: "Reopen Shell · eight" }));
+    expect(reopenClosedTab).toHaveBeenLastCalledWith("main", "tab_8");
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
+});
+
+describe("App tab context menu", () => {
+  const three: TabSummary[] = [
+    { ...tab, id: "t_a", label: "A" },
+    { ...tab, id: "t_b", label: "B" },
+    { ...tab, id: "t_c", label: "C" },
+  ];
+
+  it("Close others closes at once when nothing runs and asks once when a terminal runs", async () => {
+    state = { windowId: "main", activeTabId: "t_a", tabs: three, closedTabs: [] };
+    closeTab.mockClear();
+    render(<App />);
+    fireEvent.contextMenu(await screen.findByRole("tab", { name: "A" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Close others" }));
+    await waitFor(() => expect(closeTab).toHaveBeenCalledTimes(2));
+    expect(closeTab.mock.calls.map((call) => (call as unknown[])[1])).toEqual(["t_b", "t_c"]);
+    cleanup();
+
+    state = { windowId: "main", activeTabId: "t_a", tabs: three, closedTabs: [] };
+    closeTab.mockClear();
+    running.add("t_c");
+    render(<App />);
+    fireEvent.contextMenu(await screen.findByRole("tab", { name: "A" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Close to the right" }));
+    expect(await screen.findByText("Close tabs?")).toBeTruthy();
+    expect(closeTab).not.toHaveBeenCalled();
+    expect(screen.getByText(/1 of these tabs still run a terminal/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close 2 tabs" }));
+    await waitFor(() => expect(closeTab).toHaveBeenCalledTimes(2));
+    running.clear();
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
+
+  it("Duplicate opens a tab of the same kind in the same folder", async () => {
+    state = { windowId: "main", activeTabId: "t_a", tabs: [{ ...tab, id: "t_a", label: "A", cwd: "/w/dup", kind: "shell" }], closedTabs: [] };
+    newTab.mockClear();
+    render(<App />);
+    fireEvent.contextMenu(await screen.findByRole("tab", { name: "A" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate in same folder" }));
+    await waitFor(() => expect(newTab).toHaveBeenCalledWith("main", "/w/dup", "shell"));
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
+});
+
+describe("App split panes", () => {
+  const splitTab: TabSummary = {
+    ...tab,
+    id: "t_s",
+    label: "Claude · split",
+    cwd: "/w/split",
+    split: { direction: "right", ratio: 0.5, id: "t_s:p2", cwd: "/w/split", folderStatus: "ok" },
+  };
+
+  it("Ctrl+Shift+D splits the active tab right and Ctrl+Shift+Alt+D down", async () => {
+    const bridge = await import("./bridge");
+    const split = bridge.splitTab as unknown as ReturnType<typeof vi.fn>;
+    split.mockClear();
+    state = { windowId: "main", activeTabId: "tab_1", tabs: [tab], closedTabs: [] };
+    render(<App />);
+    await screen.findByTestId("terminal");
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "D", ctrlKey: true, shiftKey: true });
+    });
+    expect(split).toHaveBeenLastCalledWith("main", "tab_1", "right");
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "D", ctrlKey: true, shiftKey: true, altKey: true });
+    });
+    expect(split).toHaveBeenLastCalledWith("main", "tab_1", "down");
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
+
+  it("a split tab shows both panes; Cmd+W closes the focused pane, not the tab", async () => {
+    const bridge = await import("./bridge");
+    const closePane = bridge.closePane as unknown as ReturnType<typeof vi.fn>;
+    const closeTabMock = closeTab;
+    closePane.mockClear();
+    closeTabMock.mockClear();
+    state = { windowId: "main", activeTabId: "t_s", tabs: [splitTab], closedTabs: [] };
+    render(<App />);
+    expect(await screen.findByTestId("split")).toBeTruthy();
+    expect(screen.getAllByTestId("terminal")).toHaveLength(2);
+    // Move to the second pane (the arrow toward the second pane), then close.
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "ArrowRight", ctrlKey: true, shiftKey: true, altKey: true });
+    });
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "W", ctrlKey: true, shiftKey: true });
+    });
+    expect(closePane).toHaveBeenLastCalledWith("main", "t_s", 2);
+    expect(closeTabMock).not.toHaveBeenCalled();
+    // Back in the first pane, the same key closes pane 1.
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "ArrowLeft", ctrlKey: true, shiftKey: true, altKey: true });
+    });
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "W", ctrlKey: true, shiftKey: true });
+    });
+    expect(closePane).toHaveBeenLastCalledWith("main", "t_s", 1);
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
+
+  it("a one-pane tab: Cmd+W closes the tab", async () => {
+    const closeTabMock = closeTab;
+    closeTabMock.mockClear();
+    state = { windowId: "main", activeTabId: "tab_1", tabs: [tab], closedTabs: [] };
+    render(<App />);
+    await screen.findByTestId("terminal");
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "W", ctrlKey: true, shiftKey: true });
+    });
+    await waitFor(() => expect(closeTabMock).toHaveBeenCalledWith("main", "tab_1"));
   });
 });

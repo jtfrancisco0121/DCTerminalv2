@@ -137,7 +137,7 @@ if run:
 # Written only by state.sh (status, writeback, guard) or only by the app
 # (the ClickUp snapshot and records, meta.json, the app's own check results).
 PROTECTED = ("status.json", "writeback.json", ".guard.json",
-             "tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json",
+             "tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json", "app-usage.json",
              "app-cleanup.json")
 who = agent or "the orchestrator"
 where = "your worktree or the run folder" if role == "implementer" else "the run folder"

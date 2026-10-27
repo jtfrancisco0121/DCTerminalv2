@@ -18,6 +18,24 @@ export function stageText(stage: string | null): string {
   return STAGES[stage] ?? stage;
 }
 
+/** The event kinds the detector announces (src-tauri/src/observe/attention.rs), for Settings. */
+export const ATTENTION_KINDS: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "needs-you", label: "A Claude tab needs you" },
+  { key: "approval-wait", label: "A run waits for your approval" },
+  { key: "waiting-reminder", label: "Reminder: still waiting for you" },
+  { key: "stall", label: "A run has made no progress" },
+  { key: "run-done", label: "A run finished" },
+  { key: "run-failed", label: "A run failed" },
+  { key: "check-failed", label: "A PR's check failed" },
+  { key: "autopost-failed", label: "A ClickUp auto-post failed" },
+  { key: "merged-cleaned", label: "A merged PR was cleaned up" },
+];
+
+/** The events the phone gets (src-tauri/src/observe/push.rs PUSH_KINDS). */
+export const PUSH_KINDS: ReadonlyArray<{ key: string; label: string }> = ATTENTION_KINDS.filter((kind) =>
+  ["stall", "check-failed", "merged-cleaned", "autopost-failed"].includes(kind.key),
+);
+
 const PR_STATES: Record<string, string> = {
   pending: "waiting",
   building: "building",
@@ -98,4 +116,58 @@ export function reviewText(pr: PrView): string | null {
 /** A link the opener may open (http/https only). */
 export function safeUrl(url: string | null): string | null {
   return url && /^https?:\/\//i.test(url) ? url : null;
+}
+
+/** The approval stops (status.json `waitingFor`) and their titles. */
+const APPROVALS: Record<string, string> = {
+  "plan-approval": "Plan approval",
+  "ship-approval": "Ship approval",
+};
+
+/** "Plan approval" / "Ship approval"; an unknown value is shown as it is. */
+export function approvalTitle(waitingFor: string): string {
+  return APPROVALS[waitingFor] ?? waitingFor;
+}
+
+export function isKnownApproval(waitingFor: string): boolean {
+  return waitingFor in APPROVALS;
+}
+
+/** The app's own check result for a PR (R1), in words. */
+export function appCheckText(pr: PrView): string {
+  if (!pr.checkKnown) return "no check known";
+  return `${checkMark(pr.appCheck?.result)} ${pr.appCheck?.result ?? "not run"}`;
+}
+
+/** The runs list: a run matches when `query` is in its title, folder, id or a ticket id (case-insensitive). */
+export function runMatches(
+  run: { title: string | null; folder: string | null; runId: string; ticketIds?: string[] },
+  query: string,
+): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return [run.title, run.folder, run.runId, ...(run.ticketIds ?? [])].some((text) =>
+    (text ?? "").toLowerCase().includes(needle),
+  );
+}
+
+/** "today", "yesterday", "3 days ago", else the date; "" for a missing or unreadable time. */
+export function relativeDate(iso: string | null | undefined, now: Date = new Date()): string {
+  if (!iso) return "";
+  const then = new Date(iso);
+  if (Number.isNaN(then.getTime())) return "";
+  const day = (d: Date) => Math.floor((d.getTime() - d.getTimezoneOffset() * 60_000) / 86_400_000);
+  const days = day(now) - day(then);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+  return iso.slice(0, 10);
+}
+
+/** "35 min", "2 h 5 min"; "—" with no figure. */
+export function minutesText(minutes: number | null | undefined): string {
+  if (minutes == null || !Number.isFinite(minutes)) return "—";
+  const total = Math.round(minutes);
+  if (total < 60) return `${total} min`;
+  return `${Math.floor(total / 60)} h ${total % 60} min`;
 }

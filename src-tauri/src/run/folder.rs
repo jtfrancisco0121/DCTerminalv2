@@ -74,6 +74,11 @@ pub fn request_md(folder: &Path, repos_limit: &[String], request: &str) -> Strin
     out
 }
 
+/// The words after `## What to do` in a request.md.
+pub fn request_md_body(text: &str) -> &str {
+    text.split("## What to do").nth(1).unwrap_or(text)
+}
+
 /// `r-YYYYMMDD-HHMM`, with `-2`, `-3`, … when that folder exists.
 pub fn new_run_id(runs: &Path, now: chrono::DateTime<chrono::Utc>) -> String {
     // Seconds and a random suffix: an id is never reused, so no record kept
@@ -329,6 +334,77 @@ pub struct RunListItem {
     /// Used in place from another data folder (the dev app's).
     #[serde(default)]
     pub adopted: bool,
+    /// The run record's totals (`app-usage.json`); None for a run without one.
+    #[serde(default)]
+    pub record: Option<RecordTotals>,
+    /// status.json's PR count (None before the skill wrote one).
+    #[serde(default)]
+    pub pr_count: Option<u32>,
+    /// The ClickUp tickets of the run (tickets.json `tasks[]` id and custom id).
+    #[serde(default)]
+    pub ticket_ids: Vec<String>,
+    /// report.md exists.
+    #[serde(default)]
+    pub has_report: bool,
+}
+
+/// What the Runs view shows from the run record.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordTotals {
+    pub outcome: Option<String>,
+    pub total_tokens: u64,
+    pub estimate_usd: Option<f64>,
+    /// Active minutes over all stages.
+    pub minutes: f64,
+    pub pr_urls: Vec<String>,
+    pub first_activity: Option<String>,
+    pub last_activity: Option<String>,
+}
+
+fn record_totals(run_dir: &Path) -> Option<RecordTotals> {
+    let record = super::record::read_record(run_dir)?;
+    // A record that only lists sessions (the run is not finished) has no totals yet.
+    record.outcome.as_ref()?;
+    let tokens = &record.tokens;
+    Some(RecordTotals {
+        outcome: record.outcome.clone(),
+        total_tokens: tokens.input
+            + tokens.output
+            + tokens.cache_write_5m
+            + tokens.cache_write_1h
+            + tokens.cache_read,
+        estimate_usd: record.estimate_usd,
+        minutes: record.active_minutes_by_stage.values().sum(),
+        pr_urls: record.pr_urls,
+        first_activity: record.first_activity,
+        last_activity: record.last_activity,
+    })
+}
+
+/// tickets.json `tasks[]`: `id` and `custom_id` of each (nothing else is read).
+fn ticket_ids(run_dir: &Path) -> Vec<String> {
+    let Some(value) = read_json_value(&run_dir.join("tickets.json")) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for task in value
+        .get("tasks")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .take(200)
+    {
+        for key in ["id", "custom_id"] {
+            if let Some(id) = task.get(key).and_then(Value::as_str) {
+                if !id.is_empty() && id.len() <= 64 && !out.iter().any(|seen| seen == id) {
+                    out.push(id.to_string());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The runs under `<data>/runs` and the adopted ones, newest first.
@@ -366,6 +442,14 @@ pub fn list_runs(data_dir: &Path) -> Vec<RunListItem> {
                     stage: text(&status, "stage"),
                     updated_at: text(&status, "updatedAt"),
                     title: request_title(&dir),
+                    record: record_totals(&dir),
+                    pr_count: status
+                        .as_ref()
+                        .and_then(|v| v.get("prs"))
+                        .and_then(Value::as_array)
+                        .map(|prs| prs.len() as u32),
+                    ticket_ids: ticket_ids(&dir),
+                    has_report: dir.join("report.md").is_file(),
                     run_id,
                     run_dir: dir.display().to_string(),
                     adopted,
@@ -579,6 +663,69 @@ mod tests {
         assert_eq!(adopted.len(), 1);
         assert_eq!(adopted[0].title.as_deref(), Some("Old"));
         assert_eq!(adopted_runs(dir.path()), [other.canonicalize().unwrap()]);
+    }
+
+    #[test]
+    fn the_list_carries_the_record_pr_count_tickets_and_report() {
+        let dir = TempDir::new("run_list_fields");
+        let runs = runs_dir(dir.path());
+        let make = |id: &str, created: &str| {
+            let run = runs.join(id);
+            std::fs::create_dir_all(&run).unwrap();
+            std::fs::write(
+                run.join("meta.json"),
+                format!(r#"{{"createdAt":"{created}","folder":"/w"}}"#),
+            )
+            .unwrap();
+            std::fs::write(run.join("request.md"), "Do the thing\n").unwrap();
+            run
+        };
+        let done = make("r-20261027-1000-aaaa", "2026-10-27T10:00:00Z");
+        let old = make("r-20261020-1000-bbbb", "2026-10-20T10:00:00Z");
+        std::fs::write(
+            done.join("status.json"),
+            r#"{"schema":1,"stage":"done","prs":[{"id":"PR1"},{"id":"PR2"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            done.join("tickets.json"),
+            r#"{"schema":1,"tasks":[{"id":"86b1aa001","custom_id":"QA-129","name":"x"},{"id":"86b1aa002","custom_id":null}]}"#,
+        )
+        .unwrap();
+        std::fs::write(done.join("report.md"), "# report").unwrap();
+        std::fs::write(
+            done.join("app-usage.json"),
+            r#"{"schema":1,"sessions":[],"outcome":"done","prCount":2,"prUrls":["https://github.com/o/r/pull/1"],
+                "tokens":{"input":10,"output":5,"cacheWrite5m":1,"cacheWrite1h":2,"cacheRead":100},
+                "estimateUsd":1.5,"activeMinutesByStage":{"planning":10.0,"building":20.5},
+                "firstActivity":"2026-10-27T10:00:00Z","lastActivity":"2026-10-27T11:00:00Z","statusUpdatedAt":"t"}"#,
+        )
+        .unwrap();
+
+        let list = list_runs(dir.path());
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].run_id, "r-20261027-1000-aaaa", "newest first");
+        let first = &list[0];
+        assert_eq!(first.pr_count, Some(2));
+        assert_eq!(first.ticket_ids, ["86b1aa001", "QA-129", "86b1aa002"]);
+        assert!(first.has_report);
+        let record = first.record.as_ref().unwrap();
+        assert_eq!(record.total_tokens, 118);
+        assert_eq!(record.estimate_usd, Some(1.5));
+        assert_eq!(record.minutes, 30.5);
+        assert_eq!(record.pr_urls, ["https://github.com/o/r/pull/1"]);
+        // A run without a record, tickets or status reads as none.
+        let second = &list[1];
+        assert_eq!(second.run_id, old.file_name().unwrap().to_str().unwrap());
+        assert!(second.record.is_none() && second.pr_count.is_none());
+        assert!(second.ticket_ids.is_empty() && !second.has_report);
+        // A record that only lists sessions (not finished) has no totals.
+        std::fs::write(
+            old.join("app-usage.json"),
+            r#"{"schema":1,"sessions":[{"sessionId":"s","configDir":"/c"}]}"#,
+        )
+        .unwrap();
+        assert!(list_runs(dir.path())[1].record.is_none());
     }
 
     #[test]
