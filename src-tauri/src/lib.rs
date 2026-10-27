@@ -23,8 +23,8 @@ mod windows;
 
 use commands::{
     claude_account_logins, claude_status, close_tab, get_app_state, get_claude_usage, get_settings,
-    new_tab, rename_tab, reopen_closed_tab, select_tab, set_claude_settings, set_observe_settings,
-    set_run_settings, set_terminal_settings, set_ui_settings,
+    new_tab, rename_tab, reopen_closed_tab, select_tab, set_claude_settings, set_notify_settings,
+    set_observe_settings, set_run_settings, set_terminal_settings, set_ui_settings,
 };
 use pty::{
     pty_kill, pty_open, pty_resize, pty_set_scheme, pty_write, terminal_resume_id, PtyRegistry,
@@ -89,6 +89,7 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let resolved = data_dir::app_data_dir(app.handle());
             // First, so a panic anywhere below lands in logs/crash.log.
@@ -137,7 +138,10 @@ pub fn run() {
             run::spawn_prune_launch_prompts(app.handle());
             clickup::commands::spawn_auto_post_sweep(app.handle());
             run::afk::spawn_afk_sweeps(app.handle());
-            observe::attention::spawn(app.handle(), Box::new(observe::attention::RunLogNotifier));
+            observe::attention::spawn(
+                app.handle(),
+                Box::new(observe::notify::AppNotifier::new(app.handle())),
+            );
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -166,6 +170,10 @@ pub fn run() {
             get_claude_usage,
             set_run_settings,
             set_observe_settings,
+            set_notify_settings,
+            observe::notify::send_test_notification,
+            observe::notify::notification_permission,
+            run::focus_tab_command,
             run::run_overview,
             run::detect_folder_repos,
             run::set_repo_setup,

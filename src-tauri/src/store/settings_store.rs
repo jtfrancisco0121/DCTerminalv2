@@ -265,6 +265,34 @@ impl Default for ObserveSettings {
     }
 }
 
+/// Notifications (docs/launch.md, "Attention"): a master switch and one
+/// switch per event kind. Missing: all on.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifySettings {
+    #[serde(default = "default_true")]
+    pub master: bool,
+    /// Event kind (`needs-you`, `stall`, …) → on. A kind not listed is on.
+    #[serde(default)]
+    pub events: std::collections::BTreeMap<String, bool>,
+}
+
+impl Default for NotifySettings {
+    fn default() -> Self {
+        Self {
+            master: true,
+            events: Default::default(),
+        }
+    }
+}
+
+impl NotifySettings {
+    /// The master switch and the event's own switch are both on.
+    pub fn enabled(&self, kind: &str) -> bool {
+        self.master && self.events.get(kind).copied().unwrap_or(true)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsFile {
@@ -279,6 +307,8 @@ pub struct SettingsFile {
     pub run: RunSettings,
     #[serde(default)]
     pub observe: ObserveSettings,
+    #[serde(default)]
+    pub notify: NotifySettings,
     /// ClickUp: per-account switches (auto-post after ship approval).
     #[serde(default)]
     pub clickup: ClickUpSettings,
@@ -428,6 +458,7 @@ impl Default for SettingsFile {
             ui: UiSettings::default(),
             run: RunSettings::default(),
             observe: ObserveSettings::default(),
+            notify: NotifySettings::default(),
             clickup: ClickUpSettings::default(),
             worktree_setup: Default::default(),
         }
@@ -515,6 +546,18 @@ impl SettingsStore {
         self.save()
     }
 
+    pub fn notify(&self) -> &NotifySettings {
+        &self.data.notify
+    }
+
+    /// Only known event kinds are kept.
+    pub fn set_notify(&mut self, mut next: NotifySettings) -> Result<(), String> {
+        next.events
+            .retain(|kind, _| crate::observe::attention::Kind::from_key(kind).is_some());
+        self.data.notify = next;
+        self.save()
+    }
+
     pub fn clickup(&self) -> &ClickUpSettings {
         &self.data.clickup
     }
@@ -588,6 +631,34 @@ mod tests {
             .unwrap();
         let again = SettingsStore::open(dir.path()).unwrap();
         assert!(!again.observe().hooks_all_tabs);
+    }
+
+    #[test]
+    fn notifications_default_on_and_an_old_file_keeps_its_schema() {
+        let dir = TempDir::new("settings_notify_default");
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{"schemaVersion":1,"terminal":{"fontSize":15}}"#,
+        )
+        .unwrap();
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(store.data.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert!(store.notify().master);
+        assert!(store.notify().enabled("needs-you"));
+        let mut next = store.notify().clone();
+        next.events.insert("stall".into(), false);
+        next.events.insert("made-up".into(), false);
+        store.set_notify(next).unwrap();
+        assert!(!store.notify().enabled("stall"));
+        assert!(store.notify().enabled("needs-you"));
+        assert!(!store.notify().events.contains_key("made-up"));
+        let mut off = store.notify().clone();
+        off.master = false;
+        store.set_notify(off).unwrap();
+        assert!(
+            !store.notify().enabled("needs-you"),
+            "the master switch wins"
+        );
     }
 
     #[test]

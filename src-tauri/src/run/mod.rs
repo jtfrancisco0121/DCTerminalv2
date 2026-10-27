@@ -292,6 +292,14 @@ fn focus_live_run_tab(app: &AppHandle, run_dir: &Path) -> Result<Option<TabSumma
     focus_tab(app, &tab.id)
 }
 
+/// The in-app "Go to tab" (the attention notice, the overview): the same
+/// path as the landing. Resolves to the tab, or null when it is gone.
+#[tauri::command]
+pub fn focus_tab_command(app: AppHandle, tab_id: String) -> Result<Option<TabSummary>, String> {
+    crate::observe::attention::clear_landing(&app);
+    focus_tab(&app, &tab_id)
+}
+
 /// Selects the tab in its window and brings that window to the front. The
 /// one path every "go to this tab" takes: a resumed run's live tab, the
 /// in-app Go to tab button, and the landing after a notification.

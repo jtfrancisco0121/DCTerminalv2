@@ -1432,6 +1432,24 @@ body,
   background: var(--warning);
 }
 
+/* The detector's notices: over the status bar, in every window. */
+.attention-notices {
+  position: fixed;
+  right: var(--space-3);
+  bottom: 2.2rem;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 28rem;
+}
+
+.attention-notices .inline-notice {
+  margin: 0;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 30%);
+  background: var(--bg-elev);
+}
+
 /* Review on GitHub: the PR's draft / ready badge and its review-round comment links. */
 .run-pr-badge {
   border: 1px solid var(--border);

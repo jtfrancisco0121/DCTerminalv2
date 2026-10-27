@@ -62,6 +62,29 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// The kind named `key` in settings.json.
+    pub fn from_key(key: &str) -> Option<Kind> {
+        Kind::ALL.into_iter().find(|kind| kind.key() == key)
+    }
+
+    pub const ALL: [Kind; 9] = [
+        Kind::NeedsYou,
+        Kind::ApprovalWait,
+        Kind::Stall,
+        Kind::RunDone,
+        Kind::RunFailed,
+        Kind::CheckFailed,
+        Kind::AutopostFailed,
+        Kind::WaitingReminder,
+        Kind::MergedCleaned,
+    ];
+
+    /// Needs-you and approval-wait are the ones that count in the badge and
+    /// ring the dock harder.
+    pub fn is_urgent(self) -> bool {
+        matches!(self, Kind::NeedsYou | Kind::ApprovalWait)
+    }
+
     /// The name in settings.json and in the `attention` event.
     pub fn key(self) -> &'static str {
         match self {
@@ -319,14 +342,6 @@ pub struct TabSnap {
     pub prs_total: u32,
 }
 
-impl TabSnap {
-    /// The tab needs the person: Claude asks (needs-you) or a run waits at
-    /// an approval stop.
-    pub fn needs_you(&self) -> bool {
-        self.activity == TabActivity::NeedsYou || self.waiting_for.is_some()
-    }
-}
-
 /// The latest reading of every open tab.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -357,11 +372,6 @@ impl Snapshot {
                 })
                 .collect(),
         }
-    }
-
-    /// Tabs that need the person: the dock badge and the status bar count.
-    pub fn needing_you(&self) -> usize {
-        self.tabs.iter().filter(|t| t.needs_you()).count()
     }
 }
 
@@ -545,7 +555,7 @@ impl Reader {
                 .filter(|pr| {
                     matches!(
                         pr.state.as_deref(),
-                        Some("reviewed" | "opened" | "pushed" | "local-only")
+                        Some("reviewed" | "drafted" | "opened" | "pushed" | "local-only")
                     )
                 })
                 .count() as u32,
@@ -575,8 +585,8 @@ pub fn recent_enough(updated_at: Option<&str>, now: chrono::DateTime<chrono::Utc
 pub trait Notifier: Send + Sync {
     /// `app_active`: some window of the app has focus.
     fn notify(&self, event: &Event, app_active: bool);
-    /// The tabs that need the person, after every tick.
-    fn badge(&self, _needing_you: usize) {}
+    /// The latest reading, after every tick (the badge follows it).
+    fn badge(&self, _snapshot: &Snapshot) {}
 }
 
 /// Run events go to the run's `log.md` (a line of the app's own).
@@ -830,7 +840,7 @@ pub fn spawn(app: &AppHandle, notifier: Box<dyn Notifier>) {
                         landing.set_target(tab, now_ms());
                     }
                 }
-                notifier.badge(snapshot.needing_you());
+                notifier.badge(&snapshot);
                 std::thread::sleep(FAST_TICK);
             }
         });
@@ -1297,7 +1307,7 @@ mod tests {
     }
 
     #[test]
-    fn the_snapshot_counts_tabs_that_need_you_and_carries_pr_progress() {
+    fn the_snapshot_carries_each_tabs_run_and_pr_progress() {
         let mut waiting = run("r-1");
         waiting.waiting_for = Some("plan-approval".into());
         waiting.prs_total = 3;
@@ -1312,11 +1322,9 @@ mod tests {
         asking.activity = TabActivity::NeedsYou;
         let tabs = vec![run_tab("t1", "r-1"), run_tab("t2", "r-2"), asking, tab("b")];
         let snap = Snapshot::build(&tabs, &runs);
-        assert_eq!(
-            snap.needing_you(),
-            2,
-            "the approval wait and the needs-you tab"
-        );
+        assert_eq!(snap.tabs.len(), 4);
+        assert_eq!(snap.tabs[0].waiting_for.as_deref(), Some("plan-approval"));
+        assert_eq!(snap.tabs[2].activity, TabActivity::NeedsYou);
         assert_eq!((snap.tabs[0].prs_done, snap.tabs[0].prs_total), (1, 3));
     }
 }

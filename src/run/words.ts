@@ -18,6 +18,19 @@ export function stageText(stage: string | null): string {
   return STAGES[stage] ?? stage;
 }
 
+/** The event kinds the detector announces (src-tauri/src/observe/attention.rs), for Settings. */
+export const ATTENTION_KINDS: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "needs-you", label: "A Claude tab needs you" },
+  { key: "approval-wait", label: "A run waits for your approval" },
+  { key: "waiting-reminder", label: "Reminder: still waiting for you" },
+  { key: "stall", label: "A run has made no progress" },
+  { key: "run-done", label: "A run finished" },
+  { key: "run-failed", label: "A run failed" },
+  { key: "check-failed", label: "A PR's check failed" },
+  { key: "autopost-failed", label: "A ClickUp auto-post failed" },
+  { key: "merged-cleaned", label: "A merged PR was cleaned up" },
+];
+
 const PR_STATES: Record<string, string> = {
   pending: "waiting",
   building: "building",

@@ -61,7 +61,9 @@ vi.mock("./bridge", () => ({
   reopenClosedTab: vi.fn(async () => tab),
   openAccountWindow: vi.fn(async () => "win-2"),
   ptySetScheme: vi.fn(async () => {}),
+  focusTab: vi.fn(async () => null),
 }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 // The terminal itself is xterm in a real webview; here it is a marker.
 vi.mock("./components/TerminalView", () => ({
   TerminalView: ({ tab: shown }: { tab: TabSummary }) => <div data-testid="terminal">{shown.label}</div>,

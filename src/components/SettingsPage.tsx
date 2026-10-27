@@ -4,6 +4,9 @@ import {
   claudeAccountLogins,
   claudeStatus,
   setClaudeSettings,
+  notificationPermission,
+  sendTestNotification,
+  setNotifySettings,
   setObserveSettings,
   setRunSettings,
   setTerminalSettings,
@@ -12,11 +15,13 @@ import {
   type ClaudeAccountLogin,
   type ClaudeStatus,
   type LoginStatus,
+  type NotifySettings,
   type RunSettings,
   type SettingsView,
   type TerminalSettings,
 } from "../bridge";
 import { accountsProblem, addAccount, MAX_ACCOUNTS } from "../settings/accounts";
+import { ATTENTION_KINDS } from "../run/words";
 import { THEME_CHOICES } from "../theme";
 import { errorText, InlineNotice } from "./InlineNotice";
 import { ClickUpTokens } from "../clickup/ClickUpTokens";
@@ -118,6 +123,41 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
       setNotice({ tone: "info", text: "Terminal settings saved." });
       onSaved({ ...view, terminal: saved });
     } catch (err) {
+      setNotice({ tone: "error", text: errorText(err) });
+    }
+  };
+
+  const notify = view.notify ?? { master: true, events: {} };
+  const [permission, setPermission] = useState<string | null>(null);
+  const [testFailed, setTestFailed] = useState(false);
+
+  useEffect(() => {
+    let current = true;
+    notificationPermission().then(
+      (state) => current && setPermission(state),
+      () => undefined,
+    );
+    return () => {
+      current = false;
+    };
+  }, []);
+
+  const saveNotify = async (next: NotifySettings) => {
+    try {
+      const saved = await setNotifySettings(next);
+      onSaved({ ...view, notify: saved });
+    } catch (err) {
+      setNotice({ tone: "error", text: errorText(err) });
+    }
+  };
+
+  const sendTest = async () => {
+    setTestFailed(false);
+    try {
+      await sendTestNotification();
+      setNotice({ tone: "info", text: "Test notification sent." });
+    } catch (err) {
+      setTestFailed(true);
       setNotice({ tone: "error", text: errorText(err) });
     }
   };
@@ -403,6 +443,45 @@ export function SettingsPage({ view, onSaved, onClose }: Props) {
         <p className="hint">
           Adds a small hook to every Claude tab so its dot shows working, waiting or needs you.
         </p>
+      </section>
+
+      <section className="settings-section" aria-label="Notifications">
+        <h2>Notifications</h2>
+        <p className="hint">
+          Tells you when a tab needs you, a run waits, stalls or finishes, or an app check fails. The dock shows how
+          many tabs need you.
+        </p>
+        {(permission === "denied" || testFailed) && (
+          <InlineNotice tone="warning">
+            macOS blocks notifications for DCTerminalv2: allow them in System Settings &gt; Notifications.
+          </InlineNotice>
+        )}
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={notify.master}
+            onChange={(event) => void saveNotify({ ...notify, master: event.target.checked })}
+          />{" "}
+          Notify me (master switch: notices, system notifications, dock badge and bounce)
+        </label>
+        {ATTENTION_KINDS.map((kind) => (
+          <label key={kind.key} className="check-label">
+            <input
+              type="checkbox"
+              disabled={!notify.master}
+              checked={notify.events[kind.key] ?? true}
+              onChange={(event) =>
+                void saveNotify({ ...notify, events: { ...notify.events, [kind.key]: event.target.checked } })
+              }
+            />{" "}
+            {kind.label}
+          </label>
+        ))}
+        <div className="button-row">
+          <button type="button" className="secondary-button" onClick={() => void sendTest()}>
+            Send a test notification
+          </button>
+        </div>
       </section>
 
       <section className="settings-section" aria-label="Appearance">

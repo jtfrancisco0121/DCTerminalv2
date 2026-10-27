@@ -5,6 +5,9 @@ import type { SettingsView } from "../bridge";
 
 const setRunSettings = vi.fn(async (run: unknown) => run);
 const setObserveSettings = vi.fn(async (observe: unknown) => observe);
+const setNotifySettings = vi.fn(async (notify: unknown) => notify);
+const sendTestNotification = vi.fn(async () => {});
+const notificationPermission = vi.fn(async () => "granted");
 const setClaudeSettings = vi.fn(async (claude: SettingsView["claude"]) => ({ ...view(), claude }));
 vi.mock("../bridge", () => ({
   claudeStatus: vi.fn(async () => ({ found: true, path: "/opt/homebrew/bin/claude", version: "2.1.287", error: null })),
@@ -21,6 +24,9 @@ vi.mock("../bridge", () => ({
   setUiSettings: vi.fn(async (ui: unknown) => ui),
   setRunSettings: (run: unknown) => setRunSettings(run),
   setObserveSettings: (observe: unknown) => setObserveSettings(observe),
+  setNotifySettings: (notify: unknown) => setNotifySettings(notify),
+  sendTestNotification: () => sendTestNotification(),
+  notificationPermission: () => notificationPermission(),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
 
@@ -42,6 +48,34 @@ function view(): SettingsView {
     configDirEnv: null,
   };
 }
+
+describe("SettingsPage notifications", () => {
+  it("saves the master switch and one event switch, and the test button sends a test", async () => {
+    const onSaved = vi.fn();
+    render(<SettingsPage view={view()} onSaved={onSaved} onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("checkbox", { name: /A run has made no progress/ }));
+    await waitFor(() =>
+      expect(setNotifySettings).toHaveBeenCalledWith({ master: true, events: { stall: false } }),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: /Notify me/ }));
+    await waitFor(() => expect(setNotifySettings).toHaveBeenCalledWith({ master: false, events: {} }));
+    fireEvent.click(screen.getByRole("button", { name: "Send a test notification" }));
+    await waitFor(() => expect(sendTestNotification).toHaveBeenCalled());
+    expect(screen.queryByText(/macOS blocks notifications/)).toBeNull();
+  });
+
+  it("says macOS blocks notifications when the permission is denied or the test is refused", async () => {
+    notificationPermission.mockResolvedValueOnce("denied");
+    const { unmount } = render(<SettingsPage view={view()} onSaved={() => {}} onClose={() => {}} />);
+    expect(await screen.findByText(/macOS blocks notifications for DCTerminalv2/)).toBeTruthy();
+    unmount();
+    sendTestNotification.mockRejectedValueOnce(new Error("refused"));
+    render(<SettingsPage view={view()} onSaved={() => {}} onClose={() => {}} />);
+    expect(screen.queryByText(/macOS blocks notifications/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Send a test notification" }));
+    expect(await screen.findByText(/macOS blocks notifications for DCTerminalv2/)).toBeTruthy();
+  });
+});
 
 describe("SettingsPage activity", () => {
   it("the all-tabs hook switch is on by default and saves when turned off", async () => {

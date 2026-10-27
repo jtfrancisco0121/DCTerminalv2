@@ -14,6 +14,7 @@ pub mod attention;
 #[allow(dead_code)]
 pub mod forward;
 pub mod hooks;
+pub mod notify;
 pub mod price;
 pub mod tail;
 pub mod transcript;

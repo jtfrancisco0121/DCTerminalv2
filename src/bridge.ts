@@ -99,6 +99,12 @@ export type ObserveSettings = {
   hooksAllTabs: boolean;
 };
 
+/** Notifications: a master switch and one switch per event kind (missing: on). */
+export type NotifySettings = {
+  master: boolean;
+  events: Record<string, boolean>;
+};
+
 export type SettingsView = {
   terminal: TerminalSettings;
   ui: UiSettings;
@@ -106,6 +112,7 @@ export type SettingsView = {
   /** Eagle-Eye launch settings; absent from older test fixtures. */
   run?: RunSettings;
   observe?: ObserveSettings;
+  notify?: NotifySettings;
   /** Per account: auto-post ClickUp comments after ship approval (missing: on). */
   clickup?: { autoPost: Record<string, boolean> };
   accounts: ResolvedClaudeAccount[];
@@ -261,6 +268,25 @@ export function setRunSettings(run: RunSettings): Promise<RunSettings> {
 
 export function setObserveSettings(observe: ObserveSettings): Promise<ObserveSettings> {
   return invoke<ObserveSettings>("set_observe_settings", { observe });
+}
+
+export function setNotifySettings(notify: NotifySettings): Promise<NotifySettings> {
+  return invoke<NotifySettings>("set_notify_settings", { notify });
+}
+
+/** One system notification and one in-app notice. Rejects when the system refuses. */
+export function sendTestNotification(): Promise<void> {
+  return invoke<void>("send_test_notification");
+}
+
+/** `granted`, `denied` or `prompt`. */
+export function notificationPermission(): Promise<string> {
+  return invoke<string>("notification_permission");
+}
+
+/** Selects the tab in its window and brings that window forward (null: the tab is gone). */
+export function focusTab(tabId: string): Promise<TabSummary | null> {
+  return invoke<TabSummary | null>("focus_tab_command", { tabId });
 }
 
 export function setClaudeSettings(claude: ClaudeSettings): Promise<SettingsView> {

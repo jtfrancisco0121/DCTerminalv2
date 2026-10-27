@@ -7,7 +7,7 @@ use crate::provider::claude::ClaudeStatus;
 use crate::provider::claude_config::{ConfigDirInfo, CONFIG_DIR_ENV};
 use crate::provider::claude_detect::{claude_login_status, resolve_claude};
 use crate::provider::ClaudeProvider;
-use crate::store::settings_store::{resolved_account_config, ObserveSettings};
+use crate::store::settings_store::{resolved_account_config, NotifySettings, ObserveSettings};
 use crate::store::{ClaudeSettings, RunSettings, SettingsStore, TerminalSettings, UiSettings};
 use serde::Serialize;
 use std::sync::Mutex;
@@ -21,6 +21,7 @@ pub struct SettingsView {
     pub claude: ClaudeSettings,
     pub run: RunSettings,
     pub observe: ObserveSettings,
+    pub notify: NotifySettings,
     /// ClickUp per-account switches (auto-post after ship approval).
     pub clickup: crate::store::settings_store::ClickUpSettings,
     /// Each saved account with its resolved folder. Login is a separate call.
@@ -61,6 +62,7 @@ fn view(settings: &SettingsStore) -> SettingsView {
         claude: claude.clone(),
         run: settings.run().clone(),
         observe: settings.observe().clone(),
+        notify: settings.notify().clone(),
         clickup: settings.clickup().clone(),
         accounts,
         config_dir_env: env,
@@ -111,6 +113,16 @@ pub fn set_observe_settings(
     let mut settings = settings.lock().map_err(|err| err.to_string())?;
     settings.set_observe(observe)?;
     Ok(settings.observe().clone())
+}
+
+#[tauri::command]
+pub fn set_notify_settings(
+    notify: NotifySettings,
+    settings: State<Mutex<SettingsStore>>,
+) -> Result<NotifySettings, String> {
+    let mut settings = settings.lock().map_err(|err| err.to_string())?;
+    settings.set_notify(notify)?;
+    Ok(settings.notify().clone())
 }
 
 /// Save the Claude path and accounts. Open windows are retitled, since an

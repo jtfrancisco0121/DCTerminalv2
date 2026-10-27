@@ -17,6 +17,7 @@ import {
   type SettingsView,
   type WindowContext,
 } from "./bridge";
+import { AttentionNotices } from "./components/AttentionNotice";
 import { AccountPicker } from "./components/AccountPicker";
 import { Dialog } from "./components/Dialog";
 import { InlineNotice } from "./components/InlineNotice";
@@ -383,6 +384,7 @@ function App() {
           </div>
         )}
       </section>
+      <AttentionNotices />
       <StatusBar
         account={ctx ? { name: ctx.accountName, config: ctx.config } : null}
         folder={active?.cwd ?? null}
