@@ -136,8 +136,11 @@ def inside(p, root):
 
 
 def protected(p):
-    if run and inside(p, os.path.join(run, "requests")):
-        return True  # requests (state.sh request) and their results (the app)
+    q = p
+    while q and q != os.path.dirname(q):  # requests/ of any run folder: state.sh request and the app only
+        if os.path.basename(q) == "requests" and (os.path.dirname(q) == run or os.path.isfile(os.path.join(os.path.dirname(q), "request.md"))):
+            return True
+        q = os.path.dirname(q)
     if os.path.basename(p) not in PROTECTED:
         return False
     d = os.path.dirname(p)
@@ -354,6 +357,42 @@ def git_readonly(sub, rest):
     return False
 
 
+def own_branch(target):
+    """The run's branch of the recorded worktree target is in (dcv2/<runId>-<pr>), or None."""
+    for w in worktrees:
+        if target and inside(target, w):
+            name = os.path.basename(w)
+            return "dcv2/" + name[len("dcv2-"):] if name.startswith("dcv2-") else None
+    return None
+
+
+def shared_refs(sub, rest, target):
+    """Worktrees, branches and refs belong to the whole repo (every worktree shares them): nobody in a bound run changes
+    them with raw git. Only `state.sh worktree` / `state.sh cleanup` and the app do; the Implementer may create or
+    switch to its own PR's branch only."""
+    if not run:
+        return
+    how = ("worktrees are made by `state.sh worktree`; removing worktrees and branches is `state.sh cleanup <run>` "
+           "(at done / failed), or the app does it.")
+    if sub == "worktree" and rest[:1] != ["list"]:
+        block(f"{who} never runs `git worktree {' '.join(rest[:1])}`: {how}")
+    if sub in ("update-ref", "prune", "gc", "replace") or (sub == "symbolic-ref" and not git_readonly(sub, rest)) \
+            or (sub == "reflog" and not git_readonly(sub, rest)) or (sub == "tag" and not git_readonly(sub, rest)):
+        block(f"{who} never runs `git {sub}` (it changes refs every worktree of the repo shares): {how}")
+    mine = own_branch(target) if role == "implementer" else None
+    if sub == "branch" and not git_readonly(sub, rest):
+        names = [a for a in rest if not a.startswith("-")]
+        if not (mine and not [a for a in rest if a.startswith("-")] and names == [mine]):
+            block(f"{who} never changes branches with `git branch` (they are shared by every worktree): {how}")
+    if sub in ("checkout", "switch"):
+        for i, a in enumerate(rest):
+            flag = a.split("=", 1)[0]
+            if flag in ("-b", "-B", "-c", "-C", "--orphan", "--create", "--force-create") or re.match(r"^-[a-zA-Z]*[bBcC]$", a):
+                name = a.split("=", 1)[1] if "=" in a else (rest[i + 1] if i + 1 < len(rest) else "")
+                if not mine or name != mine:
+                    block(f"{who} never creates or resets a branch (`git {sub} {a} {name}`): branches are shared by every worktree.")
+
+
 def check_git(args, cwd):
     if not bound:
         return
@@ -402,10 +441,11 @@ def check_git(args, cwd):
             block("this run reviews on GitHub: pushes go only through state.sh (draft-pr / push / ready), which check the stage and approvals.")
         ship_gate("git push")
         return
+    shared_refs(sub, rest, target)
     if not pipeline:
-        if run and sub in ("worktree", "branch") and not git_readonly(sub, rest):
-            block(f"the orchestrator never runs `git {sub} {' '.join(rest[:1])}`: worktrees are made by `state.sh worktree`; "
-                  "removing worktrees and branches is `state.sh cleanup <run>` (at done / failed), or the app does it.")
+        if run and sub in ("remote", "config") and not git_readonly(sub, rest):
+            block(f"the orchestrator never changes git remotes or config (`git {sub} ...`): they are shared by the repo and "
+                  "its worktrees, and every push goes to the remote recorded for the run.")
         if run and target and main_checkout(target) and not git_readonly(sub, rest):
             block(f"the orchestrator never runs `git {sub}` in a repo's main checkout ({target}); worktrees go through state.sh worktree.")
         return
@@ -509,6 +549,11 @@ def check_state_sh(args):
             block(f"`state.sh {sub}` needs the plan approval first (stop #1).")
     if sub == "ready" and not status.get("shipApproval"):
         block("`state.sh ready` needs the ship approval first (stop #2).")
+    if sub in ("cleanup", "request", "request-wait") and run:
+        rest = [a for a in args[1:] if not a.startswith("-")]
+        target = rest[1] if len(rest) > 1 else ""
+        if "$" not in target and os.path.realpath(os.path.expanduser(target)) != run:
+            block(f"`state.sh {sub}` acts only on this run's folder ({run}), not {target or 'none'}.")
 
 
 def check_node(args, cwd):
@@ -562,6 +607,60 @@ def check_live(script, cwd):
     if not live_tests_on(wt):
         block("live Claude tests are off for this repo (the app setting \"Allow live Claude tests in checks\"); "
               "they stay a manual step for the user.")
+
+
+SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
+INTERPRETERS = ("python", "python3", "node", "nodejs", "perl", "ruby", "osascript", "deno", "bun")
+ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Programs that run the next word as a command, and their options that take a value.
+RUNNERS = {"nohup": (), "caffeinate": (), "stdbuf": (), "command": (), "exec": ("-a",), "builtin": (), "sudo": ("-u", "-g", "-C"),
+           "doas": ("-u",), "time": (), "env": ("-u", "--unset", "-C", "--chdir", "-S", "--split-string"),
+           "nice": ("-n", "--adjustment"), "timeout": ("-s", "--signal", "-k", "--kill-after"), "npx": ("-p", "--package"),
+           "bunx": (), "unbuffer": (), "chronic": ()}
+
+
+def unwrap(words):
+    """The command a segment really runs: assignments, `then`/`do`/…, and runners (timeout, nice, env, npx, …) with
+    their options dropped."""
+    while words:
+        w, b = words[0], os.path.basename(words[0])
+        if ASSIGN.match(w) or (w in WRAPPERS and b not in RUNNERS):
+            words = words[1:]
+            continue
+        if b in ("npm", "pnpm", "yarn") and len(words) > 1 and words[1] in ("exec", "dlx", "x"):
+            b, words = "npx", words[1:]
+        if b not in RUNNERS:
+            break
+        words = words[1:]
+        while words and (words[0].startswith("-") or (b == "env" and ASSIGN.match(words[0]))):
+            opt, words = words[0], words[1:]
+            if opt == "--":
+                break
+            if opt in RUNNERS[b] and words:
+                words = words[1:]
+        if b == "timeout" and words:
+            words = words[1:]  # the duration
+    return words
+
+
+def shell_script(args):
+    """The script file `bash [options] [--] <script>` runs (None with -c, or none given)."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "-c" or (re.match(r"^-[a-zA-Z]+$", a) and "c" in a):
+            return None
+        if a == "--":
+            i += 1
+            break
+        if a in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file"):
+            i += 2
+            continue
+        if a.startswith("-") or a.startswith("+"):
+            i += 1
+            continue
+        break
+    return args[i] if i < len(args) else None
 
 
 def check_security(args):
@@ -623,11 +722,20 @@ def analyze(cmd, cwd, depth=0):
                 analyze(a or b, cwd, depth + 1)
         for t in targets:
             check_write(t, cwd)
-        while words and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]) or words[0] in WRAPPERS):
-            words = words[1:]
+        words = unwrap(words)
         if not words:
             continue
         name, args = os.path.basename(words[0]), words[1:]
+        script = shell_script(args) if name in SHELLS else (args[0] if name in ("source", ".") and args else None)
+        if pipeline:
+            if "$" in words[0] and "claude" in CMD:
+                block(f"cannot tell which program `{words[0]}` is, and the command mentions claude: {who} never launches claude.")
+            if name in INTERPRETERS and any(re.search(r"\bclaude\b", a) for a in args):
+                block(f"{who} never launches claude, not even from a script (`{name} … claude …`).")
+            if name in ("find",):
+                for i, a in enumerate(args):
+                    if a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args):
+                        analyze(" ".join(shlex.quote(x) for x in args[i + 1:] if x not in (";", "+")), cwd, depth + 1)
         if bound and any("ade-runtime.mjs" in w for w in words):
             block("ade-runtime.mjs is the bundle behind the BMAD wrapper and bypasses its write checks; run `node <plugin>/bmad/runtime.mjs <command>` (planner only).")
         if name in ("cd", "pushd"):
@@ -649,12 +757,12 @@ def analyze(cmd, cwd, depth=0):
                   "`bmad_spike.sh` in your worktree, when the repo allows them (repos.json liveTests).")
         elif name in LIVE_SCRIPTS and pipeline:
             check_live(words[0], cwd)
-        elif name in ("bash", "sh", "zsh", "dash", "ksh") and args and os.path.basename(args[0]) in LIVE_SCRIPTS and pipeline:
-            check_live(args[0], cwd)
+        elif script and os.path.basename(script) in LIVE_SCRIPTS and pipeline:
+            check_live(script, cwd)
         elif name == "state.sh" and bound:  # run directly by path
             check_state_sh([words[0]] + args)
-        elif name in ("bash", "sh", "zsh", "dash", "ksh") and args and os.path.basename(args[0]) == "state.sh" and bound:
-            check_state_sh(args)
+        elif script and os.path.basename(script) == "state.sh" and bound:
+            check_state_sh(args[args.index(script):])
         elif name in ("bash", "sh", "zsh", "dash", "ksh") and "-c" in args and args.index("-c") + 1 < len(args):
             analyze(args[args.index("-c") + 1], cwd, depth + 1)
         elif name == "eval":

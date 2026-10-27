@@ -425,4 +425,49 @@ printf '{"schema": 1, "repos": [{"name": "r", "path": "%s", "check": null, "live
 b 2 dcv2:implementer "cd $WT && bash scripts/skill-e2e/golden.sh github"                  # only a JSON true counts
 rm -f "$RUN/repos.json"
 
+echo "# shared refs (review of #11): nobody changes worktrees, branches or refs with raw git"
+O="$d/ws/r-worktrees/dcv2-other-pr1"
+for who in dcv2:implementer dcv2:pr-reviewer ""; do
+  for c in "git -C $WT worktree remove --force $O" "git -C $WT worktree prune" "git -C $WT worktree add /tmp/z" \
+           "git -C $WT branch -D dcv2/other-pr1" "git -C $WT branch -D main" "git -C $WT branch -f main HEAD" \
+           "git -C $WT update-ref -d refs/heads/main" "git -C $WT update-ref --stdin" "git -C $WT symbolic-ref HEAD refs/heads/main" \
+           "git -C $WT checkout -B main" "git -C $WT switch -C main" "git -C $WT tag -d v1" "git -C $WT gc --prune=now" \
+           "cd $WT && git branch -d dcv2/r-x-pr1" "timeout 60 git -C $WT update-ref -d refs/heads/main"; do
+    b 2 "$who" "$c"
+  done
+done
+b 0 dcv2:implementer "git -C $WT branch dcv2/r-x-pr1"                          # its own branch only
+b 0 dcv2:implementer "git -C $WT checkout -b dcv2/r-x-pr1"
+b 0 dcv2:implementer "git -C $WT checkout -- src/a.js && git -C $WT branch --show-current && git -C $WT symbolic-ref --short HEAD"
+b 2 dcv2:implementer "git -C $WT checkout -b feature/x"
+for c in "git -C $WT config remote.origin.url /tmp/evil.git" "git -C $WT config url.ext::sh.insteadOf https://" \
+         "git -C $R config protocol.ext.allow always" "git -C $WT remote set-url origin -- --upload-pack=x"; do
+  b 2 "" "$c"                                                                   # the orchestrator writes no git config
+done
+b 0 "" "git -C $WT config --get remote.origin.url && git -C $WT remote -v"
+
+echo "# other runs' requests (review of #11)"
+RB="$d/runs/r-b"; mkdir -p "$RB"; printf 'folder: %s/ws\n' "$d" > "$RB/request.md"
+for who in "" dcv2:implementer; do
+  w 2 "$who" "$RB/requests/20261027T000000Z-selftest.json"
+  w 2 "$who" "$RB/app-cleanup.json"
+  b 2 "$who" "echo '{}' > $RB/requests/20261027T000000Z-selftest.result.json"
+done
+b 2 "" "bash $STATE request $RB selftest"
+b 2 "" "bash $STATE cleanup $RB"
+b 2 "" "bash $STATE request-wait $RB 20261027T000000Z-selftest"
+b 2 "" "bash -- $STATE cleanup $RB"
+b 0 "" "bash $STATE request $RUN selftest"
+
+echo "# claude and the live suites, any form (review of #11; liveTests off)"
+for c in "bash -x scripts/skill-e2e/golden.sh github" "bash -- scripts/skill-e2e/golden.sh" "timeout 600 bash scripts/skill-e2e/golden.sh" \
+         "npx claude -p hi" "npm exec claude -- -p hi" "cl''aude -p hi" "c=claude; \$c -p hi" "\$(command -v claude) -p hi" "timeout 5 claude -p hi" \
+         "find . -maxdepth 0 -exec claude -p hi \;" "python3 -c 'import os; os.system(\"claude -p hi\")'" "nice -n 5 claude -p hi" \
+         "env -u X claude -p hi" "nohup claude -p hi" "command claude -p hi" "exec claude" "echo hi | xargs claude -p" \
+         "source scripts/skill-e2e/golden.sh" ". scripts/skill-e2e/golden.sh" "/bin/bash scripts/skill-e2e/golden.sh" "bash ./scripts/skill-e2e/golden.sh" \
+         "bash -o pipefail scripts/skill-e2e/golden.sh"; do
+  b 2 dcv2:implementer "$c" "$WT"
+done
+b 0 dcv2:implementer "grep -rn claude src && cat src/claude.rs && timeout 600 npm run check" "$WT"   # naming claude is fine
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }
