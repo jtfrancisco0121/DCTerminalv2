@@ -1,7 +1,10 @@
 //! One PTY process: spawn, write, resize, and kill the process tree.
 //!
-//! Output is delivered on a channel. The master stays on a control thread so
-//! resize and write do not race the reader.
+//! Output is delivered on a channel. Three threads per session: a reader, a
+//! control thread (owns the master: resize, kill, exit polling) and a writer
+//! (owns the PTY writer). A write into a terminal whose program stopped
+//! reading blocks; it must never delay a kill or the exit poll, so no write
+//! happens on the control thread.
 
 #[cfg(unix)]
 use crate::process_tree::STOP_GRACE;
@@ -38,11 +41,16 @@ pub enum PtyOutput {
     Exit { code: Option<i32> },
 }
 
+/// Messages to the writer thread, applied in arrival order.
+enum WriterMsg {
+    /// Frontend input or a cursor-position report we generated.
+    Data(Vec<u8>),
+    /// The program is gone: drop the writer and end the thread.
+    Stop,
+}
+
 enum Ctrl {
-    Write(Vec<u8>),
-    /// A cursor-position report we generated. Does not mean the frontend is listening.
-    Reply(Vec<u8>),
-    /// Not acknowledged: the control thread may be blocked in `write_all`.
+    /// Not acknowledged: applied in order with the other control messages.
     Resize {
         cols: u16,
         rows: u16,
@@ -74,6 +82,11 @@ impl PtyHandle {
 /// Milliseconds since the first call in this process: a clock an atomic can hold.
 pub struct PtySession {
     ctrl: Sender<Ctrl>,
+    writer: Sender<WriterMsg>,
+    attached: Arc<AtomicBool>,
+    /// Set when the writer thread has ended.
+    #[cfg(test)]
+    writer_done: Arc<AtomicBool>,
     output: Option<Receiver<PtyOutput>>,
     pid: u32,
     group: PtyGroup,
@@ -131,18 +144,49 @@ impl PtySession {
         let (out_tx, out_rx) = mpsc::channel();
         let read_out = out_tx.clone();
         let attached = Arc::new(AtomicBool::new(false));
-        let read_ctrl = ctrl_tx.clone();
+        let (writer_tx, writer_rx) = mpsc::channel();
+        let discard = Arc::new(AtomicBool::new(false));
+        let writer_done = Arc::new(AtomicBool::new(false));
+        let read_writer = writer_tx.clone();
         let read_attached = Arc::clone(&attached);
         thread::Builder::new()
             .name("pty-read".into())
-            .spawn(move || read_loop(reader, read_out, read_ctrl, read_attached))
+            .spawn(move || read_loop(reader, read_out, read_writer, read_attached))
             .map_err(|err| io::Error::other(err.to_string()))?;
+        let write_discard = Arc::clone(&discard);
+        let write_done = Arc::clone(&writer_done);
+        thread::Builder::new()
+            .name("pty-write".into())
+            .spawn(move || {
+                write_loop(writer, writer_rx, write_discard);
+                write_done.store(true, Ordering::SeqCst);
+            })
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let ctrl_writer = writer_tx.clone();
+        let ctrl_attached = Arc::clone(&attached);
         thread::Builder::new()
             .name("pty-ctrl".into())
-            .spawn(move || control_loop(master, writer, child, guard, ctrl_rx, out_tx, attached))
+            .spawn(move || {
+                control_loop(
+                    master,
+                    child,
+                    guard,
+                    ctrl_rx,
+                    out_tx,
+                    ctrl_attached,
+                    ctrl_writer,
+                    discard,
+                )
+            })
             .map_err(|err| io::Error::other(err.to_string()))?;
+        #[cfg(not(test))]
+        let _ = writer_done;
         Ok(Self {
             ctrl: ctrl_tx,
+            writer: writer_tx,
+            attached,
+            #[cfg(test)]
+            writer_done,
             output: Some(out_rx),
             pid,
             group,
@@ -164,8 +208,10 @@ impl PtySession {
     }
 
     pub fn write(&self, data: &[u8]) -> io::Result<()> {
-        self.ctrl
-            .send(Ctrl::Write(data.to_vec()))
+        // A frontend write means xterm is listening and will answer later queries.
+        self.attached.store(true, Ordering::Relaxed);
+        self.writer
+            .send(WriterMsg::Data(data.to_vec()))
             .map_err(|err| io::Error::other(err.to_string()))
     }
 
@@ -209,8 +255,12 @@ impl PtySession {
                 }
             }
         });
+        let (writer, _writer_rx) = mpsc::channel();
         let session = Self {
             ctrl: ctrl_tx,
+            writer,
+            attached: Arc::new(AtomicBool::new(false)),
+            writer_done: Arc::new(AtomicBool::new(false)),
             output: None,
             pid: 0,
             group: PidGuard::adopt(0).group(),
@@ -240,7 +290,7 @@ impl Drop for PtySession {
 fn read_loop(
     mut reader: Box<dyn Read + Send>,
     output: Sender<PtyOutput>,
-    ctrl: Sender<Ctrl>,
+    writer: Sender<WriterMsg>,
     attached: Arc<AtomicBool>,
 ) {
     let mut gate = DsrGate::default();
@@ -256,7 +306,7 @@ fn read_loop(
             }
             Ok(n) => {
                 let (forward, reply) = gate.push(&buf[..n], attached.load(Ordering::Relaxed));
-                if !reply.is_empty() && ctrl.send(Ctrl::Reply(reply)).is_err() {
+                if !reply.is_empty() && writer.send(WriterMsg::Data(reply)).is_err() {
                     break;
                 }
                 if !forward.is_empty() && output.send(PtyOutput::Data(forward)).is_err() {
@@ -311,28 +361,48 @@ impl DsrGate {
     }
 }
 
+/// Owns the PTY writer. Writes block when the program stops reading, so this
+/// is the only thread that may. After `discard` is set (a kill began) queued
+/// data is dropped unwritten. The writer is dropped only on `Stop`, after the
+/// program is gone: `UnixMasterWriter::drop` types `\n` + EOF into the
+/// terminal, which a still-running program (during the SIGTERM grace) would
+/// read as Enter + Ctrl-D.
+fn write_loop(
+    mut writer: Box<dyn Write + Send>,
+    rx: Receiver<WriterMsg>,
+    discard: Arc<AtomicBool>,
+) {
+    // Not "while let Ok": read_loop and PtySession hold senders, so the
+    // channel does not disconnect on its own.
+    while let Ok(msg) = rx.recv() {
+        match msg {
+            WriterMsg::Data(data) => {
+                if discard.load(Ordering::SeqCst) {
+                    continue;
+                }
+                let _ = writer.write_all(&data);
+                let _ = writer.flush();
+            }
+            WriterMsg::Stop => break,
+        }
+    }
+    drop(writer);
+}
+
+#[allow(clippy::too_many_arguments)]
 fn control_loop(
     master: Box<dyn portable_pty::MasterPty + Send>,
-    mut writer: Box<dyn Write + Send>,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
     guard: PidGuard,
     ctrl: Receiver<Ctrl>,
     output: Sender<PtyOutput>,
     attached: Arc<AtomicBool>,
+    writer: Sender<WriterMsg>,
+    discard: Arc<AtomicBool>,
 ) {
     let mut exited = false;
     loop {
         match ctrl.recv_timeout(Duration::from_millis(200)) {
-            Ok(Ctrl::Write(data)) => {
-                // A frontend write means xterm is listening and will answer later queries.
-                attached.store(true, Ordering::Relaxed);
-                let _ = writer.write_all(&data);
-                let _ = writer.flush();
-            }
-            Ok(Ctrl::Reply(data)) => {
-                let _ = writer.write_all(&data);
-                let _ = writer.flush();
-            }
             Ok(Ctrl::Resize { cols, rows }) => {
                 attached.store(true, Ordering::Relaxed);
                 if let Err(err) = master.resize(PtySize {
@@ -353,6 +423,8 @@ fn control_loop(
                 let _ = ack.send(result);
             }
             Ok(Ctrl::Kill) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // Whatever the writer is doing, nothing more reaches the program.
+                discard.store(true, Ordering::SeqCst);
                 finish(&guard, child.as_mut(), &output, &mut exited);
                 break;
             }
@@ -369,7 +441,9 @@ fn control_loop(
             }
         }
     }
-    drop(writer);
+    // The program is gone: the writer may now be dropped.
+    discard.store(true, Ordering::SeqCst);
+    let _ = writer.send(WriterMsg::Stop);
     drop(master);
 }
 
@@ -715,6 +789,107 @@ mod tests {
         let children = wait_for_children(&pid_file);
         session.kill();
         assert_only_detached_stopped(children, "closing the terminal");
+    }
+
+    #[cfg(unix)]
+    fn spawn_sh(script: &str, dir: &std::path::Path) -> PtySession {
+        PtySession::spawn(SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), script.into()],
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            cwd: dir.to_path_buf(),
+            cols: 80,
+            rows: 24,
+        })
+        .expect("spawn sh")
+    }
+
+    #[cfg(unix)]
+    fn wait_for_exit(session: &PtySession, within: Duration) -> bool {
+        let deadline = std::time::Instant::now() + within;
+        while std::time::Instant::now() < deadline {
+            if matches!(
+                session.recv_timeout(Duration::from_millis(50)),
+                Ok(Some(PtyOutput::Exit { .. }))
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+
+    // Ticket 14yq6g30jed: a write into a program that stopped reading blocked
+    // the control thread, so a close waited behind it.
+    #[cfg(unix)]
+    #[test]
+    fn a_close_while_a_write_is_stuck_stops_the_program() {
+        let dir = crate::test_support::TempDir::new("pty_stuck_write");
+        let session = spawn_sh("sleep 30", dir.path());
+        thread::sleep(Duration::from_millis(300));
+        session.write(&vec![b'x'; 64 * 1024]).expect("write");
+        session.write(b"more").expect("write");
+        thread::sleep(Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        session.kill();
+        assert!(
+            wait_for_exit(&session, STOP_GRACE + Duration::from_millis(500)),
+            "kill did not report an exit while a write was stuck"
+        );
+        assert!(started.elapsed() < STOP_GRACE + Duration::from_millis(500));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !session.writer_done.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            session.writer_done.load(Ordering::SeqCst),
+            "the writer thread did not end after the program was gone"
+        );
+        assert!(!process_alive_unix(session.pid()), "program still alive");
+    }
+
+    #[cfg(unix)]
+    fn process_alive_unix(pid: u32) -> bool {
+        // SAFETY: signal 0 only checks existence.
+        unsafe { libc_kill(pid as i32, 0) == 0 }
+    }
+
+    #[cfg(unix)]
+    extern "C" {
+        #[link_name = "kill"]
+        fn libc_kill(pid: i32, sig: i32) -> i32;
+    }
+
+    // The writer must not be dropped during the SIGTERM grace: that would type
+    // Enter + Ctrl-D into a program that is still running.
+    #[cfg(unix)]
+    #[test]
+    fn a_close_types_nothing_into_the_program_during_the_grace() {
+        let dir = crate::test_support::TempDir::new("pty_no_typing");
+        let log = dir.join("stdin.log");
+        let ready = dir.join("ready");
+        let script = format!(
+            "trap '' TERM; touch '{}'; exec cat > '{}'",
+            ready.display(),
+            log.display()
+        );
+        let session = spawn_sh(&script, dir.path());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !ready.exists() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(ready.exists(), "script ready");
+        thread::sleep(Duration::from_millis(300));
+        // cat ignores TERM, so it lives through the whole grace and would log
+        // any byte typed into it (the writer's drop types "\n" + EOF).
+        session.kill();
+        assert!(
+            wait_for_exit(&session, STOP_GRACE + Duration::from_secs(10)),
+            "kill did not report an exit"
+        );
+        thread::sleep(Duration::from_millis(300));
+        let logged = std::fs::read(&log).unwrap_or_default();
+        assert!(logged.is_empty(), "the program was typed into: {logged:?}");
     }
 
     #[cfg(unix)]
