@@ -56,6 +56,19 @@ fn rules() -> &'static Rules {
                 ("a JWT", re(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+"), None),
                 ("a password in a URL", re(r"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]{3,}@"), None),
                 (
+                    "a Bearer token",
+                    re(r#"(?i)\bAuthorization["']?\s*[:=]\s*["']?Bearer\s+([A-Za-z0-9._~+/=-]{16,})"#),
+                    Some(group1_secretish),
+                ),
+                (
+                    "a webhook URL",
+                    re(concat!(
+                        r"(?i)\bhttps?://(?:hooks\.slack\.com/services/|discord(?:app)?\.com/api/webhooks/|outlook\.office\.com/webhook/|",
+                        r"[a-z0-9-]+\.webhook\.office\.com/|hooks\.zapier\.com/hooks/catch/)[A-Za-z0-9]"
+                    )),
+                    None,
+                ),
+                (
                     "a secret assignment (.env / JSON / YAML style)",
                     re(concat!(
                         r#"(?i)(?:^|[\s"'{,(])(?:export\s+)?["']?[A-Za-z0-9_.-]*?"#,
@@ -187,6 +200,8 @@ mod tests {
             "AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q",
             "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc",
             "https://bob:hunter22@example.com/x",
+            "curl -H 'Authorization: Bearer 9fK2mQ7xL4pR8tW1zB6nC3vD' https://api.example.com",
+            "https://hooks.slack.com/services/T0123ABCD/B0123ABCD/abcdEFGH1234",
             "DB_PASSWORD=s3cr3tPass!",
             "\"apiKey\": \"Zx8Kq2Lm9Pw4Rt7Yb1Nc6Vd3\"",
         ];
@@ -202,6 +217,10 @@ mod tests {
             "secret = example_value",
             "sk_short",
             "The token is stored in the keychain.",
+            "The Bearer token is rotated nightly.",
+            "Authorization: Bearer <your token>",
+            "Send Authorization: Bearer ${TOKEN} with each call",
+            "see https://hooks.slack.com/ for how webhooks work",
             "monkey: banana",
         ];
         for line in clean {
@@ -239,6 +258,16 @@ mod tests {
             "key: src/components/StartScreen.tsx",
             "auth_key = 9fK2mQ7xL4pR8tW1zB6nC3vD",
             "see https://bob:hunter22@example.com/x",
+            "curl -H \"Authorization: Bearer 9fK2mQ7xL4pR8tW1zB6nC3vD\" https://api.example.com",
+            "Authorization: Bearer <your token>",
+            "The Bearer token is rotated nightly.",
+            "https://hooks.slack.com/services/T0123ABCD/B0123ABCD/abcdEFGH1234",
+            "post to https://discord.com/api/webhooks/123456789/abcdefghijkl",
+            "https://discordapp.com/api/webhooks/123456789/abcdefghijkl",
+            "https://outlook.office.com/webhook/abc-123@def/IncomingWebhook/xyz",
+            "https://contoso.webhook.office.com/webhookb2/abc-123@def/IncomingWebhook/xyz",
+            "https://hooks.zapier.com/hooks/catch/123456/abcdef/",
+            "docs at https://hooks.slack.com/ explain webhooks",
             "pk_live_abcdefghijklmnop",
             "pk_live_Q2W3E4R5T6Y7U8I9O0PL",
             "client-secret: 'abc'",
