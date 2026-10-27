@@ -816,6 +816,44 @@ has "  the result line" "result=done ok=yes message=no ticket changed in ClickUp
 expect 1 "request-wait: not an id" bash "$STATE" request-wait "$CRUN" "../../etc/passwd"
 expect 1 "request-wait: no such request" bash "$STATE" request-wait "$CRUN" "20261027T000000Z-recheck"
 
+echo "# worktree identity is the git common dir: a linked-worktree start folder, a --separate-git-dir repo (CAP-15)"
+cleanup_layout() { # <tag> <repo path>: the run's own worktree of the repo is made by state.sh worktree, then cleaned up at done
+  local tag="$1" repo="$2" lrun="$d/runs/r-$1" base wtp
+  mkdir -p "$lrun"; printf 'folder: %s\n' "$(dirname "$repo")" > "$lrun/request.md"; echo '{"schema": 1, "reviewMode": "local"}' > "$lrun/meta.json"
+  base="$(git -C "$repo" rev-parse HEAD)"
+  expect 0 "[$tag] worktree made" env DCV2_RUN_DIR="$lrun" bash "$STATE" worktree "$lrun" "$repo" PR1 "$base"
+  wtp="$(dirname "$repo")/$(basename "$repo")-worktrees/dcv2-r-$tag-pr1"
+  python3 - "$lrun/status.json" "$tag" "$repo" "$wtp" <<'PY'
+import json, sys
+f, tag, repo, wt = sys.argv[1:5]
+json.dump({"schema": 1, "runId": "r-" + tag, "stage": "done", "prs": [{"id": "PR1", "repoPath": repo, "branch": f"dcv2/r-{tag}-pr1", "worktree": wt, "state": "reviewed"}]}, open(f, "w"))
+PY
+  expect 0 "[$tag] cleanup accepts the run's own worktree" env DCV2_RUN_DIR="$lrun" bash "$STATE" cleanup "$lrun"
+  has "  [$tag] removed" "PR1: worktree removed"
+  [[ ! -d "$wtp" ]] && ok "  [$tag] the folder is gone" || bad "  [$tag] worktree still there"
+}
+LMAIN="$d/lw/main"; LSTART="$d/lw/start"; mkdir -p "$LMAIN"
+git -C "$LMAIN" init -q -b main; git -C "$LMAIN" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$LMAIN" worktree add -q -b feature/start "$LSTART"
+cleanup_layout lnk "$LSTART"
+SWORK="$d/sw/work"; mkdir -p "$SWORK" "$d/sw/gd"
+git -C "$SWORK" init -q -b main --separate-git-dir "$d/sw/gd/work.git"; git -C "$SWORK" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+[[ -f "$SWORK/.git" ]] && ok "  the separate-git-dir repo's .git is a file" || bad "  .git is not a file"
+cleanup_layout sep "$SWORK"
+# a worktree of an unrelated repo is still refused: it sits where the contract puts the recorded repo's worktree, but is not that repo's
+URUN="$d/runs/r-unrel"; mkdir -p "$URUN" "$d/lw/unrelated"; printf 'folder: %s\n' "$d/lw" > "$URUN/request.md"
+git -C "$d/lw/unrelated" init -q -b main; git -C "$d/lw/unrelated" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+UWT="$d/lw/unrelated-worktrees/dcv2-r-unrel-pr1"; git -C "$LSTART" worktree add -q -b dcv2/r-unrel-pr1 "$UWT"
+python3 - "$URUN" "$d/lw/unrelated" "$UWT" <<'PY'
+import json, sys
+run, repo, wt = sys.argv[1:4]
+json.dump({"schema": 1, "runId": "r-unrel", "stage": "done", "prs": [{"id": "PR1", "repoPath": repo, "branch": "dcv2/r-unrel-pr1", "worktree": wt, "state": "reviewed"}]}, open(run + "/status.json", "w"))
+json.dump({"schema": 1, "runDir": run, "repos": [repo], "worktrees": {"PR1": wt}}, open(run + "/.guard.json", "w"))
+PY
+expect 0 "cleanup with a worktree of another repo" env DCV2_RUN_DIR="$URUN" bash "$STATE" cleanup "$URUN"
+has "  kept: not a worktree of its recorded repo" "not a worktree of its recorded repo"
+[[ -d "$UWT" ]] && ok "  the unrelated worktree is untouched" || bad "  it was removed"
+
 echo "# report: what the run could not do"
 bash "$STATE" log "$CRUN" <<<'not done: re-run the checks (the app did not answer: is DCTerminalv2 running?)' >/dev/null
 expect 0 "report" bash "$STATE" report "$CRUN"

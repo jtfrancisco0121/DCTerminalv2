@@ -2005,7 +2005,11 @@ def verify_wt(run_id, pid, repo, wt):
     common = git("-C", wt, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
     if not gd or not common or os.path.realpath(gd) == os.path.realpath(common):
         return "not a linked worktree"
-    if os.path.realpath(os.path.dirname(common)) != repo:
+    # Same git common dir as the recorded repo: right for a repo that is itself a linked worktree, a submodule
+    # (common dir under the superproject's .git/modules/) and a --separate-git-dir repo, where the common dir's parent
+    # is not the checkout.
+    repo_common = git("-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+    if not repo_common or same_path(common, "") or not same_path(common, repo_common):
         return "not a worktree of its recorded repo"
     head = git("-C", wt, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
     if head != branch:
