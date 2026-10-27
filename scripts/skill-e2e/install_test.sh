@@ -38,6 +38,20 @@ mkdir -p "$d/bundle/Contents"; echo new > "$d/bundle/Contents/marker"
 ) >"$d/good.out" 2>&1
 if [ "$(cat "$d/Apps/DCTerminalv2.app/Contents/marker")" = new ] && [ ! -e "$d/Apps/DCTerminalv2.app.old" ]; then ok "a good copy installs and cleans up"; else bad "a good copy did not install: $(cat "$d/good.out")"; fi
 
+# 2b. A failing move-aside (or .old clear) leaves the current app untouched.
+for failing in mv rm; do
+  rm -rf "$d/Apps"; mkdir -p "$d/Apps/DCTerminalv2.app/Contents" "$d/Apps/DCTerminalv2.app.old"
+  echo old > "$d/Apps/DCTerminalv2.app/Contents/marker"
+  (
+    ditto() { echo "ditto must not run" >&2; return 0; }
+    if [ "$failing" = mv ]; then mv() { return 1; }; else rm() { return 1; }; fi
+    install_copy "$d/bundle" "$d/Apps/DCTerminalv2.app"
+  ) >"$d/aside.out" 2>&1
+  rc=$?
+  if [ "$rc" != 0 ]; then ok "a failing $failing exits non-zero"; else bad "a failing $failing exited 0"; fi
+  if [ "$(cat "$d/Apps/DCTerminalv2.app/Contents/marker" 2>/dev/null)" = old ]; then ok "a failing $failing leaves the current app"; else bad "a failing $failing lost the current app: $(cat "$d/aside.out")"; fi
+done
+
 # 3. The running check sees the app anywhere, and not the hook forwarder.
 process_list() {
   printf '%s\n' \

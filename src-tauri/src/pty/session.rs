@@ -892,6 +892,42 @@ mod tests {
         assert!(logged.is_empty(), "the program was typed into: {logged:?}");
     }
 
+    // A write queued behind a stuck one, right before kill(), never lands even
+    // when the program starts reading again during the grace.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_queued_before_a_close_is_never_typed() {
+        let dir = crate::test_support::TempDir::new("pty_late_write");
+        let log = dir.join("stdin.log");
+        let ready = dir.join("ready");
+        let script = format!(
+            "trap '' TERM; touch '{}'; sleep 0.8; exec cat > '{}'",
+            ready.display(),
+            log.display()
+        );
+        let session = spawn_sh(&script, dir.path());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !ready.exists() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(ready.exists(), "script ready");
+        // Nothing reads for 0.8 s: this write fills the tty and blocks the writer.
+        session.write(&b"x\n".repeat(128 * 1024)).expect("write");
+        thread::sleep(Duration::from_millis(200));
+        session.write(b"late-marker\n").expect("queue");
+        session.kill();
+        assert!(
+            wait_for_exit(&session, STOP_GRACE + Duration::from_secs(10)),
+            "kill did not report an exit"
+        );
+        thread::sleep(Duration::from_millis(300));
+        let logged = std::fs::read(&log).unwrap_or_default();
+        assert!(
+            !String::from_utf8_lossy(&logged).contains("late-marker"),
+            "a write queued before the close was typed"
+        );
+    }
+
     #[cfg(unix)]
     fn process_alive(pid: u32) -> bool {
         std::path::Path::new(&format!("/proc/{pid}")).exists()

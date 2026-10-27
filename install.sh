@@ -56,11 +56,13 @@ install_copy() { # <bundle> <dest>
   trap rollback_install EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  ROLLBACK_PENDING=1
+  # Arm the rollback only once the old app is safely aside: until then $dest
+  # is the working app and must not be removed.
   if [ -d "$dest" ]; then
-    rm -rf "$ROLLBACK_OLD"
-    mv "$dest" "$ROLLBACK_OLD"
+    rm -rf "$ROLLBACK_OLD" || die "could not clear $ROLLBACK_OLD; the installed app is untouched."
+    mv "$dest" "$ROLLBACK_OLD" || die "could not move the installed app aside; it is untouched."
   fi
+  ROLLBACK_PENDING=1
   ditto "$bundle" "$dest" || die "could not copy the app to $dest."
   ROLLBACK_PENDING=0
   trap - EXIT INT TERM
@@ -97,7 +99,7 @@ main() {
   if [ ! -x "$BUNDLE/Contents/MacOS/dcv2-hook" ]; then
     [ -x "$HOOK_BIN" ] || die "no hook forwarder at $HOOK_BIN (run without --no-build)."
     if hook_is_stale "$HOOK_BIN" "$BUNDLE/Contents/MacOS/dcterminalv2"; then
-      die "the hook forwarder at $HOOK_BIN is older than the app build. Rebuild it: cargo build --release --manifest-path src-tauri/Cargo.toml --bin dcv2-hook (or run without --no-build)."
+      die "the hook forwarder at $HOOK_BIN is older than the app build. Rebuild it: cargo build --release --manifest-path src-tauri/Cargo.toml --bin dcv2-hook, then touch it if cargo had nothing to rebuild (or run without --no-build)."
     fi
     say "Adding the hook forwarder to the app"
     cp "$HOOK_BIN" "$BUNDLE/Contents/MacOS/dcv2-hook"
