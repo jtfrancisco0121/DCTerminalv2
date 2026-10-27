@@ -513,4 +513,25 @@ for c in "git -c user.name=t -c user.email=t@t commit -m x" "git -c color.ui=nev
   b 0 dcv2:implementer "$c" "$WT"
 done
 
+echo "# fourth review of #11: git repo env, the user's git config, --show-origin reads"
+for c in "GIT_DIR=$R/.git git reset --hard" "GIT_DIR=$R/.git GIT_WORK_TREE=$R git checkout -- ." "GIT_TEMPLATE_DIR=/tmp/t git init /tmp/x" \
+         "export GIT_WORK_TREE=$R; git checkout -- ." "env GIT_INDEX_FILE=/tmp/i git add -A" "declare -x GIT_COMMON_DIR=$R/.git" \
+         "typeset -x GIT_OBJECT_DIRECTORY=/tmp/o" "GIT_ALTERNATE_OBJECT_DIRECTORIES=/tmp/o git log" "GIT_NAMESPACE=x git log" \
+         "env -S 'GIT_DIR=$R/.git git reset --hard'"; do
+  b 2 dcv2:implementer "$c" "$WT"
+done
+for who in "" dcv2:implementer dcv2:planner; do
+  b 2 "$who" "echo '[alias] x = !rm -rf $O' >> ~/.gitconfig"
+  b 2 "$who" "echo x >> \$HOME/.gitconfig"
+  b 2 "$who" "cp /tmp/x ~/.config/git/config"
+  b 2 "$who" "tee -a ~/.config/git/ignore < /dev/null"
+  w 2 "$who" "$HOME/.gitconfig"
+  w 2 "$who" "$HOME/.config/git/config"
+done
+b 0 "" "cat ~/.gitconfig"
+for c in "git config --show-origin user.name" "git config --show-scope user.name" "git config --list --show-origin"; do
+  b 0 dcv2:implementer "$c" "$WT"
+done
+b 2 dcv2:implementer "git config --show-origin user.name x" "$WT"
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

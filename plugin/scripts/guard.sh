@@ -135,6 +135,17 @@ def inside(p, root):
     return bool(root) and (p == root or p.startswith(root.rstrip(os.sep) + os.sep))
 
 
+def git_user_config(p):
+    """The user's own git config (~/.gitconfig, $XDG_CONFIG_HOME/git/): the app's network git reads it (credential
+    helpers run from there), so nothing in a run writes it."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    xdg = os.path.realpath(os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"))
+    return p == os.path.join(home, ".gitconfig") or inside(p, os.path.join(xdg, "git"))
+
+
+GITCONFIG_MSG = "the user's git config (~/.gitconfig, ~/.config/git/) is never written from a dcv2 run."
+
+
 def protected(p):
     q = p
     while q and q != os.path.dirname(q):  # requests/ of any run folder: state.sh request and the app only
@@ -203,6 +214,8 @@ if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
         block("write run-folder state only with scripts/state.sh (put / approve / writeback / worktree), never with Edit or Write.")
     if bmad_config(p):
         block(BMAD_CFG_MSG)
+    if (run or pipeline) and git_user_config(p):
+        block(GITCONFIG_MSG)
     if inside(p, mem):
         block("codebase memory is written only with `bash <plugin>/scripts/memory.sh write <repo id> <file> <<'EOF'` "
               "(it checks size caps, secrets and pinned lines), never with Edit or Write.")
@@ -265,6 +278,8 @@ def ship_gate(what):
 def check_write(t, cwd):
     if t in SAFE_DEV or t.startswith("/dev/fd/"):
         return
+    if bound and re.search(r"[$`*?]", t) and re.search(r"\.gitconfig|\.config/git|/git/config\b", t):
+        block(GITCONFIG_MSG)
     if re.search(r"[$`*?]", t) or (cwd is None and not os.path.isabs(os.path.expanduser(t))):
         if trust_root and "run-trust" in t:
             block(TRUST_MSG)
@@ -283,6 +298,8 @@ def check_write(t, cwd):
         block("codebase memory is written only with memory.sh write, never with a shell redirect, copy or move.")
     if not bound:
         return
+    if git_user_config(p):
+        block(GITCONFIG_MSG)
     if protected(p):
         block("write run-folder state only with scripts/state.sh, never with a shell redirect or copy.")
     if bmad_config(p):
@@ -350,6 +367,7 @@ def git_readonly(sub, rest):
             return True
         if rest[:1] in (["get"], ["list"]):
             return True
+        rest = [a for a in rest if a not in ("--show-origin", "--show-scope")]  # `git config --show-origin <key>` reads
         # `git config <key>` reads; a key and anything else (a value, even one starting with `-`) writes.
         return len(rest) == 1 and not rest[0].startswith("-") and rest[0] not in ("set", "unset", "edit")
     if sub == "worktree":
@@ -377,7 +395,8 @@ def git_c_ok(kv):
     return key in GIT_C_KEYS or key.startswith(GIT_C_PREFIXES)
 
 
-GIT_ENV_RE = re.compile(r"^(GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\w*|GIT_CONFIG_VALUE_\w*|GIT_CONFIG_PARAMETERS|GIT_CONFIG|GIT_CONFIG_GLOBAL|"
+GIT_ENV_RE = re.compile(r"^(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES|"
+                        r"GIT_NAMESPACE|GIT_TEMPLATE_DIR|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\w*|GIT_CONFIG_VALUE_\w*|GIT_CONFIG_PARAMETERS|GIT_CONFIG|GIT_CONFIG_GLOBAL|"
                         r"GIT_CONFIG_SYSTEM|GIT_EXEC_PATH|GIT_SSH_COMMAND|GIT_SSH|GIT_ASKPASS|GIT_PROXY_COMMAND|GIT_EXTERNAL_DIFF)=")
 
 
@@ -799,7 +818,8 @@ def analyze(cmd, cwd, depth=0):
         if bound:
             for w in words:
                 if GIT_ENV_RE.match(w):
-                    block(f"setting {w.split('=', 1)[0]} is not allowed in a dcv2 run: it changes which programs git runs.")
+                    block(f"setting {w.split('=', 1)[0]} is not allowed in a dcv2 run: it changes which repo git works on "
+                          "or which programs it runs.")
         words = unwrap(words)
         if not words:
             continue
