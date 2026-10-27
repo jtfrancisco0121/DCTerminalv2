@@ -308,11 +308,13 @@ PY
 expect 0 "a repo inside the start folder is accepted (PR1 again)" bash "$STATE" worktree "$RUN" "$R" PR1 "$BASE"
 
 echo "# ship (3, 4, 8, 10)"
+export DCV2_TEST_LOCAL_REMOTES=1   # the remote is a local bare repo (state.sh pushes to local folders only in the suites)
 gh="$d/gh"; mkdir -p "$gh"
 cat > "$gh/gh" <<EOF
 #!/bin/sh
 echo "\$*" >> "$d/gh.log"
 case "\$1 \$2" in
+  "repo view") echo o/rr ;;
   "pr view") [ -f "$d/gh-has-pr" ] && echo https://github.com/o/rr/pull/7 && exit 0; exit 1 ;;
   "pr create") echo https://github.com/o/rr/pull/8 ;;
   *) exit 1 ;;
@@ -323,14 +325,58 @@ export PATH="$gh:$PATH"
 expect 0 "put ship-approval" put < <(status ship-approval reviewed reviewed 'doc["waitingFor"]="ship-approval"')
 expect 1 "ship-pr refused before the ship approval" bash "$STATE" ship-pr "$RUN" PR2
 expect 0 "ship-check" bash "$STATE" ship-check "$RUN"
-has "  no remote for r" "PR1 r: no git remote"; has "  base on origin for rr" "PR2 rr: remote origin, base main is on the remote"
+has "  no remote for r" "PR1 r: no git remote"; has "  base on the recorded remote for rr" "PR2 rr: remote $d/origin.git, base main is on the remote"
 expect 1 "approve ship test without the env" bash "$STATE" approve "$RUN" ship test
 expect 0 "approve ship user" bash "$STATE" approve "$RUN" ship user
 is "  stage shipping" "$RUN/status.json" stage '"shipping"'
 is "  shipApproval.by user" "$RUN/status.json" shipApproval.by '"user"'
 expect 0 "ship-pr PR1 (no remote)" bash "$STATE" ship-pr "$RUN" PR1
 is "  PR1 local-only" "$RUN/status.json" prs.0.state '"local-only"'
+# Local-mode ship-pr has the github-mode protections (CAP-14). Each case undoes itself, so PR2 ships normally after them.
+pr2() { python3 - "$RUN" "$@" <<'PY'    # pr2 <python on st (status.json) and g (.guard.json)>
+import json, sys
+run, code = sys.argv[1:3]
+st, g = json.load(open(run + "/status.json")), json.load(open(run + "/.guard.json"))
+exec(code)
+json.dump(st, open(run + "/status.json", "w")); json.dump(g, open(run + "/.guard.json", "w"))
+PY
+}
+pr2reset() { pr2 'st["prs"][1].update(state="reviewed", note=None)'; }
+: > "$d/gh.log"
+expect 0 "a recorded remote the run may not push (a local folder, outside the suites) is needs-attention" env -u DCV2_TEST_LOCAL_REMOTES bash "$STATE" ship-pr "$RUN" PR2
+is "  PR2 needs-attention" "$RUN/status.json" prs.1.state '"needs-attention"'
+has "  says why" "is not an owner/name https or ssh URL: nothing pushed"
+has "  names the URL" "remote $d/origin.git"
+git -C "$d/origin.git" show-ref --verify -q refs/heads/dcv2/r-t-pr2 && bad "  the branch was pushed" || ok "  nothing pushed"
+[[ ! -s "$d/gh.log" ]] && ok "  no gh call" || bad "  gh calls: $(cat "$d/gh.log")"
+expect 0 "ship-check says the same before approving" env -u DCV2_TEST_LOCAL_REMOTES bash "$STATE" ship-check "$RUN"
+has "  cannot be pushed" "PR2 rr: remote $d/origin.git cannot be pushed by the run"
+has "  needs attention" ": needs attention"
+pr2reset
+pr2 'st["prs"][1]["worktree"] = "/tmp/x"'
+expect 1 "ship-pr: a status.json worktree that is not canonical is refused" bash "$STATE" ship-pr "$RUN" PR2
+has "  says where it must be" "must be on dcv2/r-t-pr2 in its worktree"
+pr2 'st["prs"][1]["worktree"] = g["worktrees"]["PR2"]'
+pr2 'g["worktrees"].pop("PR2")'
+expect 1 "ship-pr: a worktree not recorded in .guard.json is refused" bash "$STATE" ship-pr "$RUN" PR2
+has "  says so" "not recorded in .guard.json"
+pr2 'g["worktrees"]["PR2"] = st["prs"][1]["worktree"]'
+git -C "$d/origin.git" show-ref --verify -q refs/heads/dcv2/r-t-pr2 && bad "  pushed anyway" || ok "  nothing pushed by the refused cases"
+pr2 'g.setdefault("copied", {})["PR2"] = [".env"]'
+echo "K=1" > "$WT2/.env"; git -C "$WT2" add -f .env; git -C "$WT2" -c user.name=t -c user.email=t@t commit -q -m "oops: .env"
+expect 3 "ship-pr: a committed copied .env is needs-attention" bash "$STATE" ship-pr "$RUN" PR2
+has "  names the file" "the branch commits .env"
+is "  PR2 needs-attention" "$RUN/status.json" prs.1.state '"needs-attention"'
+git -C "$d/origin.git" show-ref --verify -q refs/heads/dcv2/r-t-pr2 && bad "  the .env was pushed" || ok "  nothing pushed"
+git -C "$WT2" reset -q --hard HEAD~1; rm -f "$WT2/.env"; pr2 'g["copied"].pop("PR2")'; pr2reset
+mkdir -p "$(git -C "$RR" rev-parse --path-format=absolute --git-common-dir)/hooks"
+printf '#!/bin/sh\ntouch "%s/pre-push-ran"\nexit 0\n' "$d" > "$(git -C "$RR" rev-parse --path-format=absolute --git-common-dir)/hooks/pre-push"
+chmod +x "$(git -C "$RR" rev-parse --path-format=absolute --git-common-dir)/hooks/pre-push"
+: > "$d/gh.log"
 expect 0 "ship-pr PR2 (remote)" bash "$STATE" ship-pr "$RUN" PR2
+[[ ! -e "$d/pre-push-ran" ]] && ok "  the worktree's pre-push hook did not run" || bad "  the pre-push hook ran"
+grep -q -- "pr view dcv2/r-t-pr2 --json url -q .url -R o/rr" "$d/gh.log" && ok "  gh pr view names -R o/rr" || bad "  gh calls: $(cat "$d/gh.log")"
+grep -q -- "pr create .* -R o/rr" "$d/gh.log" && ok "  gh pr create names -R o/rr" || bad "  gh calls: $(cat "$d/gh.log")"
 is "  PR2 opened" "$RUN/status.json" prs.1.state '"opened"'
 is "  PR2 url" "$RUN/status.json" prs.1.prUrl '"https://github.com/o/rr/pull/8"'
 git -C "$d/origin.git" show-ref --verify -q refs/heads/dcv2/r-t-pr2 && ok "  branch pushed" || bad "  branch not on origin"
@@ -348,6 +394,12 @@ touch "$d/gh-has-pr"; : > "$d/gh.log"
 expect 0 "ship-pr of a pushed PR with no url (resume)" bash "$STATE" ship-pr "$RUN" PR2
 is "  url from gh pr view" "$RUN/status.json" prs.1.prUrl '"https://github.com/o/rr/pull/7"'
 grep -q "pr create" "$d/gh.log" && bad "  opened a second PR" || ok "  no second PR"
+echo "# an ssh host alias remote is recognised as owner/name (CAP-14)"
+AL="$WS/al"; mkdir -p "$AL"; git -C "$AL" init -q -b main; git -C "$AL" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$AL" remote add origin github-work:o/rr
+expect 0 "worktree for a repo whose remote is an ssh host alias" bash "$STATE" worktree "$RUN" "$AL" PR3 "$(git -C "$AL" rev-parse HEAD)"
+is "  recorded as owner/name" "$RUN/.guard.json" remotes.PR3.repo '"o/rr"'
+is "  with its URL" "$RUN/.guard.json" remotes.PR3.url '"github-work:o/rr"'
 
 echo "# writeback (5, 15)"
 cat > "$RUN/tickets.json" <<'EOF'

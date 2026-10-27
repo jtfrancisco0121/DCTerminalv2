@@ -135,7 +135,7 @@ When nothing is ready or in progress, go to stop #2. PRs still `pending` because
 
 ## Stop #2: ship approval
 
-1. Run `S ship-check <run>`: per PR, whether its repo has a remote and whether its base is on that remote. A PR whose base is not on its remote → `needs-attention` with that note. Do not push.
+1. Run `S ship-check <run>`: per PR, whether its repo has a remote and whether its base is on that remote. A PR whose base is not on its remote, or whose remote the run may not push (not an owner/name https or ssh URL) → `needs-attention` with that note. Do not push.
 2. Set `stage: ship-approval`, `waitingFor: ship-approval`, write status.json, log `waiting for ship approval`.
 3. Run `S testmode`. `auto-approve=yes` → run `S approve <run> ship test` (it logs `ship auto-approved (test-mode)` and sets `stage: shipping`) and go to Step 4.
 4. Otherwise show the user a table: PR, repo, branch, stories done/total, check result, review verdict (round), state (GitHub mode: and the draft PR's URL); then the ClickUp drafts you will queue (`S plan <run> tickets`: ticket id + title + its `ship status`, which is what the drafts will suggest, when every PR of the ticket is opened); then which repos have no remote ("no git remote: will not push or open a PR"). Ask: **"Push and open these PRs, and queue the ClickUp updates?"** (GitHub mode: **"Mark these N draft PRs ready for review, and queue the ClickUp updates?"**, N = the `reviewed` PRs with a draft; name any reviewed PR without a draft, which `S ready` will open as a normal PR.) Then **end your turn and wait for the user.**

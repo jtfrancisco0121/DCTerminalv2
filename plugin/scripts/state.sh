@@ -32,7 +32,10 @@
 #                                             (exit 0 pass, 3 fail). plan-approval is refused until it passes on
 #                                             the current documents (put and approve)
 #   state.sh ship-check <run>                 per PR: remote, and whether its base is on the remote
-#   state.sh ship-pr <run> <pr id>            local mode: push the PR's branch and open its GitHub PR
+#   state.sh ship-pr <run> <pr id>            local mode: push the PR's branch and open its GitHub PR, with the
+#                                             github-mode protections (canonical worktree, no copied file, push to the
+#                                             recorded URL without hooks, gh -R <owner/name>); a recorded remote the run
+#                                             may not push (not an owner/name https/ssh URL) ends needs-attention.
 #                                             (stage shipping + ship approval only); updates status.json
 # github review mode only (meta.json reviewMode "github"; after the plan approval):
 #   state.sh draft-pr <run> <pr id>           push the branch (never force) and open a DRAFT PR (or find
@@ -985,7 +988,8 @@ def record_guard(run, repo, pr_id, wt, copied=None, remote=None, base=None):
     atomic_write(path, json.dumps(g, indent=2) + "\n")
 
 
-SLUG = re.compile(r"^(?:https?://[^/\s]+/|ssh://[^/\s]+/|[\w.-]+@[^:/\s]+:)([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
+# https / ssh URLs, user@host:owner/name, and an ssh host alias (alias:owner/name, e.g. github-work:o/rr; the alias cannot start with -).
+SLUG = re.compile(r"^(?:https?://[^/\s]+/|ssh://[^/\s]+/|[\w.-]+@[^:/\s]+:|[A-Za-z0-9_][\w.-]*:)([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
 
 
 def remote_record(run, repo):
@@ -1163,17 +1167,31 @@ def cmd_worktree(run, repo, pr_id, base):
     print(f"setup={result} log={log or '-'}")
 
 
+def recorded_remote(run, pr):
+    """The push remote of a PR as ship-pr will use it: the one recorded in .guard.json when its worktree was made
+    ({name, url, repo}), else the repo's current one; None when the repo has no remote."""
+    rem = (guard_rec(run).get("remotes") or {}).get(pr.get("id"))
+    if isinstance(rem, dict) and rem.get("url"):
+        return rem
+    repo = os.path.realpath(pr["repoPath"]) if pr.get("repoPath") else ""
+    return remote_record(run, repo) if repo and os.path.isdir(repo) else None
+
+
 def cmd_ship_check(run):
     st = load_status(run)
     for pr in st.get("prs") or []:
-        repo = pr.get("repoPath") or ""
-        remote = remote_of(repo) if repo else None
-        if not remote:
-            print(f"{pr.get('id')} {pr.get('repo')}: no git remote: will not push or open a PR")
-        elif on_remote(repo, remote, pr.get("base") or ""):
-            print(f"{pr.get('id')} {pr.get('repo')}: remote {remote}, base {pr.get('base')} is on the remote")
+        who = f"{pr.get('id')} {pr.get('repo')}"
+        rem = recorded_remote(run, pr)
+        if not rem:
+            print(f"{who}: no git remote: will not push or open a PR")
+            continue
+        why = url_problem(rem["url"])
+        if why:
+            print(f"{who}: remote {rem['url']} cannot be pushed by the run ({why}): needs attention")
+        elif remote_sha(rem["url"], pr.get("base") or ""):
+            print(f"{who}: remote {rem['url']}, base {pr.get('base')} is on the remote")
         else:
-            print(f"{pr.get('id')} {pr.get('repo')}: remote {remote}, base {pr.get('base')} is NOT on the remote: needs attention")
+            print(f"{who}: remote {rem['url']}, base {pr.get('base')} is NOT on the remote: needs attention")
 
 
 def pr_body(run, st, pr):
@@ -1213,25 +1231,40 @@ def cmd_ship_pr(run, pid):
 
     if pr.get("state") not in ("reviewed", "pushed"):
         die(f"NOT SHIPPED: {pid} is {pr.get('state')}; only reviewed PRs ship")
-    repo, wt, branch, base = pr.get("repoPath"), pr.get("worktree"), pr.get("branch"), pr.get("base")
-    remote = remote_of(repo)
-    if not remote:
+    # The same protections as github mode: the canonical branch and worktree recorded in .guard.json, no copied file in the
+    # commits, a push to the URL recorded when the worktree was made (no hooks, no remote name), `gh -R <owner/name>`.
+    pr, rem = canonical_pr(run, st, pid, "NOT SHIPPED")
+    wt, branch, base = pr["worktree"], pr["branch"], pr.get("base")
+    if not rem:
         return save("local-only", "no git remote: nothing pushed, no PR opened")
+    url = rem["url"]
+    why = url_problem(url)
+    if why:
+        return save("needs-attention", f"remote {url} is not an owner/name https or ssh URL: nothing pushed; "
+                    f"push {branch} by hand and open the PR")
     if pr["state"] == "reviewed":
-        if not on_remote(repo, remote, base):
-            return save("needs-attention", f"base {base} is not on {remote}")
-        r = git("-C", wt, "push", "-u", remote, branch)
+        no_copied(run, st, pr, "NOT SHIPPED")
+    slug = rem.get("repo")
+    if not slug:  # e.g. a local mirror (test suites): ask gh which repo this is
+        q = run_cmd(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], cwd=wt, timeout=60)
+        slug = q.stdout.strip() if q.returncode == 0 and re.fullmatch(r"[\w.-]+/[\w.-]+", q.stdout.strip()) else None
+    if not slug:
+        return save("needs-attention", f"cannot tell which GitHub repo {url} is: nothing pushed; push {branch} by hand and open the PR")
+    if pr["state"] == "reviewed":
+        if not remote_sha(url, base):
+            return save("needs-attention", f"base {base} is not on {url}")
+        r = push_branch(wt, url, branch)
         if r.returncode != 0:
             return save("needs-attention", "push refused: " + first_line(r.stderr)[:200])
         save("pushed", "pushed; opening the PR")
-    v = run_cmd(["gh", "pr", "view", branch, "--json", "url", "-q", ".url"], cwd=wt, timeout=60)
+    v = gh(["pr", "view", branch, "--json", "url", "-q", ".url"], wt, slug, 60)
     if v.returncode == 0 and v.stdout.strip().startswith("http"):
         return save("opened", None, v.stdout.strip())
     body = os.path.join(run, "pr-bodies", f"{pid}.md")
     os.makedirs(os.path.dirname(body), exist_ok=True)
     atomic_write(body, pr_body(run, st, pr))
     title = str(pr.get("title") or pid)
-    c = run_cmd(["gh", "pr", "create", "--base", base, "--head", branch, "--title", title, "--body-file", body], cwd=wt, timeout=120)
+    c = gh(["pr", "create", "--base", base, "--head", branch, "--title", title, "--body-file", body], wt, slug)
     url = next((l.strip() for l in reversed(c.stdout.splitlines()) if l.strip().startswith("http")), None)
     if c.returncode == 0 and url:
         return save("opened", None, url)
@@ -1366,17 +1399,25 @@ def github_pr(run, pid, stages=GITHUB_STAGES):
         die("NOT DONE: GitHub writes need the plan approval first (stop #1: `state.sh approve <run> plan user`)")
     if st.get("stage") not in stages:
         die(f"NOT DONE: stage {st.get('stage')}: this command runs only at stage {' / '.join(stages)}")
+    pr, rem = canonical_pr(run, st, pid)
+    return st, pr, rem
+
+
+def canonical_pr(run, st, pid, what="NOT DONE"):
+    """(the PR entry, its recorded remote or None) for a push / PR write, local or github mode: the PR must be on its
+    canonical branch in its canonical worktree (made by state.sh worktree) and recorded in .guard.json. status.json's
+    own worktree / branch fields are never trusted on their own."""
     pr = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == pid), None)
     if pr is None:
-        die(f"NOT DONE: no {pid} in status.json")
+        die(f"{what}: no {pid} in status.json")
     branch, wt = canon(pr.get("repoPath") or "/", st.get("runId"), pid)
     if pr.get("branch") != branch or os.path.realpath(str(pr.get("worktree") or "")) != wt or not os.path.isdir(wt):
-        die(f"NOT DONE: {pid} must be on {branch} in its worktree {wt} (made by state.sh worktree)")
+        die(f"{what}: {pid} must be on {branch} in its worktree {wt} (made by state.sh worktree)")
     if git("-C", wt, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() != branch:
-        die(f"NOT DONE: {wt} is not on {branch}")
+        die(f"{what}: {wt} is not on {branch}")
     g = guard_rec(run)
     if (g.get("worktrees") or {}).get(pid) != wt:
-        die(f"NOT DONE: {pid}'s worktree is not recorded in .guard.json (run `state.sh worktree` for it)")
+        die(f"{what}: {pid}'s worktree is not recorded in .guard.json (run `state.sh worktree` for it)")
     if pid not in (g.get("remotes") or {}):
         # A worktree made before 0.3.0 has no recorded remote. A github-mode run is always a 0.3.0 run (the app
         # writes reviewMode only then), whose worktrees were recorded when made; this fallback records the
@@ -1388,7 +1429,7 @@ def github_pr(run, pid, stages=GITHUB_STAGES):
     rem = (g.get("remotes") or {}).get(pid)
     if rem and not (isinstance(rem, dict) and rem.get("url")):
         rem = None
-    return st, pr, rem
+    return pr, rem
 
 
 def save_pr(run, st, pr, msg):
