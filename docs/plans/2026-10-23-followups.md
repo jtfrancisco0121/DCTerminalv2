@@ -28,4 +28,6 @@ LOWs left for later:
 - `requests/` grows by two files per request and is never pruned.
 - A worktree that is "already gone" is recorded as gone without checking whether `git worktree list` still names it (prune happens later).
 - A copied-in `.env` (copyFiles) that the user edited in the worktree goes with the worktree (it is treated as a copy).
-- The orchestrator may still delete or reset a run worktree's files (`rm -rf <wt>`, `git clean`, `git reset --hard` in the worktree) and write files through interpreters (`python3 -c 'open(...)'`): the guard sees shell write targets only. Worth a rule that the orchestrator writes nothing in worktrees.
+- **Do first:** interpreter writes (`python3 -c 'open(".guard.json","w")…'`, `node -e`) are not seen by the guard; this is the root of a forged `.guard.json` (and with it forged worktree / remote records).
+- `git stash drop` / `stash clear` by a sub-agent drops the shared `refs/stash` (LOW).
+- (MEDIUM per the re-review) The orchestrator may still delete or reset a run worktree's files (`rm -rf <wt>`, `git clean`, `git reset --hard` in the worktree) and write files through interpreters (`python3 -c 'open(...)'`): the guard sees shell write targets only. Worth a rule that the orchestrator writes nothing in worktrees.
