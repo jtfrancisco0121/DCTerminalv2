@@ -18,10 +18,17 @@ export type PageAction =
   | { kind: "zoom-in" }
   | { kind: "zoom-out" }
   | { kind: "zoom-reset" }
+  | { kind: "reopen-closed"; tabId: string }
   | { kind: "select"; index: number };
+
+/** File > Recently Closed items are `reopen-closed:<tab id>`. */
+export const REOPEN_CLOSED_PREFIX = "reopen-closed:";
 
 /** The action for a `menu` event's item id, or null for an unknown one. */
 export function pageAction(id: unknown): PageAction | null {
+  if (typeof id === "string" && id.startsWith(REOPEN_CLOSED_PREFIX) && id.length > REOPEN_CLOSED_PREFIX.length) {
+    return { kind: "reopen-closed", tabId: id.slice(REOPEN_CLOSED_PREFIX.length) };
+  }
   switch (id) {
     case "new-tab":
     case "close-tab":

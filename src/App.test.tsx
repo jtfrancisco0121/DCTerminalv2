@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { AppStateSnapshot, TabSummary } from "./bridge";
 
@@ -269,6 +269,27 @@ describe("App tab cycling and font zoom", () => {
       fireEvent.keyDown(window, { key: "+", ctrlKey: true, shiftKey: true });
     });
     expect(setTerminalSettings).toHaveBeenCalledWith(expect.objectContaining({ fontSize: 15 }));
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
+});
+
+describe("App recently closed", () => {
+  it("lists the window's closed tabs on the start screen and reopens the chosen one", async () => {
+    const bridge = await import("./bridge");
+    const reopenClosedTab = bridge.reopenClosedTab as unknown as ReturnType<typeof vi.fn>;
+    state = {
+      windowId: "main",
+      activeTabId: null,
+      tabs: [],
+      closedTabs: [
+        { id: "tab_9", label: "Claude · nine", cwd: "/w/nine", kind: "claude" },
+        { id: "tab_8", label: "Shell · eight", cwd: "/w/eight", kind: "shell" },
+      ],
+    };
+    render(<App />);
+    const list = await screen.findByRole("region", { name: "Recently closed" });
+    fireEvent.click(within(list).getByRole("button", { name: "Reopen Shell · eight" }));
+    expect(reopenClosedTab).toHaveBeenLastCalledWith("main", "tab_8");
     state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
   });
 });

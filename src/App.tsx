@@ -241,8 +241,8 @@ function App() {
     else doClose(tabId);
   };
 
-  const reopen = () => {
-    reopenClosedTab(windowId).then(
+  const reopen = (tabId?: string) => {
+    reopenClosedTab(windowId, tabId ?? null).then(
       () => reload(),
       (err: unknown) => fail("Reopen tab", err),
     );
@@ -286,6 +286,9 @@ function App() {
         break;
       case "reopen-closed-tab":
         reopen();
+        break;
+      case "reopen-closed":
+        reopen(action.tabId);
         break;
       case "settings":
         setDialog("settings");
@@ -435,9 +438,19 @@ function App() {
               />
             )}
             {state.closedTabs.length > 0 && (
-              <button type="button" className="secondary-button" onClick={reopen}>
-                Reopen {state.closedTabs[0].label}
-              </button>
+              <section className="recently-closed" aria-label="Recently closed">
+                <h3>Recently closed</h3>
+                <ul>
+                  {state.closedTabs.slice(0, 10).map((closed) => (
+                    <li key={closed.id}>
+                      <button type="button" className="link-button" onClick={() => reopen(closed.id)}>
+                        Reopen {closed.label}
+                      </button>
+                      <span className="hint"> {closed.cwd}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
             )}
           </div>
         )}

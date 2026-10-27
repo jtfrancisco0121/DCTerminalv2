@@ -71,6 +71,19 @@ const REOPEN_WINDOW_ITEM: &str = "reopen-closed-window";
 #[cfg(target_os = "macos")]
 struct ReopenWindowItem(tauri::menu::MenuItem<tauri::Wry>);
 
+/// File > Recently Closed: a submenu of the focused window's closed tabs,
+/// rebuilt by [`refresh_recently_closed`]. The macOS menu is app-wide, so it
+/// is rebuilt for another window when that window gains focus.
+#[cfg(target_os = "macos")]
+struct RecentlyClosedMenu(tauri::menu::Submenu<tauri::Wry>);
+
+/// The menu id of a closed tab's item; the page maps it to a reopen.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const REOPEN_CLOSED_PREFIX: &str = "reopen-closed:";
+/// At most this many closed tabs are listed.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const RECENTLY_CLOSED_LISTED: usize = 10;
+
 /// Set while a real quit is in progress so closing windows does not archive them.
 static QUITTING: AtomicBool = AtomicBool::new(false);
 /// Set while the quit question is on screen, so a second quit does not stack another.
@@ -312,7 +325,20 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
             true,
             None::<&str>,
         )?;
+        let recently_closed = Submenu::with_items(
+            app,
+            "Recently Closed",
+            true,
+            &[&MenuItem::with_id(
+                app,
+                "recently-closed-none",
+                "No Recently Closed Tabs",
+                false,
+                None::<&str>,
+            )?],
+        )?;
         file_items.push(&separator);
+        file_items.push(&recently_closed);
         #[cfg(not(debug_assertions))]
         file_items.push(&import_dev);
         file_items.push(&new_window);
@@ -320,6 +346,7 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
         file_items.push(&close_window);
         let file = Submenu::with_items(app, "File", true, &file_items)?;
         app.manage(ReopenWindowItem(reopen_window));
+        app.manage(RecentlyClosedMenu(recently_closed));
         let settings =
             MenuItem::with_id(app, SETTINGS_ITEM, "Settings…", true, Some("CmdOrCtrl+,"))?;
         // Not the predefined Quit: that sends `terminate:`, which tao turns
@@ -391,6 +418,7 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
                     let _ = window.close();
                 }
             }
+            id if id.starts_with(REOPEN_CLOSED_PREFIX) => send_to_focused(app, id),
             id if id == SETTINGS_ITEM
                 || id == IMPORT_DEV_ITEM
                 || PAGE_ITEMS.iter().any(|(item, _, _)| *item == id)
@@ -469,7 +497,13 @@ pub fn handle_run_event(app: &AppHandle, event: tauri::RunEvent) {
             label,
             event: tauri::WindowEvent::Focused(focused),
             ..
-        } => crate::observe::attention::on_window_focus(app, &label, focused),
+        } => {
+            crate::observe::attention::on_window_focus(app, &label, focused);
+            // The app-wide menu lists the focused window's closed tabs.
+            if focused {
+                refresh_recently_closed(app, &label);
+            }
+        }
         tauri::RunEvent::Exit => shutdown_processes(app),
         tauri::RunEvent::ExitRequested { code, api, .. } => {
             match exit_step(code, host_os(), QUITTING.load(Ordering::SeqCst)) {
@@ -673,6 +707,100 @@ fn on_window_destroyed(app: &AppHandle, label: &str) {
     // An archive may drop the oldest closed window's tabs for good.
     crate::usage::remove_gone_status_lines(app);
     refresh_reopen_window_item(app);
+}
+
+/// "5 min ago", "2 h ago", "3 days ago" for a closed tab's time.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn ago(closed_at: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    let Ok(at) = chrono::DateTime::parse_from_rfc3339(closed_at) else {
+        return String::new();
+    };
+    let minutes = now.signed_duration_since(at).num_minutes().max(0);
+    match minutes {
+        0 => "just now".to_string(),
+        1..=59 => format!("{minutes} min ago"),
+        60..=1439 => format!("{} h ago", minutes / 60),
+        _ => format!("{} days ago", minutes / 1440),
+    }
+}
+
+/// The Recently Closed items of `window_id`: (menu id, title), newest first.
+/// Another window's closed tabs are never listed.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn recently_closed_items(
+    closed: &[crate::store::TabRecord],
+    window_id: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<(String, String)> {
+    closed
+        .iter()
+        .filter(|tab| crate::store::window_matches(&tab.window_id, window_id))
+        .take(RECENTLY_CLOSED_LISTED)
+        .map(|tab| {
+            let folder = std::path::Path::new(tab.cwd.trim_end_matches(['/', '\\']))
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| tab.cwd.clone());
+            let when = tab
+                .closed_at
+                .as_deref()
+                .map(|at| ago(at, now))
+                .filter(|text| !text.is_empty());
+            let title = match when {
+                Some(when) => format!("{} — {folder} ({when})", tab.label),
+                None => format!("{} — {folder}", tab.label),
+            };
+            (format!("{REOPEN_CLOSED_PREFIX}{}", tab.id), title)
+        })
+        .collect()
+}
+
+/// Rebuilds File > Recently Closed for `window_id`'s closed tabs. Takes the
+/// state lock briefly (never call it while holding that lock); the menu is
+/// changed on the main thread.
+pub(crate) fn refresh_recently_closed(app: &AppHandle, window_id: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(state) = app.try_state::<Mutex<StateStore>>() else {
+            return;
+        };
+        let items = match state.lock() {
+            Ok(state) => {
+                recently_closed_items(&state.data.closed_tabs, window_id, chrono::Utc::now())
+            }
+            Err(_) => return,
+        };
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            use tauri::menu::MenuItem;
+            let Some(menu) = handle.try_state::<RecentlyClosedMenu>() else {
+                return;
+            };
+            if let Ok(old) = menu.0.items() {
+                for item in old {
+                    let _ = menu.0.remove(&item);
+                }
+            }
+            if items.is_empty() {
+                if let Ok(none) = MenuItem::with_id(
+                    &handle,
+                    "recently-closed-none",
+                    "No Recently Closed Tabs",
+                    false,
+                    None::<&str>,
+                ) {
+                    let _ = menu.0.append(&none);
+                }
+                return;
+            }
+            for (id, title) in items {
+                if let Ok(item) = MenuItem::with_id(&handle, id, title, true, None::<&str>) {
+                    let _ = menu.0.append(&item);
+                }
+            }
+        });
+    }
+    let _ = (app, window_id);
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -1231,6 +1359,89 @@ mod tests {
             .iter()
             .all(|(_, _, shortcut)| shortcut.starts_with("CmdOrCtrl+")));
         assert!(!ids.contains(&SETTINGS_ITEM) && !ids.contains(&NEW_WINDOW_EVENT));
+    }
+
+    fn closed(id: &str, window: &str, label: &str, cwd: &str, at: &str) -> crate::store::TabRecord {
+        crate::store::TabRecord {
+            id: id.into(),
+            label: label.into(),
+            custom_label: false,
+            cwd: cwd.into(),
+            kind: crate::store::TabKind::Claude,
+            window_id: window.into(),
+            order: 0,
+            created_at: at.into(),
+            claude_session_id: None,
+            claude_config_dir: None,
+            closed_at: Some(at.into()),
+            launch: None,
+        }
+    }
+
+    #[test]
+    fn recently_closed_lists_the_focused_windows_tabs_newest_first() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-27T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let tabs = vec![
+            closed(
+                "tab_3",
+                "win-2",
+                "Claude · web",
+                "/w/web",
+                "2026-10-27T11:55:00Z",
+            ),
+            closed(
+                "tab_2",
+                "main",
+                "Shell · api",
+                "/w/api",
+                "2026-10-27T10:00:00Z",
+            ),
+            closed(
+                "tab_1",
+                "",
+                "Claude · app",
+                "/w/app/",
+                "2026-10-24T12:00:00Z",
+            ),
+        ];
+        // The main window (a blank window id is the main window).
+        let main = recently_closed_items(&tabs, "main", now);
+        assert_eq!(
+            main,
+            [
+                (
+                    "reopen-closed:tab_2".to_string(),
+                    "Shell · api — api (2 h ago)".to_string()
+                ),
+                (
+                    "reopen-closed:tab_1".to_string(),
+                    "Claude · app — app (3 days ago)".to_string()
+                ),
+            ]
+        );
+        // After focusing the other window the submenu lists its tabs only.
+        let other = recently_closed_items(&tabs, "win-2", now);
+        assert_eq!(
+            other,
+            [(
+                "reopen-closed:tab_3".to_string(),
+                "Claude · web — web (5 min ago)".to_string()
+            )]
+        );
+        assert!(recently_closed_items(&tabs, "win-9", now).is_empty());
+        // Capped.
+        let many: Vec<_> = (0..30)
+            .map(|n| closed(&format!("t{n}"), "main", "x", "/w", "2026-10-27T11:59:30Z"))
+            .collect();
+        assert_eq!(
+            recently_closed_items(&many, "main", now).len(),
+            RECENTLY_CLOSED_LISTED
+        );
+        assert!(recently_closed_items(&many, "main", now)[0]
+            .1
+            .ends_with("(just now)"));
     }
 
     #[test]

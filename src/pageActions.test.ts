@@ -23,6 +23,8 @@ describe("menu items", () => {
     expect(pageAction("zoom-in")).toEqual({ kind: "zoom-in" });
     expect(pageAction("zoom-out")).toEqual({ kind: "zoom-out" });
     expect(pageAction("zoom-reset")).toEqual({ kind: "zoom-reset" });
+    expect(pageAction("reopen-closed:tab_17")).toEqual({ kind: "reopen-closed", tabId: "tab_17" });
+    expect(pageAction("reopen-closed:")).toBeNull();
     expect(pageAction("quit")).toBeNull();
     expect(pageAction(7)).toBeNull();
   });

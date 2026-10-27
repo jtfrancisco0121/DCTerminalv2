@@ -179,6 +179,7 @@ pub fn close_tab(
         usage.forget_tab(&tab_id);
     }
     crate::observe::forget_tab(&app, &tab_id);
+    crate::windows::refresh_recently_closed(&app, window_id.as_deref().unwrap_or("main"));
     // The close may push the oldest closed tab off the list for good.
     crate::usage::remove_gone_status_lines(&app);
     crate::run::spawn_prune_launch_prompts(&app);
@@ -209,13 +210,18 @@ pub(crate) fn close_tab_then_kill(
 /// when a view shows it (a Claude tab can resume its session then).
 #[tauri::command]
 pub fn reopen_closed_tab(
+    app: tauri::AppHandle,
     window_id: Option<String>,
     tab_id: Option<String>,
     store: State<Mutex<StateStore>>,
 ) -> Result<TabSummary, String> {
-    let mut store = store.lock().map_err(|e| e.to_string())?;
-    store.bind_window(window_id.as_deref());
-    let tab = store.reopen_closed_id(tab_id.as_deref())?;
+    let tab = {
+        let mut store = store.lock().map_err(|e| e.to_string())?;
+        store.bind_window(window_id.as_deref());
+        store.reopen_closed_id(tab_id.as_deref())?
+    };
+    // The state lock is released: the menu is rebuilt from the store.
+    crate::windows::refresh_recently_closed(&app, window_id.as_deref().unwrap_or("main"));
     Ok(summary(&tab))
 }
 

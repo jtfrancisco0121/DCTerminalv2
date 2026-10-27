@@ -106,6 +106,8 @@ One backend thread, `observe/attention.rs`, started at app setup (never from a c
 
 - **Active runs** (status bar). `attention_summary()` returns `{needsYou, activeRuns}` from the detector's latest reading: the tabs that need you in every window (needs-you, or a run at an approval stop; it does not follow the notification switches, since it is information, not a notification) and the unfinished run tabs. The status bar shows it right of the account ("2 need you · 3 runs", hidden at 0), refreshed every few seconds, on window focus and on the `attention` event. Clicking it opens Active runs (`active_runs()`: window, tab, stage, waiting / no progress, PRs done of total; read at most every 3 s while open) with Go to tab (`focus_tab`, which may switch windows) and a link to the Runs view.
 
+- **Recently closed** (macOS File menu, and the start screen of an empty window). File › Recently Closed lists the focused window's closed tabs (label, folder, time, at most 10; item ids `reopen-closed:<tab id>`) and reopens the chosen one, not only the newest. The macOS menu is app-wide, so it is rebuilt when a tab closes or reopens and when another window gains focus.
+
 ## Import from the dev app (release builds)
 
 Debug builds keep their data in `<identifier>.dev`, release builds in `<identifier>`. On first launch (offered once; `dev-import.json` records it) and from File › "Import from dev app…" (hidden in debug builds) the built app imports the dev app's session, reading `.dev` only:
