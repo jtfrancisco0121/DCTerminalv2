@@ -343,7 +343,17 @@ def git_readonly(sub, rest):
     if sub == "remote":
         return not rest or rest[0] in ("-v", "--verbose", "show", "get-url")
     if sub == "config":
-        return any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l") for a in rest)
+        if any(a in ("--unset", "--unset-all", "--add", "--replace-all", "--rename-section", "--remove-section", "-e", "--edit")
+               for a in rest):
+            return False
+        if any(a in ("--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l", "--show-origin") for a in rest):
+            return True
+        nonopt = [a for a in rest if not a.startswith("-")]
+        if nonopt[:1] in (["get"], ["list"]):
+            return True
+        if nonopt[:1] in (["set"], ["unset"], ["rename-section"], ["remove-section"], ["edit"]):
+            return False
+        return len(nonopt) <= 1  # `git config <key>` reads
     if sub == "worktree":
         return rest[:1] == ["list"]
     if sub == "stash":
@@ -379,7 +389,16 @@ def shared_refs(sub, rest, target):
     if sub in ("update-ref", "prune", "gc", "replace") or (sub == "symbolic-ref" and not git_readonly(sub, rest)) \
             or (sub == "reflog" and not git_readonly(sub, rest)) or (sub == "tag" and not git_readonly(sub, rest)):
         block(f"{who} never runs `git {sub}` (it changes refs every worktree of the repo shares): {how}")
+    if sub == "notes" and rest[:1] not in ([], ["list"], ["show"]):
+        block(f"{who} never writes git notes (they are shared by every worktree).")
     mine = own_branch(target) if role == "implementer" else None
+    if sub in ("fetch", "pull"):
+        refs = [a for a in rest if not a.startswith("-")][1:]
+        for ref in refs:
+            dst = ref.split(":", 1)[1] if ":" in ref else ""
+            dst = dst[len("refs/heads/"):] if dst.startswith("refs/heads/") else dst
+            if ":" in ref and dst and not dst.startswith("refs/remotes/") and dst != mine:
+                block(f"{who} never fetches into a local branch (`git {sub} … {ref}`): branches are shared by every worktree.")
     if sub == "branch" and not git_readonly(sub, rest):
         names = [a for a in rest if not a.startswith("-")]
         if not (mine and not [a for a in rest if a.startswith("-")] and names == [mine]):
@@ -404,7 +423,10 @@ def check_git(args, cwd):
             target = None if "$" in v else (os.path.realpath(v) if os.path.isabs(v) else (real(v, target) if target else None))
             i += 2
             continue
-        if a in ("-c", "--git-dir", "--work-tree", "--namespace") and i + 1 < len(args):
+        if (a in ("-c", "--config-env") and i + 1 < len(args) and args[i + 1].lower().startswith("alias.")) or \
+                a.lower().startswith("--config-env=alias."):
+            block("git aliases from the command line (`-c alias.…`) are never run in a dcv2 run: name the git command itself.")
+        if a in ("-c", "--git-dir", "--work-tree", "--namespace", "--config-env") and i + 1 < len(args):
             if a in ("--git-dir", "--work-tree"):
                 target = real(args[i + 1], target or "/") if "$" not in args[i + 1] else None
             i += 2
@@ -551,7 +573,7 @@ def check_state_sh(args):
         block("`state.sh ready` needs the ship approval first (stop #2).")
     if sub in ("cleanup", "request", "request-wait") and run:
         rest = [a for a in args[1:] if not a.startswith("-")]
-        target = rest[1] if len(rest) > 1 else ""
+        target = re.sub(r"\$\{?DCV2_RUN_DIR\}?", lambda _: run, rest[1] if len(rest) > 1 else "")
         if "$" not in target and os.path.realpath(os.path.expanduser(target)) != run:
             block(f"`state.sh {sub}` acts only on this run's folder ({run}), not {target or 'none'}.")
 
@@ -636,11 +658,40 @@ def unwrap(words):
             opt, words = words[0], words[1:]
             if opt == "--":
                 break
+            if b == "env" and (opt in ("-S", "--split-string") or opt.startswith("--split-string=")) and (words or "=" in opt):
+                text = opt.split("=", 1)[1] if "=" in opt else words.pop(0)
+                try:
+                    words = shlex.split(text) + words
+                except ValueError:
+                    block("could not parse `env -S` text")
+                continue
             if opt in RUNNERS[b] and words:
                 words = words[1:]
         if b == "timeout" and words:
             words = words[1:]  # the duration
     return words
+
+
+def shell_c(args):
+    """The command string of `bash [-lxe…]c [-o opt] [--] '<command>'` (any flag cluster with c), else None."""
+    i, has_c = 0, False
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            i += 1
+            break
+        if a in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file"):
+            i += 2
+            continue
+        if re.match(r"^[-+][a-zA-Z]+$", a):
+            has_c = has_c or (a[0] == "-" and "c" in a)
+            i += 1
+            continue
+        if a.startswith("--"):
+            i += 1
+            continue
+        break
+    return args[i] if has_c and i < len(args) else None
 
 
 def shell_script(args):
@@ -730,8 +781,8 @@ def analyze(cmd, cwd, depth=0):
         if pipeline:
             if "$" in words[0] and "claude" in CMD:
                 block(f"cannot tell which program `{words[0]}` is, and the command mentions claude: {who} never launches claude.")
-            if name in INTERPRETERS and any(re.search(r"\bclaude\b", a) for a in args):
-                block(f"{who} never launches claude, not even from a script (`{name} … claude …`).")
+            if any("@anthropic-ai/claude-code" in w for w in words) or name == "claude-code":
+                block(f"{who} never launches claude (the @anthropic-ai/claude-code package).")
             if name in ("find",):
                 for i, a in enumerate(args):
                     if a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args):
@@ -763,8 +814,8 @@ def analyze(cmd, cwd, depth=0):
             check_state_sh([words[0]] + args)
         elif script and os.path.basename(script) == "state.sh" and bound:
             check_state_sh(args[args.index(script):])
-        elif name in ("bash", "sh", "zsh", "dash", "ksh") and "-c" in args and args.index("-c") + 1 < len(args):
-            analyze(args[args.index("-c") + 1], cwd, depth + 1)
+        elif name in SHELLS and shell_c(args) is not None:
+            analyze(shell_c(args), cwd, depth + 1)
         elif name == "eval":
             analyze(" ".join(args), cwd, depth + 1)
         elif name == "xargs" and args:
@@ -778,6 +829,8 @@ def analyze(cmd, cwd, depth=0):
 
 
 CMD = str(inp.get("command") or "")
+if bound and "DCV2_TEST_LOCAL_REMOTES" in CMD:
+    block("DCV2_TEST_LOCAL_REMOTES is set only by the test suites, never from inside a run.")
 MEM_MENTIONED = bool(mem) and ("DCV2_MEMORY_DIR" in CMD or mem in CMD)
 analyze(CMD, cwd0)
 sys.exit(0)

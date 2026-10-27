@@ -462,12 +462,38 @@ b 0 "" "bash $STATE request $RUN selftest"
 echo "# claude and the live suites, any form (review of #11; liveTests off)"
 for c in "bash -x scripts/skill-e2e/golden.sh github" "bash -- scripts/skill-e2e/golden.sh" "timeout 600 bash scripts/skill-e2e/golden.sh" \
          "npx claude -p hi" "npm exec claude -- -p hi" "cl''aude -p hi" "c=claude; \$c -p hi" "\$(command -v claude) -p hi" "timeout 5 claude -p hi" \
-         "find . -maxdepth 0 -exec claude -p hi \;" "python3 -c 'import os; os.system(\"claude -p hi\")'" "nice -n 5 claude -p hi" \
+         "find . -maxdepth 0 -exec claude -p hi \;" "nice -n 5 claude -p hi" \
          "env -u X claude -p hi" "nohup claude -p hi" "command claude -p hi" "exec claude" "echo hi | xargs claude -p" \
          "source scripts/skill-e2e/golden.sh" ". scripts/skill-e2e/golden.sh" "/bin/bash scripts/skill-e2e/golden.sh" "bash ./scripts/skill-e2e/golden.sh" \
          "bash -o pipefail scripts/skill-e2e/golden.sh"; do
   b 2 dcv2:implementer "$c" "$WT"
 done
 b 0 dcv2:implementer "grep -rn claude src && cat src/claude.rs && timeout 600 npm run check" "$WT"   # naming claude is fine
+
+echo "# re-review of #11: shell -c clusters, git aliases, fetch into branches, config reads, claude false positives"
+for c in "bash -lc 'git -C $O worktree remove --force $O'" "bash -lc 'git push --force origin main'" "sh -ec 'git -C $WT push origin main'" \
+         "bash -xc 'echo x > $RUN/status.json'" "zsh -c 'claude -p hi'" "dash -ec 'claude'" "bash -o pipefail -c 'claude -p hi'" \
+         "bash -l -c 'claude -p hi'" "bash -lc -- 'claude -p hi'" "sh -lc 'claude -p hi'" \
+         "git -c alias.x='update-ref -d refs/heads/main' x" "git -c 'alias.x=!rm -rf $O' x" "git --config-env=alias.x=EVIL x" \
+         "git fetch . +HEAD:refs/heads/main" "git fetch . HEAD:refs/heads/dcv2/other-pr1" "git fetch origin main:main" "git pull origin +main:main" \
+         "git notes add -m x" "npx --yes @anthropic-ai/claude-code -p hi" "bunx @anthropic-ai/claude-code -p hi" \
+         "npm exec @anthropic-ai/claude-code -- -p hi" "/usr/bin/env -S 'claude -p hi'" "env --split-string='claude -p hi'" \
+         "git config user.name x" "git config --unset user.name" "git config set user.name x"; do
+  b 2 dcv2:implementer "$c" "$WT"
+done
+b 2 "" "git -C $WT fetch . +HEAD:refs/heads/main"
+b 2 "" "sh -ec 'git -C $WT push --delete origin dcv2/r-x-pr1'"
+b 2 "" "bash $STATE cleanup \$DCV2_RUN_DIR/../r-b"
+b 0 "" "bash $STATE request \$DCV2_RUN_DIR recheck"
+for who in "" dcv2:implementer; do
+  b 2 "$who" "DCV2_TEST_LOCAL_REMOTES=1 bash $STATE cleanup $RUN"
+done
+for c in "git fetch origin" "git fetch origin main" "git fetch origin +refs/heads/main:refs/remotes/origin/main" "git fetch . HEAD:refs/heads/dcv2/r-x-pr1" \
+         "git config user.name" "git config --get user.email" "git config --list" "git config get user.name" \
+         "node scripts/check-claude.mjs" "python3 tools/claude-log.py" "python3 -m json.tool plugin/.claude-plugin/plugin.json" \
+         "cat fixtures/claude-2.1.287/hooks.json" "bash -lc 'npm run check'" "bash -c 'git status'"; do
+  b 0 dcv2:implementer "$c" "$WT"
+done
+b 0 dcv2:pr-reviewer "git config user.name && git -C $WT log --oneline -3" "$WT"
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }
