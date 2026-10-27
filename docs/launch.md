@@ -55,10 +55,11 @@ The guard blocks Edit/Write into `DCV2_MEMORY_DIR` (agents use `memory.sh write`
 - `gates/<PR id>.yml` (A1): written by the PR Reviewer step through `state.sh gate`: `gate: PASS|CONCERNS|FAIL|WAIVED`, `reason: <one line>`, `updated: <UTC>`, `review: <review file>`. A PR is green in the app only when the gate is PASS or WAIVED **and** the app's own check re-run (R1) passes.
 - `report.md` (R10): written at `done`/`failed`: planned vs built per PR, review rounds, retries, gate per PR, check results.
 - `memory-update.md`: what the end-of-run memory update changed (or "no topic touched").
+- **AFK runs (0.5.0, plan 2026-10-27).** `requests/<id>.json` (written by `state.sh request <run> recheck|cleanup|tickets|selftest`, `{"schema":1,"id","kind","at"}`, id `<YYYYMMDDTHHMMSSZ>[-n]-<kind>`) asks the app for one of its fixed actions; the app answers in `requests/<id>.result.json` (`{"schema":1,"id","kind","state":"running|done|refused|ignored","ok","message","at"}`) and an `app:` line in `log.md`; `state.sh request-wait <run> <id> [--timeout <s>]` waits for it. `app-cleanup.json` is the app's record of merged-PR cleanups. `state.sh cleanup <run>` (done / failed only) removes the run's clean worktrees, `git branch -d`, and merged PRs' remote branches. repos.json repos may carry `"liveTests": true`. Guard: the orchestrator runs no raw `git worktree …` / changing `git branch` / `git push --delete`; `requests/` and `app-cleanup.json` are guard-protected; a pipeline sub-agent never runs `claude`, and `scripts/skill-e2e/golden.sh` / `bmad_spike.sh` only as the Implementer or PR Reviewer in its worktree of a `liveTests` repo. Details: run-folder.md, "AFK runs".
 
 ## What the app reads
 
-`status.json`, `log.md`, `gates/*.yml`, `report.md`, `memory.sh status` output, the session JSONL under `<account dir>/projects/...` (A2, P3), and hook-forwarder events.
+`status.json`, `log.md`, `gates/*.yml`, `report.md`, `memory.sh status` output, the session JSONL under `<account dir>/projects/...` (A2, P3), hook-forwarder events, and (0.5.0) `requests/*.json`, of which it uses only the kind.
 
 ## App side as built (P3a)
 
