@@ -124,10 +124,13 @@ pub fn new_tab(
 
 #[tauri::command]
 pub fn select_tab(
+    app: tauri::AppHandle,
     window_id: Option<String>,
     tab_id: String,
     store: State<Mutex<StateStore>>,
 ) -> Result<(), String> {
+    // The person chose a tab: a pending notification landing is moot.
+    crate::observe::attention::clear_landing(&app);
     let mut store = store.lock().map_err(|e| e.to_string())?;
     store.bind_window(window_id.as_deref());
     store.set_active_tab(&tab_id)

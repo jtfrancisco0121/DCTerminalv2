@@ -289,11 +289,23 @@ fn focus_live_run_tab(app: &AppHandle, run_dir: &Path) -> Result<Option<TabSumma
     let Some(tab) = live_run_tab(&tabs, run_dir, |id| live.contains(id)).cloned() else {
         return Ok(None);
     };
-    {
+    focus_tab(app, &tab.id)
+}
+
+/// Selects the tab in its window and brings that window to the front. The
+/// one path every "go to this tab" takes: a resumed run's live tab, the
+/// in-app Go to tab button, and the landing after a notification.
+/// `None` when the tab no longer exists.
+pub fn focus_tab(app: &AppHandle, tab_id: &str) -> Result<Option<TabSummary>, String> {
+    let tab = {
         let state = app.state::<Mutex<StateStore>>();
         let mut state = state.lock().map_err(|e| e.to_string())?;
+        let Some(tab) = state.tab_by_id(tab_id).cloned() else {
+            return Ok(None);
+        };
         state.set_active_tab(&tab.id)?;
-    }
+        tab
+    };
     let label = crate::store::window_label(&tab.window_id).to_string();
     if let Some(window) = app.get_webview_window(&label) {
         let _ = window.unminimize();

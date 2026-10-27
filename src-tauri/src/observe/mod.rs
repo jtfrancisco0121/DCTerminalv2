@@ -10,6 +10,7 @@
 //! Nothing here writes under the account's config folder.
 
 // The `dcv2-hook` binary's code; the app uses its constants and its tests.
+pub mod attention;
 #[allow(dead_code)]
 pub mod forward;
 pub mod hooks;
@@ -216,52 +217,65 @@ pub async fn observe_tab(app: AppHandle, tab_id: String) -> Result<TabObservatio
             let settings = settings.lock().map_err(|e| e.to_string())?;
             settings.run().watchdog_minutes
         };
-        let observe_state = app.state::<ObserveState>();
-        let hook = observe_state.hooks.as_ref().and_then(|h| h.state(&tab_id));
-        let installed = observe_state
-            .hooks
-            .as_ref()
-            .is_some_and(|h| h.has_tab(&tab_id));
-        let run_dir = tab
-            .launch
-            .as_ref()
-            .and_then(|l| l.run_dir.as_deref())
-            .and_then(|d| crate::run::checked_run_dir(&data_dir(&app), d).ok());
-        // A `/clear` (or a resume that forks) moves Claude to a new session;
-        // SessionStart's session id says which log to follow.
-        let session = hook
-            .as_ref()
-            .and_then(|h| h.session_id.clone())
-            .or_else(|| tab.claude_session_id.clone())
-            .unwrap_or_default();
-        let mut trackers = observe_state.trackers.lock().map_err(|e| e.to_string())?;
-        let fresh = trackers
-            .get(&tab_id)
-            .is_none_or(|(id, t)| id != &session || t.session_file.is_none());
-        if fresh {
-            let file = tab.claude_config_dir.as_deref().and_then(|config| {
-                crate::claude_session_log::find_session_log(Path::new(config), &session)
-            });
-            let tracker = file
-                .map(transcript::SessionTracker::for_file)
-                .unwrap_or_default();
-            trackers.insert(tab_id.clone(), (session, tracker));
-        }
-        let (_, tracker) = trackers.get_mut(&tab_id).expect("inserted");
-        let mut out = observe(
-            tracker,
-            run_dir.as_deref(),
-            hook.as_ref(),
-            minutes,
-            std::time::SystemTime::now(),
-        );
-        out.hooks_active = hook.is_some();
-        out.hooks_installed = installed;
-        out.hook = hook;
-        Ok(out)
+        observe_tab_now(&app, &tab, minutes)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Everything `observe_tab` shows for `tab`, read now (blocking: it follows
+/// the session log). No store lock is held by the caller. The attention
+/// detector (`attention.rs`) calls this too, so the panel and the detector
+/// share one verdict and one set of trackers.
+pub fn observe_tab_now(
+    app: &AppHandle,
+    tab: &crate::store::TabRecord,
+    minutes: u32,
+) -> Result<TabObservation, String> {
+    let tab_id = tab.id.clone();
+    let observe_state = app.state::<ObserveState>();
+    let hook = observe_state.hooks.as_ref().and_then(|h| h.state(&tab_id));
+    let installed = observe_state
+        .hooks
+        .as_ref()
+        .is_some_and(|h| h.has_tab(&tab_id));
+    let run_dir = tab
+        .launch
+        .as_ref()
+        .and_then(|l| l.run_dir.as_deref())
+        .and_then(|d| crate::run::checked_run_dir(&data_dir(app), d).ok());
+    // A `/clear` (or a resume that forks) moves Claude to a new session;
+    // SessionStart's session id says which log to follow.
+    let session = hook
+        .as_ref()
+        .and_then(|h| h.session_id.clone())
+        .or_else(|| tab.claude_session_id.clone())
+        .unwrap_or_default();
+    let mut trackers = observe_state.trackers.lock().map_err(|e| e.to_string())?;
+    let fresh = trackers
+        .get(&tab_id)
+        .is_none_or(|(id, t)| id != &session || t.session_file.is_none());
+    if fresh {
+        let file = tab.claude_config_dir.as_deref().and_then(|config| {
+            crate::claude_session_log::find_session_log(Path::new(config), &session)
+        });
+        let tracker = file
+            .map(transcript::SessionTracker::for_file)
+            .unwrap_or_default();
+        trackers.insert(tab_id.clone(), (session, tracker));
+    }
+    let (_, tracker) = trackers.get_mut(&tab_id).expect("inserted");
+    let mut out = observe(
+        tracker,
+        run_dir.as_deref(),
+        hook.as_ref(),
+        minutes,
+        std::time::SystemTime::now(),
+    );
+    out.hooks_active = hook.is_some();
+    out.hooks_installed = installed;
+    out.hook = hook;
+    Ok(out)
 }
 
 /// A closed tab's token and session tracker go.

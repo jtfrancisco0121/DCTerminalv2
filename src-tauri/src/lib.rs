@@ -123,6 +123,7 @@ pub fn run() {
                 hooks.set_session_sink(observe::session_sink(app.handle()));
             }
             app.manage(observe_state);
+            app.manage(observe::attention::AttentionState::default());
             for note in store::take_recovery_notes() {
                 eprintln!("DCTerminalv2: {note}");
             }
@@ -136,6 +137,7 @@ pub fn run() {
             run::spawn_prune_launch_prompts(app.handle());
             clickup::commands::spawn_auto_post_sweep(app.handle());
             run::afk::spawn_afk_sweeps(app.handle());
+            observe::attention::spawn(app.handle(), Box::new(observe::attention::RunLogNotifier));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -417,7 +417,18 @@ pub fn request_new_window(app: &AppHandle) {
 }
 
 pub fn handle_run_event(app: &AppHandle, event: tauri::RunEvent) {
+    // A dock click is an app activation: it lands in a notified tab before
+    // the existing reopen handling below.
+    #[cfg(target_os = "macos")]
+    if matches!(event, tauri::RunEvent::Reopen { .. }) {
+        crate::observe::attention::on_reopen(app);
+    }
     match event {
+        tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::Focused(focused),
+            ..
+        } => crate::observe::attention::on_window_focus(app, &label, focused),
         tauri::RunEvent::Exit => shutdown_processes(app),
         tauri::RunEvent::ExitRequested { code, api, .. } => {
             match exit_step(code, host_os(), QUITTING.load(Ordering::SeqCst)) {

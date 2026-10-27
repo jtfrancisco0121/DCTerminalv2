@@ -53,7 +53,7 @@ describe("ObserveView", () => {
     expect(screen.queryByTestId("run-waiting")).toBeNull();
     rerender(
       <ObserveView
-        seen={{ ...seen, waiting: { minutes: 14, threshold: 10 } }}
+        seen={{ ...seen, waiting: { minutes: 14, threshold: 10, sinceMs: 1 } }}
         nudging={false}
         onNudge={vi.fn()}
         onResume={vi.fn()}

@@ -41,6 +41,9 @@ pub struct Waiting {
     /// Whole minutes since the wait began.
     pub minutes: u64,
     pub threshold: u32,
+    /// Unix milliseconds when the wait began: the id of the episode, so one
+    /// reminder is sent per episode.
+    pub since_ms: u64,
 }
 
 /// "Waiting for you for N min": status.json's `waitingFor` is set (counted
@@ -61,6 +64,10 @@ pub fn waiting(now: SystemTime, input: &WatchInput, threshold_minutes: u32) -> O
     (waited >= Duration::from_secs(u64::from(threshold_minutes) * 60)).then_some(Waiting {
         minutes: waited.as_secs() / 60,
         threshold: threshold_minutes,
+        since_ms: since
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
     })
 }
 
@@ -239,7 +246,8 @@ mod tests {
             waiting(t0 + min(10), &asking, 10),
             Some(Waiting {
                 minutes: 10,
-                threshold: 10
+                threshold: 10,
+                since_ms: 1_000_000_000
             }),
             "at the threshold"
         );

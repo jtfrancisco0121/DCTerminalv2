@@ -48,7 +48,7 @@ export type SubagentInfo = {
 
 export type Stall = { minutes: number; threshold: number };
 
-export type Waiting = { minutes: number; threshold: number };
+export type Waiting = { minutes: number; threshold: number; sinceMs: number };
 
 export type TabObservation = {
   hook: TabHookState | null;
