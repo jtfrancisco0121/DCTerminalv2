@@ -3,7 +3,7 @@ import "@xterm/xterm/css/xterm.css";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ptyResize, terminalResumeId, type TabSummary } from "../bridge";
 import { detectPlatform, isAppShortcut, isShiftEnter, SHIFT_ENTER_SEQUENCE, shiftEnterSendsNewline } from "../terminal/keys";
-import { formatDroppedPaths } from "../terminal/drop";
+import { dropPointToCss, formatDroppedPaths } from "../terminal/drop";
 import { firstOpenResumes, folderProblem } from "../terminal/openPlan";
 import { TerminalSearchBar } from "./TerminalSearchBar";
 import { TerminalExitStrip, lastFiftyLines, lastOutputLine } from "./TerminalExitStrip";
@@ -136,7 +136,9 @@ export function TerminalView({ tab, fontSize, autoFocus = true }: TerminalViewPr
     let unlisten: (() => void) | undefined;
     let disposed = false;
     const over = (position: { x: number; y: number }) => {
-      const target = document.elementFromPoint(position.x, position.y);
+      // Tauri reports physical pixels; the hit test wants CSS pixels.
+      const point = dropPointToCss(position, window.devicePixelRatio);
+      const target = document.elementFromPoint(point.x, point.y);
       return !!target && !!viewRef.current?.contains(target);
     };
     try {
