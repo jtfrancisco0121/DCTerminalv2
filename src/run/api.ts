@@ -16,10 +16,12 @@ export type Repo = {
   setup?: string | null;
   /** Git-ignored files copied from the main checkout into run worktrees. */
   copyFiles?: string[];
+  /** Live Claude tests allowed in this repo's checks (repos.json `liveTests`). */
+  liveTests?: boolean;
 };
 
 /** One repo's worktree setup (app settings, keyed by the repo's real path). */
-export type RepoSetup = { setup: string | null; copyFiles: string[] };
+export type RepoSetup = { setup: string | null; copyFiles: string[]; liveTests?: boolean };
 
 /** `github`: draft PRs + one review comment per round; `local`: the quiet local loop. */
 export type ReviewMode = "github" | "local";
@@ -151,6 +153,20 @@ export type RunView = {
   shipApproved?: boolean;
   /** BMAD planning; missing or null when the run has it off (or is older). */
   bmad?: BmadView | null;
+  /** What the app cleaned up for merged PRs (app-cleanup.json). */
+  cleanup?: CleanupRecord[];
+};
+
+/** One PR's merged-run cleanup (outcome `cleaned`, `kept` or `untouched`). */
+export type CleanupRecord = {
+  prId: string;
+  prUrl: string;
+  outcome: string;
+  note?: string;
+  worktree: string;
+  branch: string;
+  remote: string;
+  at: string;
 };
 
 export type WorktreeItem = {

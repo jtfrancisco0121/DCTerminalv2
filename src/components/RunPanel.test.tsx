@@ -78,6 +78,28 @@ describe("RunPanelView", () => {
     expect(screen.queryByTestId("bmad-docs")).toBeNull();
   });
 
+  it("still links the BMAD documents on a failed run", () => {
+    renderPanel({
+      stage: "failed",
+      bmad: { mode: "on", version: null, size: "Large", reasons: [], applied: true, checkResult: "pass", documents: ["bmad/output/r-1/spec-a/spec-a.md"] },
+    });
+    expect(within(screen.getByTestId("bmad-docs")).getByText("Spec")).toBeTruthy();
+  });
+
+  it("shows what the app cleaned up for merged PRs", () => {
+    renderPanel({
+      cleanup: [
+        { prId: "PR1", prUrl: "https://github.com/o/r/pull/1", outcome: "cleaned", note: "", worktree: "worktree removed", branch: "branch dcv2/r-1-pr1 deleted", remote: "remote branch deleted", at: "t" },
+        { prId: "PR2", prUrl: "https://github.com/o/r/pull/2", outcome: "untouched", note: "untouched: closed without merging", worktree: "", branch: "", remote: "", at: "t" },
+      ],
+    });
+    expect(screen.getByTestId("cleanup-PR1").textContent).toBe("PR1 worktree removed; branch dcv2/r-1-pr1 deleted; remote branch deleted");
+    expect(screen.getByTestId("cleanup-PR2").textContent).toBe("PR2 untouched: closed without merging");
+    cleanup();
+    renderPanel({ cleanup: [] });
+    expect(screen.queryByTestId("cleanup")).toBeNull();
+  });
+
   it("shows nothing about BMAD for an old run or one with it off", () => {
     renderPanel();
     expect(screen.queryByTestId("bmad")).toBeNull();
