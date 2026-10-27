@@ -390,6 +390,11 @@ for who in "" dcv2:implementer; do                                  # requests/ 
   b 2 "$who" "mkdir -p $RUN/requests/a"
   b 2 "$who" "cp /dev/null $RUN/app-cleanup.json"
 done
+for who in "" dcv2:implementer; do                                  # the app's run record
+  w 2 "$who" "$RUN/app-usage.json"
+  b 2 "$who" "echo '{}' > $RUN/app-usage.json"
+  b 2 "$who" "cp /dev/null $RUN/app-usage.json"
+done
 b 0 "" "cat $RUN/requests/20261027T100000Z-recheck.result.json"
 
 echo "# BMAD runtime: path forms are normalised"

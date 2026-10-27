@@ -347,7 +347,7 @@ is "  file kept" "$RUN/writeback.json" app '"edited"'
 expect 0 "writeback --force" bash "$STATE" writeback "$RUN" --force
 expect 1 "put refuses writeback.json" bash "$STATE" put "$RUN/writeback.json" <<<'{}'
 expect 1 "put refuses requests/" bash "$STATE" put "$RUN/requests/20261027T100000Z-recheck.result.json" <<<'{"state": "done"}'
-for f in tickets.json meta.json writeback-posted.json tickets-pulls.json tickets-update.md app-checks.json app-cleanup.json; do
+for f in tickets.json meta.json writeback-posted.json tickets-pulls.json tickets-update.md app-checks.json app-cleanup.json app-usage.json; do
   expect 1 "put refuses the app's $f" bash "$STATE" put "$RUN/$f" <<<'{}'
 done
 

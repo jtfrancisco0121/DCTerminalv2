@@ -83,7 +83,7 @@ CHECK_RESULTS = ["not-run", "pass", "fail", "none", "error"]
 POST_APPROVAL = ("building", "ship-approval", "shipping", "done")
 SHIPPED = ("opened", "pushed", "local-only")
 # Run files only the app writes (docs/run-folder.md); `put` refuses them.
-APP_FILES = ("tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json",
+APP_FILES = ("tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json", "app-usage.json",
              "app-cleanup.json")
 REQUEST_KINDS = ("recheck", "cleanup", "tickets", "selftest")
 REQUEST_ID = re.compile(r"^\d{8}T\d{6}Z(?:-\d+)?-(" + "|".join(REQUEST_KINDS) + r")$")
