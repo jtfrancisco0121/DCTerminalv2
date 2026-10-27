@@ -84,16 +84,11 @@ fn inspect_folder(path: &Path) -> Result<PathBuf, FolderError> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn scratch_dir() -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let path = crate::test_support::test_root().join(format!("dctv2_paths_{nanos}"));
-        fs::create_dir_all(&path).unwrap();
-        path
+        // Unique per call: two tests in the same clock tick must not share a
+        // folder (one of them makes its folder unreadable).
+        crate::test_support::temp_path("dctv2_paths")
     }
 
     #[test]
