@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 STATE="$ROOT/plugin/scripts/state.sh"
 d="$(mktemp -d)"; d="$(cd "$d" && pwd -P)"
 trap 'rm -rf "$d"' EXIT
-unset DCV2_TEST_MODE DCV2_RUN_DIR || true
+unset DCV2_TEST_MODE DCV2_RUN_DIR DCV2_MEMORY_DIR || true
 
 fails=0
 ok()   { echo "ok   $*"; }
@@ -351,6 +351,28 @@ for f in tickets.json meta.json writeback-posted.json tickets-pulls.json tickets
   expect 1 "put refuses the app's $f" bash "$STATE" put "$RUN/$f" <<<'{}'
 done
 
+echo "# put writes only <DCV2_RUN_DIR>/status.json (CAP-1, CAP-2)"
+PH="$d/home"; mkdir -p "$PH/.claude" "$d/appdata" "$d/runs/r-other"
+for tgt in "$RUN/Repos.json" "$RUN/Requests/x.json" "$PH/.claude/settings.json" \
+           "$d/appdata/adopted-runs.json" "$d/runs/r-other/status.json" "$RUN/notes.json" "$RUN/sub/status.json"; do
+  rm -f "$tgt"
+  expect 1 "put refuses ${tgt#$d/}" env HOME="$PH" bash "$STATE" put "$tgt" <<<'{"schema": 1}'
+  [[ ! -e "$tgt" ]] && ok "  nothing written" || bad "  $tgt was written"
+done
+{ cp "$RUN/status.json" "$d/status.before" 2>/dev/null || : > "$d/status.before"; }
+for v in Writeback.json .Guard.json Meta.JSON; do   # protected names in another case: refused (and not removed: the volume may ignore case)
+  expect 1 "put refuses $v" bash "$STATE" put "$RUN/$v" <<<'{"schema": 1}'
+done
+for v in Status.json STATUS.JSON; do     # the same file on a case-insensitive volume: refused, whatever the volume
+  expect 1 "put refuses $v (not the exact name)" bash "$STATE" put "$RUN/$v" <<<'{"schema": 1}'
+  cmp -s "$RUN/status.json" "$d/status.before" && ok "  status.json unchanged" || bad "  status.json changed by $v"
+done
+expect 1 "put without DCV2_RUN_DIR refused" env -u DCV2_RUN_DIR bash "$STATE" put "$RUN/status.json" <<<'{"schema": 1}'
+{ [[ -f "$RUN/status.json" ]] && cmp -s "$RUN/status.json" "$d/status.before" || { [[ ! -f "$RUN/status.json" && ! -s "$d/status.before" ]]; }; } && ok "  status.json unchanged" || bad "  status.json changed"
+expect 1 "put of another run's status.json refused" bash "$STATE" put "$d/runs/r-other/status.json" <<<'{"schema": 1}'
+ln -s "$RUN" "$d/runlink"
+expect 0 "put through a symlinked run path is still the run's status.json" bash "$STATE" put "$d/runlink/status.json" < "$d/status.before"
+
 echo "# done gate, report (R10)"
 bash "$STATE" log "$RUN" <<<'PR2 implementer retried: no JSON block' >/dev/null
 echo "Updated topics/sync.md (checked-at abc1234)." > "$RUN/memory-update.md"
@@ -377,10 +399,10 @@ import json, sys
 print(json.dumps({"schema": 1, "runId": "r-f", "stage": "failed", "waitingFor": None, "folder": "/x", "plan": None, "prs": [],
                   "ship": None, "writeback": None, "error": "planner failed twice: usage limit"}))
 PY2
-expect 0 "failed run" bash "$STATE" put "$RUN2/status.json" < "$d/failed.json"
+expect 0 "failed run" env DCV2_RUN_DIR="$RUN2" bash "$STATE" put "$RUN2/status.json" < "$d/failed.json"
 grep -q "planner failed twice" "$RUN2/report.md" && ok "  report.md at failed, with the error" || bad "  report: $(cat "$RUN2/report.md" 2>/dev/null)"
 rm -f "$RUN2/report.md"; mkdir "$RUN2/report.md"
-expect 0 "a report that cannot be written does not fail the status write (LOW 9)" bash "$STATE" put "$RUN2/status.json" < "$d/failed.json"
+expect 0 "a report that cannot be written does not fail the status write (LOW 9)" env DCV2_RUN_DIR="$RUN2" bash "$STATE" put "$RUN2/status.json" < "$d/failed.json"
 has "  says so" "report.md not written"
 
 echo "# BMAD mode: size, init, check, and the plan-approval refusal (run folder path has a space)"

@@ -19,7 +19,7 @@ git -C "$R" worktree add -q -b dcv2/other-pr1 "$d/ws/r-worktrees/dcv2-other-pr1"
 touch "$d/fake/request.md" "$d/fake/status.json"                                             # fake run folder
 ln -s "$R" "$WT/link"                                                                        # symlink out of the worktree
 export DCV2_RUN_DIR="$RUN"
-unset DCV2_TEST_MODE || true
+unset DCV2_TEST_MODE DCV2_MEMORY_DIR || true
 
 fails=0
 payload() { # <agent> <tool> <key> <value> [cwd]

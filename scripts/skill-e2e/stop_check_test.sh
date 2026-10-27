@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HOOK="$ROOT/plugin/scripts/stop-check.sh"
 d="$(mktemp -d)"; d="$(cd "$d" && pwd -P)"
 trap 'rm -rf "$d"' EXIT
-unset DCV2_STOP_HOOKS DCV2_TEST_MODE || true
+unset DCV2_STOP_HOOKS DCV2_TEST_MODE DCV2_RUN_DIR DCV2_MEMORY_DIR || true
 
 RUN="$d/runs/r-s"; A="$d/ws/a"; B="$d/ws/b"
 WT1="$d/ws/a-worktrees/dcv2-r-s-pr1"; WT2="$d/ws/b-worktrees/dcv2-r-s-pr2"

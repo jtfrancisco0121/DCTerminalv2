@@ -7,7 +7,7 @@
 #                                             print folder= / repos= / tickets= / reposJson= / testmode= /
 #                                             maxImplementers= / memory= / reviewMode= / bmad= / node=
 #   state.sh testmode                         print the test mode, from the env DCV2_TEST_MODE only
-#   state.sh put <run>/status.json  < json    validate the whole document, then write it
+#   state.sh put <run>/status.json  < json    validate the whole document, then write it (only $DCV2_RUN_DIR/status.json)
 #   state.sh log <run> [<stage>]    < text    append "<UTC time> <stage> <text>" to log.md (text on stdin;
 #                                             stage defaults to status.json's)
 #   state.sh now                              print the UTC time (ISO-8601)
@@ -115,6 +115,22 @@ def load_json(path):
             return json.load(f)
     except (OSError, ValueError):
         return None
+
+
+def norm(p):
+    """A path's identity for every allow / deny decision: the real path, casefolded (the default macOS volume ignores case)."""
+    return os.path.realpath(p).casefold() if p else ""
+
+
+def same_path(a, b):
+    return bool(a) and bool(b) and norm(a) == norm(b)
+
+
+def under(p, root):
+    if not p or not root:
+        return False
+    p, root = norm(p), norm(root)
+    return p == root or p.startswith(root.rstrip(os.sep) + os.sep)
 
 
 def atomic_write(dest, text):
@@ -605,21 +621,23 @@ def load_status(run):
 
 def cmd_put(dest):
     name = os.path.basename(dest)
-    if name in ("writeback.json", ".guard.json"):
+    low = name.casefold()
+    if low in ("writeback.json", ".guard.json"):
         die(f"NOT WRITTEN: {name} is written only by its own state.sh command")
-    if name in APP_FILES:
+    if low in [a.casefold() for a in APP_FILES]:
         die(f"NOT WRITTEN: {name} is written only by the app")
-    if os.path.basename(os.path.dirname(os.path.abspath(dest))) == "requests":
+    if os.path.basename(os.path.dirname(os.path.abspath(dest))).casefold() == "requests":
         die("NOT WRITTEN: requests/ is written only by `state.sh request` and the app")
+    run_env = os.environ.get("DCV2_RUN_DIR", "")
+    if not run_env:
+        die("NOT WRITTEN: put writes the run's status.json, and DCV2_RUN_DIR (the run folder, set when claude is launched) is not set")
+    if name != "status.json" or not same_path(dest, os.path.join(run_env, "status.json")):
+        die(f"NOT WRITTEN: put writes only <DCV2_RUN_DIR>/status.json ({os.path.join(run_env, 'status.json')}), not {dest}")
     text = sys.stdin.read()
     try:
         doc = json.loads(text)
     except ValueError as e:
         die(f"NOT WRITTEN: invalid JSON for {dest}: {e}")
-    if name != "status.json":
-        atomic_write(dest, json.dumps(doc, indent=2) + "\n")
-        print(f"wrote {dest}")
-        return
     if not isinstance(doc, dict):
         die(f"NOT WRITTEN: {dest} must be a JSON object")
     run = os.path.dirname(os.path.abspath(dest))

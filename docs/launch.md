@@ -42,6 +42,8 @@ All commands read `DCV2_MEMORY_DIR` (or `--root <dir>`), print nothing secret, e
 | `memory.sh write <repo id or "workspace:<id>"> <relative file> < content` | The only write path for agents: enforces size caps, secret scan, pinned lines (`<!-- pinned -->` lines cannot be removed or changed by an automatic write), topic header. Rejects with a reason. |
 | `memory.sh scan < text` | The secret scanner alone: `clean` (exit 0), or `looks like a secret on line <n> (<kind>)` (exit 1), never the value. `state.sh` runs it on every GitHub post (fails closed when it cannot run). |
 
+`state.sh put <path> < json` is the one way the skill writes status.json: the path must be `$DCV2_RUN_DIR/status.json` (exact name, same real path); any other path, name or an unset `DCV2_RUN_DIR` is refused with nothing written.
+
 The guard blocks Edit/Write into `DCV2_MEMORY_DIR` (agents use `memory.sh write`). The app's own memory editor (P3) writes files directly, as the user.
 
 ## Run folder additions (P2b)

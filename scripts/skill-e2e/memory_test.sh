@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 MEM="$ROOT/plugin/scripts/memory.sh"
 d="$(mktemp -d)"; d="$(cd "$d" && pwd -P)"
 trap 'rm -rf "$d"' EXIT
-unset DCV2_RUN_DIR DCV2_TEST_MODE || true
+unset DCV2_RUN_DIR DCV2_MEMORY_DIR DCV2_TEST_MODE || true
 export DCV2_MEMORY_DIR="$d/mem"
 
 fails=0

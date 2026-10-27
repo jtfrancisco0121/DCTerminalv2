@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 STATE="$ROOT/plugin/scripts/state.sh"
 d="$(mktemp -d)"; d="$(cd "$d" && pwd -P)"
 trap 'rm -rf "$d"' EXIT
-unset DCV2_TEST_MODE DCV2_MEMORY_DIR || true
+unset DCV2_TEST_MODE DCV2_MEMORY_DIR DCV2_RUN_DIR || true
 export DCV2_TEST_LOCAL_REMOTES=1   # the remote is a local bare repo (state.sh accepts local folders only in the suites)
 
 fails=0
