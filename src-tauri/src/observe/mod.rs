@@ -262,12 +262,26 @@ pub async fn observe_tab(app: AppHandle, tab_id: String) -> Result<TabObservatio
 
 /// A closed tab's token and session tracker go.
 pub fn forget_tab(app: &AppHandle, tab_id: &str) {
+    forget_tabs(app, &[tab_id.to_string()]);
+}
+
+/// The tabs' hook tokens, hook states and session trackers go (a closed
+/// tab, or every tab of a destroyed window). Takes no store lock.
+pub fn forget_tabs(app: &AppHandle, tab_ids: &[String]) {
     if let Some(state) = app.try_state::<ObserveState>() {
-        if let Some(hooks) = &state.hooks {
-            hooks.forget_tab(tab_id);
-        }
-        if let Ok(mut trackers) = state.trackers.lock() {
-            trackers.remove(tab_id);
+        state.forget(tab_ids);
+    }
+}
+
+impl ObserveState {
+    fn forget(&self, tab_ids: &[String]) {
+        for tab_id in tab_ids {
+            if let Some(hooks) = &self.hooks {
+                hooks.forget_tab(tab_id);
+            }
+            if let Ok(mut trackers) = self.trackers.lock() {
+                trackers.remove(tab_id);
+            }
         }
     }
 }
@@ -442,6 +456,35 @@ mod tests {
     use crate::test_support::TempDir;
     use serde_json::json;
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn forgetting_tabs_drops_their_token_state_and_tracker() {
+        let state = ObserveState::start();
+        let hooks = state.hooks.as_ref().expect("listener");
+        let mut tokens = Vec::new();
+        for tab in ["a", "b", "keep"] {
+            let token = hooks.register_tab(tab);
+            assert_eq!(
+                hooks.accept(tab, &token, br#"{"hook_event_name":"UserPromptSubmit"}"#),
+                204
+            );
+            state
+                .trackers
+                .lock()
+                .unwrap()
+                .insert(tab.to_string(), ("s".into(), Default::default()));
+            tokens.push(token);
+        }
+        state.forget(&["a".to_string(), "b".to_string()]);
+        for tab in ["a", "b"] {
+            assert!(!hooks.has_tab(tab));
+            assert!(hooks.state(tab).is_none());
+            assert!(!state.trackers.lock().unwrap().contains_key(tab));
+        }
+        assert_eq!(hooks.accept("a", &tokens[0], b"{}"), 403);
+        assert!(hooks.has_tab("keep") && hooks.state("keep").is_some());
+        assert!(state.trackers.lock().unwrap().contains_key("keep"));
+    }
 
     #[test]
     fn a_new_session_is_saved_under_the_tabs_account_folder() {
