@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   closeTab,
   getAppState,
@@ -248,6 +249,44 @@ function App() {
     );
   };
 
+  const [confirmCloseMany, setConfirmCloseMany] = useState<string[] | null>(null);
+
+  const closeNow = async (ids: string[]) => {
+    setConfirmCloseMany(null);
+    for (const id of ids) {
+      try {
+        const next = await closeTab(windowId, id);
+        destroyTerminal(id);
+        dropLivePty(id);
+        setState(next);
+      } catch (err) {
+        fail("Close tab", err);
+        break;
+      }
+    }
+  };
+
+  // Close others / Close to the right: one question when any terminal runs.
+  const requestCloseMany = (ids: string[]) => {
+    if (ids.some((id) => ptyRunning(id))) setConfirmCloseMany(ids);
+    else void closeNow(ids);
+  };
+
+  const duplicate = (tabId: string) => {
+    const source = state?.tabs.find((tab) => tab.id === tabId);
+    if (!source) return;
+    newTab(windowId, source.cwd, source.kind).then(
+      () => reload(),
+      (err: unknown) => fail("Duplicate tab", err),
+    );
+  };
+
+  const reveal = (tabId: string) => {
+    const source = state?.tabs.find((tab) => tab.id === tabId);
+    if (!source) return;
+    revealItemInDir(source.cwd).catch((err: unknown) => fail("Reveal folder", err));
+  };
+
   const move = (tabId: string, index: number) => {
     moveTab(windowId, tabId, index).then(setState, (err: unknown) => fail("Move tab", err));
   };
@@ -393,6 +432,9 @@ function App() {
           onClose={requestClose}
           onRename={rename}
           onMove={move}
+          onDuplicate={duplicate}
+          onReveal={reveal}
+          onCloseMany={requestCloseMany}
           onNew={() => {
             setPlainTab(false);
             setDialog("new-tab");
@@ -559,6 +601,27 @@ function App() {
           onClose={() => setDialog(null)}
           onStarted={(run) => void started(run)}
         />
+      )}
+      {confirmCloseMany && (
+        <Dialog
+          title="Close tabs?"
+          onClose={() => setConfirmCloseMany(null)}
+          footer={
+            <>
+              <button type="button" className="secondary-button" onClick={() => setConfirmCloseMany(null)}>
+                Cancel
+              </button>
+              <button type="button" className="danger-button" onClick={() => void closeNow(confirmCloseMany)}>
+                Close {confirmCloseMany.length} tabs
+              </button>
+            </>
+          }
+        >
+          <p>
+            {confirmCloseMany.filter((id) => ptyRunning(id)).length} of these tabs still run a terminal. They will be
+            stopped. You can reopen the tabs later.
+          </p>
+        </Dialog>
       )}
       {confirmClose && (
         <Dialog

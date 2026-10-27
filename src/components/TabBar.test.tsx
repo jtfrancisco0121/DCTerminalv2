@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { dropIndex, markerX } from "../tabDrag";
 import type { TabSummary } from "../bridge";
-import { TabBar } from "./TabBar";
+import { TabBar, tabMenuItems } from "./TabBar";
 
 const tab = (id: string, label: string, kind: TabSummary["kind"] = "claude"): TabSummary => ({
   id,
@@ -183,5 +183,102 @@ describe("TabBar drag to reorder", () => {
     expect(markerX(boxes, 1)).toBe(100);
     expect(markerX(boxes, 2)).toBe(200);
     expect(markerX([], 0)).toBeNull();
+  });
+});
+
+describe("TabBar context menu and middle-click", () => {
+  function menuBar() {
+    const props = {
+      tabs: [tab("a", "A"), tab("b", "B"), tab("c", "C")],
+      activeTabId: "a",
+      exited: new Set<string>(),
+      onSelect: vi.fn(),
+      onClose: vi.fn(),
+      onRename: vi.fn(),
+      onNew: vi.fn(),
+      onMove: vi.fn(),
+      onDuplicate: vi.fn(),
+      onReveal: vi.fn(),
+      onCloseMany: vi.fn(),
+    };
+    render(<TabBar {...props} />);
+    return props;
+  }
+  const open = (name: string) => fireEvent.contextMenu(screen.getByRole("tab", { name }));
+  const item = (name: string) => screen.getByRole("menuitem", { name });
+
+  it("right-click lists the actions and each one works", () => {
+    const props = menuBar();
+    open("B");
+    expect(screen.getAllByRole("menuitem").map((el) => el.textContent)).toEqual([
+      "Rename",
+      "Duplicate in same folder",
+      "Reveal folder",
+      "Move left",
+      "Move right",
+      "Split right",
+      "Split down",
+      "Close others",
+      "Close to the right",
+    ]);
+    fireEvent.click(item("Duplicate in same folder"));
+    expect(props.onDuplicate).toHaveBeenCalledWith("b");
+    open("B");
+    fireEvent.click(item("Reveal folder"));
+    expect(props.onReveal).toHaveBeenCalledWith("b");
+    open("B");
+    fireEvent.click(item("Move left"));
+    expect(props.onMove).toHaveBeenLastCalledWith("b", 0);
+    open("B");
+    fireEvent.click(item("Move right"));
+    expect(props.onMove).toHaveBeenLastCalledWith("b", 2);
+    open("B");
+    fireEvent.click(item("Close others"));
+    expect(props.onCloseMany).toHaveBeenLastCalledWith(["a", "c"]);
+    open("B");
+    fireEvent.click(item("Close to the right"));
+    expect(props.onCloseMany).toHaveBeenLastCalledWith(["c"]);
+    open("B");
+    fireEvent.click(item("Rename"));
+    expect(screen.getByRole("textbox", { name: "Tab name" })).toBeTruthy();
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("Move left / right are disabled at the ends, and the split items until splitting exists", () => {
+    menuBar();
+    open("A");
+    expect((item("Move left") as HTMLButtonElement).disabled).toBe(true);
+    expect((item("Move right") as HTMLButtonElement).disabled).toBe(false);
+    expect((item("Split right") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    open("C");
+    expect((item("Move right") as HTMLButtonElement).disabled).toBe(true);
+    expect((item("Close to the right") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("opens from the keyboard with Shift+F10 or the context-menu key", () => {
+    menuBar();
+    fireEvent.keyDown(screen.getByRole("tab", { name: "B" }), { key: "F10", shiftKey: true });
+    expect(screen.getByRole("menu")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(screen.getByRole("tab", { name: "C" }), { key: "ContextMenu" });
+    expect(screen.getByRole("menu")).toBeTruthy();
+  });
+
+  it("middle-click closes the tab through the same close handler as the × button", () => {
+    const props = menuBar();
+    fireEvent(screen.getByRole("tab", { name: "B" }), new MouseEvent("auxclick", { bubbles: true, button: 1 }));
+    expect(props.onClose).toHaveBeenCalledWith("b");
+    fireEvent(screen.getByRole("tab", { name: "C" }), new MouseEvent("auxclick", { bubbles: true, button: 2 }));
+    expect(props.onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("a lone tab has nothing to close or move", () => {
+    const items = tabMenuItems([tab("a", "A")], "a", { onRename: () => {}, onMove: () => {}, onCloseMany: () => {} });
+    const by = (id: string) => items.find((i) => i.id === id)!;
+    expect(by("close-others").disabled).toBe(true);
+    expect(by("close-right").disabled).toBe(true);
+    expect(by("move-left").disabled && by("move-right").disabled).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { AppStateSnapshot, TabSummary } from "./bridge";
 
@@ -91,7 +91,7 @@ vi.mock("./run/observe", async () => {
   };
 });
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
-vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn(async () => {}) }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn(async () => {}), revealItemInDir: vi.fn(async () => {}) }));
 
 const runTab: TabSummary = { ...tab, id: "tab_run", label: "Eagle-Eye · ws", cwd: "/w/ws", runDir: "/d/runs/r-1", role: "eagle-eye" };
 const startRun = vi.fn(async () => {
@@ -136,6 +136,12 @@ vi.mock("./run/api", () => ({
   readRunFile: vi.fn(async () => ""),
   memoryStatus: vi.fn(async () => ({ available: false, problem: "memory.sh is not in this plugin yet" })),
   readMemoryFile: vi.fn(async () => ""),
+}));
+
+const running = new Set<string>();
+vi.mock("./terminal/live", async (original) => ({
+  ...(await original<typeof import("./terminal/live")>()),
+  ptyRunning: (id: string) => running.has(id),
 }));
 
 const { default: App } = await import("./App");
@@ -290,6 +296,49 @@ describe("App recently closed", () => {
     const list = await screen.findByRole("region", { name: "Recently closed" });
     fireEvent.click(within(list).getByRole("button", { name: "Reopen Shell · eight" }));
     expect(reopenClosedTab).toHaveBeenLastCalledWith("main", "tab_8");
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
+});
+
+describe("App tab context menu", () => {
+  const three: TabSummary[] = [
+    { ...tab, id: "t_a", label: "A" },
+    { ...tab, id: "t_b", label: "B" },
+    { ...tab, id: "t_c", label: "C" },
+  ];
+
+  it("Close others closes at once when nothing runs and asks once when a terminal runs", async () => {
+    state = { windowId: "main", activeTabId: "t_a", tabs: three, closedTabs: [] };
+    closeTab.mockClear();
+    render(<App />);
+    fireEvent.contextMenu(await screen.findByRole("tab", { name: "A" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Close others" }));
+    await waitFor(() => expect(closeTab).toHaveBeenCalledTimes(2));
+    expect(closeTab.mock.calls.map((call) => (call as unknown[])[1])).toEqual(["t_b", "t_c"]);
+    cleanup();
+
+    state = { windowId: "main", activeTabId: "t_a", tabs: three, closedTabs: [] };
+    closeTab.mockClear();
+    running.add("t_c");
+    render(<App />);
+    fireEvent.contextMenu(await screen.findByRole("tab", { name: "A" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Close to the right" }));
+    expect(await screen.findByText("Close tabs?")).toBeTruthy();
+    expect(closeTab).not.toHaveBeenCalled();
+    expect(screen.getByText(/1 of these tabs still run a terminal/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close 2 tabs" }));
+    await waitFor(() => expect(closeTab).toHaveBeenCalledTimes(2));
+    running.clear();
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
+
+  it("Duplicate opens a tab of the same kind in the same folder", async () => {
+    state = { windowId: "main", activeTabId: "t_a", tabs: [{ ...tab, id: "t_a", label: "A", cwd: "/w/dup", kind: "shell" }], closedTabs: [] };
+    newTab.mockClear();
+    render(<App />);
+    fireEvent.contextMenu(await screen.findByRole("tab", { name: "A" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate in same folder" }));
+    await waitFor(() => expect(newTab).toHaveBeenCalledWith("main", "/w/dup", "shell"));
     state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
   });
 });

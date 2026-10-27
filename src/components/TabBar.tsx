@@ -1,6 +1,8 @@
 import { useRef, useState } from "react";
 import type { TabSummary } from "../bridge";
 import { DRAG_THRESHOLD_PX, dropIndex, markerX } from "../tabDrag";
+import { TabContextMenu } from "./TabContextMenu";
+import type { ContextMenuItem } from "./TerminalContextMenu";
 
 type Props = {
   tabs: TabSummary[];
@@ -17,7 +19,79 @@ type Props = {
   onActivityClick?: (tabId: string) => void;
   /** A tab was dragged to this place among the window's tabs. */
   onMove?: (tabId: string, index: number) => void;
+  /** Context menu: a new tab of the same kind in the same folder. */
+  onDuplicate?: (tabId: string) => void;
+  /** Context menu: show the tab's folder in the file manager. */
+  onReveal?: (tabId: string) => void;
+  /** Context menu: close these tabs (the owner asks first when a terminal runs). */
+  onCloseMany?: (tabIds: string[]) => void;
+  /** Context menu: split the tab (absent: the items are disabled). */
+  onSplit?: (tabId: string, direction: "right" | "down") => void;
 };
+
+type MenuHandlers = Pick<Props, "onMove" | "onDuplicate" | "onReveal" | "onCloseMany" | "onSplit"> & {
+  onRename: () => void;
+};
+
+/**
+ * The items of a tab's context menu. Move left / right are the keyboard
+ * alternative to dragging and are disabled at the ends; Close others and
+ * Close to the right are disabled when no tab would close.
+ */
+export function tabMenuItems(tabs: readonly TabSummary[], tabId: string, handlers: MenuHandlers): ContextMenuItem[] {
+  const at = tabs.findIndex((tab) => tab.id === tabId);
+  const others = tabs.filter((tab) => tab.id !== tabId).map((tab) => tab.id);
+  const right = at < 0 ? [] : tabs.slice(at + 1).map((tab) => tab.id);
+  return [
+    { id: "rename", label: "Rename", onSelect: handlers.onRename },
+    {
+      id: "duplicate",
+      label: "Duplicate in same folder",
+      disabled: !handlers.onDuplicate,
+      onSelect: () => handlers.onDuplicate?.(tabId),
+    },
+    { id: "reveal", label: "Reveal folder", disabled: !handlers.onReveal, onSelect: () => handlers.onReveal?.(tabId) },
+    {
+      id: "move-left",
+      label: "Move left",
+      divider: true,
+      disabled: at <= 0 || !handlers.onMove,
+      onSelect: () => handlers.onMove?.(tabId, at - 1),
+    },
+    {
+      id: "move-right",
+      label: "Move right",
+      disabled: at < 0 || at >= tabs.length - 1 || !handlers.onMove,
+      onSelect: () => handlers.onMove?.(tabId, at + 1),
+    },
+    {
+      id: "split-right",
+      label: "Split right",
+      divider: true,
+      disabled: !handlers.onSplit,
+      onSelect: () => handlers.onSplit?.(tabId, "right"),
+    },
+    {
+      id: "split-down",
+      label: "Split down",
+      disabled: !handlers.onSplit,
+      onSelect: () => handlers.onSplit?.(tabId, "down"),
+    },
+    {
+      id: "close-others",
+      label: "Close others",
+      divider: true,
+      disabled: others.length === 0 || !handlers.onCloseMany,
+      onSelect: () => handlers.onCloseMany?.(others),
+    },
+    {
+      id: "close-right",
+      label: "Close to the right",
+      disabled: right.length === 0 || !handlers.onCloseMany,
+      onSelect: () => handlers.onCloseMany?.(right),
+    },
+  ];
+}
 
 /** A drag in progress: the tab, how far the pointer moved, and where it would land. */
 type Drag = { id: string; startX: number; dx: number; active: boolean; index: number; marker: number | null; cancelled: boolean };
@@ -30,9 +104,10 @@ export function activityTitle(activity: string): string {
 }
 
 /** The window's tabs: click to show, double-click to rename, × to close, + for a new one. */
-export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename, onNew, activity, onActivityClick, onMove }: Props) {
+export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename, onNew, activity, onActivityClick, onMove, onDuplicate, onReveal, onCloseMany, onSplit }: Props) {
   const [editing, setEditing] = useState<{ id: string; value: string } | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
+  const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const bar = useRef<HTMLDivElement>(null);
   const tabEls = useRef(new Map<string, HTMLDivElement>());
   // The click that ends a drag must not select the tab.
@@ -114,6 +189,10 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
             key={tab.id}
             className={classes}
             title={tab.cwd}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setMenu({ tabId: tab.id, x: event.clientX, y: event.clientY });
+            }}
             style={dragging ? { transform: `translateX(${drag.dx}px)` } : undefined}
             ref={(el) => {
               if (el) tabEls.current.set(tab.id, el);
@@ -139,7 +218,24 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
                 role="tab"
                 aria-selected={active}
                 className="tab-label"
-                onPointerDown={(event) => beginDrag(event, tab.id)}
+                onPointerDown={(event) => {
+                  // Middle-click closes the tab (on release); no autoscroll.
+                  if (event.button === 1) event.preventDefault();
+                  beginDrag(event, tab.id);
+                }}
+                onAuxClick={(event) => {
+                  if (event.button !== 1) return;
+                  event.preventDefault();
+                  onClose(tab.id);
+                }}
+                onKeyDown={(event) => {
+                  // The keyboard way to the context menu.
+                  if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+                    event.preventDefault();
+                    const box = event.currentTarget.getBoundingClientRect();
+                    setMenu({ tabId: tab.id, x: box.left, y: box.bottom });
+                  }
+                }}
                 onClick={() => {
                   if (swallowClick.current) return;
                   onSelect(tab.id);
@@ -179,6 +275,24 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
           </div>
         );
       })}
+      {menu && (
+        <TabContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={tabMenuItems(tabs, menu.tabId, {
+            onMove,
+            onDuplicate,
+            onReveal,
+            onCloseMany,
+            onSplit,
+            onRename: () => {
+              const target = tabs.find((item) => item.id === menu.tabId);
+              if (target) setEditing({ id: target.id, value: target.label });
+            },
+          })}
+        />
+      )}
       {drag?.active && drag.marker != null && (
         <div className="tab-insert-marker" style={{ left: drag.marker }} data-testid="tab-insert-marker" aria-hidden />
       )}
