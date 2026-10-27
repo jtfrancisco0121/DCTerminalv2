@@ -10,6 +10,7 @@ const api = {
   post: vi.fn<(runDir: string, version: string, requests: PostRequest[]) => Promise<PostReply>>(),
   retry: vi.fn<(runDir: string, ticketId: string) => Promise<unknown>>(),
   consent: vi.fn<(runDir: string, sha: string) => Promise<void>>(),
+  now: vi.fn<(runDir: string) => Promise<void>>(),
 };
 vi.mock("./api", () => ({
   clickupRunState: (d: string) => api.state(d),
@@ -18,6 +19,7 @@ vi.mock("./api", () => ({
   clickupPostWriteback: (d: string, v: string, r: PostRequest[]) => api.post(d, v, r),
   clickupAutoPostRetry: (d: string, id: string) => api.retry(d, id),
   clickupAutoPostConsent: (d: string, sha: string) => api.consent(d, sha),
+  clickupAutoPostNow: (d: string) => api.now(d),
 }));
 
 import { ClickUpRunSection, draftDone, tellClaude } from "./ClickUpRunSection";
@@ -328,5 +330,51 @@ describe("a comment that looks like it holds a secret", () => {
       expect(within(screen.getByTestId("draft-86b")).getByLabelText("I checked this comment: post it anyway.")).toBeTruthy(),
     );
     expect(screen.getByTestId("post-outcomes").textContent).toContain("looks like it contains a webhook URL");
+  });
+});
+
+describe("an automatic attempt that failed before anything was recorded", () => {
+  const waitingView = (waiting: NonNullable<NonNullable<RunClickUp["autoPost"]>["waiting"]>): RunClickUp => ({
+    ...base,
+    drafts: [draft("86a1")],
+    autoPost: { enabled: true, running: false, problem: null, record: null, offer: null, waiting },
+  });
+
+  it("says why, when the next try is, and Try now makes one attempt", async () => {
+    api.state.mockResolvedValue(waitingView({ reason: "The posted record could not be saved: disk full.", nextAt: "2026-10-27T14:32:00Z", noToken: false }));
+    api.now.mockResolvedValue();
+    render(<ClickUpRunSection runDir="/runs/r-1" stage="shipping" updatedAt="t" />);
+    const notice = await screen.findByRole("status");
+    expect(notice.textContent).toContain("Not posted yet: The posted record could not be saved: disk full.");
+    expect(notice.textContent).toMatch(/Next try at \d{2}:\d{2}\./);
+    fireEvent.click(within(notice).getByText("Try now"));
+    await waitFor(() => expect(api.now).toHaveBeenCalledWith("/runs/r-1"));
+    await waitFor(() => expect(api.state.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it("with no token there is no time: it waits for Settings", async () => {
+    api.state.mockResolvedValue(waitingView({ reason: "no ClickUp token for this account", nextAt: null, noToken: true }));
+    render(<ClickUpRunSection runDir="/r" stage="shipping" updatedAt="t" />);
+    const notice = await screen.findByTestId("backoff-notice");
+    expect(notice.textContent).toContain(
+      "Not posted yet: no ClickUp token for this account. Next try after you set one in Settings.",
+    );
+    expect(notice.textContent).not.toMatch(/\d{2}:\d{2}/);
+  });
+
+  it("hides the notice while an attempt runs", async () => {
+    api.state.mockResolvedValue({
+      ...waitingView({ reason: "x", nextAt: "2026-10-27T14:32:00Z", noToken: false }),
+      autoPost: {
+        enabled: true,
+        running: true,
+        problem: null,
+        record: null,
+        waiting: { reason: "x", nextAt: "2026-10-27T14:32:00Z", noToken: false },
+      },
+    });
+    render(<ClickUpRunSection runDir="/r" stage="shipping" updatedAt="t" />);
+    await screen.findByText("Posting the comments…");
+    expect(screen.queryByTestId("backoff-notice")).toBeNull();
   });
 });

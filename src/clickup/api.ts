@@ -86,6 +86,8 @@ export type AutoPostView = {
   adopted?: boolean;
   /** Waiting for the user's click: what would go, and what never goes on its own. */
   offer?: ConsentOffer | null;
+  /** The last automatic attempt failed before anything was recorded; the next one waits. */
+  waiting?: { reason: string; nextAt: string | null; noToken: boolean } | null;
 };
 export type ConsentOffer = {
   /** The writeback.json version shown; the click covers exactly this. */
@@ -134,5 +136,7 @@ export const clickupAutoPostRetry = (runDir: string, ticketId: string) =>
 /** The one click: records consent for the writeback.json version shown, then the app posts. */
 export const clickupAutoPostConsent = (runDir: string, writebackSha: string) =>
   invoke<void>("clickup_auto_post_consent", { runDir, writebackSha });
+/** "Try now": ends the run's wait and makes one attempt (consent and secret rules unchanged). */
+export const clickupAutoPostNow = (runDir: string) => invoke<void>("clickup_auto_post_now", { runDir });
 export const clickupSetAutoPost = (accountId: string, on: boolean) =>
   invoke<void>("clickup_set_auto_post", { accountId, on });

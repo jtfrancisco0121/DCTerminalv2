@@ -6,6 +6,7 @@
 //! no reply carries it.
 
 use super::autopost;
+use super::backoff::Backoff;
 use super::intake::{self, ChangedTicket, IntakePreview, IntakeRef};
 use super::trust;
 use super::writeback::{self, PostOutcome, PostRequest, PostedDraft};
@@ -16,7 +17,7 @@ use crate::store::{SettingsStore, StateStore};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use tauri::{AppHandle, Manager};
 
 async fn blocking<T: Send + 'static>(
@@ -25,6 +26,21 @@ async fn blocking<T: Send + 'static>(
     tauri::async_runtime::spawn_blocking(work)
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// The auto-post waits (process memory only; see `backoff`).
+fn backoff() -> MutexGuard<'static, Backoff> {
+    static WAITS: OnceLock<Mutex<Backoff>> = OnceLock::new();
+    WAITS
+        .get_or_init(|| Mutex::new(Backoff::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn now_text() -> String {
@@ -101,13 +117,23 @@ pub async fn clickup_set_token(
 ) -> Result<(), String> {
     known_account(&app, &account_id)?;
     let token = ClickUpToken::parse(&token)?;
-    blocking(move || KeychainStore.set(&account_id, &token)).await
+    blocking(move || {
+        let saved = KeychainStore.set(&account_id, &token);
+        backoff().clear_all();
+        saved
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn clickup_clear_token(app: AppHandle, account_id: String) -> Result<(), String> {
     known_account(&app, &account_id)?;
-    blocking(move || KeychainStore.clear(&account_id)).await
+    blocking(move || {
+        let cleared = KeychainStore.clear(&account_id);
+        backoff().clear_all();
+        cleared
+    })
+    .await
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -241,6 +267,28 @@ pub struct AutoPostView {
     /// Waiting for the user's click: the comments that would go, and those that never
     /// go on their own. Nothing is sent until the consent command records the click.
     pub offer: Option<autopost::ConsentOffer>,
+    /// The last automatic attempt failed before anything was recorded; the next one waits.
+    pub waiting: Option<WaitingView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitingView {
+    pub reason: String,
+    /// UTC time of the next automatic try; `None`: not before a token is set.
+    pub next_at: Option<String>,
+    pub no_token: bool,
+}
+
+fn waiting_view(dir: &Path) -> Option<WaitingView> {
+    backoff().waiting(dir).map(|wait| WaitingView {
+        reason: wait.reason.clone(),
+        next_at: wait.next_at.and_then(|secs| {
+            chrono::DateTime::from_timestamp(i64::try_from(secs).ok()?, 0)
+                .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        }),
+        no_token: wait.no_token,
+    })
 }
 
 const UNTRUSTED: &str = "This run's tickets.json was not written by this app's Start, so the app checks and posts nothing for it.";
@@ -415,18 +463,33 @@ fn auto_post_view(
             );
         }
     }
+    if view.enabled {
+        view.waiting = waiting_view(dir);
+    }
     view
 }
 
 /// Posts in the background under the run's lock; `false` when busy.
 fn spawn_auto_post(key: trust::Key, data: PathBuf, dir: PathBuf, account_id: String) -> bool {
+    // A failed attempt waits (1, 2, 4 ... minutes), and no token waits for Settings.
+    if !backoff().allowed(&dir, now_secs()) {
+        return false;
+    }
     let Ok(lock) = RunLock::take(&dir) else {
         return false;
     };
     std::thread::spawn(move || {
         let _lock = lock;
-        if let Err(err) = run_auto_post(&key, &data, &dir, &account_id) {
-            eprintln!("DCTerminalv2: ClickUp auto-post: {err}");
+        match run_auto_post(&key, &data, &dir, &account_id) {
+            Ok(()) => backoff().succeeded(&dir),
+            Err(err) => {
+                eprintln!("DCTerminalv2: ClickUp auto-post: {err}");
+                if err == ClickUpError::NoToken.to_string() {
+                    backoff().missing_token(&dir, &account_id, "no ClickUp token for this account");
+                } else {
+                    backoff().failed(&dir, &err, now_secs());
+                }
+            }
         }
     });
     true
@@ -442,6 +505,10 @@ fn run_auto_post(
         return Ok(());
     }
     // The run's own account's token, from the signed record (never the window's).
+    // An account known to have none is not looked up again until Settings change.
+    if backoff().account_has_no_token(account_id) {
+        return Err(ClickUpError::NoToken.to_string());
+    }
     let token = token_of(&KeychainStore, account_id)?;
     let transport = UreqTransport::new();
     autopost::auto_post(&ClickUp::new(&transport, &token), key, data, dir, &now_text).map(|_| ())
@@ -500,6 +567,33 @@ pub async fn clickup_auto_post_consent(
             return Err("Auto-post is off for this account (Settings › ClickUp).".into());
         }
         autopost::give_consent(&key, &data, &dir, &writeback_sha, &now_text)?;
+        backoff().clear_run(&dir, &run.account_id);
+        spawn_auto_post(key, data, dir, run.account_id);
+        Ok(())
+    })
+    .await
+}
+
+/// "Try now": ends this run's wait and makes one attempt through the same path
+/// as the sweep (the consent and the secret rules are unchanged).
+#[tauri::command]
+pub async fn clickup_auto_post_now(app: AppHandle, run_dir: String) -> Result<(), String> {
+    blocking(move || {
+        let own = data_dir(&app);
+        let dir = checked_run_dir(&own, &run_dir)?;
+        let data = crate::run::trust_data_dir(&own, &dir);
+        if data != own {
+            return Err(
+                "This run came from the dev app: its comments are not posted automatically here."
+                    .into(),
+            );
+        }
+        let key = trust::install_key()?;
+        let run = trusted(&key, &data, &dir)?;
+        if !auto_post_on(&app, &run.account_id) {
+            return Err("Auto-post is off for this account (Settings › ClickUp).".into());
+        }
+        backoff().clear_run(&dir, &run.account_id);
         spawn_auto_post(key, data, dir, run.account_id);
         Ok(())
     })
@@ -510,7 +604,9 @@ pub async fn clickup_auto_post_consent(
 pub fn clickup_set_auto_post(app: AppHandle, account_id: String, on: bool) -> Result<(), String> {
     let settings = app.state::<Mutex<SettingsStore>>();
     let mut settings = settings.lock().map_err(|e| e.to_string())?;
-    settings.set_auto_post(&account_id, on)
+    let saved = settings.set_auto_post(&account_id, on);
+    backoff().clear_all();
+    saved
 }
 
 /// How often the app looks for runs whose comments are due.
@@ -526,7 +622,7 @@ pub fn spawn_auto_post_sweep(app: &AppHandle) {
         let data = data_dir(&app);
         for run in crate::run::folder::list_runs(&data) {
             let dir = PathBuf::from(&run.run_dir);
-            if !autopost::may_be_due(&dir) {
+            if !autopost::may_be_due(&dir) || !backoff().allowed(&dir, now_secs()) {
                 continue;
             }
             let Ok(key) = trust::install_key() else {
@@ -923,6 +1019,30 @@ mod tests {
         // No key from the keychain: the panel says so, nothing is trusted.
         let view = run_clickup(&Err("no keychain".into()), &data, &run);
         assert_eq!(view.tickets_problem.as_deref(), Some("no keychain"));
+    }
+
+    #[test]
+    fn the_panel_reads_the_wait_and_settings_clear_it() {
+        let run = Path::new("/runs/r-waiting-view-test");
+        assert!(waiting_view(run).is_none());
+        backoff().failed(run, "disk full", 1_700_000_000);
+        let wait = waiting_view(run).unwrap();
+        assert_eq!(wait.reason, "disk full");
+        assert_eq!(
+            wait.next_at.as_deref(),
+            Some("2023-11-14T22:14:20Z"),
+            "one minute on"
+        );
+        assert!(!wait.no_token);
+        assert!(!backoff().allowed(run, 1_700_000_059));
+        backoff().missing_token(run, "work", "no ClickUp token for this account");
+        let wait = waiting_view(run).unwrap();
+        assert!(wait.no_token && wait.next_at.is_none());
+        assert!(backoff().account_has_no_token("work"));
+        // What a token save, a token clear and the auto-post switch all do.
+        backoff().clear_all();
+        assert!(waiting_view(run).is_none());
+        assert!(backoff().allowed(run, 0) && !backoff().account_has_no_token("work"));
     }
 
     #[test]

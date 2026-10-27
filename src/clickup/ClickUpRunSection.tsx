@@ -4,6 +4,7 @@ import { errorText } from "../components/InlineNotice";
 import { safeUrl } from "../run/words";
 import {
   clickupAutoPostConsent,
+  clickupAutoPostNow,
   clickupAutoPostRetry,
   clickupCheckTickets,
   clickupPostWriteback,
@@ -232,6 +233,13 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
             );
           }}
           onOpen={(url) => void openUrl(url).catch((err: unknown) => setProblem(errorText(err)))}
+          onTryNow={() => {
+            setProblem(null);
+            clickupAutoPostNow(runDir).then(
+              () => void load(),
+              (err: unknown) => setProblem(errorText(err)),
+            );
+          }}
           consenting={consenting}
           consentError={consentError}
           onConsent={(sha) => {
@@ -385,6 +393,13 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
   );
 }
 
+/** HH:MM in the user's local time for a UTC ISO time. */
+export function localClock(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;
+  return at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
 const AUTO_RESULT: Record<string, string> = {
   posted: "posted",
   failed: "failed",
@@ -400,6 +415,7 @@ export function AutoPostList({
   onRetry,
   onOpen,
   onConsent,
+  onTryNow,
   consenting = false,
   consentError = null,
 }: {
@@ -409,6 +425,8 @@ export function AutoPostList({
   onOpen: (url: string) => void;
   /** The one click: records consent for this writeback.json version (its sha-256). */
   onConsent?: (writebackSha: string) => void;
+  /** "Try now" in the backoff notice. */
+  onTryNow?: () => void;
   consenting?: boolean;
   consentError?: string | null;
 }) {
@@ -424,6 +442,19 @@ export function AutoPostList({
       {view.problem && <p className="hint warn">{view.problem}</p>}
       {view.offer && view.enabled && (
         <ConsentBlock offer={view.offer} busy={consenting || view.running} error={consentError} onConsent={onConsent} />
+      )}
+      {view.waiting && view.enabled && !view.running && (
+        <p className="hint warn" role="status" data-testid="backoff-notice">
+          Not posted yet: {view.waiting.reason.replace(/[.\s]+$/, "")}.{" "}
+          {view.waiting.noToken
+            ? "Next try after you set one in Settings."
+            : view.waiting.nextAt
+              ? `Next try at ${localClock(view.waiting.nextAt)}.`
+              : ""}{" "}
+          <button type="button" className="link-button" onClick={onTryNow}>
+            Try now
+          </button>
+        </p>
       )}
       {view.running && <p className="hint">Posting the comments…</p>}
       {view.record && (
