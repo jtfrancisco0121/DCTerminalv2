@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   closeTab,
   getAppState,
+  attentionSummary,
   getClaudeUsage,
   getSettings,
   newTab,
@@ -13,10 +15,12 @@ import {
   setWindowAccount,
   windowContext,
   type AppStateSnapshot,
+  type AttentionSummary,
   type RateWindow,
   type SettingsView,
   type WindowContext,
 } from "./bridge";
+import { ActiveRuns } from "./components/ActiveRuns";
 import { AttentionNotices } from "./components/AttentionNotice";
 import { AccountPicker } from "./components/AccountPicker";
 import { Dialog } from "./components/Dialog";
@@ -47,6 +51,8 @@ import "./App.css";
 
 /** How often the usage line is read again while nothing else asks. */
 const USAGE_POLL_MS = 60_000;
+/** How often the status bar reads the attention summary (an in-memory read). */
+const ATTENTION_POLL_MS = 4_000;
 
 /** This window's label: the id every window-scoped command names. */
 function currentWindowId(): string {
@@ -73,6 +79,9 @@ function App() {
   const [state, setState] = useState<AppStateSnapshot | null>(null);
   const [usage, setUsage] = useState<RateWindow[] | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  // Tabs that need you and unfinished runs, in every window (the status bar's control).
+  const [attention, setAttention] = useState<AttentionSummary | null>(null);
+  const [activeRunsOpen, setActiveRunsOpen] = useState(false);
   const [dialog, setDialog] = useState<"new-tab" | "new-window" | "pick-account" | "settings" | "runs" | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
   const [lastFolder, setLastFolder] = useState("");
@@ -130,6 +139,31 @@ function App() {
       window.removeEventListener("focus", refreshUsage);
     };
   }, [refreshUsage]);
+
+  const refreshAttention = useCallback(() => {
+    attentionSummary().then(setAttention, () => undefined);
+  }, []);
+
+  // The detector runs in the backend whatever this window does; the summary
+  // is read now, every few seconds, when the window gets focus, and when
+  // the detector announces something.
+  useEffect(() => {
+    refreshAttention();
+    const timer = window.setInterval(refreshAttention, ATTENTION_POLL_MS);
+    window.addEventListener("focus", refreshAttention);
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    listen("attention", refreshAttention).then(
+      (fn) => (disposed ? fn() : (unlisten = fn)),
+      () => undefined,
+    );
+    return () => {
+      disposed = true;
+      unlisten?.();
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshAttention);
+    };
+  }, [refreshAttention]);
 
   useEffect(() => subscribeLivePty(() => setLiveVersion((n) => n + 1)), []);
   useEffect(() => subscribePtyExit(() => refreshUsage()), [refreshUsage]);
@@ -391,11 +425,19 @@ function App() {
         )}
       </section>
       <AttentionNotices />
+      {activeRunsOpen && (
+        <ActiveRuns
+          onClose={() => setActiveRunsOpen(false)}
+          onAllRuns={() => setDialog("runs")}
+        />
+      )}
       <StatusBar
         account={ctx ? { name: ctx.accountName, config: ctx.config } : null}
         folder={active?.cwd ?? null}
         usage={usage ? statusLimit(usage) : null}
         message={message ? { text: message, onDismiss: () => setMessage(null) } : null}
+        attention={attention}
+        onAttention={() => setActiveRunsOpen((open) => !open)}
         onNewWindow={() => setDialog("new-window")}
         onSettings={() => setDialog("settings")}
       />

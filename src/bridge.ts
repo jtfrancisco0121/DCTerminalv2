@@ -323,6 +323,31 @@ export function pushSendTest(): Promise<void> {
   return invoke<void>("push_send_test");
 }
 
+/** One unfinished run tab, from the attention detector (any window). */
+export type ActiveRun = {
+  windowLabel: string;
+  tabId: string;
+  label: string;
+  activity: string;
+  runId: string | null;
+  runDir: string | null;
+  stage: string | null;
+  waitingFor: string | null;
+  stalled: boolean;
+  prsDone: number;
+  prsTotal: number;
+};
+
+export type AttentionSummary = { needsYou: number; activeRuns: number };
+
+export function activeRuns(): Promise<ActiveRun[]> {
+  return invoke<ActiveRun[]>("active_runs");
+}
+
+export function attentionSummary(): Promise<AttentionSummary> {
+  return invoke<AttentionSummary>("attention_summary");
+}
+
 export function setClaudeSettings(claude: ClaudeSettings): Promise<SettingsView> {
   return invoke<SettingsView>("set_claude_settings", { claude });
 }

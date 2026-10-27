@@ -62,6 +62,8 @@ vi.mock("./bridge", () => ({
   openAccountWindow: vi.fn(async () => "win-2"),
   ptySetScheme: vi.fn(async () => {}),
   focusTab: vi.fn(async () => null),
+  attentionSummary: vi.fn(async () => ({ needsYou: 0, activeRuns: 0 })),
+  activeRuns: vi.fn(async () => []),
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 // The terminal itself is xterm in a real webview; here it is a marker.
@@ -219,5 +221,27 @@ describe("App", () => {
     expect(setWindowAccount).toHaveBeenCalledWith("default");
     expect((await screen.findByTestId("terminal")).textContent).toBe("Claude · app");
     context = personal;
+  });
+});
+
+describe("App attention control", () => {
+  it("reads the attention summary again when the detector announces something", async () => {
+    const bridge = await import("./bridge");
+    const events = await import("@tauri-apps/api/event");
+    const summary = bridge.attentionSummary as unknown as ReturnType<typeof vi.fn>;
+    const listen = events.listen as unknown as ReturnType<typeof vi.fn>;
+    summary.mockResolvedValue({ needsYou: 0, activeRuns: 0 });
+    render(<App />);
+    expect(await screen.findByTestId("status-account")).toBeTruthy();
+    expect(screen.queryByTestId("status-attention")).toBeNull();
+    const calls = summary.mock.calls.length;
+    summary.mockResolvedValue({ needsYou: 2, activeRuns: 1 });
+    const payload = { kind: "needs-you", tabId: null, windowLabel: null, runId: null, text: "dcv2: a tab needs you" };
+    const handlers = listen.mock.calls.filter(([name]) => name === "attention").map(([, fn]) => fn as (e: unknown) => void);
+    await act(async () => handlers.forEach((fn) => fn({ payload })));
+    expect(summary.mock.calls.length).toBeGreaterThan(calls);
+    expect((await screen.findByTestId("status-attention")).textContent).toBe("2 need you · 1 run");
+    fireEvent.click(screen.getByTestId("status-attention"));
+    expect(await screen.findByRole("dialog", { name: "Active runs" })).toBeTruthy();
   });
 });

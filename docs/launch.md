@@ -104,6 +104,8 @@ One backend thread, `observe/attention.rs`, started at app setup (never from a c
 
 - **Duplicate start** (`run/duplicate.rs`). `start_run` (Eagle-Eye) takes `force`. Without it, an unfinished run (not `done`, not `failed`; no status.json yet counts as unfinished) with the same request words (whitespace-normalised, the ticket lines left out), the same folder (canonical) and the same set of ClickUp ticket ids makes it answer a typed `duplicate {runId, runDir}` and start nothing. The start screen then offers Resume that run (`resume_run`, which focuses a live tab of it) or Start anyway (`force`).
 
+- **Active runs** (status bar). `attention_summary()` returns `{needsYou, activeRuns}` from the detector's latest reading: the tabs that need you in every window (needs-you, or a run at an approval stop; it does not follow the notification switches, since it is information, not a notification) and the unfinished run tabs. The status bar shows it right of the account ("2 need you · 3 runs", hidden at 0), refreshed every few seconds, on window focus and on the `attention` event. Clicking it opens Active runs (`active_runs()`: window, tab, stage, waiting / no progress, PRs done of total; read at most every 3 s while open) with Go to tab (`focus_tab`, which may switch windows) and a link to the Runs view.
+
 ## Import from the dev app (release builds)
 
 Debug builds keep their data in `<identifier>.dev`, release builds in `<identifier>`. On first launch (offered once; `dev-import.json` records it) and from File › "Import from dev app…" (hidden in debug builds) the built app imports the dev app's session, reading `.dev` only:

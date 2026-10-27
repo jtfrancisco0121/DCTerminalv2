@@ -180,6 +180,8 @@ pub fn run() {
             observe::push::push_send_test,
             observe::notify::send_test_notification,
             observe::notify::notification_permission,
+            observe::attention::active_runs,
+            observe::attention::attention_summary,
             run::focus_tab_command,
             run::actions::pr_worktree_checks,
             run::actions::pr_worktree_action,

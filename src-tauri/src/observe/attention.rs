@@ -342,11 +342,29 @@ pub struct TabSnap {
     pub prs_total: u32,
 }
 
+impl TabSnap {
+    /// The tab needs the person: Claude asks (needs-you) or a run waits at
+    /// an approval stop.
+    pub fn needs_you(&self) -> bool {
+        self.activity == TabActivity::NeedsYou || self.waiting_for.is_some()
+    }
+}
+
 /// The latest reading of every open tab.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub tabs: Vec<TabSnap>,
+}
+
+/// The status bar's attention control.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Summary {
+    /// Tabs that need the person, in every window.
+    pub needs_you: usize,
+    /// Run tabs whose run has not finished.
+    pub active_runs: usize,
 }
 
 impl Snapshot {
@@ -371,6 +389,25 @@ impl Snapshot {
                     }
                 })
                 .collect(),
+        }
+    }
+}
+
+impl Snapshot {
+    /// Run tabs whose run has not finished, windows in tab order.
+    pub fn active_runs(&self) -> Vec<TabSnap> {
+        self.tabs
+            .iter()
+            .filter(|t| t.run_id.is_some())
+            .filter(|t| !matches!(t.stage.as_deref(), Some("done") | Some("failed")))
+            .cloned()
+            .collect()
+    }
+
+    pub fn summary(&self) -> Summary {
+        Summary {
+            needs_you: self.tabs.iter().filter(|t| t.needs_you()).count(),
+            active_runs: self.active_runs().len(),
         }
     }
 }
@@ -641,6 +678,10 @@ pub struct AttentionState {
 }
 
 impl AttentionState {
+    pub fn snapshot(&self) -> Snapshot {
+        self.snapshot.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
     pub fn app_active(&self) -> bool {
         self.landing.lock().is_ok_and(|l| l.app_active())
     }
@@ -657,6 +698,18 @@ fn now_ms() -> u64 {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Every unfinished run tab of every window, from the detector's latest reading.
+#[tauri::command]
+pub fn active_runs(state: tauri::State<AttentionState>) -> Vec<TabSnap> {
+    state.snapshot().active_runs()
+}
+
+/// The count behind the status bar's attention control (every window).
+#[tauri::command]
+pub fn attention_summary(state: tauri::State<AttentionState>) -> Summary {
+    state.snapshot().summary()
 }
 
 /// A window gained or lost focus: tracks app activity and lands in the
@@ -1357,6 +1410,20 @@ mod tests {
         let tabs = vec![run_tab("t1", "r-1"), run_tab("t2", "r-2"), asking, tab("b")];
         let snap = Snapshot::build(&tabs, &runs);
         assert_eq!(snap.tabs.len(), 4);
+        // The approval wait and the needs-you tab need the person; the
+        // finished run's tab is not an active run.
+        assert_eq!(
+            snap.summary(),
+            Summary {
+                needs_you: 2,
+                active_runs: 1
+            }
+        );
+        let active = snap.active_runs();
+        assert_eq!(active.len(), 1);
+        assert_eq!((active[0].prs_done, active[0].prs_total), (1, 3));
+        assert_eq!(active[0].tab_id, "t1");
+        assert_eq!(Snapshot::default().summary(), Summary::default());
         assert_eq!(snap.tabs[0].waiting_for.as_deref(), Some("plan-approval"));
         assert_eq!(snap.tabs[2].activity, TabActivity::NeedsYou);
         assert_eq!((snap.tabs[0].prs_done, snap.tabs[0].prs_total), (1, 3));
