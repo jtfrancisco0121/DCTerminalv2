@@ -99,7 +99,8 @@ export function ObserveView({ seen, nudging, onNudge, onResume }: ViewProps) {
       {usage && usage.messages > 0 && (
         <details className="run-cost" data-testid="run-cost">
           <summary>
-            {tokensText(usage.totalTokens)} tokens · {costText(usage.totalCostUsd)} estimate · {usage.minutes.toFixed(0)} min
+            This session: {tokensText(usage.totalTokens)} tokens · {costText(usage.totalCostUsd)} estimate ·{" "}
+            {usage.minutes.toFixed(0)} min
           </summary>
           <table>
             <thead>
@@ -124,6 +125,10 @@ export function ObserveView({ seen, nudging, onNudge, onResume }: ViewProps) {
           <p className="hint">
             By agent:{" "}
             {usage.agents.map((a) => `${a.name} ${tokensText(a.totalTokens)} ${costText(a.costUsd)}`).join(" · ")}
+          </p>
+          <p className="hint">
+            These figures are for this tab's current session only. Resume or /clear starts a new session with its own
+            figures.
           </p>
           <p className="hint">Estimate at API list prices; a subscription is not billed per token.</p>
         </details>

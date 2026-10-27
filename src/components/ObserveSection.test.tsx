@@ -44,6 +44,8 @@ describe("ObserveView", () => {
     expect(screen.getByTestId("context-meter").textContent).toContain("over 60%");
     expect(screen.getByText(/implementer · Build PR1 — running/)).toBeTruthy();
     expect(screen.getByTestId("run-cost").textContent).toContain("$1.23 estimate");
+    expect(screen.getByTestId("run-cost").querySelector("summary")?.textContent).toContain("This session:");
+    expect(screen.getByTestId("run-cost").textContent).not.toMatch(/run total/i);
   });
 
   it("offers Nudge and Resume only on a stall, and nudges only on click", () => {
