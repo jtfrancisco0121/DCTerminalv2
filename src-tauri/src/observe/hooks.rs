@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 /// What a tab's Claude is doing, from its hook events.
@@ -66,6 +66,14 @@ impl TabHookState {
             "SessionStart" => {
                 self.activity = TabActivity::Waiting;
                 self.tool_running = false;
+                // Only SessionStart moves the session (a /clear or a resume
+                // starts a new one). Any other event may come from a
+                // sub-agent or an old session.
+                if let Some(id) = event.get("session_id").and_then(Value::as_str) {
+                    if crate::provider::claude::valid_session_id(id) {
+                        self.session_id = Some(id.to_string());
+                    }
+                }
             }
             "UserPromptSubmit" => self.activity = TabActivity::Working,
             "PreToolUse" => {
@@ -111,11 +119,6 @@ impl TabHookState {
             }
             _ => return,
         }
-        if let Some(id) = event.get("session_id").and_then(Value::as_str) {
-            if crate::provider::claude::valid_session_id(id) {
-                self.session_id = Some(id.to_string());
-            }
-        }
         self.last_event = Some(name.to_string());
         self.updated_ms = Some(at_ms);
     }
@@ -128,11 +131,17 @@ struct Shared {
     states: HashMap<String, TabHookState>,
 }
 
+/// Called with (tab id, session id) when a tab's `SessionStart` reports a
+/// session other than the one the hook state had. Runs on a connection
+/// thread with no hook-server lock held.
+pub type SessionSink = Box<dyn Fn(&str, &str) + Send + Sync>;
+
 /// The listener and the per-tab states. Cheap to clone.
 #[derive(Clone)]
 pub struct HookServer {
     pub port: u16,
     shared: Arc<Mutex<Shared>>,
+    session_sink: Arc<OnceLock<SessionSink>>,
     live: Arc<AtomicUsize>,
 }
 
@@ -228,6 +237,7 @@ impl HookServer {
         let server = Self {
             port,
             shared: Arc::new(Mutex::new(Shared::default())),
+            session_sink: Arc::new(OnceLock::new()),
             live: Arc::new(AtomicUsize::new(0)),
         };
         let serving = server.clone();
@@ -253,6 +263,11 @@ impl HookServer {
                 }
             })?;
         Ok(server)
+    }
+
+    /// Installs the sink for new session ids (once; a second call is ignored).
+    pub fn set_session_sink(&self, sink: SessionSink) {
+        let _ = self.session_sink.set(sink);
     }
 
     /// A new token for a tab's launch (the old one stops working).
@@ -292,24 +307,34 @@ impl HookServer {
 
     /// Takes one post when its token is the tab's. Returns the HTTP status.
     pub fn accept(&self, tab: &str, token: &str, body: &[u8]) -> u16 {
-        let Ok(mut shared) = self.shared.lock() else {
-            return 500;
+        let new_session = {
+            let Ok(mut shared) = self.shared.lock() else {
+                return 500;
+            };
+            let known = shared
+                .tokens
+                .get(tab)
+                .is_some_and(|want| same_token(want, token));
+            if !known {
+                return 403;
+            }
+            let Ok(event) = serde_json::from_slice::<Value>(body) else {
+                return 400;
+            };
+            let state = shared.states.entry(tab.to_string()).or_default();
+            let before = state.session_id.clone();
+            state.apply(&event, now_ms());
+            let started = state.last_event.as_deref() == Some("SessionStart");
+            if started && state.session_id != before {
+                state.session_id.clone()
+            } else {
+                None
+            }
         };
-        let known = shared
-            .tokens
-            .get(tab)
-            .is_some_and(|want| same_token(want, token));
-        if !known {
-            return 403;
+        // After the lock is released: the sink takes the state store's.
+        if let (Some(session), Some(sink)) = (new_session, self.session_sink.get()) {
+            sink(tab, &session);
         }
-        let Ok(event) = serde_json::from_slice::<Value>(body) else {
-            return 400;
-        };
-        shared
-            .states
-            .entry(tab.to_string())
-            .or_default()
-            .apply(&event, now_ms());
         204
     }
 
@@ -532,6 +557,49 @@ mod tests {
         server.forget_tab("tab-a");
         assert_eq!(server.accept("tab-a", &fresh, body), 403);
         assert!(same_token("abc", "abc") && !same_token("abc", "abd") && !same_token("ab", "abc"));
+    }
+
+    #[test]
+    fn a_session_start_with_a_new_id_reaches_the_sink_once() {
+        let server = HookServer::start().unwrap();
+        let seen: Arc<Mutex<Vec<(String, String)>>> = Default::default();
+        let into = Arc::clone(&seen);
+        server.set_session_sink(Box::new(move |tab, session| {
+            into.lock()
+                .unwrap()
+                .push((tab.to_string(), session.to_string()));
+        }));
+        let token = server.register_tab("tab-s");
+        let a = "11111111-2222-4333-8444-555555555555";
+        let b = "66666666-7777-4888-8999-000000000000";
+        let start =
+            |id: &str| format!(r#"{{"hook_event_name":"SessionStart","session_id":"{id}"}}"#);
+        let other =
+            |id: &str| format!(r#"{{"hook_event_name":"PostToolUse","session_id":"{id}"}}"#);
+        // A wrong token calls nothing.
+        assert_eq!(server.accept("tab-s", "nope", start(a).as_bytes()), 403);
+        assert!(seen.lock().unwrap().is_empty());
+        assert_eq!(server.accept("tab-s", &token, start(a).as_bytes()), 204);
+        // The same id again, and other events with another id: nothing.
+        assert_eq!(server.accept("tab-s", &token, start(a).as_bytes()), 204);
+        assert_eq!(server.accept("tab-s", &token, other(b).as_bytes()), 204);
+        assert_eq!(
+            server.state("tab-s").unwrap().session_id.as_deref(),
+            Some(a)
+        );
+        // A bad id is not a session.
+        assert_eq!(
+            server.accept("tab-s", &token, start("../x").as_bytes()),
+            204
+        );
+        assert_eq!(server.accept("tab-s", &token, start(b).as_bytes()), 204);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                ("tab-s".to_string(), a.to_string()),
+                ("tab-s".to_string(), b.to_string())
+            ]
+        );
     }
 
     #[test]

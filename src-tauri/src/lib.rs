@@ -89,7 +89,11 @@ pub fn run() {
             app.manage(Mutex::new(settings_store));
             app.manage(Mutex::new(usage::UsageStore::open(&data_dir)));
             app.manage(Mutex::new(PtyRegistry::new()));
-            app.manage(observe::ObserveState::start());
+            let observe_state = observe::ObserveState::start();
+            if let Some(hooks) = &observe_state.hooks {
+                hooks.set_session_sink(observe::session_sink(app.handle()));
+            }
+            app.manage(observe_state);
             for note in store::take_recovery_notes() {
                 eprintln!("DCTerminalv2: {note}");
             }

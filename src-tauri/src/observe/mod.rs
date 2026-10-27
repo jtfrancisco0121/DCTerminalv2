@@ -51,6 +51,35 @@ impl ObserveState {
     }
 }
 
+/// The sink for new session ids (`HookServer::set_session_sink`): saves a
+/// tab's new session (a `/clear`) so a restart resumes it. Holds the state
+/// store's lock only, never the hook server's.
+pub fn session_sink(app: &AppHandle) -> hooks::SessionSink {
+    let app = app.clone();
+    Box::new(move |tab_id, session_id| {
+        let Some(store) = app.try_state::<Mutex<StateStore>>() else {
+            return;
+        };
+        if let Err(err) = save_session(&store, tab_id, session_id) {
+            eprintln!("DCTerminalv2: could not save the new session of a tab: {err}");
+        }
+    })
+}
+
+/// Saves `session_id` as the tab's session, under the account folder the
+/// tab already has. A tab that is gone or has no folder (it never ran
+/// Claude) is left alone.
+fn save_session(store: &Mutex<StateStore>, tab_id: &str, session_id: &str) -> Result<(), String> {
+    let mut state = store.lock().map_err(|err| err.to_string())?;
+    let Some(config_dir) = state
+        .tab_by_id(tab_id)
+        .and_then(|tab| tab.claude_config_dir.clone())
+    else {
+        return Ok(());
+    };
+    state.remember_claude_session(tab_id, session_id, &config_dir)
+}
+
 /// The `hooks` settings value and the env for one dcv2 tab launch. None
 /// when the listener or the `dcv2-hook` binary is missing (the tab then
 /// runs without per-tab state; nothing else changes).
@@ -413,6 +442,36 @@ mod tests {
     use crate::test_support::TempDir;
     use serde_json::json;
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn a_new_session_is_saved_under_the_tabs_account_folder() {
+        use crate::store::TabKind;
+        let dir = TempDir::new("observe_session_sink");
+        let mut state = StateStore::open_path(dir.join("state.json")).unwrap();
+        let tab = state
+            .create_tab(&dir.path().display().to_string(), TabKind::Claude)
+            .unwrap();
+        let old = "11111111-2222-4333-8444-555555555555";
+        let new = "66666666-7777-4888-8999-000000000000";
+        state.remember_claude_session(&tab, old, "/cfg/a").unwrap();
+        let store = Mutex::new(state);
+        save_session(&store, &tab, new).unwrap();
+        let state = store.lock().unwrap();
+        let record = state.tab_by_id(&tab).unwrap();
+        assert_eq!(record.claude_session_id.as_deref(), Some(new));
+        assert_eq!(record.claude_config_dir.as_deref(), Some("/cfg/a"));
+        drop(state);
+        // A tab that is gone, or never had a folder, is left alone.
+        save_session(&store, "gone", new).unwrap();
+        let mut state = store.lock().unwrap();
+        let bare = state
+            .create_tab(&dir.path().display().to_string(), TabKind::Claude)
+            .unwrap();
+        drop(state);
+        save_session(&store, &bare, new).unwrap();
+        let state = store.lock().unwrap();
+        assert_eq!(state.tab_by_id(&bare).unwrap().claude_session_id, None);
+    }
 
     #[test]
     fn hooks_are_laid_over_the_status_line_settings() {
