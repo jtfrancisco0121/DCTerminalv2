@@ -202,6 +202,8 @@ pub struct DraftView {
     pub posted: PostedDraft,
     /// The comment's last send did not finish cleanly: resend needs a confirm.
     pub needs_confirm: bool,
+    /// What the secret scan finds in the unedited comment ("a GitHub token"), if anything.
+    pub secret_kind: Option<String>,
     /// From the app's snapshot; `None`: not in it, never posted.
     pub trusted: Option<TrustedTicket>,
 }
@@ -316,6 +318,11 @@ pub fn run_clickup(key: &Result<trust::Key, String>, data: &Path, run_dir: &Path
                             .unwrap_or_default();
                         DraftView {
                             needs_confirm: writeback::needs_confirm(record.comment.as_ref()),
+                            secret_kind: draft
+                                .comment
+                                .as_deref()
+                                .and_then(super::secret_scan::first_hit)
+                                .map(str::to_string),
                             trusted: tickets.get(&draft.ticket.id).map(|t| TrustedTicket {
                                 custom_id: t.custom_id.clone(),
                                 name: t.name.clone(),
@@ -825,6 +832,30 @@ mod tests {
     }
 
     #[test]
+    fn the_draft_view_carries_the_scan_kind_of_the_unedited_comment() {
+        let (_dir, data, run) = run_with_drafts("secret_kind");
+        std::fs::write(
+            run.join(writeback::DRAFTS_FILE),
+            serde_json::json!({"schema": 1, "drafts": [
+                {"ticket": {"id": "86c0abcde"}, "comment": "key ghp_abcdefghijklmnopqrstuvwxyz0123"},
+                {"ticket": {"id": "86c0abcdf"}, "comment": "Done: S1"}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        trust::write_start(&k(), &data, &run, "personal", &snap("86c0abcde")).unwrap();
+        let drafts = run_clickup(&Ok(k()), &data, &run).drafts.unwrap();
+        assert_eq!(drafts[0].secret_kind.as_deref(), Some("a GitHub token"));
+        assert_eq!(drafts[1].secret_kind, None);
+        let json = serde_json::to_value(&drafts[0]).unwrap();
+        assert_eq!(json["secretKind"], "a GitHub token");
+        assert!(
+            !json.to_string().contains("secretKind\":\"ghp_"),
+            "the value is not in the kind"
+        );
+    }
+
+    #[test]
     fn a_post_is_refused_when_writeback_json_changed_or_the_run_is_untrusted() {
         let (_dir, data, run) = run_with_drafts("post_checked");
         let token = ClickUpToken::parse("pk_x").unwrap();
@@ -835,6 +866,7 @@ mod tests {
             comment: Some("x".into()),
             status: None,
             confirm_resend: false,
+            confirm_secret: false,
         }];
         assert_eq!(
             post_checked(&client, &k(), &data, &run, "v", &req).unwrap_err(),
@@ -881,6 +913,7 @@ mod tests {
             comment: Some("x".into()),
             status: None,
             confirm_resend: false,
+            confirm_secret: false,
         }];
         assert_eq!(
             post_checked(&client, &k(), &data, &run, "v", &req).unwrap_err(),

@@ -118,7 +118,7 @@ describe("ClickUpRunSection", () => {
     fireEvent.click(screen.getByText("Post ticked (1)"));
     await waitFor(() => expect(screen.getByTestId("post-outcomes")).toBeTruthy());
     expect(api.post).toHaveBeenCalledWith("/r", "v1", [
-      { ticketId: "86a", comment: "Edited", status: null, confirmResend: false },
+      { ticketId: "86a", comment: "Edited", status: null, confirmResend: false, confirmSecret: false },
     ]);
   });
 
@@ -132,7 +132,7 @@ describe("ClickUpRunSection", () => {
     fireEvent.click(screen.getByText("Post ticked (1)"));
     await waitFor(() => expect(api.post).toHaveBeenCalled());
     expect(api.post.mock.calls[0][2]).toEqual([
-      { ticketId: "86a", comment: null, status: "in review", confirmResend: false },
+      { ticketId: "86a", comment: null, status: "in review", confirmResend: false, confirmSecret: false },
     ]);
   });
 
@@ -262,5 +262,71 @@ describe("the click before comments post on their own", () => {
     render(<ClickUpRunSection runDir="/r" stage="shipping" updatedAt="t" />);
     await screen.findByText("Posting the comments…");
     expect(screen.queryByRole("region", { name: "Comments ready to post" })).toBeNull();
+  });
+});
+
+describe("a comment that looks like it holds a secret", () => {
+  it("warns under the comment, sends the confirm for that ticket only, and clears it after the post", async () => {
+    api.state.mockResolvedValue({
+      ...base,
+      drafts: [
+        draft("86a", { comment: "key ghp_abcdefghijklmnopqrstuvwxyz0123", secretKind: "a GitHub token" }),
+        draft("86b"),
+      ],
+    });
+    api.post.mockResolvedValue({
+      outcomes: [
+        { ticketId: "86a", result: "posted", message: "comment posted" },
+        { ticketId: "86b", result: "posted", message: "comment posted" },
+      ],
+      error: null,
+    });
+    render(<ClickUpRunSection runDir="/r" stage="done" updatedAt="1" />);
+    const warning = await screen.findByText("This comment looks like it contains a GitHub token.");
+    expect(warning.className).toContain("secret-warning");
+    expect(screen.getByLabelText("Comment for QA-86a").getAttribute("aria-describedby")).toBe(warning.id);
+    // Only the flagged ticket has the confirm box.
+    const confirms = screen.getAllByLabelText("I checked this comment: post it anyway.") as HTMLInputElement[];
+    expect(confirms).toHaveLength(1);
+    expect(confirms[0].checked).toBe(false);
+    expect(screen.queryByText("This comment looks like it contains", { exact: false })?.id).toBe("secret-86a");
+    fireEvent.click(screen.getByLabelText("Post comment on QA-86a"));
+    fireEvent.click(screen.getByLabelText("Post comment on QA-86b"));
+    fireEvent.click(confirms[0]);
+    fireEvent.click(screen.getByText("Post ticked (2)"));
+    await waitFor(() => expect(api.post).toHaveBeenCalled());
+    expect(api.post.mock.calls[0][2]).toEqual([
+      { ticketId: "86a", comment: "key ghp_abcdefghijklmnopqrstuvwxyz0123", status: null, confirmResend: false, confirmSecret: true },
+      { ticketId: "86b", comment: "Comment 86b", status: null, confirmResend: false, confirmSecret: false },
+    ]);
+    await waitFor(() => expect(screen.getByTestId("post-outcomes")).toBeTruthy());
+    expect((screen.getByLabelText("I checked this comment: post it anyway.") as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("shows the confirm after a secret refusal even when the text was edited, and no warning when it is clean", async () => {
+    api.state.mockResolvedValue({ ...base, drafts: [draft("86a", { secretKind: "a Bearer token" }), draft("86b")] });
+    api.post.mockResolvedValue({
+      outcomes: [
+        {
+          ticketId: "86b",
+          result: "not-sent",
+          message: "Comment not sent: looks like it contains a webhook URL. Check the comment, tick the confirm box, then post again.",
+        },
+      ],
+      error: null,
+    });
+    render(<ClickUpRunSection runDir="/r" stage="done" updatedAt="1" />);
+    await screen.findByTestId("draft-86b");
+    expect(within(screen.getByTestId("draft-86b")).queryByLabelText("I checked this comment: post it anyway.")).toBeNull();
+    // Editing the flagged text away drops the warning (the post-time scan decides).
+    fireEvent.change(screen.getByLabelText("Comment for QA-86a"), { target: { value: "clean now" } });
+    expect(screen.queryByText(/looks like it contains a Bearer token/)).toBeNull();
+    expect(within(screen.getByTestId("draft-86a")).queryByLabelText("I checked this comment: post it anyway.")).toBeNull();
+    fireEvent.click(screen.getByLabelText("Post comment on QA-86b"));
+    fireEvent.click(screen.getByText("Post ticked (1)"));
+    await waitFor(() =>
+      expect(within(screen.getByTestId("draft-86b")).getByLabelText("I checked this comment: post it anyway.")).toBeTruthy(),
+    );
+    expect(screen.getByTestId("post-outcomes").textContent).toContain("looks like it contains a webhook URL");
   });
 });

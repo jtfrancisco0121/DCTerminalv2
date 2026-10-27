@@ -70,6 +70,10 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
+  // Comments the user checked after the secret scan flagged them (cleared after each post), and the
+  // tickets whose last post was refused for a secret (their confirm box shows even after an edit).
+  const [secretOk, setSecretOk] = useState<Set<string>>(new Set());
+  const [secretRefused, setSecretRefused] = useState<Set<string>>(new Set());
   const [posting, setPosting] = useState(false);
   const [outcomes, setOutcomes] = useState<PostOutcome[] | null>(null);
   const [consenting, setConsenting] = useState(false);
@@ -144,6 +148,7 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
         comment: ticked.has(`comment:${d.ticket.id}`) ? commentOf(d) : null,
         status: ticked.has(`status:${d.ticket.id}`) ? d.status : null,
         confirmResend: confirmed.has(d.ticket.id),
+        confirmSecret: secretOk.has(d.ticket.id),
       }));
     if (requests.length === 0 || !state.draftsVersion) return;
     setPosting(true);
@@ -155,6 +160,10 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
           if (reply.error) setProblem(reply.error);
           setTicked(new Set());
           setConfirmed(new Set());
+          setSecretOk(new Set());
+          setSecretRefused(
+            new Set(reply.outcomes.filter((o) => o.message.includes("looks like it contains")).map((o) => o.ticketId)),
+          );
         },
         (err: unknown) => setProblem(errorText(err)),
       )
@@ -255,6 +264,9 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
               const statusPosted = d.posted.status?.result === "posted";
               const commentPosted = d.posted.comment?.result === "posted";
               const lines = [partText("Status", d.posted.status), partText("Comment", d.posted.comment)].filter(Boolean);
+              // The scan of the unedited text; after an edit the post-time scan decides.
+              const flagged = d.secretKind && commentOf(d) === (d.comment ?? "") ? d.secretKind : null;
+              const secretCheck = !commentPosted && (flagged !== null || secretRefused.has(id));
               return (
                 <li key={id} className="clickup-draft" data-testid={`draft-${id}`}>
                   <div>
@@ -293,9 +305,32 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
                         aria-label={`Comment for ${label}`}
                         value={commentOf(d)}
                         disabled={commentPosted || posting}
+                        aria-describedby={flagged && !commentPosted ? `secret-${id}` : undefined}
                         onChange={(event) => setEdits((all) => ({ ...all, [id]: event.target.value }))}
                       />
+                      {flagged && !commentPosted && (
+                        <p id={`secret-${id}`} className="secret-warning">
+                          This comment looks like it contains {flagged}.
+                        </p>
+                      )}
                     </>
+                  )}
+                  {secretCheck && (
+                    <label className="hint warn">
+                      <input
+                        type="checkbox"
+                        checked={secretOk.has(id)}
+                        onChange={(event) =>
+                          setSecretOk((set) => {
+                            const next = new Set(set);
+                            if (event.target.checked) next.add(id);
+                            else next.delete(id);
+                            return next;
+                          })
+                        }
+                      />{" "}
+                      I checked this comment: post it anyway.
+                    </label>
                   )}
                   {lines.map((line) => (
                     <p key={line} className="hint">

@@ -336,6 +336,7 @@ pub fn auto_post(
             comment: Some(text.to_string()),
             status: None,
             confirm_resend: false,
+            confirm_secret: false,
         });
     }
     let mut store = trust::TrustStore { key, data, run_dir };
@@ -422,6 +423,7 @@ pub fn retry(
             comment: Some(text),
             status: None,
             confirm_resend: false,
+            confirm_secret: false,
         };
         let outcomes = writeback::post(
             client,

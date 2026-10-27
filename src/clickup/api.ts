@@ -46,6 +46,8 @@ export type DraftView = {
   statusNote: string | null;
   posted: { comment?: PartResult; status?: PartResult };
   needsConfirm: boolean;
+  /** What the app's secret scan finds in the unedited comment ("a GitHub token"), if anything. */
+  secretKind?: string | null;
   /** From the app's own snapshot; null: not in it, never posted. */
   trusted: { customId: string | null; name: string; url: string; list: string | null } | null;
 };
@@ -108,6 +110,8 @@ export type PostRequest = {
   /** The status as shown (the draft's); null: not ticked. */
   status: string | null;
   confirmResend: boolean;
+  /** This comment was flagged by the secret scan and you checked it: send it anyway. */
+  confirmSecret: boolean;
 };
 export type PostOutcome = { ticketId: string; result: string; message: string };
 export type PostReply = { outcomes: PostOutcome[]; error: string | null };
