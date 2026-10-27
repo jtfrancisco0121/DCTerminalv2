@@ -52,19 +52,30 @@
 input="$(cat)"
 PIPE_RE='"agent_type"[[:space:]]*:[[:space:]]*"(dcv2:)?(implementer|planner|plan-reviewer|pr-reviewer|memory-updater)"'
 
+# The plugin folder this script lives in (pure bash: no dirname, the PATH may be broken).
+gdir="${BASH_SOURCE[0]%/*}"; [[ "$gdir" != "${BASH_SOURCE[0]}" ]] || gdir="."
+GUARD_PLUGIN="$(cd "$gdir/.." 2>/dev/null && pwd -P)" || GUARD_PLUGIN=""
+
 fallback() { # python3 missing or broken, or the payload did not parse: fail closed where it matters
   if grep -Eq "$PIPE_RE" <<<"$input"; then
     echo "Blocked by the dcv2 guard: this call could not be checked (python3 missing or broken, or an unreadable hook payload)." >&2
     exit 2
   fi
-  if [[ -n "${DCV2_RUN_DIR:-}" ]] && grep -Eq 'git[^"]*push|gh[^"]*pr' <<<"$input"; then
-    echo "Blocked by the dcv2 guard: push / PR commands cannot be checked (python3 missing or broken)." >&2
+  if [[ -n "${DCV2_RUN_DIR:-}" ]]; then  # a bound run: nothing is let through unchecked
+    echo "Blocked by the dcv2 guard: this call could not be checked (python3 missing or broken, or an unreadable hook payload) and a run is bound." >&2
     exit 2
   fi
+  local p
+  for p in "${DCV2_MEMORY_DIR:-}" "${CLAUDE_PLUGIN_ROOT:-}" "$GUARD_PLUGIN"; do  # a dcv2 tab: memory and the plugin stay closed
+    if [[ -n "$p" ]] && grep -qiF -- "$p" <<<"$input"; then
+      echo "Blocked by the dcv2 guard: this call names the codebase memory or the plugin folder and could not be checked (python3 missing or broken)." >&2
+      exit 2
+    fi
+  done
   exit 0
 }
 
-command -v python3 >/dev/null 2>&1 || fallback
+python3 -c 'import sys' >/dev/null 2>&1 || fallback
 
 IFS= read -r -d '' PY <<'PY' || true
 import json, os, re, shlex, sys
@@ -1073,7 +1084,7 @@ analyze(CMD, cwd0)
 sys.exit(0)
 PY
 
-python3 -c "$PY" "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P)" <<<"$input"
+python3 -c "$PY" "$GUARD_PLUGIN" <<<"$input"
 rc=$?
 case $rc in
   0|2) exit $rc ;;

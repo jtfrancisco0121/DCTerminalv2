@@ -127,12 +127,23 @@ expect 2 "memory-updater: no push" "$(payload dcv2:memory-updater Bash command "
 echo "# unparsable input / no python3"
 expect 2 "unparsable payload from an implementer" '{"agent_type": "dcv2:implementer", "tool_input": {broken'
 expect 2 "unparsable payload from a bare planner" '{"agent_type":"planner", oops'
-expect 0 "unparsable payload, no agent" '{"tool_input": {broken'
+expect 2 "unparsable payload, no agent, a run bound" '{"tool_input": {broken'
+expect 0 "unparsable payload, no agent, nothing bound" '{"tool_input": {broken' -u DCV2_RUN_DIR
 nopy="$d/nopy"; mkdir -p "$nopy"; for c in bash cat grep; do ln -s "$(command -v $c)" "$nopy/$c"; done
 expect 2 "no python3: implementer" "$(payload dcv2:implementer Write file_path "$WT/a.js")" PATH="$nopy"
 expect 0 "no python3: user session" "$(payload "" Write file_path "$R/a.js")" -u DCV2_RUN_DIR PATH="$nopy"
 badpy="$d/badpy"; mkdir -p "$badpy"; printf '#!/bin/sh\nexit 1\n' > "$badpy/python3"; chmod +x "$badpy/python3"
 expect 2 "broken python3: implementer" "$(payload dcv2:implementer Write file_path "$WT/a.js")" PATH="$badpy:$PATH"
+FM="$d/failmem"; mkdir -p "$FM/x"
+for pyenv in "PATH=$badpy:$PATH" "PATH=$nopy"; do
+  expect 2 "[$pyenv] bound orchestrator Write <run>/.guard.json" "$(payload "" Write file_path "$RUN/.guard.json")" "$pyenv"
+  expect 2 "[$pyenv] bound orchestrator git reset --hard in a main checkout" "$(payload "" Bash command "git -C $R reset --hard")" "$pyenv"
+  expect 2 "[$pyenv] bound orchestrator, anything at all" "$(payload "" Bash command "ls")" "$pyenv"
+  expect 2 "[$pyenv] memory-only session writes into the memory dir" "$(payload "" Write file_path "$FM/x/index.md")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$FM" "$pyenv"
+  expect 2 "[$pyenv] memory-only session writes into the plugin folder" "$(payload "" Write file_path "$ROOT/plugin/scripts/guard.sh")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$FM" "$pyenv"
+  expect 0 "[$pyenv] memory-only session, unrelated ls" "$(payload "" Bash command "ls")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$FM" "$pyenv"
+  expect 0 "[$pyenv] plain session" "$(payload "" Bash command "git push")" -u DCV2_RUN_DIR -u DCV2_MEMORY_DIR "$pyenv"
+done
 
 echo "# Bash: sub-agents"
 b 0 dcv2:implementer "git -C $WT add -A && git -C $WT commit -m 'S1: x'"
