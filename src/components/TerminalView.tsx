@@ -198,6 +198,13 @@ export function TerminalView({ tab, fontSize, autoFocus = true }: TerminalViewPr
 
   useEffect(() => subscribeLivePty(() => setGeneration((value) => value + 1)), []);
 
+  // The parked terminal feeds xterm from the PTY; this view only shows
+  // whether the program exited (a restart replaces the session).
+  useEffect(() => {
+    const live = livePty(ptyId);
+    setExitCode(live?.exited ? (live.exitCode ?? -1) : null);
+  }, [ptyId, generation]);
+
   useEffect(() => setTerminalSearchOpener(ptyId, () => setSearchOpen(true)), [ptyId]);
 
   useEffect(() => {
@@ -211,16 +218,6 @@ export function TerminalView({ tab, fontSize, autoFocus = true }: TerminalViewPr
       focusParkedTerminal(ptyId);
     }
 
-    const live = livePty(ptyId);
-    // Subscribe before replaying. ConPTY's first bytes are often a cursor
-    // query, and xterm answers that only through onData.
-    const onData = parked.term.onData((data) => sendPtyInput(ptyId, data));
-    const detach = live?.buffer.attach({
-      data: (bytes) => parked.term.write(bytes),
-      exit: (code) => setExitCode(code ?? -1),
-    });
-    if (live?.exited) setExitCode(live.exitCode ?? -1);
-    else if (live) setExitCode(null);
     const platform = detectPlatform(navigator.platform);
     const newlineOnShiftEnter = shiftEnterSendsNewline(tab.kind);
     parked.term.attachCustomKeyEventHandler((event) => {
@@ -266,8 +263,6 @@ export function TerminalView({ tab, fontSize, autoFocus = true }: TerminalViewPr
       observer.disconnect();
       window.removeEventListener("resize", scheduleFit);
       unregisterRefit();
-      onData.dispose();
-      detach?.();
       blurParkedTerminal(ptyId);
       const root = document.getElementById("terminal-park");
       // A closed tab already released its terminal; don't park the disposed host.
