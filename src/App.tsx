@@ -13,6 +13,7 @@ import {
   renameTab,
   reopenClosedTab,
   selectTab,
+  setTerminalSettings,
   setWindowAccount,
   windowContext,
   type AppStateSnapshot,
@@ -45,6 +46,7 @@ import { applyTheme, watchSystemTheme } from "./theme";
 import { reportError, setErrorNotifier } from "./uiErrors";
 import { statusLimit, type WindowHistory } from "./usage/limits";
 import { keyAction, pageAction, type PageAction } from "./pageActions";
+import { zoomedFontSize } from "./keyTable";
 import { ClaudeVersionBanner } from "./components/ClaudeVersionBanner";
 import { ImportDevDialog, useDevImport } from "./components/ImportDevDialog";
 import { observeTabs, pollsActivity } from "./run/observe";
@@ -257,6 +259,22 @@ function App() {
     );
   };
 
+  // The latest terminal settings, so quick repeated zoom keys build on each other.
+  const terminalRef = useRef(settings?.terminal);
+  terminalRef.current = settings?.terminal;
+  const zoomFont = (kind: PageAction["kind"]) => {
+    const current = terminalRef.current;
+    if (!current) return;
+    const next = zoomedFontSize(current.fontSize, kind);
+    if (next == null || next === current.fontSize) return;
+    terminalRef.current = { ...current, fontSize: next };
+    setSettings((view) => (view ? { ...view, terminal: { ...view.terminal, fontSize: next } } : view));
+    setTerminalSettings({ ...current, fontSize: next }).then(
+      (saved) => setSettings((view) => (view ? { ...view, terminal: saved } : view)),
+      (err: unknown) => fail("Font size", err),
+    );
+  };
+
   const run = (action: PageAction) => {
     switch (action.kind) {
       case "new-tab":
@@ -283,6 +301,21 @@ function App() {
         if (tab) select(tab.id);
         break;
       }
+      case "next-tab":
+      case "prev-tab": {
+        const tabs = state?.tabs ?? [];
+        const at = tabs.findIndex((tab) => tab.id === state?.activeTabId);
+        if (tabs.length > 1 && at >= 0) {
+          const step = action.kind === "next-tab" ? 1 : -1;
+          select(tabs[(at + step + tabs.length) % tabs.length].id);
+        }
+        break;
+      }
+      case "zoom-in":
+      case "zoom-out":
+      case "zoom-reset":
+        zoomFont(action.kind);
+        break;
     }
   };
   // The listeners below outlive renders; they call the latest `run`.

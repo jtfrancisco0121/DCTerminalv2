@@ -3,6 +3,7 @@
  * or a shortcut it handles itself.
  */
 
+import { lookupShortcut, type KeyEvent } from "./keyTable";
 import type { Platform } from "./terminal/keys";
 
 export type PageAction =
@@ -12,6 +13,11 @@ export type PageAction =
   | { kind: "settings" }
   | { kind: "new-window" }
   | { kind: "find" }
+  | { kind: "next-tab" }
+  | { kind: "prev-tab" }
+  | { kind: "zoom-in" }
+  | { kind: "zoom-out" }
+  | { kind: "zoom-reset" }
   | { kind: "select"; index: number };
 
 /** The action for a `menu` event's item id, or null for an unknown one. */
@@ -21,6 +27,11 @@ export function pageAction(id: unknown): PageAction | null {
     case "close-tab":
     case "reopen-closed-tab":
     case "settings":
+    case "next-tab":
+    case "prev-tab":
+    case "zoom-in":
+    case "zoom-out":
+    case "zoom-reset":
       return { kind: id };
     default:
       return null;
@@ -28,26 +39,14 @@ export function pageAction(id: unknown): PageAction | null {
 }
 
 /**
- * A key press the page acts on, or null. Find and Cmd+1…9 everywhere; on
- * other platforms (no native menu) also Ctrl+Shift+T/W/N/, for new tab,
- * close tab, new window and Settings. macOS gets those from the menu.
+ * A key press the page acts on, or null (`lookupShortcut` has the table).
+ * On macOS the native menu takes new / close / reopen tab, new window,
+ * Settings, the bracket tab keys and the zoom keys, and sends a `menu`
+ * event; the page acts on the rest. Elsewhere there is no native menu, so
+ * the page acts on every shortcut.
  */
-export function keyAction(
-  event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
-  platform: Platform,
-): PageAction | null {
-  const command =
-    platform === "mac"
-      ? event.metaKey && !event.ctrlKey && !event.altKey
-      : event.ctrlKey && event.shiftKey && !event.metaKey && !event.altKey;
-  if (!command) return null;
-  const key = event.key.toLowerCase();
-  if (key === "f") return { kind: "find" };
-  if (/^[1-9]$/.test(key)) return { kind: "select", index: Number(key) - 1 };
-  if (platform === "mac") return null;
-  if (key === "t") return { kind: "new-tab" };
-  if (key === "w") return { kind: "close-tab" };
-  if (key === "n") return { kind: "new-window" };
-  if (key === ",") return { kind: "settings" };
-  return null;
+export function keyAction(event: KeyEvent, platform: Platform): PageAction | null {
+  const binding = lookupShortcut(event, platform);
+  if (!binding || (platform === "mac" && binding.menu)) return null;
+  return binding.action;
 }

@@ -45,6 +45,19 @@ const PAGE_ITEMS: [(&str, &str, &str); 3] = [
         "CmdOrCtrl+Shift+T",
     ),
 ];
+/// View menu: the font zoom items, sent to the page like the page items.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const VIEW_ITEMS: [(&str, &str, &str); 3] = [
+    ("zoom-in", "Zoom In", "CmdOrCtrl+="),
+    ("zoom-out", "Zoom Out", "CmdOrCtrl+-"),
+    ("zoom-reset", "Actual Size", "CmdOrCtrl+0"),
+];
+/// Window menu: cycling the tabs (Ctrl+Tab is the page's own key).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const WINDOW_ITEMS: [(&str, &str, &str); 2] = [
+    ("next-tab", "Next Tab", "CmdOrCtrl+Shift+]"),
+    ("prev-tab", "Previous Tab", "CmdOrCtrl+Shift+["),
+];
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const SETTINGS_ITEM: &str = "settings";
 /// File › Import from dev app… (release builds only), sent to the page.
@@ -342,7 +355,33 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
                 &PredefinedMenuItem::select_all(app, None)?,
             ],
         )?;
-        let menu = Menu::with_items(app, &[&app_menu, &file, &edit])?;
+        let view_items = VIEW_ITEMS
+            .iter()
+            .map(|(id, title, shortcut)| MenuItem::with_id(app, *id, *title, true, Some(*shortcut)))
+            .collect::<tauri::Result<Vec<_>>>()?;
+        let view = Submenu::with_items(
+            app,
+            "View",
+            true,
+            &view_items
+                .iter()
+                .map(|item| item as &dyn tauri::menu::IsMenuItem<tauri::Wry>)
+                .collect::<Vec<_>>(),
+        )?;
+        let window_items = WINDOW_ITEMS
+            .iter()
+            .map(|(id, title, shortcut)| MenuItem::with_id(app, *id, *title, true, Some(*shortcut)))
+            .collect::<tauri::Result<Vec<_>>>()?;
+        let window = Submenu::with_items(
+            app,
+            "Window",
+            true,
+            &window_items
+                .iter()
+                .map(|item| item as &dyn tauri::menu::IsMenuItem<tauri::Wry>)
+                .collect::<Vec<_>>(),
+        )?;
+        let menu = Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window])?;
         app.set_menu(menu)?;
         app.on_menu_event(|app, event| match event.id().as_ref() {
             "new-window" => request_new_window(app),
@@ -354,7 +393,9 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
             }
             id if id == SETTINGS_ITEM
                 || id == IMPORT_DEV_ITEM
-                || PAGE_ITEMS.iter().any(|(item, _, _)| *item == id) =>
+                || PAGE_ITEMS.iter().any(|(item, _, _)| *item == id)
+                || VIEW_ITEMS.iter().any(|(item, _, _)| *item == id)
+                || WINDOW_ITEMS.iter().any(|(item, _, _)| *item == id) =>
             {
                 send_to_focused(app, id);
             }
@@ -1190,6 +1231,34 @@ mod tests {
             .iter()
             .all(|(_, _, shortcut)| shortcut.starts_with("CmdOrCtrl+")));
         assert!(!ids.contains(&SETTINGS_ITEM) && !ids.contains(&NEW_WINDOW_EVENT));
+    }
+
+    #[test]
+    fn view_and_window_menu_items_send_the_ids_the_page_maps() {
+        let ids: Vec<&str> = VIEW_ITEMS
+            .iter()
+            .chain(WINDOW_ITEMS.iter())
+            .map(|(id, _, _)| *id)
+            .collect();
+        assert_eq!(
+            ids,
+            ["zoom-in", "zoom-out", "zoom-reset", "next-tab", "prev-tab"]
+        );
+        // No two items share an id or a shortcut with the file menu's.
+        let mut all: Vec<&str> = ids.clone();
+        all.extend(PAGE_ITEMS.iter().map(|(id, _, _)| *id));
+        all.push(SETTINGS_ITEM);
+        let unique: std::collections::HashSet<_> = all.iter().collect();
+        assert_eq!(unique.len(), all.len());
+        let shortcuts: Vec<&str> = VIEW_ITEMS
+            .iter()
+            .chain(WINDOW_ITEMS.iter())
+            .chain(PAGE_ITEMS.iter())
+            .map(|(_, _, shortcut)| *shortcut)
+            .collect();
+        let unique: std::collections::HashSet<_> = shortcuts.iter().collect();
+        assert_eq!(unique.len(), shortcuts.len());
+        assert!(shortcuts.iter().all(|s| s.starts_with("CmdOrCtrl+")));
     }
 
     #[test]

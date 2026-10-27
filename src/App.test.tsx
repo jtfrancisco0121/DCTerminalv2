@@ -59,6 +59,7 @@ vi.mock("./bridge", () => ({
   selectTab: vi.fn(async () => {}),
   renameTab: vi.fn(async () => tab),
   moveTab: vi.fn(async () => state),
+  setTerminalSettings: vi.fn(async (terminal: unknown) => terminal),
   reopenClosedTab: vi.fn(async () => tab),
   openAccountWindow: vi.fn(async () => "win-2"),
   ptySetScheme: vi.fn(async () => {}),
@@ -244,5 +245,30 @@ describe("App attention control", () => {
     expect((await screen.findByTestId("status-attention")).textContent).toBe("2 need you · 1 run");
     fireEvent.click(screen.getByTestId("status-attention"));
     expect(await screen.findByRole("dialog", { name: "Active runs" })).toBeTruthy();
+  });
+});
+
+describe("App tab cycling and font zoom", () => {
+  it("Ctrl+Tab selects the next tab and wraps; Ctrl+Shift+plus raises the font size by one", async () => {
+    const bridge = await import("./bridge");
+    const selectTab = bridge.selectTab as unknown as ReturnType<typeof vi.fn>;
+    const setTerminalSettings = bridge.setTerminalSettings as unknown as ReturnType<typeof vi.fn>;
+    const second: TabSummary = { ...tab, id: "tab_2", label: "Claude · two" };
+    state = { windowId: "main", activeTabId: tab.id, tabs: [tab, second], closedTabs: [] };
+    render(<App />);
+    expect(await screen.findAllByRole("tab")).toHaveLength(2);
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
+    });
+    expect(selectTab).toHaveBeenLastCalledWith("main", "tab_2");
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
+    });
+    expect(selectTab).toHaveBeenLastCalledWith("main", "tab_1");
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "+", ctrlKey: true, shiftKey: true });
+    });
+    expect(setTerminalSettings).toHaveBeenCalledWith(expect.objectContaining({ fontSize: 15 }));
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
   });
 });
