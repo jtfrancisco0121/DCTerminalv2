@@ -9,7 +9,7 @@ import { TerminalSearchBar } from "./TerminalSearchBar";
 import { TerminalExitStrip, lastFiftyLines, lastOutputLine } from "./TerminalExitStrip";
 import { TerminalContextMenu, type ContextMenuItem } from "./TerminalContextMenu";
 import { reportError } from "../uiErrors";
-import { livePty, openLivePty, sendPtyInput, subscribeLivePty } from "../terminal/live";
+import { isPtyOpening, livePty, openLivePty, sendPtyInput, subscribeLivePty } from "../terminal/live";
 import {
   blurParkedTerminal,
   clearTerminalScrollback,
@@ -287,6 +287,10 @@ export function TerminalView({ tab, fontSize, autoFocus = true }: TerminalViewPr
       before: () => firstOpenResumes(tab, terminalResumeId),
       start: (resume) => ({ ...openSize(ensureParkedTerminal(ptyId, fontSize)), resume }),
       onError: setFailed,
+    }).then((outcome) => {
+      // The tab was closed while the open was starting: it opened nothing, so
+      // leave no xterm behind, unless the same id was reopened since.
+      if (outcome === "closed" && !isPtyOpening(ptyId) && !livePty(ptyId)) releaseParkedTerminal(ptyId);
     });
     // The tab record only matters for this first open.
     // eslint-disable-next-line react-hooks/exhaustive-deps

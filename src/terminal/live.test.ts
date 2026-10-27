@@ -158,3 +158,26 @@ describe("keystrokes while a PTY opens", () => {
     expect(ptyWrite).toHaveBeenCalledWith("t1", "z");
   });
 });
+
+describe("a first open whose tab closed meanwhile", () => {
+  it("starts nothing when the tab closes during the before step", async () => {
+    const before = deferred<boolean>();
+    const opened = openLivePty("t1", { ...plan, before: () => before.promise, start: () => ({ cols: 1, rows: 1, resume: false }) });
+    dropLivePty("t1");
+    before.resolve(true);
+    expect(await opened).toBe("closed");
+    expect(ptyOpen).not.toHaveBeenCalled();
+    expect(livePty("t1")).toBeUndefined();
+  });
+
+  it("a reopened tab with the same id is the only one that opens", async () => {
+    const before = deferred<boolean>();
+    const stale = openLivePty("t1", { ...plan, before: () => before.promise });
+    dropLivePty("t1");
+    const reopened = openLivePty("t1", plan);
+    before.resolve(true);
+    expect(await stale).toBe("superseded");
+    expect(await reopened).toBe("opened");
+    expect(ptyOpen).toHaveBeenCalledTimes(1);
+  });
+});
