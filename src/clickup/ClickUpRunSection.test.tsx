@@ -9,6 +9,7 @@ const api = {
   pull: vi.fn<(runDir: string, ids: string[]) => Promise<{ pulled: string[]; updateFile: string }>>(),
   post: vi.fn<(runDir: string, version: string, requests: PostRequest[]) => Promise<PostReply>>(),
   retry: vi.fn<(runDir: string, ticketId: string) => Promise<unknown>>(),
+  consent: vi.fn<(runDir: string, sha: string) => Promise<void>>(),
 };
 vi.mock("./api", () => ({
   clickupRunState: (d: string) => api.state(d),
@@ -16,6 +17,7 @@ vi.mock("./api", () => ({
   clickupPullTickets: (d: string, ids: string[]) => api.pull(d, ids),
   clickupPostWriteback: (d: string, v: string, r: PostRequest[]) => api.post(d, v, r),
   clickupAutoPostRetry: (d: string, id: string) => api.retry(d, id),
+  clickupAutoPostConsent: (d: string, sha: string) => api.consent(d, sha),
 }));
 
 import { ClickUpRunSection, draftDone, tellClaude } from "./ClickUpRunSection";
@@ -199,5 +201,66 @@ describe("comments posted automatically", () => {
     fireEvent.click(within(failed).getByText("Retry"));
     await waitFor(() => expect(api.retry).toHaveBeenCalledWith("/runs/r-1", "86a2"));
     expect(list.textContent).toContain("Status changes are never posted on their own");
+  });
+});
+
+describe("the click before comments post on their own", () => {
+  const offer = {
+    writebackSha: "sha-1",
+    comments: [
+      { ticketId: "86a1", label: "QA-86a1", text: "Done: S1" },
+      { ticketId: "86a2", label: "QA-86a2", text: "Done: S2" },
+      { ticketId: "86a3", label: "QA-86a3", text: "Done: S3" },
+    ],
+    notIncluded: [{ ticketId: "86a4", label: "QA-86a4", reason: "blocked: looks like a secret (a JWT)." }],
+  };
+  const view = (over: Partial<NonNullable<RunClickUp["autoPost"]>> = {}): RunClickUp => ({
+    ...base,
+    drafts: [draft("86a1"), draft("86a2"), draft("86a3"), draft("86a4")],
+    autoPost: { enabled: true, running: false, problem: null, record: null, offer, ...over },
+  });
+
+  it("shows every comment collapsed, then one click sends the sha it showed", async () => {
+    api.state.mockResolvedValue(view());
+    api.consent.mockResolvedValue();
+    render(<ClickUpRunSection runDir="/runs/r-1" stage="shipping" updatedAt="t" />);
+    const block = await screen.findByRole("region", { name: "Comments ready to post" });
+    expect(within(block).getByText("Comment for QA-86a1")).toBeTruthy();
+    expect(block.querySelectorAll("details")).toHaveLength(3);
+    expect(block.querySelector("details")?.hasAttribute("open")).toBe(false);
+    expect(block.querySelector("details pre")?.textContent).toBe("Done: S1");
+    const notIncluded = within(block).getByTestId("consent-not-included");
+    expect(notIncluded.textContent).toContain("QA-86a4");
+    expect(notIncluded.textContent).toContain("looks like a secret");
+    expect(api.consent).not.toHaveBeenCalled();
+    fireEvent.click(within(block).getByRole("button", { name: "Post 3 comments" }));
+    await waitFor(() => expect(api.consent).toHaveBeenCalledWith("/runs/r-1", "sha-1"));
+    await waitFor(() => expect(api.state.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it("offers no button when nothing can be posted on its own", async () => {
+    api.state.mockResolvedValue(view({ offer: { ...offer, comments: [] } }));
+    render(<ClickUpRunSection runDir="/r" stage="shipping" updatedAt="t" />);
+    const block = await screen.findByRole("region", { name: "Comments ready to post" });
+    expect(within(block).queryByRole("button")).toBeNull();
+    expect(block.textContent).toContain("Nothing to include");
+    expect(within(block).getByTestId("consent-not-included").textContent).toContain("QA-86a4");
+  });
+
+  it("says plainly when the click could not be recorded and leaves the button enabled", async () => {
+    api.state.mockResolvedValue(view());
+    api.consent.mockRejectedValue("The ship approval is not in status.json.");
+    render(<ClickUpRunSection runDir="/r" stage="shipping" updatedAt="t" />);
+    const button = await screen.findByRole("button", { name: "Post 3 comments" });
+    fireEvent.click(button);
+    await screen.findByText(/The click could not be recorded: The ship approval is not in status.json\. Nothing was posted\./);
+    expect((screen.getByRole("button", { name: "Post 3 comments" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("shows no consent block once the click is recorded", async () => {
+    api.state.mockResolvedValue(view({ offer: null, running: true }));
+    render(<ClickUpRunSection runDir="/r" stage="shipping" updatedAt="t" />);
+    await screen.findByText("Posting the comments…");
+    expect(screen.queryByRole("region", { name: "Comments ready to post" })).toBeNull();
   });
 });

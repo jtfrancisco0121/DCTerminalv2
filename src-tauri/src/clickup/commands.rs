@@ -236,6 +236,9 @@ pub struct AutoPostView {
     /// A dev-app run used in place: never auto-posted here (the app that
     /// owns its data folder does that); ticked posts still work.
     pub adopted: bool,
+    /// Waiting for the user's click: the comments that would go, and those that never
+    /// go on their own. Nothing is sent until the consent command records the click.
+    pub offer: Option<autopost::ConsentOffer>,
 }
 
 const UNTRUSTED: &str = "This run's tickets.json was not written by this app's Start, so the app checks and posts nothing for it.";
@@ -389,6 +392,12 @@ fn auto_post_view(
         .lock()
         .map(|b| b.as_ref().is_some_and(|set| set.contains(dir)))
         .unwrap_or(false);
+    if view.enabled && view.problem.is_none() {
+        match autopost::offer(key, data, dir) {
+            Ok(offer) => view.offer = offer,
+            Err(problem) => view.problem = Some(problem),
+        }
+    }
     if view.enabled && !view.running && view.problem.is_none() {
         if let Ok(Some(_)) = autopost::due(key, data, dir) {
             view.running = spawn_auto_post(
@@ -455,6 +464,37 @@ pub async fn clickup_auto_post_retry(
             &ticket_id,
             &now_text,
         )
+    })
+    .await
+}
+
+/// The panel's one click: records the user's consent for the writeback.json
+/// version they read (signed, app-side), then starts the auto-post. The only
+/// writer of the consent.
+#[tauri::command]
+pub async fn clickup_auto_post_consent(
+    app: AppHandle,
+    run_dir: String,
+    writeback_sha: String,
+) -> Result<(), String> {
+    blocking(move || {
+        let own = data_dir(&app);
+        let dir = checked_run_dir(&own, &run_dir)?;
+        let data = crate::run::trust_data_dir(&own, &dir);
+        if data != own {
+            return Err(
+                "This run came from the dev app: its comments are not posted automatically here."
+                    .into(),
+            );
+        }
+        let key = trust::install_key()?;
+        let run = trusted(&key, &data, &dir)?;
+        if !auto_post_on(&app, &run.account_id) {
+            return Err("Auto-post is off for this account (Settings › ClickUp).".into());
+        }
+        autopost::give_consent(&key, &data, &dir, &writeback_sha, &now_text)?;
+        spawn_auto_post(key, data, dir, run.account_id);
+        Ok(())
     })
     .await
 }

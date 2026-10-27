@@ -22,6 +22,8 @@ use std::path::Path;
 
 pub const AUTOPOST_FILE: &str = "autopost.json";
 pub const BLOCKED_SECRET: &str = "blocked: looks like a secret";
+pub const NO_CONSENT: &str =
+    "Nothing is posted on its own until you click Post in the run panel for this writeback.json.";
 pub const NOT_IN_SNAPSHOT: &str = "Not one of the run's tickets (signed snapshot), so not posted.";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,8 +70,17 @@ pub fn may_be_due(run_dir: &Path) -> bool {
         && ship_approved(run_dir)
 }
 
+/// The user clicked Post for exactly this writeback.json version (signed
+/// record `autopost-consent.json`). status.json's `shipApproval` is written by
+/// Claude, so it is a precondition and never enough.
+pub fn consented(key: &Key, data: &Path, run_dir: &Path, version: &str) -> Result<bool, String> {
+    Ok(trust::read_consent(key, data, run_dir)?
+        .is_some_and(|c| c.schema == 1 && c.writeback_sha == version))
+}
+
 /// The writeback.json version to auto-post now, if any: approved, drafts
-/// written, the run trusted, and not yet done for this version.
+/// written, the run trusted, the user's click for this version, and not yet
+/// done for this version.
 pub fn due(key: &Key, data: &Path, run_dir: &Path) -> Result<Option<String>, String> {
     if !may_be_due(run_dir) {
         return Ok(None);
@@ -80,8 +91,134 @@ pub fn due(key: &Key, data: &Path, run_dir: &Path) -> Result<Option<String>, Str
     if trust::load(key, data, run_dir)?.is_none() {
         return Ok(None);
     }
+    if !consented(key, data, run_dir, &version)? {
+        return Ok(None);
+    }
     let done = trust::read_autopost(key, data, run_dir)?;
     Ok((done.map(|r| r.writeback_sha) != Some(version.clone())).then_some(version))
+}
+
+/// One comment the consent click would send.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferComment {
+    pub ticket_id: String,
+    /// The ticket as the app's snapshot names it (never writeback.json's words).
+    pub label: String,
+    /// The exact text that would be sent.
+    pub text: String,
+}
+
+/// A comment the click never covers, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferSkipped {
+    pub ticket_id: String,
+    pub label: String,
+    pub reason: String,
+}
+
+/// What the run panel shows before the click: the comments that would go and
+/// those that never go on their own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentOffer {
+    /// The writeback.json version shown; the click covers exactly this.
+    pub writeback_sha: String,
+    pub comments: Vec<OfferComment>,
+    pub not_included: Vec<OfferSkipped>,
+}
+
+/// The consent block's content, when it should show: approved, drafts
+/// written, the run trusted, and no click yet for this version.
+pub fn offer(key: &Key, data: &Path, run_dir: &Path) -> Result<Option<ConsentOffer>, String> {
+    if !may_be_due(run_dir) {
+        return Ok(None);
+    }
+    let Some((drafts, version)) = writeback::read_drafts(run_dir)? else {
+        return Ok(None);
+    };
+    let Some(run) = trust::load(key, data, run_dir)? else {
+        return Ok(None);
+    };
+    if consented(key, data, run_dir, &version)? {
+        return Ok(None);
+    }
+    let tickets: HashMap<String, SnapshotTask> = run
+        .snapshot
+        .tasks
+        .into_iter()
+        .map(|t| (t.id.clone(), t))
+        .collect();
+    let posted = trust::read_posted(key, data, run_dir)?;
+    let mut offer = ConsentOffer {
+        writeback_sha: version,
+        comments: Vec::new(),
+        not_included: Vec::new(),
+    };
+    for draft in &drafts.drafts {
+        let Some(text) = draft.comment.as_deref().filter(|t| !t.trim().is_empty()) else {
+            continue;
+        };
+        if posted_text(&posted, &draft.ticket.id).is_some() {
+            continue;
+        }
+        let ticket = tickets.get(&draft.ticket.id);
+        let label = ticket
+            .and_then(|t| t.custom_id.clone())
+            .unwrap_or_else(|| draft.ticket.id.clone());
+        match refusal(text, ticket) {
+            Some((_, reason)) => offer.not_included.push(OfferSkipped {
+                ticket_id: draft.ticket.id.clone(),
+                label,
+                reason,
+            }),
+            None => offer.comments.push(OfferComment {
+                ticket_id: draft.ticket.id.clone(),
+                label,
+                text: text.to_string(),
+            }),
+        }
+    }
+    Ok((!offer.comments.is_empty() || !offer.not_included.is_empty()).then_some(offer))
+}
+
+/// Records the user's click for `sha`. Only the panel's consent command calls
+/// this: the version must still be the current one, the run approved and
+/// trusted, and something must be postable on its own.
+pub fn give_consent(
+    key: &Key,
+    data: &Path,
+    run_dir: &Path,
+    sha: &str,
+    now: &dyn Fn() -> String,
+) -> Result<(), String> {
+    if !ship_approved(run_dir) {
+        return Err("The ship approval is not in status.json.".into());
+    }
+    trust::load(key, data, run_dir)?.ok_or("This run has no app-side ticket record.")?;
+    let (_, version) =
+        writeback::read_drafts(run_dir)?.ok_or("This run has no writeback.json yet.")?;
+    if version != sha {
+        return Err(writeback::DRAFTS_CHANGED.into());
+    }
+    if consented(key, data, run_dir, &version)? {
+        return Ok(());
+    }
+    match offer(key, data, run_dir)? {
+        Some(o) if !o.comments.is_empty() => {}
+        _ => return Err("No comment can be posted on its own.".into()),
+    }
+    trust::save_consent(
+        key,
+        data,
+        run_dir,
+        &trust::AutoPostConsent {
+            schema: 1,
+            writeback_sha: version,
+            at: now(),
+        },
+    )
 }
 
 /// Why a comment is not sent on its own, before any call.
@@ -153,6 +290,9 @@ pub fn auto_post(
     let _lock = trust::lock_posts(data, run_dir)?;
     let (drafts, version) =
         writeback::read_drafts(run_dir)?.ok_or("This run has no writeback.json yet.")?;
+    if !consented(key, data, run_dir, &version)? {
+        return Err(NO_CONSENT.into());
+    }
     let tickets: HashMap<String, SnapshotTask> = run
         .snapshot
         .tasks
@@ -250,6 +390,9 @@ pub fn retry(
         trust::read_autopost(key, data, run_dir)?.ok_or("Nothing was posted on its own yet.")?;
     if record.writeback_sha != version {
         return Err(writeback::DRAFTS_CHANGED.into());
+    }
+    if !consented(key, data, run_dir, &version)? {
+        return Err(NO_CONSENT.into());
     }
     let at = record
         .results
@@ -358,6 +501,24 @@ mod tests {
         ClickUpToken::parse("pk_test_autopost").unwrap()
     }
 
+    /// The user's click for the writeback.json now in the run folder (written
+    /// straight to the signed record, without the checks `give_consent` makes).
+    fn click(data: &Path, run: &Path) -> String {
+        let (_, version) = writeback::read_drafts(run).unwrap().unwrap();
+        trust::save_consent(
+            &k(),
+            data,
+            run,
+            &trust::AutoPostConsent {
+                schema: 1,
+                writeback_sha: version.clone(),
+                at: "t".into(),
+            },
+        )
+        .unwrap();
+        version
+    }
+
     #[test]
     fn after_ship_approval_only_trusted_clean_comments_post_once_and_never_statuses() {
         let (_dir, data, run) = setup("autopost", false);
@@ -366,13 +527,21 @@ mod tests {
             drop(_dir);
             setup("autopost2", true)
         };
-        let version = due(&k(), &data, &run).unwrap().expect("due");
-        assert_eq!(version.len(), 64);
+        // Approved and drafts written, but no click: not due, and nothing posts.
+        assert_eq!(due(&k(), &data, &run).unwrap(), None, "no click yet");
         let api = Recorded::default()
             .on("POST /task/86a1/comment", ok("{}".into()))
             .on("POST /task/86a3/comment", status(500));
         let token = token();
         let client = ClickUp::new(&api, &token);
+        assert_eq!(
+            auto_post(&client, &k(), &data, &run, &|| "t".into()).unwrap_err(),
+            NO_CONSENT
+        );
+        assert!(api.paths().is_empty(), "nothing was sent without the click");
+        click(&data, &run);
+        let version = due(&k(), &data, &run).unwrap().expect("due");
+        assert_eq!(version.len(), 64);
         let record = auto_post(&client, &k(), &data, &run, &|| "t".into()).unwrap();
         let paths = api.paths();
         assert!(
@@ -433,12 +602,19 @@ mod tests {
             json!({"schema": 1, "drafts": [{"ticket": {"id": "86a1"}, "comment": "Done: S1 (v2)"}]}).to_string(),
         )
         .unwrap();
+        assert_eq!(
+            due(&k(), &data, &run).unwrap(),
+            None,
+            "a rewritten writeback.json needs a new click"
+        );
+        click(&data, &run);
         assert!(due(&k(), &data, &run).unwrap().is_some());
     }
 
     #[test]
     fn a_failed_comment_can_be_retried_and_a_tampered_record_stops_everything() {
         let (_dir, data, run) = setup("autopost_retry", true);
+        click(&data, &run);
         let api = Recorded::default()
             .on("POST /task/86a1/comment", status(401))
             .on("POST /task/86a3/comment", ok("{}".into()));
@@ -495,6 +671,7 @@ mod tests {
             json!({"schema": 1, "drafts": [{"ticket": {"id": "86a2"}, "comment": "DB_PASSWORD=s3cr3tPass!"}]}).to_string(),
         )
         .unwrap();
+        click(&data, &run);
         let record = auto_post(&client, &k(), &data, &run, &|| "t".into()).unwrap();
         assert_eq!(record.results[0].result, "posted");
         assert_eq!(record.results[0].text.as_deref(), Some("by hand"));
@@ -517,5 +694,80 @@ mod tests {
         std::fs::rename(run.join("writeback.json"), &real).unwrap();
         std::os::unix::fs::symlink(&real, run.join("writeback.json")).unwrap();
         assert!(!may_be_due(&run));
+    }
+
+    #[test]
+    fn the_consent_is_signed_per_version_and_only_covers_what_the_panel_showed() {
+        let (_dir, data, run) = setup("ap_consent", true);
+        let shown = offer(&k(), &data, &run).unwrap().expect("offer");
+        // 86a1 and 86a3 would go; the flagged one and the stranger are listed apart.
+        let ids: Vec<&str> = shown
+            .comments
+            .iter()
+            .map(|c| c.ticket_id.as_str())
+            .collect();
+        assert_eq!(ids, ["86a1", "86a3"]);
+        assert_eq!(shown.comments[0].text, "Done: S1");
+        let skipped: Vec<(&str, &str)> = shown
+            .not_included
+            .iter()
+            .map(|s| (s.ticket_id.as_str(), s.label.as_str()))
+            .collect();
+        assert_eq!(skipped, [("86a2", "86a2"), ("86zz", "86zz")]);
+        assert!(shown.not_included[0].reason.starts_with(BLOCKED_SECRET));
+        assert!(!shown.not_included[0].reason.contains("s3cr3t"));
+        // A click for another version is refused; nothing is recorded.
+        assert_eq!(
+            give_consent(&k(), &data, &run, "old", &|| "t".into()).unwrap_err(),
+            writeback::DRAFTS_CHANGED
+        );
+        assert_eq!(due(&k(), &data, &run).unwrap(), None);
+        give_consent(&k(), &data, &run, &shown.writeback_sha, &|| "t".into()).unwrap();
+        assert_eq!(
+            due(&k(), &data, &run).unwrap(),
+            Some(shown.writeback_sha.clone())
+        );
+        assert!(
+            offer(&k(), &data, &run).unwrap().is_none(),
+            "clicked: no block"
+        );
+        // The click covers the version it showed: a rewrite needs another.
+        std::fs::write(
+            run.join("writeback.json"),
+            json!({"schema": 1, "drafts": [{"ticket": {"id": "86a1"}, "comment": "Done: S1, changed"}]}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(due(&k(), &data, &run).unwrap(), None);
+        let again = offer(&k(), &data, &run).unwrap().expect("shown again");
+        assert_eq!(again.comments[0].text, "Done: S1, changed");
+        assert_ne!(again.writeback_sha, shown.writeback_sha);
+        // A tampered consent record stops everything.
+        let path = trust::trust_dir(&data, &run)
+            .unwrap()
+            .join(trust::CONSENT_FILE);
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace("t\"", "u\"")).unwrap();
+        assert_eq!(due(&k(), &data, &run).unwrap_err(), trust::TAMPERED);
+    }
+
+    #[test]
+    fn nothing_postable_means_no_click_and_an_unapproved_run_is_refused() {
+        let (_dir, data, run) = setup("ap_nothing", true);
+        std::fs::write(
+            run.join("writeback.json"),
+            json!({"schema": 1, "drafts": [{"ticket": {"id": "86a2"}, "comment": "DB_PASSWORD=s3cr3tPass!"}]}).to_string(),
+        )
+        .unwrap();
+        let shown = offer(&k(), &data, &run).unwrap().expect("only the list");
+        assert!(shown.comments.is_empty() && shown.not_included.len() == 1);
+        assert_eq!(
+            give_consent(&k(), &data, &run, &shown.writeback_sha, &|| "t".into()).unwrap_err(),
+            "No comment can be posted on its own."
+        );
+        assert_eq!(due(&k(), &data, &run).unwrap(), None);
+        let (_d2, data, run) = setup("ap_unapproved", false);
+        let (_, version) = writeback::read_drafts(&run).unwrap().unwrap();
+        assert!(give_consent(&k(), &data, &run, &version, &|| "t".into()).is_err());
+        assert!(offer(&k(), &data, &run).unwrap().is_none());
     }
 }

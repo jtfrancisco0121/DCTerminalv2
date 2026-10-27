@@ -291,6 +291,37 @@ pub fn read_autopost(
     read_signed(key, data, run_dir, super::autopost::AUTOPOST_FILE)
 }
 
+/// The user's click for auto-post (`autopost-consent.json`, signed): the
+/// writeback.json version they read and said "Post" for. Only the panel's
+/// consent command writes it; nothing is posted on its own without it.
+pub const CONSENT_FILE: &str = "autopost-consent.json";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoPostConsent {
+    pub schema: u32,
+    /// sha-256 of the writeback.json the user saw.
+    pub writeback_sha: String,
+    pub at: String,
+}
+
+pub fn read_consent(
+    key: &Key,
+    data: &Path,
+    run_dir: &Path,
+) -> Result<Option<AutoPostConsent>, String> {
+    read_signed(key, data, run_dir, CONSENT_FILE)
+}
+
+pub fn save_consent(
+    key: &Key,
+    data: &Path,
+    run_dir: &Path,
+    consent: &AutoPostConsent,
+) -> Result<(), String> {
+    write_signed(key, data, run_dir, CONSENT_FILE, consent)
+}
+
 pub fn save_autopost(
     key: &Key,
     data: &Path,

@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { errorText } from "../components/InlineNotice";
 import { safeUrl } from "../run/words";
 import {
+  clickupAutoPostConsent,
   clickupAutoPostRetry,
   clickupCheckTickets,
   clickupPostWriteback,
@@ -71,6 +72,8 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
   const [posting, setPosting] = useState(false);
   const [outcomes, setOutcomes] = useState<PostOutcome[] | null>(null);
+  const [consenting, setConsenting] = useState(false);
+  const [consentError, setConsentError] = useState<string | null>(null);
   const autoChecked = useRef<string | null>(null);
 
   const load = useCallback(
@@ -220,6 +223,18 @@ export function ClickUpRunSection({ runDir, stage, updatedAt }: Props) {
             );
           }}
           onOpen={(url) => void openUrl(url).catch((err: unknown) => setProblem(errorText(err)))}
+          consenting={consenting}
+          consentError={consentError}
+          onConsent={(sha) => {
+            setConsenting(true);
+            setConsentError(null);
+            clickupAutoPostConsent(runDir, sha)
+              .catch((err: unknown) => setConsentError(errorText(err)))
+              .finally(() => {
+                setConsenting(false);
+                void load();
+              });
+          }}
         />
       )}
       {state.drafts && (
@@ -349,11 +364,18 @@ export function AutoPostList({
   label,
   onRetry,
   onOpen,
+  onConsent,
+  consenting = false,
+  consentError = null,
 }: {
   view: AutoPostView;
   label: (ticketId: string) => string;
   onRetry: (ticketId: string) => void;
   onOpen: (url: string) => void;
+  /** The one click: records consent for this writeback.json version (its sha-256). */
+  onConsent?: (writebackSha: string) => void;
+  consenting?: boolean;
+  consentError?: string | null;
 }) {
   if (view.adopted && !view.record) {
     return <p className="hint">This run came from the dev app: its comments are not posted automatically here. Tick them below.</p>;
@@ -365,6 +387,9 @@ export function AutoPostList({
     <div className="clickup-autopost" aria-label="Posted automatically" data-testid="autopost">
       <h4>Comments posted automatically</h4>
       {view.problem && <p className="hint warn">{view.problem}</p>}
+      {view.offer && view.enabled && (
+        <ConsentBlock offer={view.offer} busy={consenting || view.running} error={consentError} onConsent={onConsent} />
+      )}
       {view.running && <p className="hint">Posting the comments…</p>}
       {view.record && (
         <ul>
@@ -400,5 +425,59 @@ export function AutoPostList({
       )}
       <p className="hint">Status changes are never posted on their own: tick them below.</p>
     </div>
+  );
+}
+
+/** What would be sent, read before the one click that allows it (CAP-9). */
+function ConsentBlock({
+  offer,
+  busy,
+  error,
+  onConsent,
+}: {
+  offer: NonNullable<AutoPostView["offer"]>;
+  busy: boolean;
+  error: string | null;
+  onConsent?: (writebackSha: string) => void;
+}) {
+  const count = offer.comments.length;
+  return (
+    <section className="consent-block" aria-label="Comments ready to post" data-testid="consent-block">
+      {count > 0 ? (
+        <>
+          <p className="hint">Comments ready to post (written by Claude). Read them, then post.</p>
+          <ul>
+            {offer.comments.map((c) => (
+              <li key={c.ticketId} data-testid={`consent-${c.ticketId}`}>
+                <details className="comment-preview">
+                  <summary>Comment for {c.label}</summary>
+                  <pre>{c.text}</pre>
+                </details>
+              </li>
+            ))}
+          </ul>
+          <div className="button-row">
+            <button type="button" className="primary-button" disabled={busy} onClick={() => onConsent?.(offer.writebackSha)}>
+              {count === 1 ? "Post 1 comment" : `Post ${count} comments`}
+            </button>
+          </div>
+        </>
+      ) : (
+        <p className="hint">Nothing to include: no comment can be posted on its own; tick them below.</p>
+      )}
+      {offer.notIncluded.length > 0 && (
+        <>
+          <p className="hint">Not included:</p>
+          <ul data-testid="consent-not-included">
+            {offer.notIncluded.map((n) => (
+              <li key={n.ticketId} className="hint warn">
+                <strong>{n.label}</strong> — {n.reason}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {error && <p className="error">The click could not be recorded: {error.replace(/[.\s]+$/, "")}. Nothing was posted.</p>}
+    </section>
   );
 }

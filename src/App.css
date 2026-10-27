@@ -1440,3 +1440,44 @@ body,
   list-style: none;
   padding-left: 0;
 }
+
+/* ClickUp: the consent block and the secret warning (run-safety states). */
+.consent-block {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin: var(--space-2) 0;
+}
+
+.consent-block ul {
+  list-style: none;
+  padding-left: 0;
+}
+
+.comment-preview summary {
+  font-size: var(--text-md);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.comment-preview pre {
+  background: var(--bg-muted);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  max-height: 17em;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.secret-warning {
+  color: var(--warning-bright);
+  background: var(--warning-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  margin: var(--space-1) 0;
+  font-size: var(--text-sm);
+}
