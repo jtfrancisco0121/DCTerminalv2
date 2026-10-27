@@ -606,6 +606,27 @@ assert len(c["digest"]) == 64 and c["reasons"] == [] and c["at"].endswith("Z")
 assert "bmad/output/r-b/spec-toy/spec-toy.md" in c["documents"] and "bmad/output/r-b/ux-toy/EXPERIENCE.md" in c["documents"], c["documents"]
 PY
 
+echo "# BMAD placeholders name only real template tokens (CAP-18)"
+SPEC="$B/bmad/output/r-b/spec-toy/spec-toy.md"; cp "$SPEC" "$d/spec.keep"
+{ cat "$d/spec.keep"; printf '\nThe endpoint is GET /invoices/{invoiceId} and returns {"ok": true}.\n'; } > "$SPEC"
+expect 0 "prose with a REST path parameter passes" bash "$STATE" bmad-check "$B"
+tok="$(grep -ho '{Product Name}' "$ROOT"/plugin/bmad/skills/*/assets/*template*.md | head -1)"
+[[ "$tok" == "{Product Name}" ]] && ok "  {Product Name} is a vendored template token" || bad "  no template token found"
+{ cat "$d/spec.keep"; printf '\n# %s\n' "$tok"; } > "$SPEC"
+expect 3 "a vendored template token left in fails" bash "$STATE" bmad-check "$B"
+has "  names it" "{Product Name}"
+{ cat "$d/spec.keep"; printf '\nCall {{base_url}}/x.\n'; } > "$SPEC"
+expect 3 "a double-brace token fails" bash "$STATE" bmad-check "$B"
+has "  names it" "{{base_url}}"
+{ cat "$d/spec.keep"; printf '\nIn code it is fine: `{Product Name}` and\n\n```\n{Product Name}\n```\n'; } > "$SPEC"
+expect 0 "a template token inside code passes" bash "$STATE" bmad-check "$B"
+cp "$d/spec.keep" "$SPEC"
+rm -f "$B/bmad/output/r-b/ux-toy/validation-report.md" "$B/bmad/output/r-b/ux-toy/validation-report.html"
+expect 3 "a UX folder without its validation reports fails" bash "$STATE" bmad-check "$B"
+[[ "$(grep -o 'ux-toy/validation-report.md is missing' <<<"$out" | wc -l | tr -d ' ')" == 1 ]] && ok "  the missing report is named once, not once per document" || bad "  repeated: $out"
+mkdocs prd ux
+expect 0 "bmad-check passes again" bash "$STATE" bmad-check "$B"
+
 echo "# BMAD: plan-approval is allowed with a passing check, refused after a document edit, and recovers"
 expect 0 "plan-approval put with a passing check" bput < <(bstatus plan-approval)
 echo "A new line." >> "$B/bmad/output/r-b/spec-toy/spec-toy.md"

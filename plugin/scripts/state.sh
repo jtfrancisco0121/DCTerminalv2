@@ -72,7 +72,7 @@ set -euo pipefail
 py_works() { command -v python3 >/dev/null 2>&1 && python3 -c 'import json, sys; sys.exit(0)' >/dev/null 2>&1; }
 
 IFS= read -r -d '' PY <<'PY' || true
-import datetime, json, os, re, shutil, signal, subprocess, sys, tempfile, time
+import datetime, glob, json, os, re, shutil, signal, subprocess, sys, tempfile, time
 
 STAGES = ["planning", "plan-approval", "building", "ship-approval", "shipping", "done", "failed"]
 STATES = ["pending", "building", "drafted", "reviewing", "fixing", "reviewed", "needs-attention", "opened", "pushed", "local-only"]
@@ -307,13 +307,35 @@ def bmad_frontmatter(text):
     return d
 
 
-def bmad_placeholders(text):
-    """Unfilled template leftovers outside code: {name} tokens and template guide comments."""
+BRACE_TOKEN = re.compile(r"\{[A-Za-z][^{}\n]*\}")
+_TEMPLATE_TOKENS = []
+
+
+def bmad_text_outside_code(text):
     t = re.sub(r"(```|~~~).*?\1", "", text, flags=re.S)
-    guide = bool(re.search(r"<!--\s*TEMPLATE GUIDE", t))
     t = re.sub(r"<!--.*?-->", "", t, flags=re.S)
-    t = re.sub(r"`[^`\n]*`", "", t)
-    hits = re.findall(r"\{[A-Za-z][^{}\n]*\}", t)
+    return re.sub(r"`[^`\n]*`", "", t)
+
+
+def bmad_template_tokens():
+    """The {Word…} tokens the vendored templates (plugin/bmad/skills/*/assets/*template*.md) contain, collected at check
+    time: only these count as unfilled, so prose such as a REST path with a brace-wrapped parameter passes."""
+    if not _TEMPLATE_TOKENS:
+        tokens = set()
+        for path in glob.glob(os.path.join(PLUGIN_ROOT, "bmad", "skills", "*", "assets", "*template*.md")) if PLUGIN_ROOT else []:
+            tokens.update(BRACE_TOKEN.findall(read(path)))  # the whole template: its tokens sit in prose, comments and examples
+        _TEMPLATE_TOKENS.append(tokens)
+    return _TEMPLATE_TOKENS[0]
+
+
+def bmad_placeholders(text):
+    """Unfilled template leftovers outside code: tokens taken from the vendored templates, any double-brace token, and
+    template guide comments."""
+    guide = bool(re.search(r"<!--\s*TEMPLATE GUIDE", re.sub(r"(```|~~~).*?\1", "", text, flags=re.S)))
+    t = bmad_text_outside_code(text)
+    known = bmad_template_tokens()
+    hits = [h for h in BRACE_TOKEN.findall(t) if h in known]
+    hits += re.findall(r"\{\{[^{}\n]*\}\}", t)
     return (["<!-- TEMPLATE GUIDE -->"] if guide else []) + hits[:3]
 
 
@@ -867,7 +889,7 @@ def bmad_check_docs(run, docs):
         for need in ("DESIGN.md", "EXPERIENCE.md"):
             if need not in names:
                 reasons.append(f"UX is missing {need}")
-    return reasons, found
+    return list(dict.fromkeys(reasons)), found  # each reason once, in order
 
 
 def cmd_bmad_check(run):
