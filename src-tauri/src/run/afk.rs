@@ -18,6 +18,8 @@ use tauri::{AppHandle, Manager};
 const CLEANUP_TICK: Duration = Duration::from_secs(30);
 /// How often the request sweep looks for new requests.
 const REQUEST_TICK: Duration = Duration::from_secs(2);
+/// How often a run's old answered requests are pruned.
+const PRUNE_EVERY: Duration = Duration::from_secs(3600);
 
 fn auto_cleanup_on(app: &AppHandle) -> bool {
     app.state::<Mutex<SettingsStore>>()
@@ -42,6 +44,8 @@ pub fn spawn_afk_sweeps(app: &AppHandle) {
     std::thread::spawn(move || {
         let mut limiter = Limiter::default();
         let mut first = true;
+        // When each run's answered requests were last pruned (once an hour).
+        let mut pruned: HashMap<PathBuf, Instant> = HashMap::new();
         loop {
             let data = data_dir(&request_app);
             // The app's own run folders only (adopted runs belong to the dev
@@ -59,6 +63,13 @@ pub fn spawn_afk_sweeps(app: &AppHandle) {
                 }
                 if first {
                     requests::fail_interrupted(&dir);
+                }
+                if pruned
+                    .get(&dir)
+                    .is_none_or(|at| at.elapsed() >= PRUNE_EVERY)
+                {
+                    pruned.insert(dir.clone(), Instant::now());
+                    requests::prune(&dir, std::time::SystemTime::now());
                 }
                 for pending in requests::pending(&dir) {
                     let Some(kind) = requests::accept(&dir, &pending, &mut limiter, Instant::now())
