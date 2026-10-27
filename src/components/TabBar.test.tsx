@@ -79,3 +79,23 @@ describe("TabBar", () => {
     expect(props.onRename).toHaveBeenCalledOnce();
   });
 });
+
+describe("TabBar waiting dot", () => {
+  it("a waiting tab gets the waiting class and says Claude finished its turn", () => {
+    render(
+      <TabBar
+        tabs={[tab("a", "Claude · a")]}
+        activeTabId="a"
+        exited={new Set()}
+        activity={{ a: "waiting" }}
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onRename={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+    const dot = screen.getByLabelText("Claude waiting");
+    expect(dot.className).toContain("tab-activity-waiting");
+    expect(dot.getAttribute("title")).toBe("Claude finished its turn");
+  });
+});

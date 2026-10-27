@@ -32,6 +32,7 @@ body,
   --fg-subtle: #6e7681;
   --accent: #388bfd;
   --accent-fg: #58a6ff;
+  --activity-waiting: var(--accent-fg);
   --accent-bright: #79c0ff;
   --accent-emphasis: #1f6feb;
   --accent-subtle: #15253a;
@@ -123,6 +124,7 @@ body,
   --fg-subtle: #6e7781;
   --accent: #0969da;
   --accent-fg: #0969da;
+  --activity-waiting: var(--accent-fg);
   --accent-bright: #0550ae;
   --accent-emphasis: #0969da;
   --accent-subtle: #ddf4ff;
@@ -173,6 +175,7 @@ body,
   --fg-subtle: #6272a4;
   --accent: #bd93f9;
   --accent-fg: #bd93f9;
+  --activity-waiting: var(--accent-fg);
   --accent-bright: #d6acff;
   --accent-emphasis: #bd93f9;
   --accent-subtle: #3a3354;
@@ -223,6 +226,7 @@ body,
   --fg-subtle: #7b88a1;
   --accent: #88c0d0;
   --accent-fg: #88c0d0;
+  --activity-waiting: var(--accent-fg);
   --accent-bright: #8fbcbb;
   --accent-emphasis: #5e81ac;
   --accent-subtle: #34404e;
@@ -273,6 +277,7 @@ body,
   --fg-subtle: #737aa2;
   --accent: #7aa2f7;
   --accent-fg: #7aa2f7;
+  --activity-waiting: var(--accent-fg);
   --accent-bright: #7dcfff;
   --accent-emphasis: #3d59a1;
   --accent-subtle: #24304f;
@@ -323,6 +328,7 @@ body,
   --fg-subtle: #7f849c;
   --accent: #89b4fa;
   --accent-fg: #89b4fa;
+  --activity-waiting: var(--accent-fg);
   --accent-bright: #b4befe;
   --accent-emphasis: #74c7ec;
   --accent-subtle: #263046;
@@ -1412,6 +1418,10 @@ body,
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
+}
+
+.tab-activity-waiting {
+  background: var(--activity-waiting);
 }
 
 .tab-activity-working {

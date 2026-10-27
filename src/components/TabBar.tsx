@@ -16,6 +16,13 @@ type Props = {
   onActivityClick?: (tabId: string) => void;
 };
 
+/** The dot's tooltip. */
+export function activityTitle(activity: string): string {
+  if (activity === "needs-you") return "Claude needs you";
+  if (activity === "waiting") return "Claude finished its turn";
+  return `Claude is ${activity}`;
+}
+
 /** The window's tabs: click to show, double-click to rename, × to close, + for a new one. */
 export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename, onNew, activity, onActivityClick }: Props) {
   const [editing, setEditing] = useState<{ id: string; value: string } | null>(null);
@@ -68,7 +75,7 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
                 {showDot && !clickableDot && (
                   <span
                     className={`tab-activity tab-activity-${activity![tab.id]}`}
-                    title={activity![tab.id] === "needs-you" ? "Claude needs you" : `Claude is ${activity![tab.id]}`}
+                    title={activityTitle(activity![tab.id])}
                     aria-label={`Claude ${activity![tab.id]}`}
                   />
                 )}
@@ -78,7 +85,7 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
               <button
                 type="button"
                 className={`tab-activity tab-activity-button tab-activity-${activity![tab.id]}`}
-                title={activity![tab.id] === "needs-you" ? "Claude needs you" : `Claude is ${activity![tab.id]}`}
+                title={activityTitle(activity![tab.id])}
                 aria-label={`Claude ${activity![tab.id]}: show usage`}
                 onClick={() => onActivityClick!(tab.id)}
               />
