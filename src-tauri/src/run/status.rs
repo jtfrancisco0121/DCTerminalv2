@@ -180,6 +180,8 @@ pub struct RunView {
     pub ship_approved: bool,
     /// BMAD planning, when the run's mode is auto or on.
     pub bmad: Option<BmadView>,
+    /// What the app cleaned up for merged PRs (app-cleanup.json).
+    pub cleanup: Vec<super::cleanup::CleanupRecord>,
 }
 
 fn s(v: &Value, key: &str) -> Option<String> {
@@ -663,6 +665,10 @@ pub fn read_run(run_dir: &Path, checks_running: bool) -> RunView {
         .map(|t| parse_log(&t))
         .unwrap_or_default();
     view.has_report = run_dir.join("report.md").is_file();
+    view.cleanup = super::cleanup::read_cleanup(run_dir)
+        .prs
+        .into_values()
+        .collect();
     view
 }
 

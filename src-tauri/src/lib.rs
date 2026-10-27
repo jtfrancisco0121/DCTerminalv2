@@ -102,6 +102,7 @@ pub fn run() {
             shell_env::spawn_login_path_refresh();
             run::spawn_prune_launch_prompts(app.handle());
             clickup::commands::spawn_auto_post_sweep(app.handle());
+            run::afk::spawn_afk_sweeps(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

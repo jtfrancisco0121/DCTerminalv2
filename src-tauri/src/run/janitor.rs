@@ -203,12 +203,22 @@ pub fn dirt(worktree: &Path) -> Result<Dirt, String> {
     Ok(dirt)
 }
 
+/// `.guard.json` `copied`: the git-ignored files `state.sh worktree` copied
+/// into each PR's worktree from the main checkout (copies: they go with it).
+fn copied_files(run_dir: &Path) -> std::collections::HashMap<String, Vec<String>> {
+    read_json_value(&run_dir.join(".guard.json"))
+        .and_then(|g| g.get("copied").cloned())
+        .and_then(|c| serde_json::from_value(c).ok())
+        .unwrap_or_default()
+}
+
 fn inspect(
     run_id: &str,
     id: &str,
     wt: &Path,
     repo: Option<&str>,
     branch: Option<&str>,
+    copied: &[String],
 ) -> WorktreeItem {
     let mut item = WorktreeItem {
         pr_id: id.to_string(),
@@ -232,7 +242,8 @@ fn inspect(
     item.repo_path = Some(main.display().to_string());
     item.branch = Some(expected_branch(run_id, id));
     match dirt(wt) {
-        Ok(dirt) => {
+        Ok(mut dirt) => {
+            dirt.kept_ignored.retain(|path| !copied.contains(path));
             item.changed_files = dirt.changed;
             item.clean = dirt.changed == 0;
             if !dirt.kept_ignored.is_empty() {
@@ -270,9 +281,13 @@ fn run_id_of(run_dir: &Path) -> String {
 
 pub fn list_worktrees(run_dir: &Path) -> Vec<WorktreeItem> {
     let run_id = run_id_of(run_dir);
+    let copied = copied_files(run_dir);
     recorded(run_dir)
         .iter()
-        .map(|(id, wt, repo, branch)| inspect(&run_id, id, wt, repo.as_deref(), branch.as_deref()))
+        .map(|(id, wt, repo, branch)| {
+            let files = copied.get(id).map(Vec::as_slice).unwrap_or(&[]);
+            inspect(&run_id, id, wt, repo.as_deref(), branch.as_deref(), files)
+        })
         .collect()
 }
 
@@ -405,6 +420,8 @@ mod tests {
         std::fs::create_dir_all(clean.join("node_modules/x")).unwrap();
         std::fs::write(clean.join("node_modules/x/a.js"), "1").unwrap();
         std::fs::create_dir_all(clean.join("target/debug")).unwrap();
+        // A file state.sh copied in (copyFiles) goes with the worktree too.
+        std::fs::write(clean.join(".env"), "K=1").unwrap();
         std::fs::write(clean.join("target/debug/bin"), "1").unwrap();
         let run_dir = dir.join("runs").join(RUN);
         std::fs::create_dir_all(&run_dir).unwrap();
@@ -422,7 +439,8 @@ mod tests {
         // trusted; a foreign path never.
         std::fs::write(
             run_dir.join(".guard.json"),
-            json!({"schema": 1, "worktrees": {"PR1": clean, "PR8": dir.join("ws/foreign"), "PR9": dir.join("gone")}}).to_string(),
+            json!({"schema": 1, "worktrees": {"PR1": clean, "PR8": dir.join("ws/foreign"), "PR9": dir.join("gone")},
+                   "copied": {"PR1": [".env"], "PR2": [".env"]}}).to_string(),
         )
         .unwrap();
         let items = list_worktrees(&run_dir);

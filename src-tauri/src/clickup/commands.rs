@@ -505,6 +505,23 @@ fn trusted(key: &trust::Key, data: &Path, dir: &Path) -> Result<trust::RunTrust,
     trust::load(key, data, dir)?.ok_or_else(|| UNTRUSTED.to_string())
 }
 
+/// R8 for one checked run folder: which tickets ClickUp changed since the
+/// run's version of them (the button and a typed request share it; the
+/// token is read here and dropped).
+pub fn changed_tickets(app_data: &Path, dir: &Path) -> Result<Vec<ChangedTicket>, String> {
+    // An adopted run's records are its own data folder's run-trust.
+    let data = crate::run::trust_data_dir(app_data, dir);
+    let key = trust::install_key()?;
+    let run = trusted(&key, &data, dir)?;
+    let token = token_of(&KeychainStore, &run.account_id)?;
+    let transport = UreqTransport::new();
+    intake::check_changes(
+        &ClickUp::new(&transport, &token),
+        &run.snapshot,
+        &trust::read_pulls(&key, &data, dir)?,
+    )
+}
+
 /// R8: which tickets ClickUp changed since the run's version of them.
 #[tauri::command]
 pub async fn clickup_check_tickets(
@@ -514,17 +531,7 @@ pub async fn clickup_check_tickets(
     blocking(move || {
         let data = data_dir(&app);
         let dir = checked_run_dir(&data, &run_dir)?;
-        // An adopted run's records are its own data folder's run-trust.
-        let data = crate::run::trust_data_dir(&data, &dir);
-        let key = trust::install_key()?;
-        let run = trusted(&key, &data, &dir)?;
-        let token = token_of(&KeychainStore, &run.account_id)?;
-        let transport = UreqTransport::new();
-        intake::check_changes(
-            &ClickUp::new(&transport, &token),
-            &run.snapshot,
-            &trust::read_pulls(&key, &data, &dir)?,
-        )
+        changed_tickets(&data, &dir)
     })
     .await
 }
