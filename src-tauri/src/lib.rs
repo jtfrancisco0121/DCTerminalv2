@@ -25,7 +25,7 @@ use commands::{
     claude_account_logins, claude_status, close_tab, get_app_state, get_claude_usage, get_settings,
     move_tab, new_tab, recent_folders, rename_tab, reopen_closed_tab, select_tab,
     set_claude_settings, set_notify_settings, set_observe_settings, set_push_settings,
-    set_run_settings, set_terminal_settings, set_ui_settings,
+    set_run_settings, set_tab_folder, set_terminal_settings, set_ui_settings,
 };
 use pty::{
     pty_kill, pty_open, pty_resize, pty_set_scheme, pty_write, terminal_resume_id, PtyRegistry,
@@ -158,6 +158,7 @@ pub fn run() {
             rename_tab,
             move_tab,
             recent_folders,
+            set_tab_folder,
             close_tab,
             reopen_closed_tab,
             pty_open,

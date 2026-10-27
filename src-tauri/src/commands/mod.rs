@@ -15,6 +15,6 @@ pub(crate) use tabs::close_tab_then_kill;
 pub(crate) use tabs::{add_tab, summary as tab_summary, TabSummary};
 pub use tabs::{
     close_tab, get_app_state, move_tab, new_tab, recent_folders, rename_tab, reopen_closed_tab,
-    select_tab,
+    select_tab, set_tab_folder,
 };
 pub use usage::get_claude_usage;

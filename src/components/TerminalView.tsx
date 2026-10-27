@@ -5,6 +5,7 @@ import { ptyResize, terminalResumeId, type TabSummary } from "../bridge";
 import { detectPlatform, isAppShortcut, isShiftEnter, SHIFT_ENTER_SEQUENCE, shiftEnterSendsNewline } from "../terminal/keys";
 import { dropPointToCss, formatDroppedPaths } from "../terminal/drop";
 import { firstOpenResumes, folderProblem } from "../terminal/openPlan";
+import { FolderMissing } from "./FolderMissing";
 import { TerminalSearchBar } from "./TerminalSearchBar";
 import { TerminalExitStrip, lastFiftyLines, lastOutputLine } from "./TerminalExitStrip";
 import { TerminalContextMenu, type ContextMenuItem } from "./TerminalContextMenu";
@@ -34,6 +35,8 @@ export type TerminalViewProps = {
   fontSize: number;
   /** Take keyboard focus when shown (the active tab). */
   autoFocus?: boolean;
+  /** The tab was pointed at another folder (the window reads its tabs again). */
+  onFolderChanged?: () => void;
 };
 
 /**
@@ -69,7 +72,7 @@ function focusBelongsElsewhere(): boolean {
  * opens (a Claude tab resumes its session when it can); after that the xterm
  * and the PTY outlive the view, parked while another tab is shown.
  */
-export function TerminalView({ tab, fontSize, autoFocus = true }: TerminalViewProps) {
+export function TerminalView({ tab, fontSize, autoFocus = true, onFolderChanged }: TerminalViewProps) {
   const ptyId = tab.id;
   const claude = tab.kind === "claude";
   const slotRef = useRef<HTMLDivElement>(null);
@@ -340,12 +343,7 @@ export function TerminalView({ tab, fontSize, autoFocus = true }: TerminalViewPr
   };
 
   if (problem) {
-    return (
-      <div className="terminal-view terminal-problem">
-        <p className="error">{problem}</p>
-        <p className="hint">Close this tab and open a new one in an existing folder.</p>
-      </div>
-    );
+    return <FolderMissing tabId={tab.id} problem={problem} onChanged={() => onFolderChanged?.()} />;
   }
 
   const ended = failed != null || exitCode != null;

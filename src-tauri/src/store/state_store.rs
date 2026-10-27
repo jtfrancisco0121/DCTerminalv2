@@ -438,6 +438,28 @@ impl StateStore {
         self.save()
     }
 
+    /// Points the tab at another folder. The label follows the folder unless
+    /// the tab was renamed; the saved Claude session is kept only when
+    /// `keep_session` (its log is under the new folder), else forgotten so
+    /// the tab starts a new conversation there.
+    pub fn set_tab_folder(
+        &mut self,
+        tab_id: &str,
+        cwd: &str,
+        keep_session: bool,
+    ) -> Result<(), String> {
+        let tab = self.tab_mut(tab_id)?;
+        tab.cwd = cwd.to_string();
+        if !tab.custom_label {
+            tab.label = tab_label(tab.kind, cwd);
+        }
+        if !keep_session {
+            tab.claude_session_id = None;
+            tab.claude_config_dir = None;
+        }
+        self.save()
+    }
+
     /// Moves the tab to `index` among its window's tabs (clamped to the
     /// end) and numbers that window's tabs 0, 1, 2, … in one change, so the
     /// order stays contiguous with no duplicates. Other windows' tabs are

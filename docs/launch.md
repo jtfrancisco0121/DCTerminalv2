@@ -108,6 +108,8 @@ One backend thread, `observe/attention.rs`, started at app setup (never from a c
 
 - **Recently closed** (macOS File menu, and the start screen of an empty window). File › Recently Closed lists the focused window's closed tabs (label, folder, time, at most 10; item ids `reopen-closed:<tab id>`) and reopens the chosen one, not only the newest. The macOS menu is app-wide, so it is rebuilt when a tab closes or reopens and when another window gains focus.
 
+- **A tab whose folder is gone** shows "Choose another folder…" (`set_tab_folder`): the tab keeps its id and its name (a name that follows the folder follows the new one) and starts in the new folder. Its saved Claude session is kept only when that session's log is under the new folder's Claude project folder (`<config>/projects/<path with every non-alphanumeric as ->`/`<session>.jsonl`), otherwise the tab starts a new conversation.
+
 ## Import from the dev app (release builds)
 
 Debug builds keep their data in `<identifier>.dev`, release builds in `<identifier>`. On first launch (offered once; `dev-import.json` records it) and from File › "Import from dev app…" (hidden in debug builds) the built app imports the dev app's session, reading `.dev` only:

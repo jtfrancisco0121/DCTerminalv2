@@ -505,11 +505,23 @@ function App() {
           </div>
         )}
         {active && !blocked && !active.runDir && (
-          <TerminalView key={active.id} tab={active} fontSize={fontSize} autoFocus={!dialog} />
+          <TerminalView
+            key={active.id}
+            tab={active}
+            fontSize={fontSize}
+            autoFocus={!dialog}
+            onFolderChanged={() => void reload()}
+          />
         )}
         {active && !blocked && active.runDir && (
           <div className="run-layout">
-            <TerminalView key={active.id} tab={active} fontSize={fontSize} autoFocus={!dialog} />
+            <TerminalView
+            key={active.id}
+            tab={active}
+            fontSize={fontSize}
+            autoFocus={!dialog}
+            onFolderChanged={() => void reload()}
+          />
             <RunPanel
               key={active.runDir}
               runDir={active.runDir}

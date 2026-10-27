@@ -218,6 +218,49 @@ pub async fn recent_folders(
     .map_err(|e| e.to_string())?
 }
 
+/// Whether a tab's saved Claude session may follow it to `new_cwd`: only
+/// when that session's log is under the new folder's Claude project folder.
+pub(crate) fn keeps_session(tab: &TabRecord, new_cwd: &std::path::Path) -> bool {
+    match (
+        tab.claude_session_id.as_deref(),
+        tab.claude_config_dir.as_deref(),
+    ) {
+        (Some(session), Some(config)) => crate::claude_session_log::session_in_folder(
+            std::path::Path::new(config),
+            session,
+            new_cwd,
+        ),
+        _ => false,
+    }
+}
+
+/// Points a tab whose folder is gone at another folder. The tab keeps its
+/// id and its name (a name that follows the folder follows the new one); a
+/// Claude session is kept only when it belongs to the new folder.
+#[tauri::command]
+pub fn set_tab_folder(
+    tab_id: String,
+    cwd: String,
+    store: State<Mutex<StateStore>>,
+) -> Result<TabSummary, String> {
+    let folder = validate_working_folder(&cwd).map_err(|err| err.message())?;
+    let folder = folder.canonicalize().unwrap_or(folder);
+    // The session log is looked for with no store lock held.
+    let tab = store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .tab_by_id(&tab_id)
+        .cloned()
+        .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+    let keep = keeps_session(&tab, &folder);
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.set_tab_folder(&tab_id, &folder.display().to_string(), keep)?;
+    store
+        .tab_by_id(&tab_id)
+        .map(summary)
+        .ok_or_else(|| format!("unknown tab: {tab_id}"))
+}
+
 /// Drags a tab to `index` among the window's tabs; the new order is saved.
 #[tauri::command]
 pub fn move_tab(
@@ -338,6 +381,70 @@ mod tests {
         let other = snapshot(&store);
         assert!(other.tabs.is_empty());
         assert_eq!(other.active_tab_id, None);
+    }
+
+    #[test]
+    fn re_pointing_a_tab_keeps_its_id_and_a_session_only_when_the_new_folder_owns_it() {
+        const SID: &str = "685dd464-eabf-4e4c-9f6f-ac02c63aad27";
+        let dir = TempDir::new("tabs_repoint");
+        let old = dir.join("old");
+        let new = dir.join("new");
+        std::fs::create_dir_all(&new).unwrap();
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let config = dir.join("claude");
+        let real_new = new.canonicalize().unwrap();
+        let project = config
+            .join("projects")
+            .join(crate::claude_session_log::project_dir_name(
+                &real_new.display().to_string(),
+            ));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join(format!("{SID}.jsonl")), "{}\n").unwrap();
+
+        let mut store = StateStore::open_path(dir.join("state.json")).unwrap();
+        let mut make = |cwd: &std::path::Path, rename: bool| {
+            let id = store
+                .create_tab(&cwd.display().to_string(), TabKind::Claude)
+                .unwrap();
+            store
+                .remember_claude_session(&id, SID, &config.display().to_string())
+                .unwrap();
+            if rename {
+                store.set_tab_label(&id, "My name").unwrap();
+            }
+            id
+        };
+        let followed = make(&old, false);
+        let renamed = make(&old, true);
+        let tab = store.tab_by_id(&followed).unwrap().clone();
+
+        // The new folder owns the session: kept. A folder that does not: forgotten.
+        assert!(keeps_session(&tab, &new));
+        assert!(!keeps_session(&tab, &other));
+        let no_session = TabRecord {
+            claude_session_id: None,
+            ..tab.clone()
+        };
+        assert!(!keeps_session(&no_session, &new));
+
+        store
+            .set_tab_folder(&followed, &new.display().to_string(), true)
+            .unwrap();
+        let moved = store.tab_by_id(&followed).unwrap();
+        assert_eq!(moved.id, followed);
+        assert_eq!(moved.cwd, new.display().to_string());
+        assert_eq!(moved.label, "Claude · new", "the label follows the folder");
+        assert_eq!(moved.claude_session_id.as_deref(), Some(SID));
+
+        store
+            .set_tab_folder(&renamed, &other.display().to_string(), false)
+            .unwrap();
+        let kept_name = store.tab_by_id(&renamed).unwrap();
+        assert_eq!(kept_name.label, "My name", "a custom label stays");
+        assert_eq!(kept_name.claude_session_id, None);
+        assert_eq!(kept_name.claude_config_dir, None);
+        assert!(store.set_tab_folder("nope", "/x", true).is_err());
     }
 
     #[test]

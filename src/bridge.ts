@@ -221,6 +221,11 @@ export function recentFolders(): Promise<string[]> {
   return invoke<string[]>("recent_folders");
 }
 
+/** Points a tab whose folder is gone at another folder; it keeps its id (and its name unless it follows the folder). */
+export function setTabFolder(tabId: string, cwd: string): Promise<TabSummary> {
+  return invoke<TabSummary>("set_tab_folder", { tabId, cwd });
+}
+
 export function renameTab(tabId: string, label: string): Promise<TabSummary> {
   return invoke<TabSummary>("rename_tab", { tabId, label });
 }
