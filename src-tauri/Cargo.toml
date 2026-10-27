@@ -57,4 +57,5 @@ codegen-units = 1
 lto = true
 opt-level = 3
 panic = "abort"
-strip = true
+# Symbols stay so a release crash.log backtrace names functions.
+strip = "debuginfo"

@@ -16,7 +16,6 @@
 
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
 use objc2::{class, ffi, msg_send, sel};
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::OnceLock;
 use tauri::AppHandle;
 
@@ -26,7 +25,11 @@ const NS_TERMINATE_NOW: usize = 1;
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
 
-type ShouldTerminate = extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject) -> usize;
+/// `extern "C"`, not `"C-unwind"`: a panic that reaches this boundary aborts
+/// the process (in a release build `panic = "abort"` already does, and the
+/// crash hook has written `logs/crash.log` first). It never unwinds into
+/// AppKit, in any build.
+type ShouldTerminate = extern "C" fn(&AnyObject, Sel, *mut AnyObject) -> usize;
 
 /// Once, on the main thread, after tao made its event loop (Tauri `setup`).
 pub fn install(app: &AppHandle) {
@@ -63,13 +66,15 @@ unsafe fn add_should_terminate() -> Result<(), &'static str> {
     Ok(())
 }
 
-extern "C-unwind" fn should_terminate(_: &AnyObject, _: Sel, _: *mut AnyObject) -> usize {
+extern "C" fn should_terminate(_: &AnyObject, _: Sel, _: *mut AnyObject) -> usize {
     let Some(app) = APP.get() else {
         return NS_TERMINATE_NOW;
     };
-    // A panic must not cross into AppKit; quitting then works as before.
-    match catch_unwind(AssertUnwindSafe(|| crate::windows::should_terminate(app))) {
-        Ok(false) => NS_TERMINATE_CANCEL,
-        Ok(true) | Err(_) => NS_TERMINATE_NOW,
+    // Nothing here catches a panic: under `panic = "abort"` that would catch
+    // nothing, and in a debug build the `extern "C"` boundary aborts it.
+    if crate::windows::should_terminate(app) {
+        NS_TERMINATE_NOW
+    } else {
+        NS_TERMINATE_CANCEL
     }
 }
