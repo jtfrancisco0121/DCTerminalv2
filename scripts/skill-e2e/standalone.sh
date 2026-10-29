@@ -9,7 +9,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 ROLES=("$@")
-[[ ${#ROLES[@]} -gt 0 ]] || ROLES=(planner plan-reviewer developer pr-reviewer recommendation codebase-audit)
+[[ ${#ROLES[@]} -gt 0 ]] || ROLES=(planner plan-reviewer risk-reviewer developer pr-reviewer recommendation codebase-audit)
 
 make_tmp
 PLUGIN="$TMP/plugin"
@@ -41,6 +41,7 @@ request_for() {
   case "$1" in
     planner)        echo "Plan this, very briefly (one story): add a subtract(a, b) function to index.js with a test." ;;
     plan-reviewer)  echo "Review the plan in $TMP/plan.md, very briefly. The request was: multiply(a, b) must return a * b." ;;
+    risk-reviewer)  echo "Review the risk of the plan in $TMP/plan.md, very briefly. The request was: multiply(a, b) must return a * b." ;;
     developer)      echo "In at most three lines, tell me what this repo does and what its check command is. Do not change anything." ;;
     pr-reviewer)    echo "Review the current branch fix-multiply against main, very briefly. The intent: multiply(a, b) must return a * b. Do not post anything." ;;
     recommendation) echo "Very briefly: recommend at most one feature for this tiny library." ;;

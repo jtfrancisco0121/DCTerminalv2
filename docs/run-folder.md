@@ -12,7 +12,7 @@ The contract between the `dcv2:eagle-eye` skill and the app. The app creates the
   log.md            skill   one line per event
   writeback.json    skill   ClickUp comment + status drafts (written once, at ship time)
   .guard.json       skill   the run's worktrees and repos, for the guard hook (state.sh worktree)
-  reviews/          skill   plan-round<n>.md, PR<n>-round<n>.md (full reviews)
+  reviews/          skill   plan-round<n>.md, risk-round<n>.md, PR<n>-round<n>.md (full reviews)
   reports/          skill   PR<n>-build<n>.md, PR<n>-fix<n>.md (implementer reports)
   logs/             skill   PR<n>-check.txt etc. (full check output)
   pr-bodies/        skill   PR<n>.md (the GitHub PR body state.sh ship-pr / draft-pr / ready opened or set)
@@ -169,11 +169,11 @@ request.md names the tickets only, after the user's words: `Tickets from ClickUp
 | `schema` | int | `1` |
 | `runId` | string | the run folder's name (`state.sh put` refuses another) |
 | `updatedAt` | string | UTC time of this write (set by `state.sh put`) |
-| `stage` | string | `planning` (Planner + Plan Reviewer loop), `plan-approval` (stop #1), `building` (implement + PR review loops), `ship-approval` (stop #2), `shipping`, `done`, `failed` |
+| `stage` | string | `planning` (Planner + Plan Reviewer and Risk Reviewer loop), `plan-approval` (stop #1), `building` (implement + PR review loops), `ship-approval` (stop #2), `shipping`, `done`, `failed` |
 | `waitingFor` | string or null | `"plan-approval"`, `"ship-approval"`, or `null`. Non-null only while the session waits for the user's answer in the tab. |
 | `paused` | object or null | `{"reason": "<one line>", "at": "<UTC>"}` when the user declined at a stop or stopped the run (e.g. "plan not approved", "ship declined"); cleared by an approval. The run can be resumed. |
 | `folder` | string | the start folder |
-| `plan` | object or null | `null` until the Planner has written `plan.md`. `reviewRound` (int, 0 before the first review), `verdict` (the last Plan Reviewer verdict: `APPROVED`, `APPROVED WITH CHANGES`, `REQUIRES REVISION`, or null), `openFindings` (int, MEDIUM+ still open), `approved` (bool, mirrors `approval`), `approval` (`{"by": "user" \| "test", "at": "<UTC>"}` or null: written only by `state.sh approve`) |
+| `plan` | object or null | `null` until the Planner has written `plan.md`. `reviewRound` (int, 0 before the first review), `verdict` (the last Plan Reviewer verdict: `APPROVED`, `APPROVED WITH CHANGES`, `REQUIRES REVISION`, or null), `openFindings` (int, MEDIUM+ still open), `approved` (bool, mirrors `approval`), `approval` (`{"by": "user" \| "test", "at": "<UTC>"}` or null: written only by `state.sh approve`), `risk` (optional; `null` or missing before the first Risk Reviewer round and in runs from before it): the last Risk Reviewer round, `{"round": <int >= 1>, "verdict": "NO BLOCKING RISKS" | "RISKS FOUND", "openFindings": <MEDIUM+ risks>, "path": "reviews/risk-round<n>.md" | null}`, validated by `state.sh put` (NO BLOCKING RISKS needs `openFindings` 0). A MEDIUM+ risk sends the plan back like a MEDIUM+ finding; LOW risks never do. |
 | `prs` | array | empty until the plan is approved; then one entry per PR of the plan, in plan order |
 | `prs[].id` | string | `PR1`, `PR2`, ... as in `plan.md` |
 | `prs[].title` | string | from `plan.md` (the GitHub PR title) |

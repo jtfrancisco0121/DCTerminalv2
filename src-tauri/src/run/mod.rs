@@ -1,5 +1,5 @@
 //! P3a: runs. The start screen (folder, repos, request, Eagle-Eye and the
-//! seven role tiles), the dcv2 launch (docs/launch.md), the progress panel
+//! eight role tiles), the dcv2 launch (docs/launch.md), the progress panel
 //! (`status`), the app's own check re-run (R1, `check`), resume, the
 //! worktree janitor (R5, `janitor`) and the memory panel (`memory`).
 //!

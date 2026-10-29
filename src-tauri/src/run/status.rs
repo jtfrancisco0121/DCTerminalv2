@@ -20,6 +20,9 @@ pub struct PlanView {
     pub verdict: Option<String>,
     pub review_round: Option<i64>,
     pub open_findings: Option<i64>,
+    /// The last Risk Reviewer round (`plan.risk`): its verdict and MEDIUM+ count.
+    pub risk_verdict: Option<String>,
+    pub risk_open_findings: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -259,6 +262,8 @@ pub fn parse_status(value: &Value) -> Result<RunView, String> {
             verdict: s(p, "verdict"),
             review_round: i(p, "reviewRound"),
             open_findings: i(p, "openFindings"),
+            risk_verdict: p.get("risk").and_then(|r| s(r, "verdict")),
+            risk_open_findings: p.get("risk").and_then(|r| i(r, "openFindings")),
         });
     let prs = value
         .get("prs")
@@ -748,7 +753,8 @@ mod tests {
     fn a_partial_status_with_unknown_fields_still_reads() {
         let view = parse_status(&json!({
             "schema": 1, "stage": "building", "somethingNew": {"x": 1},
-            "plan": {"approved": true, "verdict": "APPROVED", "reviewRound": "2"},
+            "plan": {"approved": true, "verdict": "APPROVED", "reviewRound": "2",
+                     "risk": {"round": 2, "verdict": "RISKS FOUND", "openFindings": 1}},
             "prs": [
                 {"id": "PR1", "repo": "mathlib", "state": "teleporting", "stories": {"done": 1}, "check": "oops"},
                 {"title": "no id"},
@@ -761,6 +767,8 @@ mod tests {
         let plan = view.plan.unwrap();
         assert!(plan.approved);
         assert_eq!(plan.review_round, Some(2));
+        assert_eq!(plan.risk_verdict.as_deref(), Some("RISKS FOUND"));
+        assert_eq!(plan.risk_open_findings, Some(1));
         assert_eq!(view.prs.len(), 2);
         assert_eq!(view.prs[0].state.as_deref(), Some("teleporting"));
         assert_eq!(view.prs[0].stories_done, Some(1));

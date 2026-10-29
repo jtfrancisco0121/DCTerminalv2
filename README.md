@@ -37,7 +37,8 @@ DCTerminalv2 is a macOS desktop app for running [Claude Code](https://docs.claud
 **The `dcv2` plugin** (loaded per launch with `--plugin-dir`; nothing is installed into `~/.claude*`)
 
 - `/dcv2:eagle-eye`: the orchestrator.
-- Standalone roles: `/dcv2:planner`, `/dcv2:plan-reviewer`, `/dcv2:developer`, `/dcv2:pr-reviewer`, `/dcv2:recommendation`, `/dcv2:codebase-audit`, and `/dcv2:onboard` (which writes the codebase memory).
+- Standalone roles: `/dcv2:planner`, `/dcv2:plan-reviewer`, `/dcv2:risk-reviewer`, `/dcv2:developer`, `/dcv2:pr-reviewer`, `/dcv2:recommendation`, `/dcv2:codebase-audit`, and `/dcv2:onboard` (which writes the codebase memory).
+- Risk Reviewer: checks what could go wrong (data, security, compatibility, deployment and rollback, concurrency, blast radius). It reviews every Eagle-Eye plan round beside the Plan Reviewer, and the drafts of the standalone Planner, Codebase Audit and Recommendation; a MEDIUM or higher risk sends the work back (at most 5 rounds), LOW risks are only listed.
 - Codebase memory (`plugin/scripts/memory.sh`): a per-repo index, topics and contracts, plus a workspace file for a folder of repos. All writes go through `memory.sh`, which rejects anything that looks like a secret. Staleness is tracked against git.
 - Safety guard (`plugin/scripts/guard.sh`, a PreToolUse hook). Sub-agents stay inside their worktrees and the run folder, nothing is pushed before the ship approval, and run state files are written only by `state.sh`.
 - Stop hook (`plugin/scripts/stop-check.sh`): an Implementer cannot finish while the repo check fails.
@@ -49,7 +50,7 @@ The app creates a run folder (`request.md`, plus `tickets.json` and `repos.json`
 ```mermaid
 flowchart TD
     A[request.md + tickets.json + repos.json] --> P["planning<br/>Planner (+ BMAD docs when applied)"]
-    P --> R{"Plan Reviewer<br/>fresh each round, max 3"}
+    P --> R{"Plan Reviewer + Risk Reviewer<br/>fresh, in parallel each round, max 5<br/>MEDIUM+ sends it back; LOW risks listed"}
     R -- findings --> P
     R -- approved --> S1(["plan-approval<br/>stop #1: Approve the plan?"])
     S1 -- no --> X[paused, can be resumed]

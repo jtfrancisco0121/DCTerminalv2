@@ -23,6 +23,7 @@ A role's skill and its sub-agent both start by reading `${CLAUDE_PLUGIN_ROOT}/ro
 |---|---|---|---|
 | Planner | `/dcv2:planner` | `dcv2:planner` | opus |
 | Plan Reviewer | `/dcv2:plan-reviewer` | `dcv2:plan-reviewer` | opus |
+| Risk Reviewer | `/dcv2:risk-reviewer` | `dcv2:risk-reviewer` (Eagle-Eye beside the Plan Reviewer; the standalone Planner, Codebase Audit and Recommendation) | opus |
 | Developer | `/dcv2:developer` | none (the pipeline uses the Implementer) | (session's) |
 | Implementer | none | `dcv2:implementer` | sonnet |
 | PR Reviewer | `/dcv2:pr-reviewer` | `dcv2:pr-reviewer` | opus |
@@ -42,7 +43,7 @@ DCV2_RUN_DIR=<run dir> claude --plugin-dir <plugin> "/dcv2:eagle-eye resume run=
 
 Run it from any folder; the start folder comes from `request.md`. `DCV2_RUN_DIR` is required: the guard hook uses it to know the run (the run refuses to start without it). The run folder contract (inputs, launch env incl. the tests-only `DCV2_TEST_MODE`, `status.json`, `writeback.json`, `log.md`) is in [run-folder.md](run-folder.md).
 
-The flow: Planner → Plan Reviewer loop (fresh reviewer each round, max 3) → **stop #1 "Approve the plan?"** → a worktree per PR (`<repo>-worktrees/dcv2-<runId>-<pr>`, branch `dcv2/<runId>-<pr>`) → Implementers in parallel for PRs with no unmet dependency, at most `DCV2_MAX_IMPLEMENTERS` (default 3) building/fixing at once (R6, enforced by `state.sh put`) → a fresh PR Reviewer per PR, fix loop until no MEDIUM+ (max 3 rounds), each round's gate written with `state.sh gate` (A1; `reviewed` needs a PASS/CONCERNS/WAIVED gate) → dependents start when their dependency is reviewed clean → **stop #2 "Push and open these PRs, and queue the ClickUp updates?"** → push, `gh pr create`, `writeback.json` (GitHub review mode, `meta.json` `reviewMode: "github"`: a draft PR opens after each PR's first build, every review round is posted as one PR comment and every fix round is pushed with a "Round n fixes" comment, all through `state.sh`; stop #2 asks "Mark these N draft PRs ready for review, and queue the ClickUp updates?" and `state.sh ready` marks them ready) → the memory updater patches the topics the PRs' diffs touched (`memory-update.md`) → `done`, and `state.sh put` writes `report.md` (R10; also at `failed`).
+The flow: Planner → plan review loop (each round a fresh Plan Reviewer and a fresh Risk Reviewer in parallel; a MEDIUM+ finding or risk from either sends the plan back to the Planner, LOW risks are only listed; max 5 rounds) → **stop #1 "Approve the plan?"** → a worktree per PR (`<repo>-worktrees/dcv2-<runId>-<pr>`, branch `dcv2/<runId>-<pr>`) → Implementers in parallel for PRs with no unmet dependency, at most `DCV2_MAX_IMPLEMENTERS` (default 3) building/fixing at once (R6, enforced by `state.sh put`) → a fresh PR Reviewer per PR, fix loop until no MEDIUM+ (max 3 rounds), each round's gate written with `state.sh gate` (A1; `reviewed` needs a PASS/CONCERNS/WAIVED gate) → dependents start when their dependency is reviewed clean → **stop #2 "Push and open these PRs, and queue the ClickUp updates?"** → push, `gh pr create`, `writeback.json` (GitHub review mode, `meta.json` `reviewMode: "github"`: a draft PR opens after each PR's first build, every review round is posted as one PR comment and every fix round is pushed with a "Round n fixes" comment, all through `state.sh`; stop #2 asks "Mark these N draft PRs ready for review, and queue the ClickUp updates?" and `state.sh ready` marks them ready) → the memory updater patches the topics the PRs' diffs touched (`memory-update.md`) → `done`, and `state.sh put` writes `report.md` (R10; also at `failed`).
 
 BMAD planning (meta.json `bmad` auto/on, run-folder.md "BMAD mode"): before the normal plan the Planner runs `pass=size` and, when BMAD applies (Large, or mode on), `pass=bmad`, which follows the vendored BMAD-METHOD spec, architecture (and PRD, UX) skills headless and writes only under `<run>/bmad/`. `state.sh bmad-size` / `bmad-init` / `bmad-check` record it, and `state.sh put` / `approve` refuse plan-approval until the check passes on the current documents. The default plan pass then reads `<run>/bmad/output/` and every story cites the spec items it covers, and `state.sh` refuses plan approval otherwise. The Plan Reviewer and the PR Reviewer read the same documents and check for drift. Runs with `bmad=off` (and all runs without the field) are unchanged.
 
@@ -79,6 +80,7 @@ claude --plugin-dir <plugin> "/dcv2:<role> <request>"
 |---|---|---|
 | `/dcv2:planner <request>` | Investigate the code and write an implementation plan for a feature or bug: findings, stories with acceptance criteria, PRs (one per repo, with dependencies), risks, open questions. Shown in the chat; saved to a file only when asked. | No |
 | `/dcv2:plan-reviewer <plan file or text, and the request>` | Independent review of a plan against the request and the code: verdict (APPROVED / APPROVED WITH CHANGES / REQUIRES REVISION) and findings with severities. | No |
+| `/dcv2:risk-reviewer <plan, branch / PR, or report>` | Independent review of what could go wrong if a plan is built, a change ships or a report's advice is followed (data, security, compatibility, deployment and rollback, concurrency, performance, blast radius): verdict (NO BLOCKING RISKS / RISKS FOUND) and risks with severities and mitigations. | No |
 | `/dcv2:developer <task>` | Understand the codebase and do the task: implement, fix a bug, build a feature, draw a diagram, review code, investigate CI or production problems; or an onboarding overview. Commits only when asked; never pushes or opens PRs unless asked. | Yes |
 | `/dcv2:pr-reviewer <PR URL, branch, or nothing>` | Strict review of a PR or branch against its intent: correctness, regressions, security, data, performance, tests. Posts the review on GitHub only when the user says yes. | No |
 | `/dcv2:recommendation <focus, or nothing>` | Study the product and code and recommend features and improvements, each validated against the code, in tiers. Creates GitHub issues only when asked. | No |
@@ -86,9 +88,11 @@ claude --plugin-dir <plugin> "/dcv2:<role> <request>"
 
 | `/dcv2:onboard [rebuild \| stale \| <repo>]` | Create, rebuild or refresh the codebase memory (index, topics, contracts, workspace) for the repos in the current folder, only through `memory.sh write`. | No (writes memory only) |
 
+The Planner, Codebase Audit and Recommendation sessions have their draft checked by a fresh `dcv2:risk-reviewer` sub-agent before they show it: a MEDIUM+ risk means the session revises the draft and runs a fresh reviewer, until a round reports none (at most 5 rounds); LOW risks are listed in a closing `## Risk review` section, and risks still open after round 5 are listed there for the user to decide. With no run bound, the guard lets this sub-agent run read-only (it writes nothing with Edit/Write and only read-only git), like the memory updater.
+
 At its end, a Developer session that committed runs the `dcv2:memory-updater` sub-agent on each changed repo with memory (`git diff <HEAD at start>..HEAD`).
 
-In P3 the app's start screen shows these seven as role tiles next to Eagle-Eye; a tile opens a terminal tab running `claude --plugin-dir <bundled plugin> "/dcv2:<role> <what the user typed>"` in the chosen folder.
+In P3 the app's start screen shows these eight as role tiles next to Eagle-Eye; a tile opens a terminal tab running `claude --plugin-dir <bundled plugin> "/dcv2:<role> <what the user typed>"` in the chosen folder.
 
 ## Codebase memory (D9, A6)
 

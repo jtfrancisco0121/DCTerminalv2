@@ -28,7 +28,7 @@ env CLAUDE_CONFIG_DIR=<account dir> \
 | `plugin/VERSION` | One line: the roles' version (A5). The app shows it and records it in each run's `status.json`-adjacent `meta.json` (P3). |
 | `plugin/launch/settings.json` | A4 token savers: `env` (`BASH_MAX_OUTPUT_LENGTH`, `CLAUDE_CODE_SUBAGENT_MODEL` only if the agents don't name one, autocompact threshold), `permissions.deny` (`node_modules/**`, lockfiles, build output). The app merges its own hook-forwarder `hooks` into a copy (per launch, in the run folder or a temp dir) and passes that copy with `--settings`. Never written into repos or `~/.claude*`. |
 | `plugin/scripts/memory.sh` | The only code that knows the memory layout (D9). Commands below. |
-| `plugin/skills/onboard/SKILL.md` | `/dcv2:onboard` (seventh role tile). |
+| `plugin/skills/onboard/SKILL.md` | `/dcv2:onboard` (a role tile). |
 
 ### memory.sh
 

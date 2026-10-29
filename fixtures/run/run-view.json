@@ -10,6 +10,8 @@
     "approved": true,
     "openFindings": 0,
     "reviewRound": 2,
+    "riskOpenFindings": null,
+    "riskVerdict": null,
     "verdict": "APPROVED"
   },
   "prs": [

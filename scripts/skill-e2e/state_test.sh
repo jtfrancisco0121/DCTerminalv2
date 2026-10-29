@@ -83,7 +83,8 @@ def pr(i, repo, path, b, state, story):
             "check": {"command": "true", "result": "pass", "summary": None}, "review": {"round": 1, "verdict": "APPROVED", "openFindings": 0, "path": None},
             "prUrl": None, "state": state, "note": None}
 doc = {"schema": 1, "runId": rid, "stage": stage, "waitingFor": None, "folder": os.path.dirname(r),
-       "plan": {"path": "plan.md", "reviewRound": 1, "verdict": "APPROVED", "openFindings": 0, "approved": True},
+       "plan": {"path": "plan.md", "reviewRound": 1, "verdict": "APPROVED", "openFindings": 0, "approved": True,
+                "risk": {"round": 1, "verdict": "NO BLOCKING RISKS", "openFindings": 0, "path": "reviews/risk-round1.md"}},
        "prs": [pr(1, "r", r, base, s1, "S1"), pr(2, "rr", rr, rbase, s2, "S2")] if stage not in ("planning", "plan-approval") else [],
        "ship": None, "writeback": None, "error": None}
 exec(extra)
@@ -138,6 +139,16 @@ is "  old file kept" "$RUN/status.json" stage '"plan-approval"'
 ls -a "$RUN" | grep -q '\.tmp$' && bad "  temp file left behind" || ok "  no temp file left behind"
 expect 1 "unknown stage refused" put < <(status bogus)
 expect 1 "wrong runId refused" put < <(status planning "" "" 'doc["runId"]="other"')
+echo "# plan.risk (Risk Reviewer)"
+expect 0 "plan.risk null" put < <(status planning "" "" 'doc["plan"]["risk"]=None')
+expect 0 "plan.risk missing (a run from before the Risk Reviewer)" put < <(status planning "" "" 'del doc["plan"]["risk"]')
+expect 0 "plan.risk RISKS FOUND" put < <(status planning "" "" 'doc["plan"]["risk"]={"round":2,"verdict":"RISKS FOUND","openFindings":2,"path":"reviews/risk-round2.md"}')
+expect 1 "plan.risk unknown verdict refused" put < <(status planning "" "" 'doc["plan"]["risk"]={"round":1,"verdict":"OK","openFindings":0,"path":None}')
+has "  names the verdicts" "plan.risk.verdict"
+expect 1 "plan.risk NO BLOCKING RISKS with open findings refused" put < <(status planning "" "" 'doc["plan"]["risk"]={"round":1,"verdict":"NO BLOCKING RISKS","openFindings":1,"path":None}')
+expect 1 "plan.risk round 0 refused" put < <(status planning "" "" 'doc["plan"]["risk"]={"round":0,"verdict":"RISKS FOUND","openFindings":1,"path":None}')
+expect 1 "plan.risk path outside reviews/ refused" put < <(status planning "" "" 'doc["plan"]["risk"]={"round":1,"verdict":"RISKS FOUND","openFindings":1,"path":"../status.json"}')
+expect 1 "plan.risk not an object refused" put < <(status planning "" "" 'doc["plan"]["risk"]="none"')
 expect 1 "worktree not canonical refused" put < <(status building pending pending 'doc["prs"][0]["worktree"]="/tmp/x"')
 expect 1 "branch not canonical refused" put < <(status building pending pending 'doc["prs"][0]["branch"]="main"')
 expect 1 "stories.ids empty refused (15)" put < <(status building pending pending 'doc["prs"][0]["stories"]["ids"]=[]')
@@ -463,6 +474,7 @@ R="$RUN/report.md"
 [[ -f "$R" ]] && ok "  report.md written at done" || bad "  no report.md"
 out="$(cat "$R" 2>/dev/null)"
 has "  stage" "Stage: **done**"
+has "  risk review line" "- Risk: 1 review round(s), last verdict NO BLOCKING RISKS, 0 MEDIUM+ open (\`reviews/risk-round1.md\`)"
 has "  PR table" "| PR1 | r | S1 | 1/1 |"
 has "  gate per PR" "| PASS |"
 has "  PR2 gate CONCERNS" "Gate: CONCERNS: 1 LOW: naming"

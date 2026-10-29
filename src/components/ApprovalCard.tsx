@@ -27,6 +27,9 @@ export function ApprovalCard({ view, waitingFor, onReadPlan, onGoToPrompt }: Pro
             {view.prs.length} {view.prs.length === 1 ? "PR" : "PRs"}
             {view.plan?.reviewRound != null && ` · plan review round ${view.plan.reviewRound}`}
             {view.plan?.openFindings != null && ` · ${view.plan.openFindings} open plan findings`}
+            {view.plan?.riskVerdict != null &&
+              ` · risk review: ${view.plan.riskVerdict.toLowerCase()}` +
+                (view.plan.riskOpenFindings ? `, ${view.plan.riskOpenFindings} open risks` : "")}
           </p>
           {view.prs.length > 0 && (
             <table className="approval-prs">

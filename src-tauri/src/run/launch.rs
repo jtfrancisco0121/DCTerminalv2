@@ -12,10 +12,11 @@ use std::path::{Path, PathBuf};
 pub const PLUGIN_DIR_ENV: &str = "DCTV2_PLUGIN_DIR";
 pub const TEST_MODE_ENV: &str = "DCV2_TEST_MODE";
 
-/// The seven role tiles: (skill, label).
+/// The eight role tiles: (skill, label).
 pub const ROLES: &[(&str, &str)] = &[
     ("planner", "Planner"),
     ("plan-reviewer", "Plan Reviewer"),
+    ("risk-reviewer", "Risk Reviewer"),
     ("developer", "Developer"),
     ("pr-reviewer", "PR Reviewer"),
     ("recommendation", "Recommendation"),

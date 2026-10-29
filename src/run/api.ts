@@ -173,7 +173,15 @@ export type RunView = {
   pausedReason: string | null;
   error: string | null;
   updatedAt: string | null;
-  plan: { approved: boolean; verdict: string | null; reviewRound: number | null; openFindings: number | null } | null;
+  plan: {
+    approved: boolean;
+    verdict: string | null;
+    reviewRound: number | null;
+    openFindings: number | null;
+    /** The last Risk Reviewer round (`plan.risk`); null for a run from before it. */
+    riskVerdict: string | null;
+    riskOpenFindings: number | null;
+  } | null;
   prs: PrView[];
   shipNote: string | null;
   timeline: LogLine[];

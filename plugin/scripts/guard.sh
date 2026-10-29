@@ -7,7 +7,7 @@
 # text cannot reach it. The run's allowed worktrees are listed in <run>/.guard.json, which
 # only `state.sh worktree` writes.
 #
-# Pipeline sub-agents (agent_type implementer, planner, plan-reviewer, pr-reviewer, memory-updater,
+# Pipeline sub-agents (agent_type implementer, planner, plan-reviewer, risk-reviewer, pr-reviewer, memory-updater,
 # with or without the "dcv2:" prefix):
 #   - Edit/Write: the real path (symlinks and .. resolved) must be inside the run folder, or,
 #     for the implementer only, inside one of the run's recorded worktrees.
@@ -18,8 +18,10 @@
 #     an allowed place. Best effort: commands that write through other programs (node, python,
 #     npm scripts, xargs) are not seen.
 #   - No DCV2_RUN_DIR, python3 missing, or a payload that does not parse: blocked (fail closed).
-#     Exception: the memory-updater also runs at the end of a standalone /dcv2:developer session
-#     (no run): then it may not Edit/Write anything (it writes memory only with memory.sh write).
+#     Exceptions: the memory-updater also runs at the end of a standalone /dcv2:developer session,
+#     and the risk-reviewer in the standalone planner / codebase-audit / recommendation sessions
+#     (no run): then they may not Edit/Write anything (the memory-updater writes memory only with
+#     memory.sh write; the risk-reviewer replies with its review).
 # The orchestrator (no agent_type) in a bound run: local review mode (meta.json reviewMode missing
 # or "local"): `git push` and `gh pr create` only when status.json has stage shipping and a
 # shipApproval (state.sh ship-pr does both itself). github mode: no direct `git push` / `gh pr
@@ -55,7 +57,7 @@
 # user, outside Claude). Sessions with no DCV2_RUN_DIR and no pipeline agent are not affected otherwise.
 # Exit 2 blocks the tool call (stderr is shown to the model).
 input="$(cat)"
-PIPE_RE='"agent_type"[[:space:]]*:[[:space:]]*"(dcv2:)?(implementer|planner|plan-reviewer|pr-reviewer|memory-updater)"'
+PIPE_RE='"agent_type"[[:space:]]*:[[:space:]]*"(dcv2:)?(implementer|planner|plan-reviewer|risk-reviewer|pr-reviewer|memory-updater)"'
 
 # The plugin folder this script lives in (pure bash: no dirname, the PATH may be broken).
 gdir="${BASH_SOURCE[0]%/*}"; [[ "$gdir" != "${BASH_SOURCE[0]}" ]] || gdir="."
@@ -92,7 +94,9 @@ try:
 except Exception:
     sys.exit(3)
 
-ROLES = ("implementer", "planner", "plan-reviewer", "pr-reviewer", "memory-updater")
+ROLES = ("implementer", "planner", "plan-reviewer", "risk-reviewer", "pr-reviewer", "memory-updater")
+# Sub-agents that also run in a standalone session (no run); there they write nothing with Edit/Write.
+UNBOUND_OK = ("memory-updater", "risk-reviewer")
 agent = str(data.get("agent_type") or "")
 role = agent[len("dcv2:"):] if agent.startswith("dcv2:") else agent
 pipeline = role in ROLES
@@ -233,7 +237,7 @@ GUARD_PLUGIN = os.path.realpath(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1
 
 
 def write_allowed(p):
-    if role == "memory-updater" and not run:
+    if role in UNBOUND_OK and not run:
         return False
     if inside(p, run):
         return True
@@ -258,7 +262,7 @@ def in_checkout(p):
         d = nd
 
 
-if pipeline and not run and role != "memory-updater":
+if pipeline and not run and role not in UNBOUND_OK:
     block(f"{who} runs only inside an Eagle-Eye run, and none is bound (DCV2_RUN_DIR is not set at launch).")
 
 # ---- Edit / Write ------------------------------------------------------------------------
@@ -289,6 +293,8 @@ if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
         sys.exit(0)
     if role == "memory-updater" and not run:
         block("the memory updater writes nothing with Edit/Write outside a run; use memory.sh write for memory.")
+    if role == "risk-reviewer" and not run:
+        block("the risk reviewer writes nothing outside a run; give the review in your reply.")
     block(f"{who} may only write inside {where}, not {p}. Never edit a repo main checkout; use the exact worktree path you were given.")
 
 bound = pipeline or bool(run)

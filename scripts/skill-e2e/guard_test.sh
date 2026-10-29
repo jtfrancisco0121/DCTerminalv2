@@ -123,6 +123,19 @@ expect 2 "memory-updater (no run): no git commit" "$(payload dcv2:memory-updater
 expect 0 "memory-updater in a run: writes memory-update.md" "$(payload dcv2:memory-updater Write file_path "$RUN/memory-update.md")"
 expect 2 "memory-updater in a run: not into a worktree" "$(payload dcv2:memory-updater Write file_path "$WT/a.js")"
 expect 2 "memory-updater: no push" "$(payload dcv2:memory-updater Bash command "git -C $WT push")"
+echo "# risk-reviewer"
+expect 0 "risk-reviewer (standalone, no run): read-only git" "$(payload dcv2:risk-reviewer Bash command "git -C $R log --oneline -n 5")" -u DCV2_RUN_DIR
+expect 0 "risk-reviewer (no run): reads code" "$(payload dcv2:risk-reviewer Bash command "grep -rn x $R")" -u DCV2_RUN_DIR
+expect 2 "risk-reviewer (no run): no Write" "$(payload dcv2:risk-reviewer Write file_path "$d/x.md")" -u DCV2_RUN_DIR
+expect 2 "risk-reviewer (no run): no Write into a repo" "$(payload dcv2:risk-reviewer Write file_path "$R/a.js")" -u DCV2_RUN_DIR
+expect 2 "risk-reviewer (no run): no git commit" "$(payload dcv2:risk-reviewer Bash command "git -C $R commit -m x")" -u DCV2_RUN_DIR
+expect 2 "risk-reviewer (no run): no push" "$(payload dcv2:risk-reviewer Bash command "git -C $R push")" -u DCV2_RUN_DIR
+expect 2 "risk-reviewer (no run): no gh pr merge" "$(payload dcv2:risk-reviewer Bash command "gh pr merge 1")" -u DCV2_RUN_DIR
+expect 2 "plan-reviewer (no run): still blocked" "$(payload dcv2:plan-reviewer Bash command "git -C $R log -n 1")" -u DCV2_RUN_DIR
+expect 0 "risk-reviewer in a run: writes its review" "$(payload dcv2:risk-reviewer Write file_path "$RUN/reviews/risk-round1.md")"
+expect 2 "risk-reviewer in a run: not into a worktree" "$(payload dcv2:risk-reviewer Write file_path "$WT/a.js")"
+expect 2 "risk-reviewer in a run: not status.json" "$(payload dcv2:risk-reviewer Write file_path "$RUN/status.json")"
+expect 2 "risk-reviewer in a run: no git commit in a worktree" "$(payload dcv2:risk-reviewer Bash command "git -C $WT commit -m x")"
 
 echo "# unparsable input / no python3"
 expect 2 "unparsable payload from an implementer" '{"agent_type": "dcv2:implementer", "tool_input": {broken'
@@ -406,7 +419,7 @@ bx 0 dcv2:planner "node \"$RT\" resolve_config --project-root \"$SRUN/bmad\""
 bx 0 planner "$CMDQ"
 bx 0 dcv2:planner "node '$RT' memlog init --workspace '$SRUN/bmad/output/r-s/spec-x'"
 bx 0 dcv2:planner 'node "${CLAUDE_PLUGIN_ROOT}/bmad/runtime.mjs" resolve_config --project-root "$DCV2_RUN_DIR/bmad"'
-for who in dcv2:implementer dcv2:pr-reviewer dcv2:plan-reviewer dcv2:memory-updater ""; do
+for who in dcv2:implementer dcv2:pr-reviewer dcv2:plan-reviewer dcv2:risk-reviewer dcv2:memory-updater ""; do
   bx 2 "$who" "node \"$RT\" resolve_config --project-root \"$SRUN/bmad\""
 done
 bx 2 "" 'node "${CLAUDE_PLUGIN_ROOT}/bmad/runtime.mjs" lint_spine --workspace x'
@@ -549,7 +562,7 @@ done
 b 0 "" "git -C $R worktree list && git -C $R branch --list 'dcv2/*' && git -C $WT branch --show-current"
 b 0 "" "bash $STATE cleanup $RUN"
 b 0 "" "bash $STATE request $RUN recheck && bash $STATE request-wait $RUN 20261027T100000Z-recheck"
-for who in dcv2:implementer dcv2:pr-reviewer dcv2:planner dcv2:plan-reviewer; do
+for who in dcv2:implementer dcv2:pr-reviewer dcv2:planner dcv2:plan-reviewer dcv2:risk-reviewer; do
   b 2 "$who" "bash $STATE cleanup $RUN"
   b 2 "$who" "bash $STATE request $RUN recheck"
 done
@@ -581,7 +594,7 @@ bx 0 dcv2:implementer "cd \"$d/ws\" && node ./tools/runtime.mjs"                
 
 echo "# live Claude tests (repos.json liveTests)"
 mkdir -p "$WT/scripts/skill-e2e"
-for who in dcv2:implementer dcv2:pr-reviewer dcv2:planner dcv2:plan-reviewer dcv2:memory-updater; do
+for who in dcv2:implementer dcv2:pr-reviewer dcv2:planner dcv2:plan-reviewer dcv2:risk-reviewer dcv2:memory-updater; do
   b 2 "$who" "claude -p hi"
   b 2 "$who" "cd $WT && env X=1 claude --version"
 done

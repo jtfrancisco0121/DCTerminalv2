@@ -183,10 +183,51 @@ describe("RunPanelView", () => {
     expect(screen.getByText(/Plan ✓ approved/)).toBeTruthy();
   });
 
+  it("the approval card shows the risk review verdict and open risks", () => {
+    renderPanel({
+      waitingFor: "plan-approval",
+      plan: {
+        approved: false,
+        verdict: "APPROVED",
+        reviewRound: 5,
+        openFindings: 0,
+        riskVerdict: "RISKS FOUND",
+        riskOpenFindings: 2,
+      },
+    });
+    expect(screen.getByTestId("approval-prs").textContent).toBe(
+      `${view.prs.length} PRs · plan review round 5 · 0 open plan findings · risk review: risks found, 2 open risks`,
+    );
+  });
+
+  it("the approval card says no blocking risks without a count", () => {
+    renderPanel({
+      waitingFor: "plan-approval",
+      plan: {
+        approved: false,
+        verdict: "APPROVED",
+        reviewRound: 1,
+        openFindings: 0,
+        riskVerdict: "NO BLOCKING RISKS",
+        riskOpenFindings: 0,
+      },
+    });
+    expect(screen.getByTestId("approval-prs").textContent).toBe(
+      `${view.prs.length} PRs · plan review round 1 · 0 open plan findings · risk review: no blocking risks`,
+    );
+  });
+
   it("the approval card shows the PR count, each PR's gate, app check and open findings, and the plan review", () => {
     renderPanel({
       waitingFor: "plan-approval",
-      plan: { approved: false, verdict: "APPROVED WITH CHANGES", reviewRound: 2, openFindings: 1 },
+      plan: {
+        approved: false,
+        verdict: "APPROVED WITH CHANGES",
+        reviewRound: 2,
+        openFindings: 1,
+        riskVerdict: null,
+        riskOpenFindings: null,
+      },
     });
     expect(screen.getByTestId("approval-title").textContent).toBe("Plan approval");
     expect(screen.getByTestId("approval-prs").textContent).toBe(

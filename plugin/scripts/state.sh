@@ -373,6 +373,30 @@ def on_remote(repo, remote, branch):
 
 # ---- status.json -------------------------------------------------------------------------
 
+RISK_VERDICTS = ("NO BLOCKING RISKS", "RISKS FOUND")
+
+
+def check_risk(r, p):
+    """plan.risk: null, or the last Risk Reviewer round: {round, verdict, openFindings, path}."""
+    if r is None:
+        return
+    if not isinstance(r, dict):
+        p.append("plan.risk must be null or {round, verdict, openFindings, path}")
+        return
+    if not (isinstance(r.get("round"), int) and not isinstance(r.get("round"), bool) and r["round"] >= 1):
+        p.append("plan.risk.round must be an integer >= 1")
+    if r.get("verdict") not in RISK_VERDICTS:
+        p.append(f"plan.risk.verdict must be one of {RISK_VERDICTS}")
+    n = r.get("openFindings")
+    if not (isinstance(n, int) and not isinstance(n, bool) and n >= 0):
+        p.append("plan.risk.openFindings must be an integer >= 0 (the MEDIUM+ risks)")
+    elif r.get("verdict") == "NO BLOCKING RISKS" and n:
+        p.append("plan.risk: verdict NO BLOCKING RISKS needs openFindings 0")
+    path = r.get("path")
+    if path is not None and not (isinstance(path, str) and re.fullmatch(r"reviews/risk-round\d+\.md", path)):
+        p.append("plan.risk.path must be null or reviews/risk-round<n>.md (relative to the run)")
+
+
 def check_approval(v, name, problems):
     if v is None:
         return
@@ -398,6 +422,7 @@ def validate_status(doc, run):
         p.append("plan must be null or an object")
         plan = None
     check_approval((plan or {}).get("approval"), "plan.approval", p)
+    check_risk((plan or {}).get("risk"), p)
     check_approval(doc.get("shipApproval"), "shipApproval", p)
     if doc.get("bmad") is not None and not isinstance(doc.get("bmad"), dict):
         p.append("bmad must be an object (written only by state.sh bmad-size / bmad-init / bmad-check)")
@@ -2016,8 +2041,11 @@ def write_report(run):
     if ver:
         L.append(f"- Roles version: {ver}")
     appr, ship = pl.get("approval") or {}, st.get("shipApproval") or {}
+    rk = pl.get("risk") if isinstance(pl.get("risk"), dict) else None
     L += [f"- Plan: {pl.get('reviewRound', 0)} review round(s), last verdict {pl.get('verdict') or '-'}, "
           f"{pl.get('openFindings', 0)} MEDIUM+ open; approved by {appr.get('by') or '-'}" + (f" at {appr['at']}" if appr.get("at") else ""),
+          *([f"- Risk: {rk.get('round', 0)} review round(s), last verdict {rk.get('verdict') or '-'}, {rk.get('openFindings', 0)} MEDIUM+ open"
+             + (f" (`{rk['path']}`)" if rk.get("path") else "")] if rk else []),
           f"- Ship: approved by {ship.get('by') or '-'}; " + json.dumps(st.get("ship")) if st.get("ship") else f"- Ship: approved by {ship.get('by') or '-'}; not shipped",
           f"- Plan retries: {plan_retries}",
           ""]
