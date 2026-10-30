@@ -57,6 +57,12 @@ grep -qiE 'one pull request per repository|never two for the same repo' "$pl" "$
 for k in '- Files:' '- Size:' '- Over limit:'; do grep -qF -- "$k" "$pl" && ok "planner.md has $k" || bad "planner.md lacks $k"; done
 for k in 'without an `Over limit:`' 'overlap' 'needless split' 'boilerplate'; do grep -qF -- "$k" "$pr" && ok "plan-reviewer.md names: $k" || bad "plan-reviewer.md lacks: $k"; done
 
+sk="$P/skills/eagle-eye/SKILL.md"
+for k in 'S size <run>' 'S merge-check <run>' 'size: split or justify' 'never sent to a fix Implementer' 'NOT WRITTEN: plan.md split:' 'plan.md failed the plan check twice' \
+         '`Size:` line and its `Over limit:` reason word for word' 'a list "over the limit"' '600000' 'never as a pass' 'run `S merge-check <run>` again' 'Only the user'"'"'s reason can waive a size FAIL'; do
+  grep -qF -- "$k" "$sk" && ok "SKILL.md names: $k" || bad "SKILL.md lacks: $k"
+done
+[[ "$(grep -cF 'NOT WRITTEN: plan.md split:' "$sk")" -ge 2 ]] && ok "SKILL.md handles the split refusal in the Failures table and in Stop #1" || bad "SKILL.md: plan.md split: refusal not in both places"
 grep -qF '[MEDIUM] size: split or justify' "$P/roles/pr-reviewer.md" && ok "pr-reviewer.md has the fixed size finding" || bad "pr-reviewer.md lacks '[MEDIUM] size: split or justify'"
 
 echo "# hooks and launch settings (A3, A4)"
