@@ -346,6 +346,21 @@ impl SessionTracker {
         list
     }
 
+    /// The estimated cost of each agent's messages, keyed by its agent id (`None`: the main
+    /// session). A model with no price makes that agent's cost `None`.
+    pub fn cost_by_agent(&self) -> HashMap<Option<String>, Option<f64>> {
+        let mut out: HashMap<Option<String>, Option<f64>> = HashMap::new();
+        for record in &self.records {
+            let cost = record.tokens.cost(&record.model);
+            let entry = out.entry(record.agent_id.clone()).or_insert(Some(0.0));
+            *entry = match (*entry, cost) {
+                (Some(sum), Some(c)) => Some(sum + c),
+                _ => None,
+            };
+        }
+        out
+    }
+
     /// A4: the session's last context size against its model's window.
     pub fn context(&self) -> Option<ContextMeter> {
         let (model, used) = self.context.clone()?;

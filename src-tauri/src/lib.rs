@@ -202,6 +202,7 @@ pub fn run() {
             run::rerun_checks,
             run::slop_check,
             run::compact_text,
+            run::timeline::run_timeline,
             run::preview::preview_file,
             run::preview::preview_stat,
             run::preview::paths_exist,

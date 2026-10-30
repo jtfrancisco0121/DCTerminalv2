@@ -1,0 +1,2 @@
+{"type": "assistant", "timestamp": "2026-10-30T10:04:30Z", "message": {"id": "sa30", "model": "claude-sonnet-5-5", "usage": {"input_tokens": 2000, "output_tokens": 400, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}, "content": [{"type": "text", "text": "x"}]}}
+{"type": "assistant", "timestamp": "2026-10-30T10:08:50Z", "message": {"id": "sa31", "model": "claude-sonnet-5-5", "usage": {"input_tokens": 2000, "output_tokens": 400, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}, "content": [{"type": "text", "text": "x"}]}}

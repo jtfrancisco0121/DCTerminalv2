@@ -34,6 +34,7 @@ import {
   wantsAppChecks,
 } from "../run/words";
 import { ClickUpRunSection } from "../clickup/ClickUpRunSection";
+import { FleetTimeline } from "./FleetTimeline";
 import { checkLogPr, readCheckLog } from "../run/observe";
 import { RUN_STATE_EVENT, usePushRefresh } from "../run/events";
 import { AWAY_ROWS, useAwayNotice } from "../run/away";
@@ -708,7 +709,12 @@ export function RunPanel({
         onSlopCheck={(prId) => slopCheck(runDir, prId)}
         away={away}
         session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} /> : undefined}
-        extra={<ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} mergeKey={mergeKey(view)} />}
+        extra={
+          <>
+            <FleetTimeline runDir={runDir} live={!runFinished(view)} />
+            <ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} mergeKey={mergeKey(view)} />
+          </>
+        }
       />
       </div>
       </RunPanelShell>

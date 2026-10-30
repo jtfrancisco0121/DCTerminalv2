@@ -18,7 +18,6 @@ vi.mock("@xterm/xterm", () => ({
     options = {};
     loadAddon() {}
     registerLinkProvider() {}
-    registerLinkProvider() {}
     onSelectionChange(handler: () => void) {
       selectionChanged = handler;
     }

@@ -24,6 +24,7 @@ pub mod repos;
 pub mod requests;
 pub mod slop;
 pub mod status;
+pub mod timeline;
 
 use crate::commands::{tab_summary, TabSummary};
 use crate::paths::validate_working_folder;
