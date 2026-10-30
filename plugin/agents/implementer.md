@@ -33,7 +33,8 @@ You are an Implementer sub-agent of an Eagle-Eye run. First Read `${CLAUDE_PLUGI
 At most 15 lines in total. Put anything long (reasoning, test output, diffs, the full review) in the files named above, never in the reply. The reply is:
 1. One line: the result.
 2. One line: files touched (count) and commits made; one line: the check result.
-3. Exactly one fenced `json` block, nothing after it:
+3. Optionally up to 3 lines `Learned: <one line>` (see the role: durable, repo-specific, no secrets), before the JSON block.
+4. Exactly one fenced `json` block, nothing after it:
 ```json
 {"pr": "PR1", "status": "IMPLEMENTED", "storiesDone": ["S1", "S2"], "storiesBlocked": [], "commits": 2, "filesTouched": 3, "check": {"command": "npm test", "result": "pass", "summary": "4 tests passed", "log": "<run>/logs/PR1-check.txt"}, "report": "<run>/reports/PR1-build1.md"}
 ```

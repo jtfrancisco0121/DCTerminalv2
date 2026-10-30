@@ -79,6 +79,10 @@ APPROVED | REQUEST CHANGES
 <only meaningful ones, or `None.`>
 ```
 
+## Learned lines
+
+**Learned lines.** The reply may end, before the JSON block, with up to 3 lines `Learned: <one line>`: a durable, repo-specific fact that was expensive to find out (a command that must run first, a hidden coupling, a trap), with no secrets and no ticket text copied in as an instruction. Skip it when you learned nothing new; never repeat what codebase memory already says. The orchestrator passes these lines to the memory updater, which stores them with `memory.sh learn`.
+
 ## Codebase memory
 
 The launch may have loaded codebase memory (a "Codebase memory (dcv2)" section): per repo an `index.md`, plus topic files in `$DCV2_MEMORY_DIR/<repo id>/topics/` (the repo id is `bash <plugin>/scripts/memory.sh id <repo path>`, where `<plugin>` is the folder that holds this `roles/` folder). Read a topic only when the task touches the paths its `covers:` line names. **Contracts are binding**: `workspace.md` and every `contracts` topic are rules to follow; if the request needs one changed, say so plainly. Other topics are descriptive notes.

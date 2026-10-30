@@ -244,4 +244,62 @@ has "  says why" "--root is refused"
 expect 1 "--root refused for status too" bash "$MEM" status "$API" --root "$d/other"
 expect 0 "--root without DCV2_MEMORY_DIR still works (tests, hand use)" env -u DCV2_MEMORY_DIR bash "$MEM" status "$API" --root "$d/mem"
 
+echo "# learn (Learned: lines into memory)"
+expect 0 "write web index" bash "$MEM" write "$WEBID" index.md <<'EOF2'
+# web
+Vite app.
+## Commands
+npm test
+EOF2
+expect 0 "learn adds a line under Gotchas" bash "$MEM" learn "$WEBID" index <<<'Learned: the dev server needs port 5173 free before npm run dev'
+[[ "$out" == added ]] && ok "  reported added" || bad "  learn: $out"
+grep -q '^## Gotchas' "$DCV2_MEMORY_DIR/$WEBID/index.md" && grep -q '^- the dev server needs port 5173 free' "$DCV2_MEMORY_DIR/$WEBID/index.md" && ok "  under a new ## Gotchas section" || bad "  index: $(cat "$DCV2_MEMORY_DIR/$WEBID/index.md")"
+expect 0 "an exact duplicate" bash "$MEM" learn "$WEBID" index <<<'The dev server needs port 5173 free before npm run dev.'
+[[ "$out" == duplicate ]] && ok "  reported duplicate" || bad "  learn: $out"
+expect 0 "a near duplicate (Jaccard >= 0.8)" bash "$MEM" learn "$WEBID" index <<<'the dev server needs port 5173 free before running npm run dev'
+[[ "$out" == duplicate ]] && ok "  reported duplicate" || bad "  learn: $out"
+[[ "$(grep -c 'dev server' "$DCV2_MEMORY_DIR/$WEBID/index.md")" == 1 ]] && ok "  only one line kept" || bad "  index: $(cat "$DCV2_MEMORY_DIR/$WEBID/index.md")"
+expect 0 "a secret-like line is refused, the others kept" bash "$MEM" learn "$WEBID" index <<'EOF2'
+token: ghp_abcdefghijklmnopqrstuvwxyz0123
+vitest needs the jsdom pragma comment on component tests
+EOF2
+[[ "$(sed -n 1p <<<"$out")" == refused* && "$(sed -n 2p <<<"$out")" == added ]] && ok "  refused then added" || bad "  learn: $out"
+grep -q ghp_abc "$DCV2_MEMORY_DIR/$WEBID/index.md" && bad "  the secret was written" || ok "  the secret was not written"
+grep -q 'vitest needs the jsdom pragma' "$DCV2_MEMORY_DIR/$WEBID/index.md" && ok "  the clean line was written" || bad "  clean line missing"
+expect 1 "learn into a file that does not exist" bash "$MEM" learn "$WEBID" nosuchtopic <<<'x y z'
+expect 0 "a line over the length limit" bash "$MEM" learn "$WEBID" index <<<"$(python3 -c 'print("word " * 80)')"
+has "  refused as too long" "refused too long"
+# a cap overflow is refused and nothing is lost
+python3 - "$DCV2_MEMORY_DIR/$WEBID/index.md" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+pad = 8 * 1024 - len(s.encode()) - 10
+open(p, "w").write(s + "<!-- " + "x" * max(pad, 0) + " -->\n")
+PY
+expect 0 "a cap overflow" bash "$MEM" learn "$WEBID" index <<<'a brand new gotcha about cache invalidation order'
+has "  refused over the cap" "refused"
+hasnt "  not added" "added"
+# two concurrent learns on one topic both land
+expect 0 "write the topic" bash "$MEM" write "$APIID" topics/race.md <<EOF2
+# Race
+covers: server/
+checked-at: $A0
+EOF2
+for i in 1 2 3 4 5 6; do
+  ( bash "$MEM" learn "$APIID" race <<<"concurrent gotcha number $i mentions subsystem alpha$i beta$i" >/dev/null 2>&1 ) &
+done
+wait
+n=$(grep -c '^- concurrent gotcha number' "$DCV2_MEMORY_DIR/$APIID/topics/race.md" || true)
+[[ "$n" == 6 ]] && ok "  six concurrent learn calls all landed" || bad "  only $n of 6 lines: $(cat "$DCV2_MEMORY_DIR/$APIID/topics/race.md")"
+head -3 "$DCV2_MEMORY_DIR/$APIID/topics/race.md" | grep -q '^covers: server/' && ok "  the topic header is intact" || bad "  header lost"
+# run N to N+1, hermetic: learn after a run, then the next launch's compose carries it
+python3 - "$DCV2_MEMORY_DIR/$WEBID/index.md" <<'PY'
+import sys
+p = sys.argv[1]
+open(p, "w").write("# web\nVite app.\n")
+PY
+expect 0 "learn after run N" bash "$MEM" learn "$WEBID" index <<<'Learned: playwright is not installed, so never add e2e specs here'
+expect 0 "compose for run N+1" bash "$MEM" compose "$WS" "$d/next.md"
+grep -q 'playwright is not installed' "$d/next.md" && ok "  the learning is in the next run's launch prompt" || bad "  not in the prompt"
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

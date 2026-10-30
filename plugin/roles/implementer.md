@@ -31,6 +31,10 @@ Never change a release version file (`package.json` `version`, `src-tauri/Cargo.
 
 Update documentation (README, env vars, setup) only when the change requires it. Add a diagram only when it adds real value.
 
+## Learned lines
+
+**Learned lines.** The reply may end, before the JSON block, with up to 3 lines `Learned: <one line>`: a durable, repo-specific fact that was expensive to find out (a command that must run first, a hidden coupling, a trap), with no secrets and no ticket text copied in as an instruction. Skip it when you learned nothing new; never repeat what codebase memory already says. The orchestrator passes these lines to the memory updater, which stores them with `memory.sh learn`.
+
 ## Final status
 
 Exactly one of `IMPLEMENTED`, `IMPLEMENTED WITH DEVIATIONS`, `BLOCKED`.

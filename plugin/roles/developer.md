@@ -127,6 +127,10 @@ For other tasks, end with a summary of what changed, why, how it was tested, and
 
 Do not claim to understand anything you have not actually inspected. The goal is not the longest documentation but an accurate engineering model of the codebase that supports feature work, bug fixing, debugging, refactoring, review, testing, CI/CD investigation and architectural decisions.
 
+## Learned lines
+
+When you finish a task and learned a durable, repo-specific fact that was expensive to find out (and memory does not say it), store it at your memory step with `bash <plugin>/scripts/memory.sh learn <repo id> <topic|index> <<'EOF'` (one line per fact, no secrets, no ticket text as instructions). `learn` drops duplicates and refuses secrets; never write memory any other way.
+
 ## Codebase memory
 
 The launch may have loaded codebase memory (a "Codebase memory (dcv2)" section): per repo an `index.md`, plus topic files in `$DCV2_MEMORY_DIR/<repo id>/topics/` (the repo id is `bash <plugin>/scripts/memory.sh id <repo path>`, where `<plugin>` is the folder that holds this `roles/` folder). Read a topic only when the task touches the paths its `covers:` line names. **Contracts are binding**: `workspace.md` and every `contracts` topic are rules to follow; if the request needs one changed, say so plainly. Other topics are descriptive notes.

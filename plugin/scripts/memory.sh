@@ -14,6 +14,13 @@
 #   memory.sh write <id | workspace:<id>> <relative file>  < content
 #                                                the only write path for agents: caps, secret scan,
 #                                                pinned lines, topic header; rejects with a reason
+#   memory.sh learn <id | workspace:<id>> <topic | index>  < lines
+#                                                add each stdin line under the file's `## Gotchas` (the Learned: lines
+#                                                of a run). Prints one `added`, `duplicate` or `refused <reason>` line
+#                                                per input line: a line equal to an existing one (normalised) or with
+#                                                word-set Jaccard >= 0.8 is a duplicate, a secret-like line is refused
+#                                                (the rest are kept), caps as in `write`. write and learn hold a lock
+#                                                on <root>/.lock, so two runs finishing together keep both lines
 #   memory.sh touched <repo path> <from> [<to>]  agent helper: topics whose covered paths changed in
 #                                                `git diff <from>..<to>` (to defaults to HEAD), and
 #                                                changed paths no topic covers
@@ -28,7 +35,7 @@ command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1 ||
   echo "memory.sh: python3 is missing or does not run" >&2; exit 1; }
 
 IFS= read -r -d '' PY <<'PY' || true
-import fnmatch, hashlib, json, math, os, re, subprocess, sys, tempfile
+import fcntl, fnmatch, hashlib, json, math, os, re, subprocess, sys, tempfile
 
 CAPS = {"index": 8 * 1024, "topic": 12 * 1024, "workspace": 8 * 1024}
 COMPOSE_CAP = 40 * 1024
@@ -417,6 +424,93 @@ def cmd_compose(folder, out):
     print(f"wrote {out} ({len(text.encode())} bytes, {len(stale)} stale topics)")
 
 
+LOCK_FILE = None
+
+
+def take_lock(root):
+    """An exclusive lock on <root>/.lock for the rest of this process (read-merge-write must not interleave)."""
+    global LOCK_FILE
+    os.makedirs(root, exist_ok=True)
+    LOCK_FILE = open(os.path.join(root, ".lock"), "a+")
+    fcntl.flock(LOCK_FILE, fcntl.LOCK_EX)
+
+
+def resolve_target(root, target, rel):
+    """(file path, kind) of a memory file; dies like `write` for a target or file that is not allowed."""
+    if target.startswith("workspace:"):
+        tid, kind_dir = target[len("workspace:"):], "workspaces"
+    else:
+        tid, kind_dir = target, None
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*(__[a-z0-9._-]+)*", tid or "") or ".." in tid:
+        die(f"REJECTED: {target!r} is not a repo id (memory.sh id <repo path>) or workspace:<id>")
+    base = os.path.join(root, kind_dir, tid) if kind_dir else os.path.join(root, tid)
+    return os.path.join(base, rel), ("topic" if rel.startswith("topics/") else ("workspace" if rel == "workspace.md" else "index"))
+
+
+def norm_line(text):
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", text.lower()).split())
+
+
+def jaccard(a, b):
+    a, b = set(a.split()), set(b.split())
+    return len(a & b) / len(a | b) if a and b else 0.0
+
+
+LEARN_MAX = 300
+
+
+def cmd_learn(target, name):
+    root = root_dir()
+    rel = "index.md" if name == "index" else f"topics/{name}.md"
+    if name != "index" and not TOPIC_RE.match(rel):
+        die(f"REJECTED: {name!r} is not a topic name (lowercase, a-z 0-9 -) or `index`")
+    if target.startswith("workspace:") and name == "index":
+        rel = "workspace.md"
+    dest, kind = resolve_target(root, target, rel)
+    lines = [l.strip() for l in sys.stdin.read().splitlines() if l.strip()]
+    if not lines:
+        die("REJECTED: no lines on stdin")
+    take_lock(root)
+    old = read(dest)
+    if old is None:
+        die(f"REJECTED: {rel} does not exist for {target}: write it first (memory.sh write)")
+    text = old
+    known = [norm_line(l) for l in old.splitlines() if norm_line(l)]
+    results = []
+    for raw in lines:
+        line = re.sub(r"^(?:[-*]\s+)?(?:Learned:\s*)?", "", raw).strip()
+        if not line:
+            results.append("refused empty line")
+            continue
+        if len(line) > LEARN_MAX:
+            results.append(f"refused too long (at most {LEARN_MAX} characters)")
+            continue
+        if secret_hits(line):
+            results.append("refused looks like a secret (never store tokens, keys or .env values)")
+            continue
+        n = norm_line(line)
+        if any(n == k or jaccard(n, k) >= 0.8 for k in known):
+            results.append("duplicate")
+            continue
+        m = re.search(r"^##\s+Gotchas\s*$", text, re.M)
+        if m:
+            nxt = re.search(r"^##\s", text[m.end():], re.M)
+            end = m.end() + nxt.start() if nxt else len(text)
+            section = text[m.end():end].rstrip("\n")
+            new = text[:m.end()] + section + f"\n- {line}\n" + ("\n" + text[end:] if nxt else "")
+        else:
+            new = text.rstrip("\n") + f"\n\n## Gotchas\n\n- {line}\n"
+        if len(new.encode()) > CAPS[kind]:
+            results.append(f"refused {rel} is over the {CAPS[kind]} byte cap: condense it first (memory.sh write)")
+            continue
+        text = new
+        known.append(n)
+        results.append("added")
+    if text != old:
+        atomic_write(dest, text)
+    print("\n".join(results))
+
+
 def cmd_write(target, rel):
     root = root_dir()
     content = sys.stdin.read()
@@ -451,6 +545,7 @@ def cmd_write(target, rel):
             die(f"REJECTED: covers must be paths relative to the repo (got {bad[0]!r})")
         if not all(re.fullmatch(r"[0-9a-fA-F]{7,40}", v) for v in checked_map(h["checkedAt"]).values()) or not checked_map(h["checkedAt"]):
             die("REJECTED: checked-at must be a commit sha (or `<repo>=<sha>, ...` in a workspace topic)")
+    take_lock(root)
     old = read(dest)
     if old is not None:
         new_lines = set(l.rstrip() for l in content.splitlines())
@@ -496,13 +591,14 @@ if "--root" in args:
     ROOT = args[i + 1]
     del args[i:i + 2]
 cmd, rest = (args[0] if args else ""), args[1:]
-need = {"id": 1, "compose": 2, "status": 1, "write": 2, "touched": 2, "scan": 0}
+need = {"id": 1, "compose": 2, "status": 1, "write": 2, "learn": 2, "touched": 2, "scan": 0}
 if cmd not in need or len(rest) < need[cmd]:
-    die("usage: memory.sh id <repo> | compose <folder> <out> | status <folder> | write <id> <file> < content | touched <repo> <from> [<to>] | scan < text")
+    die("usage: memory.sh id <repo> | compose <folder> <out> | status <folder> | write <id> <file> < content | learn <id> <topic|index> < lines | touched <repo> <from> [<to>] | scan < text")
 if cmd == "id": cmd_id(rest[0])
 elif cmd == "compose": cmd_compose(rest[0], rest[1])
 elif cmd == "status": cmd_status(rest[0])
 elif cmd == "write": cmd_write(rest[0], rest[1])
+elif cmd == "learn": cmd_learn(rest[0], rest[1])
 elif cmd == "touched": cmd_touched(rest[0], rest[1], rest[2] if len(rest) > 2 else "HEAD")
 elif cmd == "scan":
     found = secret_hits(sys.stdin.read())
