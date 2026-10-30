@@ -498,7 +498,7 @@ def validate_status(doc, run, guard=None):
             p.append(f"{pid}: check must be an object")
             chk = {}
         result = chk.get("result")
-        if result not in CHECK_RESULTS and not (result is None and state == "pending"):  # null: a restacked PR whose check must run again
+        if result not in CHECK_RESULTS:
             p.append(f"{pid}: check.result {result!r} not one of {CHECK_RESULTS}")
         if chk.get("cwd") is not None and not os.path.isabs(str(chk.get("cwd"))):
             p.append(f"{pid}: check.cwd must be an absolute path or null")
@@ -839,8 +839,16 @@ def epic_id_of(line):
     return None if not tok or tok.lower() in ("none", "-") else tok
 
 
+def epic_title_of(line):
+    """The title after the id in a plan `- Epic:` line (one line, at most 120 characters), or None."""
+    rest = (line or "").strip().strip("`").split(" ", 1)
+    t = re.sub(r"[\x00-\x1f\x7f]+", " ", rest[1]).strip().strip("`").strip() if len(rest) > 1 else ""
+    return t[:120] or None
+
+
 def plan_epics(run):
-    """{PR id: {id, title} or None} from the plan's Epic lines; titles from tickets.json `epics`, else None."""
+    """{PR id: {id, title} or None} from the plan's Epic lines; titles from tickets.json `epics`, else the Epic line's own
+    title, else None."""
     plan = read(os.path.join(run, "plan.md"))
     if not plan:
         return {}
@@ -848,7 +856,7 @@ def plan_epics(run):
     out = {}
     for pid, p in plan_blocks(plan)[1].items():
         e = epic_id_of(p["epic"])
-        out[pid] = {"id": e, "title": titles.get(e)} if e else None
+        out[pid] = {"id": e, "title": titles.get(e) or epic_title_of(p["epic"])} if e else None
     return out
 
 
@@ -1709,6 +1717,8 @@ def cmd_restack(run, pid):
         die(f"{what}: {parent_id}, the parent of {pid}, is not in status.json")
     if parent.get("state") != "reviewed":
         die(f"{what}: {parent_id} is {parent.get('state')}; restack {pid} once {parent_id} is reviewed again")
+    if pr.get("state") in ("building", "fixing"):  # an Implementer is working in that worktree
+        die(f"{what}: {pid} is {pr.get('state')}; restack it once its Implementer has finished")
     wt = pr["worktree"]
     if git("-C", wt, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0:
         die(f"{what}: a merge is in progress in {wt}; finish or abort it first")
@@ -1728,7 +1738,7 @@ def cmd_restack(run, pid):
         doc = json.loads(json.dumps(st))
         npr = next(p for p in doc["prs"] if p.get("id") == pid)
         npr["state"], npr["note"], npr["baseCommit"], npr["restack"] = "pending", None, phead, old_k + 1
-        npr["check"] = {**(npr.get("check") if isinstance(npr.get("check"), dict) else {}), "result": None, "summary": None, "log": None}
+        npr["check"] = {**(npr.get("check") if isinstance(npr.get("check"), dict) else {}), "result": "not-run", "summary": None, "log": None}
         npr["review"] = {"round": 0, "verdict": None, "openFindings": 0, "path": None}
         mc = doc.get("mergeChecks")
         if isinstance(mc, dict):
@@ -1922,6 +1932,8 @@ def cmd_ship_pr(run, pid):
         slug = q.stdout.strip() if q.returncode == 0 and re.fullmatch(r"[\w.-]+/[\w.-]+", q.stdout.strip()) else None
     if not slug:
         return save("needs-attention", f"cannot tell which GitHub repo {url} is: nothing pushed; push {branch} by hand and open the PR")
+    # The body is scanned before anything is pushed (epic titles and links are ticket data), so a hit really sent nothing.
+    clean_text(run, st, pr, pr_body(run, st, pr), "the PR body", "NOT SHIPPED")
     if pr["state"] == "reviewed":
         push_parent(run, st, pr, rem, "NOT SHIPPED")
         if not remote_sha(url, base):
@@ -1936,7 +1948,7 @@ def cmd_ship_pr(run, pid):
     body = os.path.join(run, "pr-bodies", f"{pid}.md")
     os.makedirs(os.path.dirname(body), exist_ok=True)
     text = pr_body(run, st, pr)
-    clean_text(run, st, pr, text, "the PR body", "NOT SHIPPED")  # epic titles and links are ticket data
+    clean_text(run, st, pr, text, "the PR body", "NOT SHIPPED")
     atomic_write(body, text)
     title = str(pr.get("title") or pid)
     c = gh(["pr", "create", "--base", base, "--head", branch, "--title", title, "--body-file", body], wt, slug)
@@ -2248,7 +2260,8 @@ def need_parent_pr(st, pr, what):
         return
     parent = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == so), None)
     if parent and not parent.get("prUrl") and parent.get("state") in ("local-only", "pushed", "needs-attention"):
-        return f"{so} ended {parent.get('state')} with no PR: no PR opened for this stacked PR; open {so}'s PR first, then ship it again"
+        return (f"{so} ended {parent.get('state')} with no PR, so this stacked PR was not pushed or opened and is left "
+                f"needs-attention: open {so}'s PR by hand first, then push {pr.get('branch')} and open its PR against {so}'s branch")
     if not parent or not parent.get("prUrl"):
         die(f"{what}: {pr.get('id')} is stacked on {so}, which has no PR yet: open {so} first (it ships before {pr.get('id')})")
     return None
@@ -2293,15 +2306,17 @@ def rem_with_slug(rem, cwd):
 
 
 def epic_links(run, st, pr, rem):
-    """After a PR of an epic with 2+ PRs is open: the epic-<id> label on it (created in the repo only if missing) and the
-    already-open siblings' bodies updated once. Every GitHub write goes through checked_pr and clean_text; a failure is a note
-    (returned), never a state change."""
+    """After a PR with an epic is open: the epic-<id> label on it (created in the repo only if missing) and, when the epic has
+    2+ PRs, the already-open siblings' bodies updated once. Every GitHub write goes through checked_pr and clean_text; a failure
+    is a note (returned), never a state change."""
     notes = []
+    ep = pr.get("epic")
+    if not (isinstance(ep, dict) and ep.get("id")):
+        return notes
     sibs = epic_siblings(st, pr)
     rem = rem_with_slug(rem, pr.get("worktree"))
-    if not sibs or not pr.get("prUrl") or not rem or not rem.get("repo"):
+    if not pr.get("prUrl") or not rem or not rem.get("repo"):
         return notes
-    ep = pr["epic"]
     label = f"epic-{ep['id']}"
     if re.fullmatch(r"epic-[A-Za-z0-9_-]{1,50}", label):
         ok, why = soft(checked_pr, run, st, pr, rem, "epic label")
@@ -2982,30 +2997,34 @@ def kept_files(wt, copied):
 
 
 def merged_head(pr, rem, cwd, branch):
-    """(headRefOid, None) for a merged PR of this run's branch in the recorded repo, else (None, why)."""
+    """(headRefOid, None, baseRefName) for a merged PR of this run's branch in the recorded repo, else (None, why, None).
+    The base is GitHub's own: in a stack it is the branch the PR was retargeted to, not the base recorded at ship time."""
     url = pr.get("prUrl")
     if not url:
-        return None, "no PR"
+        return None, "no PR", None
     if not rem or not rem.get("url") or not rem.get("repo"):
-        return None, "no recorded GitHub remote"
+        return None, "no recorded GitHub remote", None
     m = GH_URL.match(str(url))
     hm = REMOTE_HOST.match(rem.get("url") or "")
     hosts = {"github.com"} | ({hm.group(1).lower()} if hm else set())
     if not m or f"{m.group(1)}/{m.group(2)}".lower() != rem["repo"].lower() or url.split("/")[2].lower() not in hosts:
-        return None, f"{url} is not a pull request of {rem['repo']}"
-    r = gh(["pr", "view", url, "--json", "state,mergeCommit,headRefName,headRefOid"], cwd, rem["repo"], 60)
+        return None, f"{url} is not a pull request of {rem['repo']}", None
+    r = gh(["pr", "view", url, "--json", "state,mergeCommit,headRefName,headRefOid,baseRefName"], cwd, rem["repo"], 60)
     if r.returncode != 0:
-        return None, gh_err(r, "gh pr view")
+        return None, gh_err(r, "gh pr view"), None
     try:
         v = json.loads(r.stdout or "{}")
     except ValueError:
-        return None, "gh pr view printed no JSON"
+        return None, "gh pr view printed no JSON", None
+    if not isinstance(v, dict):
+        return None, "gh pr view printed no JSON object", None
     if v.get("headRefName") != branch:
-        return None, f"the PR's head is {v.get('headRefName')}, not {branch}"
+        return None, f"the PR's head is {v.get('headRefName')}, not {branch}", None
     if v.get("state") != "MERGED":
-        return None, f"not merged ({str(v.get('state') or 'unknown').lower()})"
+        return None, f"not merged ({str(v.get('state') or 'unknown').lower()})", None
     oid = str(v.get("headRefOid") or "")
-    return (oid, None) if re.fullmatch(r"[0-9a-f]{40}", oid) else (None, "gh pr view gave no head commit")
+    base = v.get("baseRefName") if isinstance(v.get("baseRefName"), str) and v.get("baseRefName") else None
+    return (oid, None, base) if re.fullmatch(r"[0-9a-f]{40}", oid) else (None, "gh pr view gave no head commit", None)
 
 
 def retarget_children(rem, cwd, branch, new_base):
@@ -3103,7 +3122,7 @@ def cmd_cleanup(run):
                 r = git("-C", repo, "branch", "-d", "--", branch)  # never -D
                 parts.append(f"branch {branch} deleted" if r.returncode == 0 else f"branch {branch} kept (not merged here)")
         rem = (g.get("remotes") or {}).get(pid)
-        oid, why = merged_head(pr, rem if isinstance(rem, dict) else None, repo, branch)
+        oid, why, merged_base = merged_head(pr, rem if isinstance(rem, dict) else None, repo, branch)
         if not oid:
             parts.append(f"remote branch kept ({why})")
             if str(why).startswith("not merged (closed"):
@@ -3117,9 +3136,10 @@ def cmd_cleanup(run):
             elif tip != oid:
                 parts.append("remote branch kept (its tip is not the merged PR's head)")
             else:
-                # A PR stacked on this branch is retargeted to this PR's own base (and checked) before the branch goes: deleting
-                # the base of an open PR closes it on GitHub. Any failure keeps the branch.
-                bad = retarget_children(rem, repo, branch, pr.get("base"))
+                # A PR stacked on this branch is retargeted to this PR's own base on GitHub (and checked) before the branch goes:
+                # deleting the base of an open PR closes it on GitHub. In a chain that base may already have been retargeted, so
+                # GitHub's baseRefName wins over the one recorded at ship time. Any failure keeps the branch.
+                bad = retarget_children(rem, repo, branch, merged_base or pr.get("base"))
                 if bad:
                     parts.append(f"remote branch kept (not deleted: {bad})")
                 else:

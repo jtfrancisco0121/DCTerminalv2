@@ -1050,7 +1050,7 @@ expect 0 "put building with a forged prs[].epic" spput < "$d/sp-building.json"
 is "  PR1 epic id from the plan" "$SP/status.json" prs.0.epic.id '"E1"'
 is "  PR1 epic title from tickets.json epics" "$SP/status.json" prs.0.epic.title '"Epic one"'
 is "  PR2 (same epic, other repo)" "$SP/status.json" prs.1.epic.id '"E1"'
-is "  PR3 epic E2 has no title in epics" "$SP/status.json" prs.2.epic.title null
+is "  PR3 epic E2 has no title in epics: the plan's Epic line title is used" "$SP/status.json" prs.2.epic.title '"Epic two"'
 is "  PR6 (Epic: none) has epic null" "$SP/status.json" prs.3.epic null
 echo "# plan <run> prs: one compact line per PR"
 expect 0 "plan prs" bash "$STATE" plan "$SP" prs
@@ -1412,7 +1412,7 @@ ststatus() {
   szstatus "$1" 'g = json.load(open(run + "/.guard.json"))
 doc["prs"][0]["state"] = "reviewed"
 doc["prs"][1].update(dependsOn=["PR1"], stackedOn="PR1", base="dcv2/" + rid + "-pr1", baseCommit=g["bases"]["PR2"], state="pending",
-                     check={"command": "true", "result": None, "summary": None})
+                     check={"command": "true", "result": "not-run", "summary": None})
 '"${2:-}"
 }
 # stprep <tag>: PR1 reviewed with one commit; PR2 made from its head, with one commit, and recorded
@@ -1466,6 +1466,12 @@ stmark 'st["prs"][0]["state"] = "building"'
 expect 1 "restack while the parent is not reviewed" bash "$STATE" restack "$SZ" PR2
 has "  says so" "PR1 is building"
 stmark 'st["prs"][0]["state"] = "reviewed"'
+for busy in building fixing; do
+  stmark "st['prs'][1]['state'] = '$busy'"
+  expect 1 "restack while the child is $busy" bash "$STATE" restack "$SZ" PR2
+  has "  says so" "PR2 is $busy"
+done
+stmark 'st["prs"][1]["state"] = "reviewed"'
 echo dirty > "$SZ2/dirty.txt"
 expect 1 "restack with an uncommitted file" bash "$STATE" restack "$SZ" PR2
 has "  says so" "uncommitted changes"
@@ -1479,7 +1485,7 @@ git -C "$SZ2" merge-base --is-ancestor "$PRE2" HEAD && ok "  PR2's own commits w
 is "  baseCommit is PR1's new head" "$SZ/status.json" prs.1.baseCommit "\"$P1H2\""
 [[ "$(gj bases PR2)" == "\"$P1H2\"" ]] && ok "  .guard.json bases.PR2 moved with it" || bad "  guard: $(cat "$SZ/.guard.json")"
 is "  PR2 is pending" "$SZ/status.json" prs.1.state '"pending"'
-is "  with no check result" "$SZ/status.json" prs.1.check.result null
+is "  its check is not-run" "$SZ/status.json" prs.1.check.result '"not-run"'
 is "  the repo's mergeChecks entry is gone" "$SZ/status.json" mergeChecks.szsta null
 is "  review.round is 0" "$SZ/status.json" prs.1.review.round 0
 is "  restack is 1" "$SZ/status.json" prs.1.restack 1
@@ -1487,6 +1493,9 @@ is "  restack is 1" "$SZ/status.json" prs.1.restack 1
 [[ "$(git -C "$SR" for-each-ref refs/remotes | wc -l | tr -d ' ')" == "$REMOTE_BEFORE" ]] && ok "  nothing was pushed" || bad "  remote refs changed"
 expect 0 "a following put with those values passes" bash "$STATE" put "$SZ/status.json" < <(ststatus building 'g = json.load(open(run + "/.guard.json")); doc["prs"][1]["baseCommit"] = g["bases"]["PR2"]')
 is "  restack kept at 1" "$SZ/status.json" prs.1.restack 1
+expect 0 "the restacked PR goes building (an Implementer round) with its not-run check" bash "$STATE" put "$SZ/status.json" < <(ststatus building 'g = json.load(open(run + "/.guard.json")); doc["prs"][1].update(baseCommit=g["bases"]["PR2"], state="building")')
+is "  PR2 is building" "$SZ/status.json" prs.1.state '"building"'
+expect 0 "and back to pending for the next step" bash "$STATE" put "$SZ/status.json" < <(ststatus building 'g = json.load(open(run + "/.guard.json")); doc["prs"][1]["baseCommit"] = g["bases"]["PR2"]')
 expect 0 "put cannot change restack" bash "$STATE" put "$SZ/status.json" < <(ststatus building 'doc["prs"][1]["restack"] = 7')
 has "  says so" "restack is set only by"
 is "  restack still 1" "$SZ/status.json" prs.1.restack 1

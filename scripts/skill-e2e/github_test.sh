@@ -651,10 +651,11 @@ exec(extra)
 json.dump(doc, open(os.path.join(run, "status.json"), "w"))
 PY
 }
-# epsetup <tag> <epic id>: PR1 in tw, PR2 in tx, both in epic <epic id>; worktrees made, one commit each, stage shipping
+# epsetup <tag> <epic id> [PR2's epic line]: PR1 in tw, PR2 in tx, both in epic <epic id> (or PR2's own Epic line); worktrees
+# made, one commit each, stage shipping
 epsetup() {
-  RUN="$d/runs/r-$1"; EPIC="$2"; mkdir -p "$RUN"; cp "$RUN3/request.md" "$RUN/"; echo '{"schema": 1}' > "$RUN/meta.json"
-  printf '# Plan\n## Stories\n### S1: Tw part\n- Files: a.txt\n### S2: Tx part\n- Files: b.txt\n## Pull requests\n### PR1: Tw\n- Repo: tw\n- Stories: S1\n- Depends on: none\n- Epic: %s Epic title\n### PR2: Tx\n- Repo: tx\n- Stories: S2\n- Depends on: none\n- Epic: %s Epic title\n' "$EPIC" "$EPIC" > "$RUN/plan.md"
+  RUN="$d/runs/r-$1"; EPIC="$2"; EPIC2="${3:-$2 Epic title}"; mkdir -p "$RUN"; cp "$RUN3/request.md" "$RUN/"; echo '{"schema": 1}' > "$RUN/meta.json"
+  printf '# Plan\n## Stories\n### S1: Tw part\n- Files: a.txt\n### S2: Tx part\n- Files: b.txt\n## Pull requests\n### PR1: Tw\n- Repo: tw\n- Stories: S1\n- Depends on: none\n- Epic: %s Epic title\n### PR2: Tx\n- Repo: tx\n- Stories: S2\n- Depends on: none\n- Epic: %s\n' "$EPIC" "$EPIC2" > "$RUN/plan.md"
   printf '{"schema":1,"repos":[{"name":"tw","path":"%s","check":"true"},{"name":"tx","path":"%s","check":"true"}]}\n' "$TW" "$TX" > "$RUN/repos.json"
   printf '{"schema":1,"tasks":[],"epics":[{"id":"%s","name":"Epic title","url":"https://x"}]}\n' "$EPIC" > "$RUN/tickets.json"
   export DCV2_RUN_DIR="$RUN"
@@ -689,6 +690,13 @@ is "  PR1 is still opened" "$RUN/status.json" prs.0.state '"opened"'
 has "  PR1's body was not updated (secret)" "PR1's body not updated with the epic links"
 prfield dcv2/r-epb-pr1 body | grep -q hunter2 && bad "  the secret reached PR1's body" || ok "  no secret was sent"
 [[ -z "$(prfield dcv2/r-epb-pr2 labels)" ]] && ok "  PR2 has no label" || bad "  labels: $(prfield dcv2/r-epb-pr2 labels)"
+echo "# epic: a PR that is its epic's only PR still gets the epic label (no Epic section, no sibling update)"
+epsetup epc E3 none
+expect 0 "ship-pr PR1, the only PR of epic E3" S ship-pr "$RUN" PR1; has "  opened" "PR1 opened:"
+[[ "$(prfield dcv2/r-epc-pr1 labels)" == "epic-E3" ]] && ok "  PR1 has the epic-E3 label" || bad "  labels: $(prfield dcv2/r-epc-pr1 labels)"
+grep -qx '## Epic' "$RUN/pr-bodies/PR1.md" && bad "  a single-PR epic got an Epic section" || ok "  no Epic section in PR1's body"
+expect 0 "ship-pr PR2, which has no epic" S ship-pr "$RUN" PR2; has "  opened" "PR2 opened:"
+[[ -z "$(prfield dcv2/r-epc-pr2 labels)" ]] && ok "  PR2 (no epic) has no label" || bad "  labels: $(prfield dcv2/r-epc-pr2 labels)"
 export DCV2_RUN_DIR="$RUN3"
 
 echo "# GitHub mode: a stacked PR is drafted against its parent; a review comment after a restack is posted again"
