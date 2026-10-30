@@ -68,6 +68,14 @@
         "round": 1,
         "verdict": "APPROVED"
       },
+      "size": {
+        "excluded": 1,
+        "files": 6,
+        "limit": 400,
+        "lines": 312,
+        "over": false,
+        "reason": null
+      },
       "stackedOn": null,
       "state": "reviewed",
       "storiesDone": 2,
@@ -129,6 +137,14 @@
         "round": 2,
         "verdict": "APPROVED"
       },
+      "size": {
+        "excluded": 0,
+        "files": 9,
+        "limit": 400,
+        "lines": 512,
+        "over": true,
+        "reason": "the parser and its table must ship together"
+      },
       "stackedOn": null,
       "state": "reviewed",
       "storiesDone": 1,
@@ -179,6 +195,7 @@
         "round": 3,
         "verdict": "REQUEST CHANGES"
       },
+      "size": null,
       "stackedOn": null,
       "state": "needs-attention",
       "storiesDone": 0,
@@ -233,6 +250,7 @@
         "round": null,
         "verdict": null
       },
+      "size": null,
       "stackedOn": null,
       "state": "opened",
       "storiesDone": null,
@@ -283,6 +301,7 @@
         "round": 1,
         "verdict": "APPROVED"
       },
+      "size": null,
       "stackedOn": null,
       "state": "reviewed",
       "storiesDone": 1,

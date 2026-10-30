@@ -146,7 +146,8 @@ pub struct PrView {
 #[serde(rename_all = "camelCase")]
 pub struct EpicView {
     pub id: String,
-    pub title: String,
+    /// `state.sh` writes a null title when no title is known.
+    pub title: Option<String>,
 }
 
 /// A string value only: numbers and booleans give None.
@@ -154,12 +155,13 @@ fn strict_str(v: &Value, key: &str) -> Option<String> {
     v.get(key)?.as_str().map(str::to_string)
 }
 
-/// None unless `epic` is an object with a string `id` and `title`.
+/// None unless `epic` is an object with a string `id`; a missing or non-string
+/// `title` (null is allowed) gives no title.
 fn parse_epic(pr: &Value) -> Option<EpicView> {
     let e = pr.get("epic")?.as_object()?;
     Some(EpicView {
         id: e.get("id")?.as_str()?.to_string(),
-        title: e.get("title")?.as_str()?.to_string(),
+        title: e.get("title").and_then(Value::as_str).map(str::to_string),
     })
 }
 
@@ -1066,21 +1068,22 @@ mod draft_pr_tests {
             good.epic,
             Some(EpicView {
                 id: "E1".into(),
-                title: "Auth".into()
+                title: Some("Auth".into())
             })
         );
         assert_eq!(good.stacked_on.as_deref(), Some("PR1"));
         assert_eq!(good.base.as_deref(), Some("dcv2/r-1-pr1"));
         assert_eq!(good.depends_on, ["PR1", "PR0"]);
-        for bad in [
-            json!("E1"),
-            json!({"id": "E1"}),
-            json!({"id": 1, "title": "x"}),
-            json!({"id": "E1", "title": null}),
-            json!(null),
-        ] {
+        for bad in [json!("E1"), json!({"id": 1, "title": "x"}), json!(null)] {
             assert_eq!(pr(json!({"id": "PR1", "epic": bad})).epic, None);
         }
+        let untitled = |e: serde_json::Value| pr(json!({"id": "PR1", "epic": e})).epic;
+        let no_title = Some(EpicView {
+            id: "E1".into(),
+            title: None,
+        });
+        assert_eq!(untitled(json!({"id": "E1", "title": null})), no_title);
+        assert_eq!(untitled(json!({"id": "E1"})), no_title);
         let wrong = pr(json!({"id": "PR1", "stackedOn": 1, "base": ["x"], "dependsOn": "PR1"}));
         assert_eq!(wrong.stacked_on, None);
         assert_eq!(wrong.base, None);
@@ -1231,8 +1234,13 @@ mod fixture_tests {
             let text = serde_json::to_string_pretty(&actual).unwrap() + "\n";
             std::fs::write(&expected_path, text).unwrap();
         }
-        let expected: serde_json::Value =
+        let mut expected: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&expected_path).unwrap()).unwrap();
+        // The page tests still read the 0.7.0 `size` of each PR from this file
+        // (their page code goes with the page PR); the app no longer emits it.
+        for pr in expected["prs"].as_array_mut().unwrap() {
+            pr.as_object_mut().unwrap().remove("size");
+        }
         assert_eq!(actual, expected);
         let kinds: Vec<&str> = view
             .prs
