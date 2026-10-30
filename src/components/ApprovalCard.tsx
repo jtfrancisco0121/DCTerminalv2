@@ -1,5 +1,5 @@
 import type { RunView } from "../run/api";
-import { appCheckText, approvalTitle, epicGroups, isKnownApproval, prStateText } from "../run/words";
+import { appCheckText, approvalTitle, epicGroups, epicName, epicTooltip, isKnownApproval, prStateText } from "../run/words";
 
 type Props = {
   view: RunView;
@@ -50,8 +50,12 @@ export function ApprovalCard({ view, waitingFor, onReadPlan, onGoToPrompt }: Pro
                 {rows.map((pr) => (
                   <tr key={pr.id} data-testid={`approval-${pr.id}`}>
                     <td>{pr.id}</td>
-                    <td className="epic-cell" data-testid={`approval-epic-${pr.id}`}>
-                      {pr.epic?.id ? pr.epic.title || pr.epic.id : "–"}
+                    <td
+                      className="epic-cell"
+                      data-testid={`approval-epic-${pr.id}`}
+                      title={pr.epic?.id ? epicTooltip({ id: pr.epic.id, title: pr.epic.title }) : undefined}
+                    >
+                      {pr.epic?.id ? epicName({ id: pr.epic.id, title: pr.epic.title }) : "–"}
                     </td>
                     <td>{prStateText(pr.state)}</td>
                     <td>{pr.gateStatus && pr.gateStatus.kind !== "none" ? pr.gateStatus.text : "–"}</td>

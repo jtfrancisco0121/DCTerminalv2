@@ -35,6 +35,9 @@ describe("ApprovalCard Epic column", () => {
     expect(screen.getByTestId("approval-epic-PR1").textContent).toBe("Billing");
     expect(screen.getByTestId("approval-epic-PR2").textContent).toBe("e2");
     expect(screen.getByTestId("approval-epic-PR4").textContent).toBe("–");
+    expect(screen.getByTestId("approval-epic-PR1").getAttribute("title")).toBe("Billing (e1)");
+    expect(screen.getByTestId("approval-epic-PR2").getAttribute("title")).toBe("e2");
+    expect(screen.getByTestId("approval-epic-PR4").getAttribute("title")).toBeNull();
     const order = screen.getAllByTestId(/^approval-PR\d+$/).map((row) => row.getAttribute("data-testid"));
     expect(order.slice(0, 3)).toEqual(["approval-PR1", "approval-PR3", "approval-PR2"]);
     expect(order[order.length - 1]).toBe("approval-PR5");

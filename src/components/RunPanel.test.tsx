@@ -90,6 +90,14 @@ describe("PRs of one repo", () => {
     expect(screen.queryByTestId("size-PR2")).toBeNull();
   });
 
+  it("shows no size badge for a 0.7.0 PR that still carries a size object", () => {
+    const legacy = { lines: 900, files: 12, stories: 3, over: true, reason: null, overlaps: [] };
+    renderPanel({ prs: view.prs.map((pr) => ({ ...pr, size: legacy }) as RunView["prs"][number]) });
+    expect(screen.getByTestId("pr-PR1")).toBeTruthy();
+    expect(screen.queryByTestId("size-PR1")).toBeNull();
+    expect(screen.queryByText(/900/)).toBeNull();
+  });
+
   it("gives two PRs of one repo their own cards, branches and actions", () => {
     const prs = view.prs.map((pr) => (pr.id === "PR4" ? { ...pr, branch: "dcv2/r-20261022-1304-pr4", worktree: "/abs/ws/mathlib-worktrees/pr4" } : pr));
     const onCopyBranch = vi.fn();
@@ -534,11 +542,18 @@ describe("epic groups and stacks", () => {
     view.prs.map((pr, at) => ({ ...pr, epic: at < 2 ? epicOf("e1", "Billing") : at < 4 ? epicOf("e2", null) : null }));
 
   it("groups PRs under one heading per epic with counts, No epic last", () => {
-    const prs = withEpics().map((pr) => (pr));
-    renderPanel({ prs });
+    renderPanel({ prs: withEpics() });
     const headings = screen.getAllByRole("heading", { level: 4 }).map((h) => h.textContent);
-    expect(headings).toEqual(["Epic Billing 2 PRs · 0 done", "Epic e2 2 PRs · 1 done", "No epic 1 PR · 0 done"]);
+    // reviewed, reviewed | needs-attention, opened | reviewed: the backend's done states
+    expect(headings).toEqual(["Epic Billing 2 PRs · 2 done", "Epic e2 2 PRs · 1 done", "No epic 1 PR · 1 done"]);
     expect(within(screen.getByRole("region", { name: "Epic Billing" })).getByTestId("pr-PR2")).toBeTruthy();
+  });
+
+  it("counts pushed, drafted and local-only PRs as done, and not pending or building ones", () => {
+    const states = ["pushed", "drafted", "local-only", "pending", "building"];
+    renderPanel({ prs: withEpics().map((pr, at) => ({ ...pr, state: states[at] })) });
+    const headings = screen.getAllByRole("heading", { level: 4 }).map((h) => h.textContent);
+    expect(headings).toEqual(["Epic Billing 2 PRs · 2 done", "Epic e2 2 PRs · 1 done", "No epic 1 PR · 0 done"]);
   });
 
   it("is a flat list for one group or an old run", () => {

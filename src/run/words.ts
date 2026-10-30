@@ -50,8 +50,12 @@ const PR_STATES: Record<string, string> = {
   "local-only": "local only",
 };
 
-/** A PR counts as done once it is opened on GitHub, merged, or kept local. */
-const DONE_STATES = ["opened", "merged", "local-only"];
+/**
+ * A PR counts as done at these states: the same ones the backend counts for Active runs
+ * (`pr_state_is_done` in src-tauri/src/observe/attention.rs), so the two never disagree.
+ * A PR merged on GitHub stays `opened` in status.json.
+ */
+const DONE_STATES = ["reviewed", "drafted", "opened", "pushed", "local-only"];
 
 export type EpicGroup = { key: string; id: string | null; title: string | null; prs: PrView[]; done: number };
 
@@ -76,10 +80,21 @@ export function epicGroups(prs: PrView[]): EpicGroup[] {
   return groups.length >= 2 ? groups : [];
 }
 
+/** An epic's name: its title, else its id (e.g. in a column already headed "Epic"). */
+export function epicName(epic: { id: string | null; title: string | null }): string {
+  return epic.title || epic.id || "";
+}
+
+/** The full epic for a tooltip: `<title> (<id>)`, or the id alone. */
+export function epicTooltip(epic: { id: string | null; title: string | null }): string | undefined {
+  if (!epic.id) return undefined;
+  return epic.title ? `${epic.title} (${epic.id})` : epic.id;
+}
+
 /** `Epic <title>`, `Epic <id>` when there is no title, or `No epic`. */
 export function epicLabel(group: { id: string | null; title: string | null }): string {
   if (!group.id) return "No epic";
-  return `Epic ${group.title || group.id}`;
+  return `Epic ${epicName(group)}`;
 }
 
 /** `3 PRs · 1 done` (the heading's counts). */
