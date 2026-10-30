@@ -62,10 +62,8 @@ cat > "$RUN/plan.md" <<'EOF'
 ## Pull requests
 ### PR1: Fix multiply
 - Stories: S1
-- Size: ~20 lines, 1 story
 ### PR2: Prefix
 - Stories: S2
-- Size: ~20 lines, 1 story
 EOF
 python3 - "$RUN/repos.json" "$R" "$RR" <<'PY'
 import json, sys
@@ -201,7 +199,7 @@ git -C "$d/origin.git" show-ref -q --verify refs/heads/dcv2/r-g-pr2 && ok "  bra
 grep -q "pr create --draft --base main --head dcv2/r-g-pr2 --title PR 2 title" "$GH_SHIM_DIR/calls.log" && ok "  gh pr create --draft" || bad "  calls: $(cat "$GH_SHIM_DIR/calls.log")"
 grep -q "review in progress" "$RUN/pr-bodies/PR2.md" && ok "  body says review in progress" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
 grep -q "S2: Prefix results" "$RUN/pr-bodies/PR2.md" && ok "  body lists the stories" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
-grep -qx "Size: not measured" "$RUN/pr-bodies/PR2.md" && ok "  body has one size line (not measured yet)" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
+grep -q '^Size:' "$RUN/pr-bodies/PR2.md" && bad "  body has a Size line" || ok "  body has no Size line"
 grep -q "draft PR opened" "$RUN/log.md" && ok "  logged" || bad "  not logged"
 expect 0 "draft-pr again" S draft-pr "$RUN" PR2; has "  exists" "draft=exists"
 python3 - "$RUN/status.json" <<'PY'
@@ -307,8 +305,8 @@ is "  state opened" "$RUN/status.json" prs.1.state '"opened"'
 is "  draft false" "$RUN/status.json" prs.1.draft false
 python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))[0]; sys.exit(0 if not p["isDraft"] and "Eagle-Eye review rounds" in p["body"] and "#issuecomment-1001" in p["body"] else 1)' "$GH_SHIM_DIR/prs.json" \
   && ok "  marked ready with the final body (review round links)" || bad "  shim: $(cat "$GH_SHIM_DIR/prs.json")"
-python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))[0]; sys.exit(0 if p["body"].count("\nSize: ") == 1 else 1)' "$GH_SHIM_DIR/prs.json" \
-  && ok "  the final body has exactly one size line" || bad "  shim: $(cat "$GH_SHIM_DIR/prs.json")"
+python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))[0]; sys.exit(0 if "Size:" not in p["body"] else 1)' "$GH_SHIM_DIR/prs.json" \
+  && ok "  the final body has no Size line" || bad "  shim: $(cat "$GH_SHIM_DIR/prs.json")"
 expect 0 "ready PR2 again" S ready "$RUN" PR2; has "  already" "PR2 already opened"
 expect 0 "ready PR1 (no remote)" S ready "$RUN" PR1; is "  local-only" "$RUN/status.json" prs.0.state '"local-only"'
 
@@ -481,17 +479,17 @@ st building pending pending 'for p in doc["prs"]: p["commits"] = 0'
 expect 0 "old run: worktree with a package-lock.json" S worktree "$RUN" "$R" PR1 "$BASE"
 has "  no detected setup" "setup=none"
 
-echo "# two PRs of one repo (disjoint Files): two worktrees, two branches, size lines in the bodies, two opened PRs, cleanup after both merge"
+echo "# two PRs of one repo (disjoint Files): two worktrees, two branches, no size line in the bodies, two opened PRs, cleanup after both merge"
 TW="$WS/tw"; mkdir -p "$TW"
 git -C "$TW" init -q -b main; git -C "$TW" config user.name t; git -C "$TW" config user.email t@t
 echo base > "$TW/base.txt"; git -C "$TW" add -A; git -C "$TW" commit -q -m init
 git init -q --bare -b main "$d/origin-tw.git"; git -C "$TW" remote add origin "$d/origin-tw.git"; git -C "$TW" push -q origin main
 TWB="$(git -C "$TW" rev-parse HEAD)"
 RUN="$d/runs/r-two"; mkdir -p "$RUN"; cp "$RUN3/request.md" "$RUN/"; echo '{"schema": 1}' > "$RUN/meta.json"
-printf '# Plan\n## Stories\n### S1: Big part\n- Files: a.txt\n### S2: Small part\n- Files: b.txt\n## Pull requests\n### PR1: Big\n- Repo: tw\n- Stories: S1\n- Size: ~450 lines, 1 story\n- Over limit: it is one table\n### PR2: Small\n- Repo: tw\n- Stories: S2\n- Size: ~5 lines, 1 story\n' > "$RUN/plan.md"
+printf '# Plan\n## Stories\n### S1: Big part\n- Files: a.txt\n### S2: Small part\n- Files: b.txt\n## Pull requests\n### PR1: Big\n- Repo: tw\n- Stories: S1\n### PR2: Small\n- Repo: tw\n- Stories: S2\n' > "$RUN/plan.md"
 printf '{"schema":1,"repos":[{"name":"tw","path":"%s","check":"true"}]}\n' "$TW" > "$RUN/repos.json"
 export DCV2_RUN_DIR="$RUN"
-# twst <stage> <pr1 state> <pr2 state> [python]: both PRs are in the one repo tw; the size and the GitHub fields of the old file are kept
+# twst <stage> <pr1 state> <pr2 state> [python]: both PRs are in the one repo tw; the GitHub fields of the old file are kept
 twst() {
   python3 - "$RUN" "$TW" "$TWB" "$@" <<'PY'
 import json, os, sys
@@ -509,7 +507,7 @@ def pr(i, state):
          "worktree": os.path.join(os.path.dirname(tw), "tw-worktrees", f"dcv2-{rid}-{lc}"), "dependsOn": [], "stories": {"done": 1, "total": 1, "ids": [f"S{i}"]},
          "commits": 0 if stage == "building" else 1, "check": {"command": "true", "result": "pass", "summary": None},
          "review": {"round": 1, "verdict": "APPROVED", "openFindings": 0, "path": None}, "prUrl": None, "state": state, "note": None}
-    for k in ("prUrl", "draft", "comments", "size"):
+    for k in ("prUrl", "draft", "comments"):
         if k in old.get(p["id"], {}):
             p[k] = old[p["id"]][k]
     return p
@@ -529,20 +527,15 @@ TW1="$WS/tw-worktrees/dcv2-r-two-pr1"; TW2="$WS/tw-worktrees/dcv2-r-two-pr2"
 is "  both recorded in .guard.json" "$RUN/.guard.json" worktrees.PR2 "\"$TW2\""
 seq 1 450 > "$TW1/a.txt"; git -C "$TW1" add -A; git -C "$TW1" commit -q -m "S1: big part"
 seq 1 5 > "$TW2/b.txt"; git -C "$TW2" add -A; git -C "$TW2" commit -q -m "S2: small part"
-expect 0 "size of PR1" S size "$RUN" PR1; has "  450 lines, over, no reason (this fixture plan has no frozen reason)" "size=450 files=1 excluded=0 limit=400 over=yes reason=none overlaps=0"
-expect 0 "size of PR2" S size "$RUN" PR2; has "  5 lines" "size=5 files=1 excluded=0 limit=400 over=no reason=none overlaps=0"
-expect 0 "gate FAIL for the oversize PR1" S gate "$RUN" PR1 FAIL "over the size limit without a reason"
-expect 0 "gate WAIVED by the user" S gate "$RUN" PR1 WAIVED "user: keep it as one PR"
+mkdir -p "$RUN/reviews"; printf '## Verdict\nAPPROVED\n' > "$RUN/reviews/PR1-round1.md"; printf '## Verdict\nAPPROVED\n' > "$RUN/reviews/PR2-round1.md"
+expect 0 "gate PASS for the big PR1 (no size limit)" S gate "$RUN" PR1 PASS "clean"
+expect 0 "gate PASS for PR2" S gate "$RUN" PR2 PASS "clean"
 twst shipping reviewed reviewed 'doc["shipApproval"] = {"by": "user", "at": "2026-10-24T01:00:00Z"}'
 expect 0 "ship-pr PR1 (local mode)" S ship-pr "$RUN" PR1; has "  opened" "PR1 opened: https://github.com/shim/repo/pull/"
 expect 0 "ship-pr PR2 (local mode)" S ship-pr "$RUN" PR2; has "  opened" "PR2 opened: https://github.com/shim/repo/pull/"
 python3 -c 'import json,sys; h=[p["head"] for p in json.load(open(sys.argv[1]))]; sys.exit(0 if "dcv2/r-two-pr1" in h and "dcv2/r-two-pr2" in h else 1)' "$GH_SHIM_DIR/prs.json" \
   && ok "  two PRs opened through the shim, one per branch" || bad "  shim: $(cat "$GH_SHIM_DIR/prs.json")"
-grep -qx "Size: 450 lines in 1 files (0 excluded), limit 400; over limit, waived by the user: user: keep it as one PR" "$RUN/pr-bodies/PR1.md" && ok "  PR1 body: the size line shows the waiver" || bad "  body: $(cat "$RUN/pr-bodies/PR1.md")"
-grep -qx "Size: 5 lines in 1 files (0 excluded), limit 400" "$RUN/pr-bodies/PR2.md" && ok "  PR2 body: the size line" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
-grep -qF "Ships with PR2 (same repo): merge one, then re-run the check before merging the next." "$RUN/pr-bodies/PR1.md" && ok "  PR1 body names its sibling" || bad "  body: $(cat "$RUN/pr-bodies/PR1.md")"
-grep -qF "Ships with PR1 (same repo)" "$RUN/pr-bodies/PR2.md" && ok "  PR2 body names its sibling" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
-[[ "$(grep -c '^Size: ' "$RUN/pr-bodies/PR1.md")" == 1 ]] && ok "  exactly one size line" || bad "  size lines: $(grep -c '^Size: ' "$RUN/pr-bodies/PR1.md")"
+for f in PR1 PR2; do grep -q '^Size:' "$RUN/pr-bodies/$f.md" && bad "  $f body has a Size line" || ok "  $f body has no Size line"; done
 git -C "$TW" merge -q --no-ff -m "merge both" dcv2/r-two-pr1 dcv2/r-two-pr2
 twst done opened opened 'doc["ship"] = {"remote": "origin", "pushed": True, "note": "x"}'
 expect 0 "cleanup at done after both PRs merged" S cleanup "$RUN"

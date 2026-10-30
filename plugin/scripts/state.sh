@@ -14,7 +14,9 @@
 #   state.sh approve <run> plan|ship user|test
 #                                             record the user's yes at stop #1 / #2 (test: only when
 #                                             DCV2_TEST_MODE has auto-approve); ship also sets stage shipping
-#   state.sh plan <run> prs|tickets|stories   print only that part of plan.md
+#   state.sh plan <run> prs|tickets|stories   print only that part of plan.md; prs prints one line per PR:
+#                                             PR<n> | <repo> | epic <id> <title> | <stories> | depends <ids|-> | stacked on <id|-> | check <full command>
+#                                             ("stacked on" is the PR's one same-repo Depends on; the check is never cut)
 #   state.sh base <repo path>                 print "base=<b> baseCommit=<sha> remote=<name|none>"
 #   state.sh worktree <run> <repo path> <pr id> <base commit>
 #                                             make (or reuse / re-make) the PR's worktree beside the
@@ -55,10 +57,6 @@
 #                                             file (default reviews/<pr>-round<review.round>.md) to say
 #                                             APPROVED; WAIVED only over a CONCERNS/FAIL gate, with the
 #                                             user's reason
-#   state.sh size <run> <pr id>               measure the PR's real diff against its base (lockfiles, generated and
-#                                             fixture files excluded), record it as prs[].size and print
-#                                             "size=<lines> files=<f> excluded=<e> limit=<l> over=yes|no reason=set|none overlaps=<n>"
-#                                             (+ "overlap: <path> (PR<n>)" lines). The gate re-measures too
 #   state.sh merge-check <run>                before stop #2: for each repo with 2 or more reviewed PRs, run the repo's check
 #                                             (repos.json only, never status.json's) once on a scratch merge of their branches
 #                                             (<run>/merge-check/, removed after); records status.json "mergeChecks" and prints
@@ -515,7 +513,11 @@ def validate_status(doc, run):
             p.append(f"{pid}: comments must be a list of {{round: <n>, url: <comment url>}}")
         if pr.get("size") is not None and not size_shape_ok(pr.get("size")):
             p.append(f"{pid}: size must be {{lines, added, deleted, files, excluded, limit: ints, over: bool, reason: string|null, overlaps: list, head, at}} "
-                     "(written only by state.sh size / gate)")
+                     "(0.7.0 runs only: read, never written)")
+        ep = pr.get("epic")
+        if ep is not None and not (isinstance(ep, dict) and isinstance(ep.get("id"), str) and ep["id"]
+                                   and (ep.get("title") is None or isinstance(ep.get("title"), str))):
+            p.append(f"{pid}: epic must be null or {{id, title}} (set by state.sh from plan.md's Epic lines)")
         if stage in POST_APPROVAL:
             ids = (pr.get("stories") or {}).get("ids") if isinstance(pr.get("stories"), dict) else None
             if not (isinstance(ids, list) and ids and all(isinstance(i, str) for i in ids)):
@@ -576,10 +578,13 @@ def prepare_status(doc, old, trusted, run_dir=None):
         doc["paused"]["at"] = t
     oprs = {p.get("id"): p for p in old.get("prs") or [] if isinstance(p, dict)}
     bad = []
+    pepics = plan_epics(run_dir) if run_dir else {}
     for pr in doc.get("prs") or []:
         if not isinstance(pr, dict):
             continue
         o = oprs.get(pr.get("id")) or {}
+        if run_dir:  # the PR's epic comes from the plan's Epic lines (null: no epic), never from the document
+            pr["epic"] = pepics.get(pr.get("id"))
         if not trusted and o.get("state") in SHIPPED and pr.get("state") != o.get("state"):
             bad.append(f"{pr.get('id')} is {o['state']} (written by state.sh ship-pr); re-read status.json and keep it")
         if not trusted:  # prUrl is set only by state.sh (ship-pr / draft-pr / ready): a put never changes it
@@ -592,9 +597,9 @@ def prepare_status(doc, old, trusted, run_dir=None):
                     pr[k] = o[k]
                 else:
                     pr.pop(k, None)
-        if not trusted:  # size is measured and written only by state.sh (size / gate)
+        if not trusted:  # size was written only by state.sh 0.7.0 (runs of that version only): kept, never written now
             if "size" in pr and pr["size"] != o.get("size"):
-                notes.append(f"note: {pr.get('id')}.size is set only by `state.sh size`; kept the recorded value")
+                notes.append(f"note: {pr.get('id')}.size is not written any more (0.7.0 runs only); kept the recorded value")
             if "size" in o:
                 pr["size"] = o["size"]
             else:
@@ -697,25 +702,6 @@ def bmad_plan_trace(run):
     return problems
 
 
-MAX_PRS = 5
-MAX_STORIES = 2
-DEFAULT_LINE_LIMIT = 400
-
-
-def pr_line_limit(run, name=None, path=None):
-    """The PR line limit of a repo (repos.json prSizeLimit, 1..100000), matched by name or real path; else 400."""
-    rj = load_json(os.path.join(run, "repos.json"))
-    for r in (rj.get("repos") if isinstance(rj, dict) else None) or []:
-        if not isinstance(r, dict):
-            continue
-        hit = (name is not None and r.get("name") == name) or \
-              (path is not None and isinstance(r.get("path"), str) and os.path.realpath(r["path"]) == path)
-        v = r.get("prSizeLimit")
-        if hit and type(v) is int and 1 <= v <= 100000:
-            return v
-    return DEFAULT_LINE_LIMIT
-
-
 def clean_plan_path(x):
     x = x.strip().strip("`").strip()
     while x.startswith("./"):
@@ -735,64 +721,183 @@ def paths_overlap(a, b):
 
 
 def plan_blocks(plan):
-    """({S id: {files}}, {PR id: {repo, stories, deps, lines, nstories, over}}) read from plan.md's ### S<n> / ### PR<n> blocks."""
+    """({S id: [files]}, {PR id: {repo, stories, deps, epic, check}}) read from plan.md's ### S<n> / ### PR<n> blocks.
+    epic is the raw text of the PR's `- Epic:` line, or None when it has none."""
     stories, prs = {}, {}
     for m in re.finditer(r"(?ms)^###\s+(S\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan):
-        fl = re.search(r"(?m)^\s*-\s*Files:\s*(.*?)\s*$", m.group(2))
+        fl = re.search(r"(?m)^[ \t]*-[ \t]*Files:[ \t]*(.*?)[ \t]*$", m.group(2))
         files = [clean_plan_path(x) for x in fl.group(1).split(",")] if fl else []
         stories[m.group(1)] = [x for x in files if x]
     for m in re.finditer(r"(?ms)^###\s+(PR\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan):
         b = m.group(2)
-        g = lambda k: re.search(rf"(?m)^\s*-\s*{k}:\s*(.*?)\s*$", b)
-        repo, sl, dl, zl, ol = g("Repo"), g("Stories"), g("Depends on"), g("Size"), g("Over limit")
-        size = re.match(r"~?\s*(\d[\d,\s]*?)\s*lines?\s*,\s*(\d+)\s*stor(?:y|ies)\b", zl.group(1)) if zl else None
+        g = lambda k: re.search(rf"(?m)^[ \t]*-[ \t]*{k}:[ \t]*(.*?)[ \t]*$", b)
+        repo, sl, dl, el, cl = g("Repo"), g("Stories"), g("Depends on"), g("Epic"), g("Check")
+        chk = cl.group(1).strip() if cl else ""
+        if len(chk) > 1 and chk.startswith("`") and chk.endswith("`") and chk.count("`") == 2:
+            chk = chk[1:-1].strip()
         prs[m.group(1)] = {
             "repo": repo.group(1).strip("` ") if repo and repo.group(1).strip("` ") else None,
             "stories": re.findall(r"S\d+", sl.group(1)) if sl else [],
             "deps": re.findall(r"PR\d+", dl.group(1)) if dl else [],
-            "lines": int(re.sub(r"\D", "", size.group(1))) if size else None,
-            "over": ol.group(1).strip() if ol and ol.group(1).strip() else None,
+            "epic": el.group(1).strip() if el else None,
+            "check": chk or None,
         }
     return stories, prs
 
 
-def plan_split_problems(run):
-    """Problems with the shape of plan.md's split into stories and PRs (empty list = fine). The single place for it."""
+def plan_story_tickets(plan):
+    """{S id: [ticket ref, ...]} from each story's `- Tickets:` line (`none` and `-` are no ticket)."""
+    out = {}
+    for m in re.finditer(r"(?ms)^###\s+(S\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan):
+        tl = re.search(r"(?m)^[ \t]*-[ \t]*Tickets:[ \t]*(.*?)[ \t]*$", m.group(2))
+        refs = []
+        for part in re.split(r"\s*,\s*", tl.group(1)) if tl else []:
+            tok = part.strip().strip("`").split(" ")[0].strip("`") if part.strip() else ""
+            if tok and tok.lower() not in ("none", "-") and tok not in refs:
+                refs.append(tok)
+        out[m.group(1)] = refs
+    return out
+
+
+def tickets_epics(run):
+    """(ticket ref (lowercased id or custom id) -> epic id or None, epic id -> title or None) from tickets.json,
+    or (None, {}) when the run has no readable tickets.json. An epic is a ticket's parent_id."""
+    tj = load_json(os.path.join(run, "tickets.json"))
+    if not isinstance(tj, dict) or not isinstance(tj.get("tasks"), list):
+        return None, {}
+    emap = {}
+    for t in tj["tasks"]:
+        if not isinstance(t, dict):
+            continue
+        pe = t.get("parent_id") if isinstance(t.get("parent_id"), str) and t.get("parent_id") else None
+        for k in ("id", "custom_id"):
+            if isinstance(t.get(k), str) and t[k]:
+                emap[t[k].lower()] = pe
+    titles = {}
+    for e in tj.get("epics") if isinstance(tj.get("epics"), list) else []:
+        if isinstance(e, dict) and isinstance(e.get("id"), str) and e["id"]:
+            titles[e["id"]] = e["name"] if isinstance(e.get("name"), str) and e["name"] else None
+    return emap, titles
+
+
+def epic_id_of(line):
+    """The epic id in a plan `- Epic:` line (`<id> <title>`), or None for `none`/empty."""
+    tok = (line or "").strip().strip("`").split(" ")[0].strip("`") if (line or "").strip() else ""
+    return None if not tok or tok.lower() in ("none", "-") else tok
+
+
+def plan_epics(run):
+    """{PR id: {id, title} or None} from the plan's Epic lines; titles from tickets.json `epics`, else None."""
+    plan = read(os.path.join(run, "plan.md"))
+    if not plan:
+        return {}
+    _, titles = tickets_epics(run)
+    out = {}
+    for pid, p in plan_blocks(plan)[1].items():
+        e = epic_id_of(p["epic"])
+        out[pid] = {"id": e, "title": titles.get(e)} if e else None
+    return out
+
+
+VERSION_FILES = ("VERSION", "plugin.json", "package.json", "tauri.conf.json", "Cargo.toml")
+
+
+def same_repo_deps(prs, pid):
+    """The Depends on entries of pid that are PRs of the same repo (a stack parent; at most one is valid)."""
+    p = prs[pid]
+    return [d for d in p["deps"] if d in prs and p["repo"] and prs[d]["repo"] == p["repo"]]
+
+
+def plan_group_problems(run):
+    """Problems with how plan.md groups stories into PRs (empty list = fine): one PR per (epic, repo), the Epic line, stacks
+    (a same-repo Depends on is a stack, one parent at most), same-repo Files overlap and version files. The single place for it."""
     plan = read(os.path.join(run, "plan.md"))
     if not plan:
         return []
     stories, prs = plan_blocks(plan)
+    tix = plan_story_tickets(plan)
+    emap, _ = tickets_epics(run)
     problems = []
-    if len(prs) > MAX_PRS:
-        problems.append(f"{len(prs)} PRs, at most {MAX_PRS} per run: ask the user to split the request into several runs")
     for sid, files in stories.items():
         if not files:
             problems.append(f"{sid} has no Files: line")
-    pfiles = {}
+    pfiles, epic_of, mixed = {}, {}, set()
     for pid, p in prs.items():
         pfiles[pid] = sorted({f for s in p["stories"] for f in stories.get(s, [])})
-        if p["lines"] is None:
-            problems.append(f"{pid} has no parseable Size: line (use `- Size: ~<n> lines, <k> stories`)")
-        limit = pr_line_limit(run, name=p["repo"])
-        n = len(p["stories"])
-        if (n > MAX_STORIES or (p["lines"] is not None and p["lines"] > limit)) and not p["over"]:
-            problems.append(f"{pid} is over the PR limit ({n} stories, max {MAX_STORIES}; ~{p['lines'] if p['lines'] is not None else '?'} lines, limit {limit}) "
-                            f"with no Over limit: line")
+        refs = []
+        for s in p["stories"]:
+            refs += [r for r in tix.get(s, []) if r not in refs]
+        known = [(r, emap[r.lower()]) for r in refs if emap is not None and r.lower() in emap]
+        epics = list(dict.fromkeys(e for _, e in known if e))
+        noepic = [r for r, e in known if not e]
+        tk = ", ".join(refs) or "no tickets"
+        if len(epics) > 1:
+            problems.append(f"{pid} mixes epics {' and '.join(epics)} (tickets {tk}): one PR per epic")
+            mixed.add(pid)
+        elif epics and noepic:
+            problems.append(f"{pid} mixes epic {epics[0]} with the no-epic ticket {', '.join(noepic)} (tickets {tk}): a no-epic ticket gets its own PR")
+            mixed.add(pid)
+        elif len(noepic) > 1:
+            problems.append(f"{pid} holds {len(noepic)} no-epic tickets ({', '.join(noepic)}): a no-epic ticket gets its own PR")
+            mixed.add(pid)
+        want = epics[0] if len(epics) == 1 and not noepic else None
+        epic_of[pid] = want
+        if pid in mixed:
+            continue
+        if p["epic"] is None:
+            if emap is not None:
+                problems.append(f"{pid} (tickets {tk}) has no Epic: line (expected `- Epic: {want or 'none'}`)")
+        elif epic_id_of(p["epic"]) != want:
+            problems.append(f"{pid} (tickets {tk}) has Epic: {p['epic']!r} but its tickets are in epic {want or 'none'}")
+    groups = {}
+    for pid, e in epic_of.items():
+        if e and pid not in mixed:
+            groups.setdefault((e, prs[pid]["repo"]), []).append(pid)
+    for (e, repo), ids in groups.items():
+        if len(ids) > 1:
+            problems.append(f"epic {e} is split across {' and '.join(ids)} in repo {repo or '?'} (even if stacked): one PR per (epic, repo)")
+    same = {pid: same_repo_deps(prs, pid) for pid in prs}
+    for pid, ds in same.items():
+        if len(ds) > 1:
+            problems.append(f"{pid} depends on {' and '.join(ds)} of the same repo ({prs[pid]['repo']}): at most one same-repo Depends on "
+                            f"(a stack has one parent: chain them, {' <- '.join(ds + [pid])})")
+    parent = {pid: ds[0] for pid, ds in same.items() if ds}
+
+    def ancestors(pid):
+        out, x = [], parent.get(pid)
+        while x and x not in out and x != pid:
+            out.append(x)
+            x = parent.get(x)
+        return out
+
+    seen = set()
+    for pid in prs:
+        x, trail = pid, []
+        while x in parent and x not in trail:
+            trail.append(x)
+            x = parent[x]
+        if x in trail and x in parent:
+            cyc = frozenset(trail[trail.index(x):])
+            if cyc not in seen:
+                seen.add(cyc)
+                problems.append(f"same-repo Depends on cycle: {' -> '.join(sorted(cyc, key=lambda i: int(i[2:])))}")
     ids = list(prs)
     for i, a in enumerate(ids):
         for b in ids[i + 1:]:
             ra, rb = prs[a]["repo"], prs[b]["repo"]
             if not ra or ra != rb:
                 continue
+            chained = a in ancestors(b) or b in ancestors(a)
             for fa in pfiles[a]:
                 for fb in pfiles[b]:
                     hit = paths_overlap(fa, fb)
-                    if hit:
-                        problems.append(f"{a} and {b} ({ra}) both change {hit}")
-    for pid, p in prs.items():
-        for d in p["deps"]:
-            if d in prs and p["repo"] and prs[d]["repo"] == p["repo"]:
-                problems.append(f"{pid} depends on {d} of the same repo ({p['repo']}): same-repo PRs must be independent")
+                    if not hit:
+                        continue
+                    if fa == fb and os.path.basename(fa) in VERSION_FILES:
+                        problems.append(f"{a} and {b} ({ra}) both change the version file {fa}: it goes in one PR per repo")
+                    elif not chained:
+                        problems.append(f"{a} and {b} ({ra}) both change {hit} and neither is stacked on the other: chain them "
+                                        f"(`Depends on`, e.g. {a} <- {b}), never two overlapping children of one parent")
     return problems
 
 
@@ -824,10 +929,10 @@ def gates(doc, run, old=None, plan_trace=True):
                     more = f"; and {len(pr) - 10} more" if len(pr) > 10 else ""
                     return "NOT WRITTEN: BMAD mode: plan.md does not trace to the BMAD documents: " + "; ".join(pr[:10]) + more, out
     if stage == "plan-approval" and plan_trace:
-        sp = plan_split_problems(run)
+        sp = plan_group_problems(run)
         if sp:
             more = f"; and {len(sp) - 10} more" if len(sp) > 10 else ""
-            return "NOT WRITTEN: plan.md split: " + "; ".join(sp[:10]) + more, out
+            return "NOT WRITTEN: plan.md grouping: " + "; ".join(sp[:10]) + more, out
     if tm["halt"] and not resumed(run):
         pid = tm["halt"]
         prs = {p.get("id"): p for p in doc.get("prs") or [] if isinstance(p, dict)}
@@ -973,10 +1078,9 @@ def cmd_approve(run, what, by):
                 or not os.path.isfile(os.path.join(run, "plan.md")):
             die(f"NOT APPROVED: the plan can be approved only at stop #1 with plan.md written (stage {st.get('stage')})")
         st["plan"]["approval"] = {"by": by, "at": t}
-        # Freeze what the user approved (written to status.json only if the split check passes): the Over limit reasons,
-        # and each PR's Files. Their presence also marks a plan approved under the size rules (the gate then enforces size).
+        # Freeze what the user approved (written to status.json only if the grouping check passes): each PR's Files.
+        # Their presence also marks a plan approved under the 0.7.0+ rules (the gate then checks overlaps against them).
         fstories, fprs = plan_blocks(read(os.path.join(run, "plan.md")) or "")
-        st["plan"]["overLimit"] = {pid: p["over"] for pid, p in fprs.items() if p["over"]}
         st["plan"]["prFiles"] = {pid: sorted({f for s in p["stories"] for f in fstories.get(s, [])}) for pid, p in fprs.items()}
         st["stage"] = "plan-approval"
         line = "plan approved by the user" if by == "user" else "plan auto-approved (test-mode)"
@@ -1166,6 +1270,19 @@ def cmd_plan(run, what):
     heading = {"prs": "Pull requests", "tickets": "Tickets"}.get(what)
     if not heading:
         die("usage: state.sh plan <run> prs|tickets|stories")
+    if what == "prs":
+        _, prs = plan_blocks(text)
+        titles = {}
+        for pid, p in prs.items():
+            e = epic_id_of(p["epic"])
+            titles[pid] = f"epic {e} {(p['epic'] or '').strip().strip('`')[len(e):].strip()[:40]}".rstrip() if e else "epic none"
+        for pid, p in prs.items():
+            sp = same_repo_deps(prs, pid)
+            head = " | ".join([pid, (p["repo"] or "-")[:40], titles[pid], (",".join(p["stories"]) or "-")[:60],
+                               "depends " + (",".join(p["deps"])[:40] or "-"), "stacked on " + (sp[0] if sp else "-")])
+            print(f"{head} | check {p['check'] or '-'}")
+        if prs:
+            return
     m = re.search(rf"^##\s+{heading}\s*$(.*?)(?=^##\s|\Z)", text, re.M | re.S)
     print((f"## {heading}" + m.group(1)).rstrip() if m else f"(plan.md has no ## {heading} section)")
 
@@ -1443,39 +1560,11 @@ def cmd_ship_check(run):
             print(f"{who}: remote {rem['url']}, base {pr.get('base')} is NOT on the remote: needs attention")
 
 
-def size_line(run, pr):
-    z = pr.get("size")
-    if not size_shape_ok(z):
-        return "Size: not measured"
-    text = f"Size: {z['lines']} lines in {z['files']} files ({z['excluded']} excluded), limit {z['limit']}"
-    if z["over"]:
-        g = read_gate(run, pr.get("id"))
-        if z.get("reason"):
-            text += f"; over limit: {z['reason']}"
-        elif g and g.get("gate") == "WAIVED":
-            text += f"; over limit, waived by the user: {g.get('reason')}"
-        else:
-            text += "; over limit, no reason"
-    return text
-
-
-def size_lines(run, st, pr):
-    """The PR body's size part: one size line, and one line naming same-repo sibling PRs (they ship separately)."""
-    out = ["", size_line(run, pr)]
-    repo = os.path.realpath(str(pr.get("repoPath") or "/"))
-    sib = [p.get("id") for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") != pr.get("id")
-           and os.path.realpath(str(p.get("repoPath") or "/")) == repo]
-    if sib:
-        out.append(f"Ships with {', '.join(sib)} (same repo): merge one, then re-run the check before merging the next.")
-    return out
-
-
 def pr_body(run, st, pr):
     titles = dict(re.findall(r"^###\s+(S\d+)\s*[:\-\u2014]+\s*(.+?)\s*$", read(os.path.join(run, "plan.md")), re.M))
     prs = {p.get("id"): p for p in st.get("prs") or []}
     chk, rev = pr.get("check") or {}, pr.get("review") or {}
     lines = ["## Stories", ""] + [f"- {s}: {titles.get(s, '')}".rstrip(": ") for s in (pr.get("stories") or {}).get("ids") or []]
-    lines += size_lines(run, st, pr)
     lines += ["", f"Check: `{chk.get('command')}`: {chk.get('result')}", f"Review: {rev.get('verdict')} (round {rev.get('round')})"]
     for dep in pr.get("dependsOn") or []:
         d = prs.get(dep) or {}
@@ -1812,7 +1901,6 @@ def story_lines(run, pr):
 
 def draft_body(run, st, pr):
     lines = ["## Stories", ""] + story_lines(run, pr)
-    lines += size_lines(run, st, pr)
     lines += ["", f"\U0001F916 Eagle-Eye run {st.get('runId')} — review in progress. Each review round is posted as a comment; "
               "this PR is marked ready for review only after the run's ship approval.", ""]
     return "\n".join(lines)
@@ -2175,51 +2263,6 @@ def cmd_writeback(run, force):
     print(f"wrote {dest} ({len(drafts)} drafts)")
 
 
-# Files that do not count toward a PR's size (generated or vendored: lockfiles, minified output, snapshots, build folders).
-SIZE_EXCLUDE = {
-    "names": ("package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "Cargo.lock", "Gemfile.lock",
-              "poetry.lock", "Pipfile.lock", "composer.lock", "go.sum", "uv.lock", "Podfile.lock", "flake.lock"),
-    "globs": ("*.lock", "*.min.js", "*.min.css", "*.map", "*.snap", "*.generated.*"),
-    "dirs": ("dist", "build", "fixtures", "testdata"),  # a folder of this name anywhere in the path
-}
-
-
-class SizeError(Exception):
-    pass
-
-
-def size_excluded(path):
-    parts = path.split("/")
-    return (any(d in SIZE_EXCLUDE["dirs"] for d in parts[:-1]) or parts[-1] in SIZE_EXCLUDE["names"]
-            or any(fnmatch.fnmatch(parts[-1], g) for g in SIZE_EXCLUDE["globs"]))
-
-
-def numstat_records(raw):
-    """[(added, deleted, new path)] from `git diff --numstat -z -M`; a rename is `a\\td\\t\\0old\\0new\\0`; a binary file has `-`."""
-    toks = raw.split("\0")
-    if toks and toks[-1] == "":
-        toks.pop()
-    out, i = [], 0
-    while i < len(toks):
-        parts = toks[i].split("\t", 2)
-        if len(parts) != 3:
-            raise SizeError(f"cannot read git's diff output near {toks[i][:60]!r}")
-        a, d, path = parts
-        if path == "":  # rename or copy record: the two paths follow
-            if i + 2 >= len(toks):
-                raise SizeError("cannot read git's diff output (a rename record is cut short)")
-            path, i = toks[i + 2], i + 3
-        else:
-            i += 1
-        if a == "-" or d == "-":
-            out.append((0, 0, path))
-        elif a.isdigit() and d.isdigit():
-            out.append((int(a), int(d), path))
-        else:
-            raise SizeError(f"cannot read git's diff counts {a!r}/{d!r} for {path}")
-    return out
-
-
 def pr_owned_files(run, st):
     """{PR id: [paths]} the approved Files of each PR (plan.prFiles), else the live plan.md's."""
     frozen = (st.get("plan") or {}).get("prFiles") if isinstance(st.get("plan"), dict) else None
@@ -2229,75 +2272,65 @@ def pr_owned_files(run, st):
     return {pid: sorted({f for s in p["stories"] for f in stories.get(s, [])}) for pid, p in prs.items()}
 
 
-def measure_pr(run, st, pid):
-    """The PR's real diff against its base commit as the `size` record. Raises SizeError (with the reason) when it cannot be measured."""
+class DiffError(Exception):
+    pass
+
+
+def diff_paths(run, st, pid):
+    """The paths the PR's branch changes against its base (.guard.json bases[pid], else baseCommit). Raises DiffError (with
+    the reason) when the worktree, the branch or the base is not there."""
     pr = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == pid), None)
     if pr is None:
-        raise SizeError(f"no {pid} in status.json")
+        raise DiffError(f"no {pid} in status.json")
     if not pr.get("repoPath") or not os.path.isabs(str(pr.get("repoPath"))):
-        raise SizeError(f"{pid} has no repoPath")
+        raise DiffError(f"{pid} has no repoPath")
     repo = os.path.realpath(pr["repoPath"])
     branch, wt = canon(repo, st.get("runId"), pid)
     if pr.get("branch") != branch or os.path.realpath(str(pr.get("worktree") or "")) != wt or not os.path.isdir(wt):
-        raise SizeError(f"{pid} is not on {branch} in its worktree {wt} (made by state.sh worktree); the worktree is missing")
+        raise DiffError(f"{pid} is not on {branch} in its worktree {wt} (made by state.sh worktree); the worktree is missing")
     if git("-C", wt, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() != branch:
-        raise SizeError(f"{wt} is not on {branch}")
+        raise DiffError(f"{wt} is not on {branch}")
     g = guard_rec(run)
     if (g.get("worktrees") or {}).get(pid) != wt:
-        raise SizeError(f"{pid}'s worktree is not recorded in .guard.json (run `state.sh worktree` for it)")
+        raise DiffError(f"{pid}'s worktree is not recorded in .guard.json (run `state.sh worktree` for it)")
     base = (g.get("bases") or {}).get(pid) or pr.get("baseCommit")
     if not base:
-        raise SizeError(f"{pid} has no base commit")
-    head = git("-C", wt, "rev-parse", "HEAD").stdout.strip()
-    r = subprocess.run(["git", "-C", wt, "diff", "--numstat", "-z", "-M", f"{base}..HEAD"], capture_output=True)
+        raise DiffError(f"{pid} has no base commit")
+    r = subprocess.run(["git", "-C", wt, "diff", "--name-only", "-z", "-M", f"{base}..HEAD"], capture_output=True)
     if r.returncode != 0:
-        raise SizeError("git diff failed: " + first_line(r.stderr.decode("utf-8", "replace")))
-    added = deleted = files = excluded = 0
-    changed = []
-    for a, d, path in numstat_records(r.stdout.decode("utf-8", "surrogateescape")):
-        if size_excluded(path):
-            excluded += 1
-            continue
-        added, deleted, files = added + a, deleted + d, files + 1
-        changed.append(path)
-    owned = pr_owned_files(run, st)
-    overlaps = []
+        raise DiffError("git diff failed: " + first_line(r.stderr.decode("utf-8", "replace")))
+    return sorted({x for x in r.stdout.decode("utf-8", "surrogateescape").split("\0") if x})
+
+
+def stack_family(st, pid):
+    """The ids of pid's stack ancestors and descendants (prs[].stackedOn)."""
+    parent = {p.get("id"): p.get("stackedOn") for p in st.get("prs") or [] if isinstance(p, dict)}
+
+    def chain(x):
+        out, y = [], parent.get(x)
+        while isinstance(y, str) and y and y not in out and y != x:
+            out.append(y)
+            y = parent.get(y)
+        return out
+
+    return set(chain(pid)) | {q for q in parent if q != pid and pid in chain(q)}
+
+
+def gate_overlaps(run, st, pid):
+    """[(path, other PR id)]: paths the PR changes that another PR of the same repo owns (plan.prFiles), leaving out the PR's
+    stack ancestors and descendants (a stacked child may change what its parent changed). Raises DiffError."""
+    changed = diff_paths(run, st, pid)
+    me = next(p for p in st["prs"] if p.get("id") == pid)
+    repo = os.path.realpath(str(me.get("repoPath") or "/"))
+    owned, skip = pr_owned_files(run, st), stack_family(st, pid)
+    out = []
     for oid, other in sorted((p.get("id"), p) for p in st.get("prs") or [] if isinstance(p, dict)):
-        if oid == pid or os.path.realpath(str(other.get("repoPath") or "/")) != repo:
+        if oid == pid or oid in skip or os.path.realpath(str(other.get("repoPath") or "/")) != repo:
             continue
         for path in changed:
             if any(paths_overlap(path, f) for f in owned.get(oid) or []):
-                overlaps.append({"path": path, "pr": oid})
-    limit = pr_line_limit(run, path=repo)
-    overlimit = ((st.get("plan") or {}).get("overLimit") or {}) if isinstance(st.get("plan"), dict) else {}
-    return {"lines": added + deleted, "added": added, "deleted": deleted, "files": files, "excluded": excluded, "limit": limit,
-            "over": added + deleted > limit, "reason": overlimit.get(pid) or None, "overlaps": overlaps, "head": head, "at": now()}
-
-
-def record_size(run, pid):
-    """Measure the PR and record it as prs[].size (through the trusted write). Returns the record; raises SizeError."""
-    st = load_status(run)
-    z = measure_pr(run, st, pid)
-    pr = next(p for p in st["prs"] if p.get("id") == pid)
-    pr["size"] = z
-    write_status(run, st, trusted=True)
-    return z
-
-
-def size_summary(z):
-    return (f"size={z['lines']} files={z['files']} excluded={z['excluded']} limit={z['limit']} over={'yes' if z['over'] else 'no'} "
-            f"reason={'set' if z['reason'] else 'none'} overlaps={len(z['overlaps'])}")
-
-
-def cmd_size(run, pid):
-    run = os.path.realpath(run)
-    try:
-        z = record_size(run, pid)
-    except SizeError as e:
-        die(f"NOT MEASURED: {e}")
-    print(size_summary(z))
-    for o in z["overlaps"]:
-        print(f"overlap: {o['path']} ({o['pr']})")
+                out.append((path, oid))
+    return out
 
 
 def cmd_gate(run, pid, gate, reason, review=None):
@@ -2327,20 +2360,17 @@ def cmd_gate(run, pid, gate, reason, review=None):
         if not (verdict or "").startswith("APPROVED"):
             die(f"NOT WRITTEN: {gate} needs the review file {review} to exist with verdict APPROVED (found {verdict or 'no review'}); "
                 "a review asking for changes is FAIL")
-        if isinstance(st.get("plan"), dict) and "overLimit" in st["plan"]:  # a plan approved under the size rules: enforce them
+        if isinstance(st.get("plan"), dict) and isinstance(st["plan"].get("prFiles"), dict):  # a plan approved under the 0.7.0+ rules
             try:
-                z = record_size(run, pid)
-            except SizeError as e:
-                die(f"NOT WRITTEN: {gate} for {pid} needs its size measured, and it cannot be: {e}. "
+                overlaps = gate_overlaps(run, st, pid)
+            except DiffError as e:
+                die(f"NOT WRITTEN: {gate} for {pid} needs its diff checked against the other PRs' files, and it cannot be: {e}. "
                     f"Fix that (state.sh worktree re-makes a missing worktree from its branch), then write the gate again")
-            if z["over"] and not z["reason"]:
-                die(f"NOT WRITTEN: {pid} is {z['lines']} lines, over its limit {z['limit']}, with no over-limit reason: write FAIL "
-                    "\"over the size limit without a reason\" (only the user's reason can waive it at stop #2)")
-            if z["overlaps"]:
+            if overlaps:
                 die(f"NOT WRITTEN: {pid} changes paths another PR of the same repo owns: "
-                    + "; ".join(f"{o['path']} ({o['pr']})" for o in z["overlaps"]) + ". Write FAIL, or WAIVED with the user's reason")
+                    + "; ".join(f"{path} ({oid})" for path, oid in overlaps) + ". Write FAIL, or WAIVED with the user's reason")
         else:
-            print("size: not enforced (plan approved before 0.7.0)")
+            print("overlap: not checked (plan approved before 0.7.0)")
     if gate == "WAIVED":
         if not old or old.get("gate") not in ("CONCERNS", "FAIL"):
             die(f"NOT WRITTEN: WAIVED only replaces a CONCERNS or FAIL gate (now {(old or {}).get('gate') or 'missing'}), "
@@ -2918,7 +2948,7 @@ def main(argv):
     cmd, args = (argv[0] if argv else ""), argv[1:]
     need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0,
             "gate": 4, "report": 1, "mode": 1, "draft-pr": 2, "push": 2, "post-review": 3, "comment": 4, "ready": 2, "bmad-size": 2, "bmad-init": 1, "bmad-check": 1,
-            "cleanup": 1, "size": 2, "merge-check": 1, "request": 2, "request-wait": 2}
+            "cleanup": 1, "merge-check": 1, "request": 2, "request-wait": 2}
     if cmd not in need or len(args) < need[cmd]:
         die("usage: see the header of state.sh", 2)
     if cmd == "preflight": cmd_preflight(args[0], "resume" in args[1:])
@@ -2945,7 +2975,6 @@ def main(argv):
     elif cmd == "bmad-init": cmd_bmad_init(args[0])
     elif cmd == "bmad-check": cmd_bmad_check(args[0])
     elif cmd == "cleanup": cmd_cleanup(args[0])
-    elif cmd == "size": cmd_size(args[0], args[1])
     elif cmd == "merge-check": cmd_merge_check(args[0])
     elif cmd == "request": cmd_request(args[0], args[1])
     elif cmd == "request-wait": cmd_request_wait(args[0], args[1], args[2:])
