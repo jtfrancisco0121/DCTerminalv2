@@ -1234,13 +1234,8 @@ mod fixture_tests {
             let text = serde_json::to_string_pretty(&actual).unwrap() + "\n";
             std::fs::write(&expected_path, text).unwrap();
         }
-        let mut expected: serde_json::Value =
+        let expected: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&expected_path).unwrap()).unwrap();
-        // The page tests still read the 0.7.0 `size` of each PR from this file
-        // (their page code goes with the page PR); the app no longer emits it.
-        for pr in expected["prs"].as_array_mut().unwrap() {
-            pr.as_object_mut().unwrap().remove("size");
-        }
         assert_eq!(actual, expected);
         let kinds: Vec<&str> = view
             .prs
