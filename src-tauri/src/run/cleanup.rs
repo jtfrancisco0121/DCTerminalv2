@@ -81,17 +81,30 @@ pub fn read_cleanup(run_dir: &Path) -> CleanupFile {
         .unwrap_or_default()
 }
 
-/// What `gh pr view --json state,mergeCommit,headRefName,headRefOid` said.
+/// What `gh pr view --json state,mergeCommit,headRefName,headRefOid,baseRefName` said.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PrInfo {
     pub state: String,
     pub head_ref_name: String,
     pub head_ref_oid: String,
+    /// The branch the PR targets (a merged PR's own base is what a PR stacked on it is retargeted to).
+    pub base_ref_name: String,
+}
+
+/// An open PR whose base is some branch (a PR stacked on a merged run branch).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StackedPr {
+    pub url: String,
+    pub base_ref_name: String,
 }
 
 /// Asks GitHub about one PR (`gh` in the app; a fake in tests).
 pub trait PrLookup {
     fn view(&self, url: &str, repo: &str) -> Result<PrInfo, String>;
+    /// The open PRs of `repo` whose base is `branch`.
+    fn stacked_on(&self, branch: &str, repo: &str) -> Result<Vec<StackedPr>, String>;
+    /// Points the PR at `base` and checks, with a fresh `view`, that it took.
+    fn retarget(&self, url: &str, base: &str, repo: &str) -> Result<(), String>;
 }
 
 /// Runs `command`, killed after `timeout`; (success, stdout, first stderr line).
@@ -133,23 +146,30 @@ pub fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<Strin
     result
 }
 
-/// `gh pr view <url> -R <repo> --json …`, no prompts, with a timeout.
+/// `gh pr view <url> -R <repo> --json …`, no prompts, with a timeout. The only
+/// writes are in [`PrLookup::retarget`]: `gh pr edit --base`, for a PR stacked
+/// on a merged branch (deleting that branch would close it).
 pub struct GhCli;
+
+fn gh_command(args: &[&str]) -> Command {
+    let mut cmd = Command::new("gh");
+    cmd.args(args)
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("NO_COLOR", "1");
+    cmd
+}
 
 impl PrLookup for GhCli {
     fn view(&self, url: &str, repo: &str) -> Result<PrInfo, String> {
-        let mut cmd = Command::new("gh");
-        cmd.args([
+        let cmd = gh_command(&[
             "pr",
             "view",
             url,
             "-R",
             repo,
             "--json",
-            "state,mergeCommit,headRefName,headRefOid",
-        ])
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("NO_COLOR", "1");
+            "state,mergeCommit,headRefName,headRefOid,baseRefName",
+        ]);
         let text = run_with_timeout(cmd, CALL_TIMEOUT).map_err(|e| format!("gh pr view: {e}"))?;
         let v: serde_json::Value =
             serde_json::from_str(&text).map_err(|_| "gh pr view printed no JSON".to_string())?;
@@ -158,7 +178,54 @@ impl PrLookup for GhCli {
             state: s("state"),
             head_ref_name: s("headRefName"),
             head_ref_oid: s("headRefOid"),
+            base_ref_name: s("baseRefName"),
         })
+    }
+
+    fn stacked_on(&self, branch: &str, repo: &str) -> Result<Vec<StackedPr>, String> {
+        let cmd = gh_command(&[
+            "pr",
+            "list",
+            "--base",
+            branch,
+            "--state",
+            "open",
+            "-R",
+            repo,
+            "--json",
+            "url,baseRefName",
+            "--limit",
+            "100",
+        ]);
+        let text = run_with_timeout(cmd, CALL_TIMEOUT).map_err(|e| format!("gh pr list: {e}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text).map_err(|_| "gh pr list printed no JSON".to_string())?;
+        let rows = v.as_array().ok_or("gh pr list printed no list")?;
+        Ok(rows
+            .iter()
+            .map(|r| StackedPr {
+                url: r.get("url").and_then(|x| x.as_str()).unwrap_or("").into(),
+                base_ref_name: r
+                    .get("baseRefName")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .into(),
+            })
+            .collect())
+    }
+
+    fn retarget(&self, url: &str, base: &str, repo: &str) -> Result<(), String> {
+        let cmd = gh_command(&["pr", "edit", url, "--base", base, "-R", repo]);
+        run_with_timeout(cmd, CALL_TIMEOUT).map_err(|e| format!("gh pr edit --base: {e}"))?;
+        let now = self.view(url, repo)?;
+        if now.base_ref_name == base {
+            Ok(())
+        } else {
+            Err(format!(
+                "{url} is on {} after the retarget, not {base}",
+                now.base_ref_name
+            ))
+        }
     }
 }
 
@@ -396,6 +463,84 @@ pub(super) fn pr_target(
     }
 }
 
+/// A branch name the app may pass to `gh pr edit --base`: no option, no `..`, no odd characters.
+fn safe_base(base: &str) -> bool {
+    static REF: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = REF.get_or_init(|| regex::Regex::new(r"^[\w][\w./-]{0,200}$").expect("ref regex"));
+    re.is_match(base) && !base.contains("..") && !base.ends_with('/') && !base.ends_with(".lock")
+}
+
+/// Before the merged PR's branch goes: every open PR that uses it as its base
+/// (a PR stacked on it) is retargeted to the merged PR's own base, and each
+/// retarget is checked (deleting the base of an open PR closes it on GitHub).
+/// `Ok` when none is left on the branch. `Err` is the one-line reason it is not
+/// safe to delete; the caller keeps the branch and asks again later.
+fn retarget_stacked(
+    lookup: &dyn PrLookup,
+    run_dir: &Path,
+    pr_id: &str,
+    branch: &str,
+    slug: &str,
+    new_base: &str,
+) -> Result<(), String> {
+    let open = lookup.stacked_on(branch, slug)?;
+    if open.is_empty() {
+        return Ok(());
+    }
+    if !safe_base(new_base) {
+        return Err(format!(
+            "no usable base to retarget the PRs stacked on it to ({new_base:?})"
+        ));
+    }
+    for stacked in open {
+        // The same URL checks as the PR's own: a PR of the recorded repo only.
+        pr_target(run_dir, pr_id, &stacked.url)
+            .map_err(|_| format!("{} is not a pull request of {slug}", stacked.url))?;
+        lookup
+            .retarget(&stacked.url, new_base, slug)
+            .map_err(|e| format!("could not retarget {} to {new_base}: {e}", stacked.url))?;
+    }
+    Ok(())
+}
+
+/// `prs[].stackedOn` of each PR, read from the raw status.json (a PR with none is not stacked).
+fn stacked_on_map(run_dir: &Path) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let Some(value) = read_json_value(&run_dir.join("status.json")) else {
+        return out;
+    };
+    for pr in value
+        .get("prs")
+        .and_then(|p| p.as_array())
+        .into_iter()
+        .flatten()
+    {
+        if let (Some(id), Some(parent)) = (
+            pr.get("id").and_then(|x| x.as_str()),
+            pr.get("stackedOn").and_then(|x| x.as_str()),
+        ) {
+            if valid_pr_id(id) && valid_pr_id(parent) {
+                out.insert(id.to_string(), parent.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// How far down a stack a PR is (0 = not stacked); a loop stops counting.
+fn stack_depth(map: &std::collections::HashMap<String, String>, id: &str) -> usize {
+    let mut depth = 0;
+    let mut cur = id;
+    while let Some(parent) = map.get(cur) {
+        depth += 1;
+        cur = parent;
+        if depth > map.len() {
+            break;
+        }
+    }
+    depth
+}
+
 /// One PR: `None` when it should be asked about again (open, or GitHub
 /// could not be asked), else the final record.
 fn clean_pr(run_dir: &Path, pr: &PrView, lookup: &dyn PrLookup) -> Option<CleanupRecord> {
@@ -520,23 +665,33 @@ fn clean_pr(run_dir: &Path, pr: &PrView, lookup: &dyn PrLookup) -> Option<Cleanu
             Ok(Some(tip)) if tip != info.head_ref_oid => {
                 "remote branch kept (its tip is not the merged PR's head)".into()
             }
-            Ok(Some(_)) => match delete_at(&remote_url, &branch, &info.head_ref_oid) {
-                Ok(_) => {
-                    remote_gone = true;
-                    "remote branch deleted".into()
+            Ok(Some(_)) => {
+                match retarget_stacked(lookup, run_dir, &pr.id, &branch, &slug, &info.base_ref_name)
+                {
+                    Err(why) => {
+                        // A PR is still based on this branch: deleting it would close that PR.
+                        rec.retry = true;
+                        format!("remote branch kept for now (not deleted: {why})")
+                    }
+                    Ok(()) => match delete_at(&remote_url, &branch, &info.head_ref_oid) {
+                        Ok(_) => {
+                            remote_gone = true;
+                            "remote branch deleted".into()
+                        }
+                        Err(err) if err.contains("remote ref does not exist") => {
+                            remote_gone = true;
+                            "remote branch already deleted".into()
+                        }
+                        Err(err) if err.contains("stale info") || err.contains("rejected") => {
+                            "remote branch kept (it moved since the merge)".into()
+                        }
+                        Err(err) => {
+                            rec.retry = true;
+                            format!("remote branch kept for now: {err}")
+                        }
+                    },
                 }
-                Err(err) if err.contains("remote ref does not exist") => {
-                    remote_gone = true;
-                    "remote branch already deleted".into()
-                }
-                Err(err) if err.contains("stale info") || err.contains("rejected") => {
-                    "remote branch kept (it moved since the merge)".into()
-                }
-                Err(err) => {
-                    rec.retry = true;
-                    format!("remote branch kept for now: {err}")
-                }
-            },
+            }
         }
     };
     rec.outcome = if worktree_gone && remote_gone {
@@ -556,7 +711,11 @@ pub(super) static CLEANUP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(())
 /// and logs the new records. Returns them.
 pub fn cleanup_run(run_dir: &Path, lookup: &dyn PrLookup) -> Vec<CleanupRecord> {
     let _lock = CLEANUP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (_, _, prs) = prs_with_url(run_dir);
+    let (_, _, mut prs) = prs_with_url(run_dir);
+    // Parents of a stack first, so a child is retargeted before its parent's branch goes;
+    // a run with no `stackedOn` keeps the order of its PRs (the sort is stable).
+    let stacks = stacked_on_map(run_dir);
+    prs.sort_by_key(|pr| stack_depth(&stacks, &pr.id));
     let mut file = read_cleanup(run_dir);
     let mut new = Vec::new();
     let mut changed = false;
@@ -642,6 +801,12 @@ mod tests {
     struct Fake {
         prs: HashMap<String, Result<PrInfo, String>>,
         calls: RefCell<Vec<String>>,
+        /// Open PRs whose base is a branch (branch -> their URLs).
+        stacked: RefCell<HashMap<String, Vec<String>>>,
+        /// `retarget` fails with this.
+        retarget_fails: RefCell<Option<String>>,
+        /// (url, new base) of each retarget that worked.
+        retargeted: RefCell<Vec<(String, String)>>,
     }
 
     impl PrLookup for Fake {
@@ -651,6 +816,36 @@ mod tests {
                 .get(url)
                 .cloned()
                 .unwrap_or_else(|| Err("no such PR".into()))
+        }
+        fn stacked_on(&self, branch: &str, repo: &str) -> Result<Vec<StackedPr>, String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("{repo} list-base {branch}"));
+            Ok(self
+                .stacked
+                .borrow()
+                .get(branch)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|url| StackedPr {
+                    url,
+                    base_ref_name: branch.to_string(),
+                })
+                .collect())
+        }
+        fn retarget(&self, url: &str, base: &str, repo: &str) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("{repo} retarget {url} {base}"));
+            if let Some(err) = self.retarget_fails.borrow().clone() {
+                return Err(err);
+            }
+            self.retargeted.borrow_mut().push((url.into(), base.into()));
+            for urls in self.stacked.borrow_mut().values_mut() {
+                urls.retain(|u| u != url);
+            }
+            Ok(())
         }
     }
 
@@ -667,6 +862,7 @@ mod tests {
             state: state.into(),
             head_ref_name: format!("dcv2/{RUN}-pr{n}"),
             head_ref_oid: oid.into(),
+            base_ref_name: "main".into(),
         })
     }
 
@@ -837,6 +1033,7 @@ mod tests {
                 state: "MERGED".into(),
                 head_ref_name: "feature/other".into(),
                 head_ref_oid: s.tips[&7].clone(),
+                base_ref_name: "main".into(),
             }),
         );
         assert!(wants_cleanup(&s.run_dir, chrono::Utc::now()));
@@ -1052,7 +1249,13 @@ mod tests {
         assert_eq!(recs.len(), 1, "{recs:?}");
         assert!(!s.wt(1).exists() && !s.on_remote(1));
         assert!(sweep(&s.data, true, &fake, &mut asked, Duration::ZERO).is_empty());
-        assert_eq!(fake.calls.borrow().len(), 1);
+        // One `gh pr view`, and the one `gh pr list --base` that precedes the branch delete.
+        let calls = fake.calls.borrow();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(
+            calls[0].contains("/pull/1") && calls[1].contains("list-base"),
+            "{calls:?}"
+        );
     }
 
     #[test]
@@ -1088,5 +1291,171 @@ mod tests {
             Some("ghe.example")
         );
         assert_eq!(remote_host("/local/bare.git"), None);
+    }
+    /// Records `stackedOn` for these PRs in the run's status file: (child, parent).
+    fn stack(s: &Setup, pairs: &[(&str, &str)]) {
+        let path = s.run_dir.join("status.json");
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        for pr in v["prs"].as_array_mut().unwrap() {
+            for (child, parent) in pairs {
+                if pr["id"] == *child {
+                    pr["stackedOn"] = json!(parent);
+                }
+            }
+        }
+        std::fs::write(&path, v.to_string()).unwrap();
+    }
+
+    fn stacked_fake(s: &Setup, parent_state: &str) -> Fake {
+        let mut fake = Fake::default();
+        fake.prs.insert(url(1), info(parent_state, 1, &s.tips[&1]));
+        fake.prs.insert(url(2), info("OPEN", 2, &s.tips[&2]));
+        fake.stacked
+            .borrow_mut()
+            .insert(format!("dcv2/{RUN}-pr1"), vec![url(2)]);
+        fake
+    }
+
+    #[test]
+    fn a_stacked_pr_is_retargeted_before_its_parents_branch_is_deleted() {
+        let s = setup("done", &[1, 2], &[]);
+        stack(&s, &[("PR2", "PR1")]);
+        run(
+            &s.repo,
+            &["merge", "-q", "--no-edit", &format!("dcv2/{RUN}-pr1")],
+        );
+        let fake = stacked_fake(&s, "MERGED");
+        let recs = cleanup_run(&s.run_dir, &fake);
+        let r1 = by(&recs, "PR1");
+        assert_eq!(r1.outcome, "cleaned", "{r1:?}");
+        assert_eq!(r1.remote, "remote branch deleted");
+        assert_eq!(
+            fake.retargeted.borrow().as_slice(),
+            [(url(2), "main".to_string())],
+            "the child goes to the merged PR's own base"
+        );
+        assert!(
+            !s.on_remote(1),
+            "the parent's branch goes after the retarget"
+        );
+        // The stacked PR is open: asked again later, nothing of it touched.
+        assert!(s.wt(2).exists() && s.branch(2) && s.on_remote(2));
+        // A second pass: the retargeted PR is no longer on the branch; the finished record is not asked again.
+        fake.calls.borrow_mut().clear();
+        assert!(cleanup_run(&s.run_dir, &fake).is_empty());
+        assert_eq!(fake.retargeted.borrow().len(), 1);
+        assert!(!fake.calls.borrow().iter().any(|c| c.contains("retarget")));
+    }
+
+    #[test]
+    fn a_failed_retarget_keeps_the_branch_records_why_and_is_tried_again() {
+        let s = setup("done", &[1, 2], &[]);
+        stack(&s, &[("PR2", "PR1")]);
+        run(
+            &s.repo,
+            &["merge", "-q", "--no-edit", &format!("dcv2/{RUN}-pr1")],
+        );
+        let fake = stacked_fake(&s, "MERGED");
+        *fake.retarget_fails.borrow_mut() = Some("gh pr edit --base: boom".into());
+        let recs = cleanup_run(&s.run_dir, &fake);
+        let r1 = by(&recs, "PR1");
+        assert_eq!(r1.outcome, "kept", "{r1:?}");
+        assert!(r1.retry, "tried again on the next sweep: {r1:?}");
+        assert!(
+            r1.remote.contains("not deleted") && r1.remote.contains("boom"),
+            "{r1:?}"
+        );
+        assert!(
+            s.on_remote(1),
+            "the branch an open PR is based on is never deleted"
+        );
+        assert!(fake.retargeted.borrow().is_empty());
+        assert!(wants_cleanup(&s.run_dir, chrono::Utc::now()), "asked again");
+        // The next sweep: the retarget works, then the branch goes, and the record is final.
+        *fake.retarget_fails.borrow_mut() = None;
+        let recs = cleanup_run(&s.run_dir, &fake);
+        let r1 = by(&recs, "PR1");
+        assert_eq!(r1.outcome, "cleaned", "{r1:?}");
+        assert_eq!(r1.remote, "remote branch deleted");
+        assert!(!r1.retry);
+        assert_eq!(fake.retargeted.borrow().len(), 1);
+        assert!(!s.on_remote(1));
+        assert!(
+            cleanup_run(&s.run_dir, &fake).is_empty(),
+            "a second run is a no-op"
+        );
+    }
+
+    #[test]
+    fn a_parent_closed_without_merge_is_not_swept_and_nothing_is_retargeted() {
+        let s = setup("done", &[1, 2], &[]);
+        stack(&s, &[("PR2", "PR1")]);
+        let fake = stacked_fake(&s, "CLOSED");
+        let recs = cleanup_run(&s.run_dir, &fake);
+        assert_eq!(by(&recs, "PR1").outcome, "untouched");
+        assert!(fake.retargeted.borrow().is_empty());
+        assert!(
+            !fake.calls.borrow().iter().any(|c| c.contains("list-base")),
+            "{:?}",
+            fake.calls.borrow()
+        );
+        assert!(s.on_remote(1) && s.on_remote(2));
+    }
+
+    #[test]
+    fn a_stacked_pr_that_is_not_the_recorded_repos_or_an_unsafe_base_keeps_the_branch() {
+        let s = setup("done", &[1, 2], &[]);
+        run(
+            &s.repo,
+            &["merge", "-q", "--no-edit", &format!("dcv2/{RUN}-pr1")],
+        );
+        let fake = stacked_fake(&s, "MERGED");
+        fake.stacked.borrow_mut().insert(
+            format!("dcv2/{RUN}-pr1"),
+            vec!["https://github.com/evil/other/pull/9".into()],
+        );
+        let recs = cleanup_run(&s.run_dir, &fake);
+        let r1 = by(&recs, "PR1");
+        assert_eq!(r1.outcome, "kept", "{r1:?}");
+        assert!(r1.remote.contains("not a pull request of o/r"), "{r1:?}");
+        assert!(fake.retargeted.borrow().is_empty() && s.on_remote(1));
+
+        let s = setup("done", &[1, 2], &[]);
+        let mut fake = stacked_fake(&s, "MERGED");
+        fake.prs.insert(
+            url(1),
+            Ok(PrInfo {
+                base_ref_name: "--delete".into(),
+                ..info("MERGED", 1, &s.tips[&1]).unwrap()
+            }),
+        );
+        let recs = cleanup_run(&s.run_dir, &fake);
+        assert!(
+            by(&recs, "PR1").remote.contains("no usable base"),
+            "{recs:?}"
+        );
+        assert!(fake.retargeted.borrow().is_empty() && s.on_remote(1));
+    }
+
+    #[test]
+    fn a_stack_is_cleaned_parent_first_and_an_old_run_keeps_its_order() {
+        // PR1 is stacked on PR2 (the child has the lower id): the parent is asked about first.
+        let s = setup("done", &[1, 2], &[]);
+        stack(&s, &[("PR1", "PR2")]);
+        let mut fake = Fake::default();
+        fake.prs.insert(url(1), info("MERGED", 1, &s.tips[&1]));
+        fake.prs.insert(url(2), info("MERGED", 2, &s.tips[&2]));
+        let recs = cleanup_run(&s.run_dir, &fake);
+        let ids: Vec<&str> = recs.iter().map(|r| r.pr_id.as_str()).collect();
+        assert_eq!(ids, ["PR2", "PR1"], "{recs:?}");
+        // No stackedOn anywhere: today's order.
+        let s = setup("done", &[1, 2], &[]);
+        let mut fake = Fake::default();
+        fake.prs.insert(url(1), info("MERGED", 1, &s.tips[&1]));
+        fake.prs.insert(url(2), info("MERGED", 2, &s.tips[&2]));
+        let recs = cleanup_run(&s.run_dir, &fake);
+        let ids: Vec<&str> = recs.iter().map(|r| r.pr_id.as_str()).collect();
+        assert_eq!(ids, ["PR1", "PR2"], "{recs:?}");
     }
 }
