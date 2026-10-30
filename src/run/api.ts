@@ -18,10 +18,12 @@ export type Repo = {
   copyFiles?: string[];
   /** Live Claude tests allowed in this repo's checks (repos.json `liveTests`). */
   liveTests?: boolean;
+  /** PR line limit (repos.json `prSizeLimit`); absent: the plugin's default, 400. */
+  prSizeLimit?: number | null;
 };
 
 /** One repo's worktree setup (app settings, keyed by the repo's real path). */
-export type RepoSetup = { setup: string | null; copyFiles: string[]; liveTests?: boolean };
+export type RepoSetup = { setup: string | null; copyFiles: string[]; liveTests?: boolean; prSizeLimit?: number | null };
 
 /** `github`: draft PRs + one review comment per round; `local`: the quiet local loop. */
 export type ReviewMode = "github" | "local";
