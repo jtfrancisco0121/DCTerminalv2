@@ -62,6 +62,7 @@ cat > "$RUN/plan.md" <<'EOF'
 - Stories: S1
 ### PR2: Prefix
 - Stories: S2
+- Why: results have no prefix without it
 EOF
 python3 - "$RUN/repos.json" "$R" "$RR" <<'PY'
 import json, sys
@@ -196,6 +197,7 @@ is "  comments []" "$RUN/status.json" prs.1.comments '[]'
 git -C "$d/origin.git" show-ref -q --verify refs/heads/dcv2/r-g-pr2 && ok "  branch pushed" || bad "  branch not on origin"
 grep -q "pr create --draft --base main --head dcv2/r-g-pr2 --title PR 2 title" "$GH_SHIM_DIR/calls.log" && ok "  gh pr create --draft" || bad "  calls: $(cat "$GH_SHIM_DIR/calls.log")"
 grep -q "review in progress" "$RUN/pr-bodies/PR2.md" && ok "  body says review in progress" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
+grep -q "^## Why" "$RUN/pr-bodies/PR2.md" && ok "  draft body has the Why section" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
 grep -q "S2: Prefix results" "$RUN/pr-bodies/PR2.md" && ok "  body lists the stories" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
 grep -q "draft PR opened" "$RUN/log.md" && ok "  logged" || bad "  not logged"
 expect 0 "draft-pr again" S draft-pr "$RUN" PR2; has "  exists" "draft=exists"
@@ -302,6 +304,8 @@ is "  state opened" "$RUN/status.json" prs.1.state '"opened"'
 is "  draft false" "$RUN/status.json" prs.1.draft false
 python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))[0]; sys.exit(0 if not p["isDraft"] and "Eagle-Eye review rounds" in p["body"] and "#issuecomment-1001" in p["body"] else 1)' "$GH_SHIM_DIR/prs.json" \
   && ok "  marked ready with the final body (review round links)" || bad "  shim: $(cat "$GH_SHIM_DIR/prs.json")"
+python3 -c 'import json,re,sys; b=json.load(open(sys.argv[1]))[0]["body"]; h=re.findall(r"^## (.+)$", b, re.M); sys.exit(0 if h[:2]==["Why","What it adds"] and h.index("Review") < h.index("Verification") and "None" not in b and "null" not in b else 1)' "$GH_SHIM_DIR/prs.json" \
+  && ok "  final body: sections in order, no None or null" || bad "  shim: $(cat "$GH_SHIM_DIR/prs.json")"
 expect 0 "ready PR2 again" S ready "$RUN" PR2; has "  already" "PR2 already opened"
 expect 0 "ready PR1 (no remote)" S ready "$RUN" PR1; is "  local-only" "$RUN/status.json" prs.0.state '"local-only"'
 

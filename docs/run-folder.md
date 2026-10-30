@@ -15,7 +15,7 @@ The contract between the `dcv2:eagle-eye` skill and the app. The app creates the
   reviews/          skill   plan-round<n>.md, risk-round<n>.md, PR<n>-round<n>.md (full reviews)
   reports/          skill   PR<n>-build<n>.md, PR<n>-fix<n>.md (implementer reports)
   logs/             skill   PR<n>-check.txt etc. (full check output)
-  pr-bodies/        skill   PR<n>.md (the GitHub PR body state.sh ship-pr / draft-pr / ready opened or set)
+  pr-bodies/        skill   PR<n>.md (the PR body state.sh ship-pr / draft-pr / ready opened or set: one builder, sections `## Why`, `## What it adds`, `## Scope`, `## Review`, `## Verification`, `## Tickets` in that order, a section with no data left out; always neutralised, capped and secret-scanned, in local mode too)
   pr-comments/      skill   PR<n>-round<n>.md, PR<n>-round<n>-fixes.md (github mode: exactly what was posted)
   logs/PR<n>-setup.txt skill the worktree setup step's output (state.sh worktree)
   (scope)           skill   `state.sh scope <run> <PR>` prints the PR's Scope (areas touched with file counts, dependency changes from `git diff <base commit>..HEAD`; lock files and unknown manifests: `changed`); it feeds the PR body's `## Scope`, local git only

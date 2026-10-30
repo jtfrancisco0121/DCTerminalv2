@@ -1279,19 +1279,6 @@ def cmd_ship_check(run):
             print(f"{who}: remote {rem['url']}, base {pr.get('base')} is NOT on the remote: needs attention")
 
 
-def pr_body(run, st, pr):
-    titles = dict(re.findall(r"^###\s+(S\d+)\s*[:\-\u2014]+\s*(.+?)\s*$", read(os.path.join(run, "plan.md")), re.M))
-    prs = {p.get("id"): p for p in st.get("prs") or []}
-    chk, rev = pr.get("check") or {}, pr.get("review") or {}
-    lines = ["## Stories", ""] + [f"- {s}: {titles.get(s, '')}".rstrip(": ") for s in (pr.get("stories") or {}).get("ids") or []]
-    lines += ["", f"Check: `{chk.get('command')}`: {chk.get('result')}", f"Review: {rev.get('verdict')} (round {rev.get('round')})"]
-    for dep in pr.get("dependsOn") or []:
-        d = prs.get(dep) or {}
-        lines.append(f"Depends on: {d.get('prUrl') or dep + ' (branch ' + str(d.get('branch')) + ')'}")
-    lines += ["", f"Plan: Eagle-Eye run {st.get('runId')}", ""]
-    return "\n".join(lines)
-
-
 def cmd_ship_pr(run, pid):
     st = load_status(run)
     if review_mode(run) == "github":
@@ -1345,10 +1332,7 @@ def cmd_ship_pr(run, pid):
     v = gh(["pr", "view", branch, "--json", "url", "-q", ".url"], wt, slug, 60)
     if v.returncode == 0 and v.stdout.strip().startswith("http"):
         return save("opened", None, v.stdout.strip())
-    body = os.path.join(run, "pr-bodies", f"{pid}.md")
-    os.makedirs(os.path.dirname(body), exist_ok=True)
-    atomic_write(body, pr_body(run, st, pr))
-    title = str(pr.get("title") or pid)
+    title, body = title_and_body(run, st, pr, build_body(run, st, pr, "ship"), "NOT SHIPPED")
     c = gh(["pr", "create", "--base", base, "--head", branch, "--title", title, "--body-file", body], wt, slug)
     url = next((l.strip() for l in reversed(c.stdout.splitlines()) if l.strip().startswith("http")), None)
     if c.returncode == 0 and url:
@@ -1613,24 +1597,126 @@ def need_remote(rem, what):
         die(f"{what}: cannot tell which GitHub repo {rem.get('url')} is (no owner/name in the URL, and `gh repo view` did not say)")
 
 
-def story_lines(run, pr):
-    titles = dict(re.findall(r"^###\s+(S\d+)\s*[:\-—]+\s*(.+?)\s*$", read(os.path.join(run, "plan.md")), re.M))
-    return [f"- {s}: {titles.get(s, '')}".rstrip(": ") for s in (pr.get("stories") or {}).get("ids") or []]
+BODY_FINDINGS_MAX = 12
+FINDING = re.compile(r"^\s*\d+\.\s+\**(CRITICAL|HIGH|MEDIUM)\**\s*[—–:-]+\s*(.+?)\s*$", re.M)
 
 
-def draft_body(run, st, pr):
-    lines = ["## Stories", ""] + story_lines(run, pr)
-    lines += ["", f"\U0001F916 Eagle-Eye run {st.get('runId')} — review in progress. Each review round is posted as a comment; "
-              "this PR is marked ready for review only after the run's ship approval.", ""]
-    return "\n".join(lines)
+def pr_story_titles(run):
+    return dict(re.findall(r"^###\s+(S\d+)\s*[:\-—]+\s*(.+?)\s*$", read(os.path.join(run, "plan.md")), re.M))
 
 
-def final_body(run, st, pr):
-    lines = pr_body(run, st, pr).rstrip("\n").splitlines()
-    rounds = sorted(pr.get("comments") or [], key=lambda c: c.get("round", 0))
+def review_round_files(run, pid):
+    """(round number, text) of every reviews/<PR>-round<n>.md, in round order."""
+    out = []
+    for f in glob.glob(os.path.join(run, "reviews", f"{pid}-round*.md")):
+        m = re.search(r"-round(\d+)\.md$", f)
+        if m:
+            out.append((int(m.group(1)), read(f)))
+    return sorted(out)
+
+
+def review_verdict_of(text):
+    m = re.search(r"^#+\s*Verdict\b[:\s]*([^\n]*)\n*([^\n]*)", text or "", re.M | re.I)
+    line = (m.group(1).strip() or m.group(2)) if m else ""
+    if not m:
+        m1 = re.match(r"^\s*\**Eagle-Eye review\s*[—–-]+\s*round\s*\d+\s*:\s*(APPROVED|REQUEST CHANGES)\b", text or "", re.I)
+        line = m1.group(1) if m1 else ""
+    return re.sub(r"[*`_#>]", "", line).strip().upper()
+
+
+def addressed_findings(run, pid):
+    """One line per MEDIUM+ finding of a round that a later approving round followed (secret-scanned one by one)."""
+    rounds = review_round_files(run, pid)
+    approved = [n for n, t in rounds if review_verdict_of(t).startswith("APPROVED")]
+    if not approved:
+        return []
+    last = max(approved)
+    lines = []
+    for n, text in rounds:
+        if n >= last:
+            continue
+        for sev, summary in FINDING.findall(text):
+            summary = re.split(r"\s[—–-]+\s*Fix:", summary)[0].strip().replace("`", "")
+            line = f"- Round {n} {sev}: {summary[:220]}"
+            if scan_secrets(line)[0] is True:  # a hit or a scanner that cannot run drops the line; the rest is kept
+                lines.append(line)
+            if len(lines) >= BODY_FINDINGS_MAX:
+                return lines
+    return lines
+
+
+def pr_ticket_lines(run, pr):
+    """`- <id>: <name> (<url>)` for the tickets.json entries the plan's Tickets lines map to this PR's stories."""
+    snap = load_json(os.path.join(run, "tickets.json"))
+    tasks = snap.get("tasks", snap) if isinstance(snap, dict) else snap
+    if not isinstance(tasks, list):
+        return []
+    mine = set((pr.get("stories") or {}).get("ids") or [])
+    refs = set()
+    for m in re.finditer(r"^###\s+(S\d+)\b(.*?)(?=^###\s|^##\s|\Z)", read(os.path.join(run, "plan.md")), re.M | re.S):
+        tl = re.search(r"^\s*-\s*Tickets:\s*(.+)$", m.group(2), re.M)
+        if tl and m.group(1) in mine:
+            refs |= {x.strip().lower() for x in re.split(r"[,\s]+", tl.group(1)) if x.strip()}
+    out = []
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        keys = {str(t.get("id", "")).lower()} | ({str(t["custom_id"]).lower()} if t.get("custom_id") else set())
+        if refs & keys:
+            name = " ".join(str(t.get("name") or "").split())
+            out.append(f"- {t.get('custom_id') or t.get('id')}: {name}" + (f" ({t['url']})" if t.get("url") else ""))
+    return out
+
+
+def build_body(run, st, pr, kind):
+    """The one PR body builder (local ship-pr, github draft-pr and ready). Sections in a fixed order; a section with
+    no data is left out. kind: ship | draft | final. Caps, neutral() and the secret scan are applied by title_and_body."""
+    pid = pr.get("id")
+    plan = read(os.path.join(run, "plan.md"))
+    titles = pr_story_titles(run)
+    prs = {p.get("id"): p for p in st.get("prs") or []}
+    chk, rev = pr.get("check") or {}, pr.get("review") or {}
+    sections = []
+
+    def add(name, lines):
+        lines = [l for l in lines if l is not None]
+        if any(l.strip() for l in lines):
+            sections.append(f"## {name}\n\n" + "\n".join(lines))
+
+    add("Why", [plan_pr_why(plan, pid)])
+    add("What it adds", [f"- {s}: {titles.get(s, '')}".rstrip(": ") for s in (pr.get("stories") or {}).get("ids") or []])
+    add("Scope", scope_lines(run, pid))
+    review = []
+    if rev.get("verdict"):
+        review.append(f"- Final: {rev['verdict']}" + (f" (round {rev['round']})" if rev.get("round") else ""))
+    gate = read_gate(run, pid)
+    if gate and gate.get("gate"):
+        review.append(f"- Gate: {gate['gate']}" + (f": {gate['reason']}" if gate.get("reason") else ""))
+    fixed = addressed_findings(run, pid)
+    if fixed:
+        review += ["", "Findings raised and fixed in a later round:"] + fixed
+    rounds = sorted(pr.get("comments") or [], key=lambda c: c.get("round", 0)) if kind == "final" else []
     if rounds:
-        lines += ["", "## Eagle-Eye review rounds", ""] + [f"- Round {c['round']}: {c['url']}" + (f" (fixes: {c['fixesUrl']})" if c.get("fixesUrl") else "") for c in rounds]
-    return "\n".join(lines) + "\n"
+        review += ["", "Eagle-Eye review rounds:"] + [f"- Round {c['round']}: {c['url']}" + (f" (fixes: {c['fixesUrl']})" if c.get("fixesUrl") else "") for c in rounds]
+    add("Review", review)
+    ver = []
+    wt = pr.get("worktree")
+    head = git("-C", wt, "rev-parse", "--short", "HEAD").stdout.strip() if wt and os.path.isdir(wt) else ""
+    if chk.get("command"):
+        ver.append(f"- Check `{chk['command']}`: {chk.get('result') or 'not run'}" + (f" at {head}" if head else ""))
+    ac = ((load_json(os.path.join(run, "app-checks.json")) or {}).get("checks") or {}).get(pid)
+    if isinstance(ac, dict) and ac.get("result") and ac.get("result") != "running":
+        ver.append(f"- App re-run of the check: {ac['result']}" + (f" at {str(ac['head'])[:7]}" if ac.get("head") else ""))
+    for dep in pr.get("dependsOn") or []:
+        d = prs.get(dep) or {}
+        ver.append(f"- Depends on: {d.get('prUrl') or dep + ' (branch ' + str(d.get('branch') or '-') + ')'}")
+    add("Verification", ver)
+    add("Tickets", pr_ticket_lines(run, pr))
+    foot = [f"Plan: Eagle-Eye run {st.get('runId')}"]
+    if kind == "draft":
+        foot = [f"\U0001F916 Eagle-Eye run {st.get('runId')} — review in progress. Each review round is posted as a comment; "
+                "this PR is marked ready for review only after the run's ship approval."]
+    return "\n\n".join(sections + ["\n".join(foot)]) + "\n"
 
 
 def title_and_body(run, st, pr, body, what):
@@ -1678,7 +1764,7 @@ def cmd_draft_pr(run, pid):
         return failed(err)
     if found and found.get("state") != "OPEN":
         return failed(f"the branch already has a {str(found.get('state')).lower()} PR ({found.get('url')}); not opening a second one")
-    title, body = title_and_body(run, st, pr, draft_body(run, st, pr), "NOT DRAFTED") if not found else (None, None)
+    title, body = title_and_body(run, st, pr, build_body(run, st, pr, "draft"), "NOT DRAFTED") if not found else (None, None)
     r = push_branch(wt, rem["url"], branch)
     if r.returncode != 0:
         return failed("push refused: " + first_line(r.stderr)[:200])
@@ -1870,7 +1956,7 @@ def cmd_ready(run, pid):
             return save("needs-attention", f"the branch's PR is {str(found.get('state')).lower()}: {found.get('url')}")
         if found:
             url, draft = found["url"], bool(found.get("isDraft"))
-    title, body = title_and_body(run, st, pr, final_body(run, st, pr), "NOT READY")
+    title, body = title_and_body(run, st, pr, build_body(run, st, pr, "final"), "NOT READY")
     head = git("-C", wt, "rev-parse", "HEAD").stdout.strip()
     if remote_sha(rem["url"], branch) != head:
         r = push_branch(wt, rem["url"], branch)

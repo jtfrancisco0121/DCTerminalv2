@@ -471,6 +471,51 @@ expect 0 "worktree for a repo whose remote is an ssh host alias" bash "$STATE" w
 is "  recorded as owner/name" "$RUN/.guard.json" remotes.PR3.repo '"o/rr"'
 is "  with its URL" "$RUN/.guard.json" remotes.PR3.url '"github-work:o/rr"'
 
+echo "# PR body sections (one builder; local mode neutralises, caps and scans)"
+cp "$RUN/plan.md" "$d/plan.body.bak"; [[ -e "$RUN/tickets.json" ]] && cp "$RUN/tickets.json" "$d/tickets.body.bak" || true
+python3 - "$RUN/plan.md" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace("### PR2: Prefix\n- Repo: rr\n", "### PR2: Prefix\n- Repo: rr\n- Why: results have no prefix without it\n")
+open(p, "w").write(s)
+PY
+mkdir -p "$RUN/reviews"
+printf 'Eagle-Eye review — round 1: REQUEST CHANGES — 2 MEDIUM+, 0 LOW\n\n## Verdict\nREQUEST CHANGES\n\n## Findings\n1. MEDIUM — `a.py:3` — missing guard, ping @alice about o/r#5 — Fix: add it\n2. HIGH — `b.py:1` — leaks token=ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 — Fix: remove\n3. LOW — `c.py:1` — nit\n' > "$RUN/reviews/PR2-round1.md"
+printf 'Eagle-Eye review — round 2: APPROVED — 0 MEDIUM+, 0 LOW\n\n## Verdict\nAPPROVED\n\n## Findings\nNone.\n' > "$RUN/reviews/PR2-round2.md"
+printf '{"tasks":[{"id":"t2","custom_id":"T-2","name":"Prefix for @bob in o/r#9","url":"https://x/t2","description":"SECRET BODY TEXT"}]}\n' > "$RUN/tickets.json"
+python3 - "$RUN/status.json" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1])); pr = st["prs"][1]; pr["state"] = "pushed"; pr["prUrl"] = None; pr["review"]["round"] = 2
+json.dump(st, open(sys.argv[1], "w"))
+PY
+rm -f "$d/gh-has-pr"; : > "$d/gh.log"
+expect 0 "ship-pr builds the sectioned body" bash "$STATE" ship-pr "$RUN" PR2
+B2="$RUN/pr-bodies/PR2.md"
+python3 - "$B2" <<'PY' && ok "  sections in order: Why, What it adds, Review, Verification, Tickets" || bad "  body: $(cat "$B2")"
+import re, sys
+t = open(sys.argv[1]).read()
+h = re.findall(r"^## (.+)$", t, re.M)
+want = ["Why", "What it adds", "Review", "Verification", "Tickets"]
+sys.exit(0 if [x for x in h if x in want] == want and h.index("Why") < h.index("What it adds") else 1)
+PY
+grep -q "results have no prefix without it" "$B2" && ok "  Why from the plan" || bad "  no Why"
+grep -q "Round 1 MEDIUM: a.py:3 — missing guard" "$B2" && ok "  a fixed MEDIUM finding is listed" || bad "  body: $(cat "$B2")"
+grep -q "ghp_" "$B2" && bad "  a secret-like finding reached the body" || ok "  the secret-like finding line was dropped"
+grep -q "nit" "$B2" && bad "  a LOW finding is listed" || ok "  LOW findings are not listed"
+grep -q "@alice" "$B2" && bad "  @mention not neutralised" || ok "  finding @mention neutralised"
+grep -q "@bob" "$B2" && bad "  ticket @mention not neutralised" || ok "  ticket name neutralised"
+grep -q "SECRET BODY TEXT" "$B2" && bad "  a ticket body leaked" || ok "  no ticket bodies"
+grep -q "Prefix for" "$B2" && ok "  ticket name listed" || bad "  no ticket line"
+grep -qE "\bNone\b|\bnull\b" "$B2" && bad "  None/null in the body: $(cat "$B2")" || ok "  no None or null"
+grep -q "^## Scope" "$B2" && bad "  empty Scope section present" || ok "  a section with no data is left out"
+cp "$d/plan.body.bak" "$RUN/plan.md"; [[ -e "$d/tickets.body.bak" ]] && cp "$d/tickets.body.bak" "$RUN/tickets.json" || rm -f "$RUN/tickets.json"
+rm -rf "$RUN/reviews"
+python3 - "$RUN/status.json" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1])); pr = st["prs"][1]; pr["prUrl"] = "https://github.com/o/rr/pull/7"; pr["review"]["round"] = 1
+json.dump(st, open(sys.argv[1], "w"))
+PY
+
 echo "# writeback (5, 15)"
 cat > "$RUN/tickets.json" <<'EOF'
 {"tasks": [{"id": "t1", "custom_id": "T-1", "name": "multiply", "url": "https://x/t1", "list": {"statuses": ["to do", "in review"]}},
