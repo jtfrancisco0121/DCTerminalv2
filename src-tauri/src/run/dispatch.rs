@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
@@ -334,6 +334,15 @@ pub fn move_entry(state: &mut Dispatch, id: &str, up: bool) -> bool {
 
 static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static RECOVERED: AtomicBool = AtomicBool::new(false);
+/// When the last start finished (epoch ms). The tab snapshot handed to `on_tick` can predate that moment, so a
+/// new start waits a moment for the tab to show up in the facts; else the cap could be exceeded by one.
+static LAST_FINISH_MS: AtomicI64 = AtomicI64::new(0);
+const SETTLE_MS: i64 = 3000;
+
+fn finish_start() {
+    LAST_FINISH_MS.store(chrono::Utc::now().timestamp_millis(), Ordering::SeqCst);
+    IN_FLIGHT.store(false, Ordering::SeqCst);
+}
 
 fn data_dir(app: &AppHandle) -> PathBuf {
     crate::data_dir::app_data_dir(app).path
@@ -434,6 +443,9 @@ pub fn on_tick(app: &AppHandle, tab_run_dirs: &HashSet<String>) {
     if state.queue.is_empty() {
         return;
     }
+    if chrono::Utc::now().timestamp_millis() - LAST_FINISH_MS.load(Ordering::SeqCst) < SETTLE_MS {
+        return;
+    }
     let (cap, hold, watchdog) = limits(app);
     let facts = run_facts(&data, tab_run_dirs);
     let held = holders(&facts, &state.released, watchdog).len();
@@ -487,7 +499,7 @@ fn spawn_start(app: &AppHandle, id: &str) {
             let (app, id) = (app.clone(), id.clone());
             move || {
                 run_entry(&app, &id, &|app, params| start_run_inner(app, params));
-                IN_FLIGHT.store(false, Ordering::SeqCst);
+                finish_start();
             }
         });
     if spawned.is_err() {

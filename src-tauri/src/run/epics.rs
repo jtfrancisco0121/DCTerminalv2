@@ -74,7 +74,7 @@ pub fn validate_waves(
 /// Where a dependency run stands on GitHub.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Merge {
-    /// Every PR is merged (no PR at all counts as merged).
+    /// Every PR is merged (a finished run with no PR counts as merged).
     Merged,
     /// A PR is open or was closed without merging.
     Waiting(String),
@@ -86,15 +86,22 @@ pub fn merge_state(run_dir: &Path) -> Merge {
     let status: Option<Value> = std::fs::read_to_string(run_dir.join("status.json"))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok());
+    let Some(status) = status else {
+        return Merge::Waiting("the run has no status yet".into());
+    };
+    let no_prs = status["prs"].as_array().is_none_or(|a| a.is_empty());
+    if no_prs {
+        // A run that finished without any PR has nothing to merge; one still going has not opened its PRs yet.
+        return if status["stage"].as_str() == Some("done") {
+            Merge::Merged
+        } else {
+            Merge::Waiting("the run has no PRs yet".into())
+        };
+    }
     let gh = super::github::read_github(run_dir);
     let mut stale: Option<String> = None;
     let mut waiting: Option<String> = None;
-    for pr in status
-        .as_ref()
-        .and_then(|s| s["prs"].as_array())
-        .into_iter()
-        .flatten()
-    {
+    for pr in status["prs"].as_array().into_iter().flatten() {
         let id = pr["id"].as_str().unwrap_or("?");
         match gh.prs.get(id).map(|g| g.pr_state.as_str()) {
             Some("MERGED") => {}
@@ -606,6 +613,10 @@ mod tests {
         let pr = |state: &str| json!({"ci": "pass", "prState": state, "at": "t"});
         write(json!({"stage": "done", "prs": []}), json!({"prs": {}}));
         assert_eq!(merge_state(&dir), Merge::Merged);
+        write(json!({"stage": "building", "prs": []}), json!({"prs": {}}));
+        assert!(matches!(merge_state(&dir), Merge::Waiting(_)), "no PRs yet");
+        std::fs::remove_file(dir.join("status.json")).unwrap();
+        assert!(matches!(merge_state(&dir), Merge::Waiting(_)), "no status");
         write(
             json!({"prs": [{"id": "PR1"}, {"id": "PR2"}]}),
             json!({"prs": {"PR1": pr("MERGED"), "PR2": pr("MERGED")}}),
