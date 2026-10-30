@@ -38,6 +38,7 @@ import { checkLogPr, readCheckLog } from "../run/observe";
 import { RUN_STATE_EVENT, usePushRefresh } from "../run/events";
 import { AWAY_ROWS, useAwayNotice } from "../run/away";
 import { Dialog } from "./Dialog";
+import { openPreview } from "../preview/bus";
 import { RunPanelShell } from "./RunPanelShell";
 import { ApprovalCard } from "./ApprovalCard";
 import { ObserveSection } from "./ObserveSection";
@@ -644,7 +645,13 @@ export function RunPanel({
     navigator.clipboard.writeText(branch).catch((err: unknown) => setProblem(errorText(err)));
   };
 
+  // Alt+click keeps the old text dialog; a plain click on a Markdown file opens the preview beside the terminal.
+  const altClick = useRef(false);
   const openFile = (path: string, title: string) => {
+    if (!altClick.current && /\.md$/i.test(path) && !checkLogPr(path)) {
+      openPreview({ path: `${runDir.replace(/\/$/, "")}/${path}`, title });
+      return;
+    }
     // A4: the app's check output is shown trimmed (ANSI, redraws, middle).
     const pr = checkLogPr(path);
     (pr ? readCheckLog(runDir, pr) : readRunFile(runDir, path)).then(
@@ -686,6 +693,7 @@ export function RunPanel({
         attention={Boolean(view.waitingFor)}
         onLayoutChange={onLayoutChange}
       >
+      <div className="run-panel-clicks" onClickCapture={(event) => { altClick.current = event.altKey; }}>
       <RunPanelView
         view={view}
         checking={checking}
@@ -702,6 +710,7 @@ export function RunPanel({
         session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} /> : undefined}
         extra={<ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} mergeKey={mergeKey(view)} />}
       />
+      </div>
       </RunPanelShell>
       {problem && <p className="error run-problem">{problem}</p>}
       {file && <TextDialog title={file.title} text={file.text} onClose={() => setFile(null)} />}

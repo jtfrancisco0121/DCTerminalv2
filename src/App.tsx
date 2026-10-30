@@ -33,6 +33,7 @@ import { Dialog } from "./components/Dialog";
 import { InlineNotice } from "./components/InlineNotice";
 import { NewTabForm } from "./components/NewTabForm";
 import { RunPanel } from "./components/RunPanel";
+import { PreviewHost } from "./components/PreviewPane";
 import { RunsView } from "./components/RunsView";
 import { StartScreen } from "./components/StartScreen";
 import { resumeRun, runOverview, startRun, type RunOverview, type StartedRun } from "./run/api";
@@ -706,6 +707,7 @@ function App() {
         {active && !blocked && active.runDir && (
           <div className="run-layout">
             {terminalsOf(active, !dialog)}
+            <PreviewHost onLayoutChange={() => refitTerminal(active.id)} />
             <RunPanel
               key={active.runDir}
               runDir={active.runDir}

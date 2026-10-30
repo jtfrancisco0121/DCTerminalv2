@@ -202,6 +202,8 @@ pub fn run() {
             run::rerun_checks,
             run::slop_check,
             run::compact_text,
+            run::preview::preview_file,
+            run::preview::preview_stat,
             drafts::drafts_load,
             drafts::drafts_save,
             run::run_worktrees,
