@@ -36,6 +36,16 @@ pub struct TerminalSettings {
     /// Offer to compact a big paste (above 200 lines or 16 KB). On by default.
     #[serde(default = "default_true")]
     pub compact_paste: bool,
+    /// What a Cmd+click on a file path opens it in: `finder` (default), `vscode`, `cursor`, `zed` or
+    /// `sublime`. A fixed list: there is no free-form command.
+    #[serde(default = "default_file_link_editor")]
+    pub file_link_editor: String,
+}
+
+pub const FILE_LINK_EDITORS: &[&str] = &["finder", "vscode", "cursor", "zed", "sublime"];
+
+fn default_file_link_editor() -> String {
+    "finder".into()
 }
 
 impl Default for TerminalSettings {
@@ -46,6 +56,7 @@ impl Default for TerminalSettings {
             option_as_meta: default_option_as_meta(),
             copy_on_select: false,
             compact_paste: true,
+            file_link_editor: default_file_link_editor(),
         }
     }
 }
@@ -562,6 +573,9 @@ impl SettingsStore {
             return Err("shell path cannot contain a newline".to_string());
         }
         next.font_size = next.font_size.clamp(8, 32);
+        if !FILE_LINK_EDITORS.contains(&next.file_link_editor.as_str()) {
+            next.file_link_editor = default_file_link_editor();
+        }
         self.data.terminal = next;
         self.save()
     }
@@ -1004,6 +1018,7 @@ mod tests {
                 option_as_meta: false,
                 copy_on_select: true,
                 compact_paste: true,
+                file_link_editor: "finder".into(),
             })
             .unwrap();
         assert!(store

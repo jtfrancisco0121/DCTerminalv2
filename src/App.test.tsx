@@ -84,6 +84,7 @@ vi.mock("./terminal/park", () => ({
   requestTerminalSearch: vi.fn(),
   setCopyOnSelect: vi.fn(),
   setCompactPaste: vi.fn(),
+  setFileLinkEditor: vi.fn(),
   setOptionAsMeta: vi.fn(),
   setTerminalTheme: vi.fn(),
 }));

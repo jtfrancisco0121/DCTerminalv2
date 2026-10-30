@@ -80,6 +80,8 @@ export type TerminalSettings = {
   copyOnSelect: boolean;
   /** Offer to compact a big paste (default on). */
   compactPaste?: boolean;
+  /** What Cmd+click on a file path opens it in (default `finder`). */
+  fileLinkEditor?: "finder" | "vscode" | "cursor" | "zed" | "sublime";
 };
 
 export type UiSettings = {

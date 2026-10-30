@@ -204,6 +204,8 @@ pub fn run() {
             run::compact_text,
             run::preview::preview_file,
             run::preview::preview_stat,
+            run::preview::paths_exist,
+            run::preview::open_file_link,
             drafts::drafts_load,
             drafts::drafts_save,
             run::run_worktrees,

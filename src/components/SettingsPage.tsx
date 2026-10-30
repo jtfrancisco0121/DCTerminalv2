@@ -528,6 +528,20 @@ export function SettingsPage({ view, onSaved, onClose, section }: Props) {
           />{" "}
           Copy a selection to the clipboard
         </label>
+        <label className="field-label">
+          Cmd+click on a file path in the terminal opens it in
+          <select
+            className="text-input text-input-narrow"
+            value={terminal.fileLinkEditor ?? "finder"}
+            onChange={(event) => setTerminal({ ...terminal, fileLinkEditor: event.target.value as NonNullable<TerminalSettings["fileLinkEditor"]> })}
+          >
+            <option value="finder">Finder (reveal)</option>
+            <option value="vscode">VS Code</option>
+            <option value="cursor">Cursor</option>
+            <option value="zed">Zed</option>
+            <option value="sublime">Sublime Text</option>
+          </select>
+        </label>
         <label className="check-label">
           <input
             type="checkbox"

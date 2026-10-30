@@ -173,6 +173,207 @@ pub async fn preview_stat(app: AppHandle, path: String) -> Result<PreviewStat, S
         .map_err(|e| e.to_string())?
 }
 
+// ---- clickable file paths in terminal output (AD-18) -----------------------------------------
+
+/// A path the terminal printed is linked only when it exists inside the tab's folder, its run
+/// folder or an open repo; a batch is at most this many candidates.
+pub const MAX_CANDIDATES: usize = 50;
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PathHit {
+    pub candidate: String,
+    /// The canonical path when the candidate is an existing file inside the roots.
+    pub path: Option<String>,
+    /// `preview_file` allows it and it is a Markdown file or a run-folder file: open it in the preview.
+    pub previewable: bool,
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// The existing files among `candidates`: relative paths are taken from `cwd`, `~/` from the home
+/// folder, absolute ones as they are; each is canonicalised and kept only inside `roots`.
+/// `preview_roots` and `run_roots` decide `previewable`.
+pub fn check_candidates(
+    cwd: &Path,
+    candidates: &[String],
+    roots: &[PathBuf],
+    preview_roots: &[PathBuf],
+    run_roots: &[PathBuf],
+) -> Vec<PathHit> {
+    candidates
+        .iter()
+        .take(MAX_CANDIDATES)
+        .map(|candidate| {
+            let raw = candidate.trim();
+            let full = if let Some(rest) = raw.strip_prefix("~/") {
+                home_dir().map(|h| h.join(rest))
+            } else if Path::new(raw).is_absolute() {
+                Some(PathBuf::from(raw))
+            } else if raw.is_empty() || raw.chars().any(char::is_control) {
+                None
+            } else {
+                Some(cwd.join(raw))
+            };
+            let canonical = full
+                .and_then(|p| p.canonicalize().ok())
+                .filter(|p| p.is_file() && roots.iter().any(|r| p.starts_with(r)));
+            let previewable = canonical.as_ref().is_some_and(|p| {
+                let md = p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                    e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown")
+                });
+                resolve(&p.to_string_lossy(), preview_roots).is_ok()
+                    && (md || run_roots.iter().any(|r| p.starts_with(r)))
+            });
+            PathHit {
+                candidate: candidate.clone(),
+                path: canonical.map(|p| p.display().to_string()),
+                previewable,
+            }
+        })
+        .collect()
+}
+
+/// The folders a tab's links may point into: its folder, its run folder, and the repo roots of every open tab.
+fn link_roots(app: &AppHandle, tab_id: &str) -> Option<(PathBuf, Vec<PathBuf>)> {
+    let state = app.try_state::<Mutex<crate::store::StateStore>>()?;
+    let (cwd, run_dir, others) = {
+        let state = state.lock().ok()?;
+        let tab = state.tab_by_id(tab_id)?;
+        (
+            PathBuf::from(&tab.cwd),
+            tab.launch.as_ref().and_then(|l| l.run_dir.clone()),
+            state
+                .sorted_tabs()
+                .iter()
+                .map(|t| t.cwd.clone())
+                .collect::<Vec<_>>(),
+        )
+    };
+    let cwd = cwd.canonicalize().ok()?;
+    let mut roots = vec![cwd.clone()];
+    roots.extend(run_dir.and_then(|d| PathBuf::from(d).canonicalize().ok()));
+    for other in others {
+        roots.extend(
+            super::git::work_tree_top(Path::new(&other)).and_then(|p| p.canonicalize().ok()),
+        );
+    }
+    roots.sort();
+    roots.dedup();
+    Some((cwd, roots))
+}
+
+#[tauri::command]
+pub async fn paths_exist(
+    app: AppHandle,
+    tab_id: String,
+    candidates: Vec<String>,
+) -> Result<Vec<PathHit>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (cwd, roots) = link_roots(&app, &tab_id).ok_or("the tab is gone")?;
+        let preview_roots = allowed_roots(&app);
+        let data = crate::data_dir::app_data_dir(&app).path;
+        let runs = super::folder::runs_dir(&data).canonicalize().ok();
+        let run_roots: Vec<PathBuf> = preview_roots
+            .iter()
+            .filter(|r| {
+                runs.as_ref()
+                    .is_some_and(|runs| r.parent() == Some(runs.as_path()))
+            })
+            .cloned()
+            .collect();
+        Ok(check_candidates(
+            &cwd,
+            &candidates,
+            &roots,
+            &preview_roots,
+            &run_roots,
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The editors a file link may open, fixed: `(id, command, app name for `open -a`)`.
+pub const EDITORS: &[(&str, &str, &str)] = &[
+    ("vscode", "code", "Visual Studio Code"),
+    ("cursor", "cursor", "Cursor"),
+    ("zed", "zed", "Zed"),
+    ("sublime", "subl", "Sublime Text"),
+];
+
+/// The argument vector (program first) that opens `file` in the editor `id` at `line`/`col`;
+/// `finder` reveals the file instead. Never a shell string. `has_cli` says whether the editor's CLI is on the PATH.
+pub fn editor_argv(
+    id: &str,
+    file: &Path,
+    line: Option<u32>,
+    col: Option<u32>,
+    has_cli: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let path = file.display().to_string();
+    let Some((_, cli, app)) = EDITORS.iter().find(|(e, _, _)| *e == id) else {
+        return vec!["open".into(), "-R".into(), path];
+    };
+    if has_cli(cli) {
+        let target = match (line, col) {
+            (Some(l), Some(c)) => format!("{path}:{l}:{c}"),
+            (Some(l), None) => format!("{path}:{l}"),
+            _ => path.clone(),
+        };
+        let flag = if *cli == "zed" { None } else { Some("-g") };
+        let mut argv = vec![cli.to_string()];
+        argv.extend(flag.map(String::from));
+        argv.push(target);
+        argv
+    } else {
+        vec!["open".into(), "-a".into(), app.to_string(), path]
+    }
+}
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|d| d.join(program).is_file()))
+}
+
+/// Opens a linked file in the chosen editor (or reveals it in Finder). The path must be one `paths_exist` would link.
+#[tauri::command]
+pub async fn open_file_link(
+    app: AppHandle,
+    tab_id: String,
+    path: String,
+    line: Option<u32>,
+    col: Option<u32>,
+    editor: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (cwd, roots) = link_roots(&app, &tab_id).ok_or("the tab is gone")?;
+        let hit = check_candidates(&cwd, &[path], &roots, &[], &[]).remove(0);
+        let file = hit
+            .path
+            .ok_or("that file is not inside the tab's folder, its run folder or an open repo")?;
+        let argv = editor_argv(
+            editor.as_deref().unwrap_or("finder"),
+            Path::new(&file),
+            line,
+            col,
+            on_path,
+        );
+        std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("could not start {}: {e}", argv[0]))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +498,103 @@ mod tests {
         .is_err());
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_existing_files_inside_the_roots_are_linked() {
+        let root = temp("links");
+        let outside = temp("links-outside");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "x").unwrap();
+        std::fs::write(root.join("notes.md"), "x").unwrap();
+        std::fs::write(outside.join("o.md"), "x").unwrap();
+        std::os::unix::fs::symlink(outside.join("o.md"), root.join("escape.md")).unwrap();
+        let roots = vec![root.clone()];
+        let cands: Vec<String> = [
+            "src/a.rs",
+            "./src/a.rs",
+            "missing.rs",
+            "src/../../outside.md",
+            "escape.md",
+            "notes.md",
+            "src",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let hits = check_candidates(&root, &cands, &roots, &roots, &[]);
+        let linked: Vec<&str> = hits
+            .iter()
+            .filter(|h| h.path.is_some())
+            .map(|h| h.candidate.as_str())
+            .collect();
+        assert_eq!(linked, ["src/a.rs", "./src/a.rs", "notes.md"]);
+        assert!(hits[5].previewable, "a markdown file inside a preview root");
+        assert!(
+            !hits[0].previewable,
+            "a source file is opened in the editor"
+        );
+        let abs = outside.join("o.md").display().to_string();
+        assert!(check_candidates(&root, &[abs], &roots, &roots, &[])[0]
+            .path
+            .is_none());
+        let many: Vec<String> = (0..80).map(|i| format!("f{i}.rs")).collect();
+        assert_eq!(
+            check_candidates(&root, &many, &roots, &roots, &[]).len(),
+            MAX_CANDIDATES
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn a_markdown_file_outside_the_preview_roots_opens_in_the_editor() {
+        let root = temp("links-md");
+        std::fs::write(root.join("README.md"), "x").unwrap();
+        let hits = check_candidates(
+            &root,
+            &["README.md".to_string()],
+            std::slice::from_ref(&root),
+            &[],
+            &[],
+        );
+        assert!(hits[0].path.is_some());
+        assert!(!hits[0].previewable);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_editor_command_is_an_argument_vector_with_the_line() {
+        let f = Path::new("/w/src/a b.rs");
+        assert_eq!(
+            editor_argv("vscode", f, Some(12), Some(3), |_| true),
+            ["code", "-g", "/w/src/a b.rs:12:3"]
+        );
+        assert_eq!(
+            editor_argv("cursor", f, Some(7), None, |_| true),
+            ["cursor", "-g", "/w/src/a b.rs:7"]
+        );
+        assert_eq!(
+            editor_argv("zed", f, Some(7), Some(1), |_| true),
+            ["zed", "/w/src/a b.rs:7:1"]
+        );
+        assert_eq!(
+            editor_argv("sublime", f, None, None, |_| true),
+            ["subl", "-g", "/w/src/a b.rs"]
+        );
+        assert_eq!(
+            editor_argv("vscode", f, Some(1), None, |_| false),
+            ["open", "-a", "Visual Studio Code", "/w/src/a b.rs"]
+        );
+        assert_eq!(
+            editor_argv("finder", f, Some(1), None, |_| true),
+            ["open", "-R", "/w/src/a b.rs"]
+        );
+        assert_eq!(
+            editor_argv("rm -rf /", f, None, None, |_| true),
+            ["open", "-R", "/w/src/a b.rs"],
+            "an unknown editor is Finder"
+        );
     }
 }
