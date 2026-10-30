@@ -100,6 +100,25 @@ F="$ROOT/fixtures/reviews/unplanned-version-bump.md"
 grep -qE '^1\. MEDIUM .*version' "$F" && grep -q '^## Criteria → tests' "$F" && head -1 "$F" | grep -q '^Eagle-Eye review' \
   && ok "fixture review flags the unplanned bump MEDIUM, with the criteria table" || bad "fixture review structure"
 
+echo "# decision log (AD-5, AD-6)"
+for r in planner plan-reviewer risk-reviewer recommendation memory-updater developer; do
+  grep -q 'topics/decisions.md' "$P/roles/$r.md" && ok "role $r describes the decision log" || bad "role $r does not mention topics/decisions.md"
+done
+grep -q '^## Decisions' "$P/roles/planner.md" && grep -q 'rules out: what' "$P/roles/planner.md" && ok "planner.md has the Decisions section and the bullet form" || bad "planner.md Decisions"
+grep -q 'why the entry' "$P/roles/plan-reviewer.md" && grep -q 'MEDIUM' "$P/roles/plan-reviewer.md" && ok "plan-reviewer.md flags a contradiction without a stated reason" || bad "plan-reviewer.md rule"
+python3 - "$ROOT" <<'PY' && ok "seed decisions file and the contradiction fixtures are well formed" || bad "decision fixtures"
+import re, sys
+root = sys.argv[1]
+seed = open(root + "/fixtures/memory/dcterminalv2-decisions.md").read()
+bullets = [l for l in seed.splitlines() if l.startswith("- ")]
+assert len(bullets) == 4 and all(re.match(r"^- \d{4}-\d{2}-\d{2} \| [^|]+ \| [^|]+ \| rules out: [^|]+$", b) for b in bullets), bullets
+assert "covers:" in seed and "checked-at:" in seed
+plan = open(root + "/fixtures/plans/contradicts-decision.md").read()
+assert "GitHub Actions" in plan and "## Decisions" not in plan
+rev = open(root + "/fixtures/reviews/plan-contradicts-decision.md").read()
+assert re.search(r"^1\. \[MEDIUM\] .*No hosted CI", rev, re.M) and "REQUIRES REVISION" in rev
+PY
+
 echo "# scripts parse"
 for f in "$P"/scripts/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do
   bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"

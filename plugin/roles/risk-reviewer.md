@@ -36,6 +36,10 @@ For a **report**, review the report itself as well:
 - findings or recommendations whose severity is over- or under-stated, with the evidence;
 - the risk of actually doing each recommended fix or feature (what it could break, what it needs first).
 
+## Decision log
+
+Codebase memory may carry the decision log (`topics/decisions.md`: `- YYYY-MM-DD | decision | reason | rules out: what`). When what you review does what an entry rules out and does not state why the entry's reason no longer holds, raise it as a risk (MEDIUM: it undoes a choice the project made on purpose).
+
 ## Severity
 
 - **CRITICAL**: a likely security hole, data loss or an outage.

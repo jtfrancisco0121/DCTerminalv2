@@ -14,6 +14,9 @@
 #   memory.sh write <id | workspace:<id>> <relative file>  < content
 #                                                the only write path for agents: caps, secret scan,
 #                                                pinned lines, topic header; rejects with a reason
+#   topics/decisions.md (repo or workspace) is the decision log: only bullets
+#                                                `- YYYY-MM-DD | decision | reason | rules out: what` (plus the topic header);
+#                                                `write` rejects any other line, compose loads it right after contracts
 #   memory.sh learn <id | workspace:<id>> <topic | index>  < lines
 #                                                add each stdin line under the file's `## Gotchas` (the Learned: lines
 #                                                of a run). Prints one `added`, `duplicate` or `refused <reason>` line
@@ -35,7 +38,7 @@ command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1 ||
   echo "memory.sh: python3 is missing or does not run" >&2; exit 1; }
 
 IFS= read -r -d '' PY <<'PY' || true
-import fcntl, fnmatch, hashlib, json, math, os, re, subprocess, sys, tempfile
+import datetime, fcntl, fnmatch, hashlib, json, math, os, re, subprocess, sys, tempfile
 
 CAPS = {"index": 8 * 1024, "topic": 12 * 1024, "workspace": 8 * 1024}
 COMPOSE_CAP = 40 * 1024
@@ -349,6 +352,7 @@ def cmd_status(folder):
     print(json.dumps(out, indent=2))
 
 
+DECISIONS_TITLE = "{} decisions (a plan that contradicts an entry must state why its reason no longer holds)"
 FENCE_OPEN, FENCE_CLOSE = "<memory-notes", "</memory-notes>"
 
 
@@ -392,6 +396,10 @@ def cmd_compose(folder, out):
         if ctext is not None:
             any_mem = True
             parts.append(section("Workspace contracts (binding)", ctext, CAPS["topic"]))
+        dtext = read(os.path.join(wdir, "topics", "decisions.md"))
+        if dtext is not None:
+            any_mem = True
+            parts.append(section(DECISIONS_TITLE.format("Workspace"), dtext, CAPS["topic"]))
         stale += [f"workspace:{wid} topics/{t['name']}.md" for t in topics_of(wdir, None, names) if t["stale"]]
     for r in repos:
         rid = repo_id(r)
@@ -405,6 +413,9 @@ def cmd_compose(folder, out):
         ctext = read(os.path.join(d, "topics", "contracts.md"))
         if ctext is not None:
             parts.append(section(f"Repo {os.path.basename(r)} contracts (binding)", ctext, CAPS["topic"]))
+        dtext = read(os.path.join(d, "topics", "decisions.md"))
+        if dtext is not None:
+            parts.append(section(DECISIONS_TITLE.format(f"Repo {os.path.basename(r)}"), dtext, CAPS["topic"]))
         stale += [f"{rid} topics/{t['name']}.md (checked at {t['checkedAt'] or 'unknown'})" for t in topics_of(d, r) if t["stale"]]
     if not any_mem:
         text = "\n".join(head + [f"No codebase memory yet for `{os.path.realpath(folder)}`: `/dcv2:onboard` creates it. Until then, work from the code."]) + "\n"
@@ -466,6 +477,8 @@ def cmd_learn(target, name):
         die(f"REJECTED: {name!r} is not a topic name (lowercase, a-z 0-9 -) or `index`")
     if target.startswith("workspace:") and name == "index":
         rel = "workspace.md"
+    if name == "decisions":
+        die("REJECTED: the decision log takes only `- YYYY-MM-DD | decision | reason | rules out: what` bullets: write it with memory.sh write")
     dest, kind = resolve_target(root, target, rel)
     lines = [l.strip() for l in sys.stdin.read().splitlines() if l.strip()]
     if not lines:
@@ -511,6 +524,32 @@ def cmd_learn(target, name):
     print("\n".join(results))
 
 
+DECISION = re.compile(r"^- (\d{4}-\d{2}-\d{2}) \| ([^|]+?) \| ([^|]+?) \| rules out: ([^|]+?)\s*$")
+
+
+def decision_problems(content):
+    """Lines of a decisions topic that are not `- YYYY-MM-DD | decision | reason | rules out: what` (header lines and
+    blank lines are fine). Returns (line number, why) for each, and checks there is at least one decision."""
+    bad, n_ok = [], 0
+    for i, line in enumerate(content.splitlines(), 1):
+        t = line.strip()
+        if not t or t.startswith("# ") or t.startswith("covers:") or t.startswith("checked-at:"):
+            continue
+        m = DECISION.match(line)
+        try:
+            if m:
+                datetime.date.fromisoformat(m.group(1))
+        except ValueError:
+            m = None
+        if m:
+            n_ok += 1
+        else:
+            bad.append((i, t[:60]))
+    if not bad and not n_ok:
+        bad.append((0, "no decision bullet"))
+    return bad
+
+
 def cmd_write(target, rel):
     root = root_dir()
     content = sys.stdin.read()
@@ -535,6 +574,12 @@ def cmd_write(target, rel):
     hits = secret_hits(content)
     if hits:
         die("REJECTED: looks like a secret on line " + ", ".join(f"{n} ({k})" for n, k in hits[:5]) + ": remove it (never store tokens, keys or .env values)")
+    if rel == "topics/decisions.md":
+        bad = decision_problems(content)
+        if bad:
+            die("REJECTED: topics/decisions.md holds only bullets of the form `- YYYY-MM-DD | decision | reason | rules out: what` "
+                "(the topic header lines are fine); not in that form: "
+                + "; ".join(f"line {n} ({t!r})" if n else t for n, t in bad[:5]))
     if kind == "topic":
         h = topic_header(content)
         if not h["covers"] or not h["checkedAt"]:

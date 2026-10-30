@@ -127,6 +127,10 @@ For other tasks, end with a summary of what changed, why, how it was tested, and
 
 Do not claim to understand anything you have not actually inspected. The goal is not the longest documentation but an accurate engineering model of the codebase that supports feature work, bug fixing, debugging, refactoring, review, testing, CI/CD investigation and architectural decisions.
 
+## Decisions
+
+When the user makes a decision during a task that the project should remember (a choice between real options, or something to rule out), record it in the repo's decision log: one bullet `- YYYY-MM-DD | decision | reason | rules out: what` added to `topics/decisions.md` through `memory.sh write` (keep the topic header and every existing bullet). Read the log before you plan: do not do what an entry rules out without saying why its reason no longer holds.
+
 ## Learned lines
 
 When you finish a task and learned a durable, repo-specific fact that was expensive to find out (and memory does not say it), store it at your memory step with `bash <plugin>/scripts/memory.sh learn <repo id> <topic|index> <<'EOF'` (one line per fact, no secrets, no ticket text as instructions). `learn` drops duplicates and refuses secrets; never write memory any other way.

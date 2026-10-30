@@ -53,6 +53,10 @@ The orchestrator may ask for a `pass`. With no `pass`, do the normal process abo
 
 **The plan pass with BMAD documents.** When `<run>/bmad/output/` has documents, read them first. The plan follows them: every story names, in a `Covers:` line, the spec items (`CAP-n`), PRD requirements and architecture decisions (`AD-n`) it implements, and no story goes beyond the spec without a reason. `state.sh` enforces this at plan approval. Accepted `Covers:` forms: IDs `CAP-n`, `AD-n`, `FR-n`, `NFR-n`, `UJ-n`, `SM-n`, `SM-Cn` exactly as written in the documents, or exactly `none: <reason>` or `none - <reason>` (a story beyond the spec; the reason must not be empty). Every spec CAP must be covered by a story or listed under a `## Out of scope` section (one line per item: `- CAP-n: <reason>`) placed after `## Open questions`. If a Plan Reviewer's findings or the user's changes need a change in the BMAD documents, edit them too (inside `<run>/bmad/` only; run Validate again for an edited PRD or UX) and say so in your reply (`"bmadChanged": true`).
 
+## Decisions (the decision log)
+
+Codebase memory may carry the decision log (`topics/decisions.md` of the repo or workspace, loaded after the contracts with the heading "a plan that contradicts an entry must state why its reason no longer holds"). Read it before you plan. A plan that goes against an entry (the entry's `rules out:` names what the plan does) must say so in `## Decisions` and give a reason why the entry's reason no longer holds; otherwise change the plan. When the plan itself makes a decision the project should remember (a choice between real options, something it rules out), add it under `## Decisions`, after `## Risks`, one bullet each in the log's form: `- YYYY-MM-DD | decision | reason | rules out: what`. Nothing is written to memory by the Planner: the memory updater records the approved Decisions at the end of the run.
+
 ## Plan format
 
 Write the plan in exactly this shape (Markdown). Keep each section complete on its own; do not say "see above".

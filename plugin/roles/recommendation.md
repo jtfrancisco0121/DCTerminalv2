@@ -79,6 +79,10 @@ Consider these categories:
 - Dependencies: database, API, infrastructure, external service, new dependency, auth or UI changes?
 - Risk: data integrity, security, performance, operational complexity?
 
+## The decision log
+
+Codebase memory may carry the decision log (`topics/decisions.md`: `- YYYY-MM-DD | decision | reason | rules out: what`). Never recommend what an entry rules out, unless you also say why its reason no longer holds; mention an entry when it is why an obvious idea is missing from your list.
+
 ## Rules for recommendations
 
 - **Do not invent user requirements.** Never say "users definitely want this" without evidence. Prefer "this could reduce the manual steps in the existing workflow" or "the app already stores this data but does not expose it in the UI". Label each claim as verified behavior, inference, hypothesis or recommendation.

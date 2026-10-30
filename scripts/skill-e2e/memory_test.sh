@@ -302,4 +302,47 @@ expect 0 "learn after run N" bash "$MEM" learn "$WEBID" index <<<'Learned: playw
 expect 0 "compose for run N+1" bash "$MEM" compose "$WS" "$d/next.md"
 grep -q 'playwright is not installed' "$d/next.md" && ok "  the learning is in the next run's launch prompt" || bad "  not in the prompt"
 
+echo "# decision log (topics/decisions.md)"
+HDR=$(printf '# Decisions\ncovers: docs/\nchecked-at: %s\n' "$A0")
+expect 1 "a malformed decision bullet is rejected" bash "$MEM" write "$APIID" topics/decisions.md <<EOF2
+$HDR
+- 2026-10-30 | no hosted CI | the owner runs locally
+EOF2
+has "  REJECTED with the shape" "REJECTED: topics/decisions.md holds only bullets of the form"
+expect 1 "free text in the decision log is rejected" bash "$MEM" write "$APIID" topics/decisions.md <<EOF2
+$HDR
+Some general advice.
+- 2026-10-30 | a | b | rules out: c
+EOF2
+expect 1 "an impossible date is rejected" bash "$MEM" write "$APIID" topics/decisions.md <<EOF2
+$HDR
+- 2026-13-45 | a | b | rules out: c
+EOF2
+expect 1 "a decision log with no decision is rejected" bash "$MEM" write "$APIID" topics/decisions.md <<<"$HDR"
+expect 1 "a secret in a decision is rejected" bash "$MEM" write "$APIID" topics/decisions.md <<EOF2
+$HDR
+- 2026-10-30 | use token ghp_abcdefghijklmnopqrstuvwxyz0123 | because | rules out: c
+EOF2
+has "  the secret scan applies" "looks like a secret"
+expect 0 "a valid decision log is written" bash "$MEM" write "$APIID" topics/decisions.md <<EOF2
+$HDR
+- 2026-10-30 | No hosted CI | the owner runs everything locally | rules out: GitHub Actions
+EOF2
+expect 1 "learn refuses the decision log" bash "$MEM" learn "$APIID" decisions <<<'a b c'
+expect 0 "compose with decisions" bash "$MEM" compose "$WS" "$d/dec.md"
+python3 - "$d/dec.md" <<'PY' && ok "  decisions come right after the repo contracts, under the contradiction heading" || bad "  order: $(grep -n '^## ' "$d/dec.md")"
+import sys
+t = open(sys.argv[1]).read()
+heads = [l for l in t.splitlines() if l.startswith("## ")]
+c = next(i for i, h in enumerate(heads) if "contracts (binding)" in h and "koneksi" in h.lower() or h.startswith("## Repo api contracts"))
+d = next(i for i, h in enumerate(heads) if "decisions" in h.lower())
+assert d == c + 1, heads
+assert "must state why its reason no longer holds" in heads[d]
+assert "No hosted CI" in t
+PY
+# the seed for this repo: its header takes a commit sha at write time (the documented manual step)
+SEED="$ROOT/fixtures/memory/dcterminalv2-decisions.md"
+[[ "$(grep -c '^- 20' "$SEED")" == 4 ]] && ok "  the seed holds the four known decisions" || bad "  seed bullets"
+sed "s/@SHA@/$A0/" "$SEED" | bash "$MEM" write "$WEBID" topics/decisions.md >/dev/null && ok "  the seed is accepted by memory.sh write" || bad "  the seed was rejected"
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }
