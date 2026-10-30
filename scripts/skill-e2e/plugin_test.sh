@@ -65,6 +65,11 @@ done
 [[ "$(grep -cF 'NOT WRITTEN: plan.md split:' "$sk")" -ge 2 ]] && ok "SKILL.md handles the split refusal in the Failures table and in Stop #1" || bad "SKILL.md: plan.md split: refusal not in both places"
 grep -qF '[MEDIUM] size: split or justify' "$P/roles/pr-reviewer.md" && ok "pr-reviewer.md has the fixed size finding" || bad "pr-reviewer.md lacks '[MEDIUM] size: split or justify'"
 
+for k in 'prSizeLimit' 'prs[].size' 'plan.overLimit' 'plan.prFiles' 'mergeChecks' 'DCV2_MERGE_CHECK_TIMEOUT'; do
+  grep -qF -- "$k" "$ROOT/docs/run-folder.md" && ok "run-folder.md documents $k" || bad "run-folder.md lacks $k"
+done
+grep -qF 'merge-check' "$ROOT/docs/skills.md" && grep -qF 'state.sh size' "$ROOT/docs/skills.md" && ok "skills.md describes size and merge-check" || bad "skills.md lacks size / merge-check"
+
 echo "# hooks and launch settings (A3, A4)"
 python3 - "$P" <<'PY' && ok "hooks.json and launch/settings.json are valid" || fails=1
 import json, os, re, sys
