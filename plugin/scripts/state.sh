@@ -14,15 +14,25 @@
 #   state.sh approve <run> plan|ship user|test
 #                                             record the user's yes at stop #1 / #2 (test: only when
 #                                             DCV2_TEST_MODE has auto-approve); ship also sets stage shipping
-#   state.sh plan <run> prs|tickets|stories   print only that part of plan.md
+#   state.sh plan <run> prs|tickets|stories   print only that part of plan.md; prs prints one line per PR:
+#                                             PR<n> | <repo> | epic <id> <title> | <stories> | depends <ids|-> | stacked on <id|-> | check <full command>
+#                                             ("stacked on" is the PR's one same-repo Depends on; the check is never cut)
 #   state.sh base <repo path>                 print "base=<b> baseCommit=<sha> remote=<name|none>"
-#   state.sh worktree <run> <repo path> <pr id> <base commit>
+#   state.sh worktree <run> <repo path> <pr id> <base commit|PR<n>>
 #                                             make (or reuse / re-make) the PR's worktree beside the
 #                                             repo, record it in <run>/.guard.json, print
 #                                             "branch=<b> worktree=<path>". Never touches the main checkout.
+#                                             A PR with a same-repo Depends on is stacked: its base is that parent
+#                                             PR<n> (a reviewed PR of the same repo), never a commit; the worktree is made
+#                                             from the parent's head and "base=<parent branch> baseCommit=<sha> stackedOn=PR<n>"
+#                                             is printed (record them in status.json; .guard.json gets stacks and bases)
 #                                             A newly made worktree also gets repos.json's copyFiles
 #                                             (git-ignored files only) and its setup (or the lockfile's
 #                                             install), printing "setup=ok|failed|none log=<path>"
+#   state.sh restack <run> <pr id>            a stacked PR after its parent changed: merge the parent's head into its worktree
+#                                             (git merge, never a rebase or a force), move baseCommit and .guard.json bases, set the PR
+#                                             pending with no check result, review round 0 and restack + 1 (the old gate no longer
+#                                             counts). A conflict: merge aborted, nothing moves, the PR is needs-attention (exit 3)
 #   state.sh mode <run>                       print "reviewMode=github|local" (meta.json; missing = local)
 #   state.sh bmad-size <run> Small|Medium|Large [--docs prd,ux] [--by planner|plan-reviewer]
 #                                             BMAD mode (meta.json bmad auto|on): record the sizing in status.json
@@ -55,10 +65,6 @@
 #                                             file (default reviews/<pr>-round<review.round>.md) to say
 #                                             APPROVED; WAIVED only over a CONCERNS/FAIL gate, with the
 #                                             user's reason
-#   state.sh size <run> <pr id>               measure the PR's real diff against its base (lockfiles, generated and
-#                                             fixture files excluded), record it as prs[].size and print
-#                                             "size=<lines> files=<f> excluded=<e> limit=<l> over=yes|no reason=set|none overlaps=<n>"
-#                                             (+ "overlap: <path> (PR<n>)" lines). The gate re-measures too
 #   state.sh merge-check <run>                before stop #2: for each repo with 2 or more reviewed PRs, run the repo's check
 #                                             (repos.json only, never status.json's) once on a scratch merge of their branches
 #                                             (<run>/merge-check/, removed after); records status.json "mergeChecks" and prints
@@ -84,7 +90,7 @@ set -euo pipefail
 py_works() { command -v python3 >/dev/null 2>&1 && python3 -c 'import json, sys; sys.exit(0)' >/dev/null 2>&1; }
 
 IFS= read -r -d '' PY <<'PY' || true
-import datetime, fcntl, fnmatch, glob, json, os, re, shutil, signal, subprocess, sys, tempfile, time
+import contextlib, datetime, fcntl, fnmatch, glob, io, json, os, re, shutil, signal, subprocess, sys, tempfile, time
 
 STAGES = ["planning", "plan-approval", "building", "ship-approval", "shipping", "done", "failed"]
 STATES = ["pending", "building", "drafted", "reviewing", "fixing", "reviewed", "needs-attention", "opened", "pushed", "local-only"]
@@ -420,7 +426,14 @@ def size_shape_ok(z):
             and isinstance(z.get("head"), str) and isinstance(z.get("at"), str))
 
 
-def validate_status(doc, run):
+def same_repo_ids(prs, pr):
+    """The dependsOn entries of this prs[] entry that are PRs of the same repo (its stack parent; at most one is valid)."""
+    repo = os.path.realpath(str(pr.get("repoPath") or "/"))
+    by = {q.get("id"): q for q in prs if isinstance(q, dict)}
+    return [d for d in pr.get("dependsOn") or [] if d in by and d != pr.get("id") and os.path.realpath(str(by[d].get("repoPath") or "/")) == repo]
+
+
+def validate_status(doc, run, guard=None):
     p = []
     schema = doc.get("schema")
     if not (type(schema) is int and schema == 1):  # the integer 1 only: not 1.0, true or "1"
@@ -511,11 +524,44 @@ def validate_status(doc, run):
             p.append(f"{pid}: draft must be true or false")
         cm = pr.get("comments")
         if cm is not None and not (isinstance(cm, list) and all(isinstance(c, dict) and isinstance(c.get("round"), int)
-                                                                  and isinstance(c.get("url"), str) for c in cm)):
-            p.append(f"{pid}: comments must be a list of {{round: <n>, url: <comment url>}}")
+                                                                  and isinstance(c.get("url"), str)
+                                                                  and (c.get("restack") is None or (type(c.get("restack")) is int and c["restack"] >= 0))
+                                                                  for c in cm)):
+            p.append(f"{pid}: comments must be a list of {{round: <n>, url: <comment url>, restack: <n>}}")
+        if "restack" in pr and not (type(pr.get("restack")) is int and pr["restack"] >= 0):
+            p.append(f"{pid}: restack must be an int >= 0 (written only by state.sh restack)")
+        so = pr.get("stackedOn")
+        if so is not None and not re.fullmatch(r"PR\d+", str(so)):
+            p.append(f"{pid}: stackedOn must be null or the PR id this PR is stacked on (as printed by state.sh worktree)")
+        elif stage in POST_APPROVAL:
+            sd = same_repo_ids(prs, pr)
+            g = guard if isinstance(guard, dict) else guard_rec(run)
+            if len(sd) > 1:
+                p.append(f"{pid}: dependsOn has more than one PR of the same repo ({', '.join(sd)}): a stack has one parent")
+            elif pr.get("worktree") and sd and so != sd[0]:
+                p.append(f"{pid}: depends on {sd[0]} in the same repo, so it is stacked on it: stackedOn must be {sd[0]} "
+                         f"(`state.sh worktree <run> <repo> {pid} {sd[0]}` makes the worktree and prints it)")
+            elif so and sd and so != sd[0]:
+                p.append(f"{pid}: stackedOn {so} is not its same-repo dependsOn entry {sd[0]}")
+            elif so and not sd:
+                p.append(f"{pid}: stackedOn {so} must be one of its dependsOn entries, a PR of the same repo")
+            if so and so in sd and (g.get("worktrees") or {}).get(pid):
+                par = next(q for q in prs if isinstance(q, dict) and q.get("id") == so)
+                if (g.get("stacks") or {}).get(pid) != so:
+                    p.append(f"{pid}: stackedOn {so} disagrees with .guard.json stacks ({(g.get('stacks') or {}).get(pid)!r})")
+                if pr.get("base") != canon(par.get("repoPath") or "/", run_id, so)[0]:
+                    p.append(f"{pid}: base must be the parent's branch {canon(par.get('repoPath') or '/', run_id, so)[0]!r} (as printed by state.sh worktree)")
+                gb = (g.get("bases") or {}).get(pid)
+                if gb and pr.get("baseCommit") != gb:
+                    p.append(f"{pid}: baseCommit {str(pr.get('baseCommit'))[:12]} disagrees with .guard.json bases {gb[:12]}: "
+                             f"re-run `state.sh restack <run> {pid}` (it writes both)")
         if pr.get("size") is not None and not size_shape_ok(pr.get("size")):
             p.append(f"{pid}: size must be {{lines, added, deleted, files, excluded, limit: ints, over: bool, reason: string|null, overlaps: list, head, at}} "
-                     "(written only by state.sh size / gate)")
+                     "(0.7.0 runs only: read, never written)")
+        ep = pr.get("epic")
+        if ep is not None and not (isinstance(ep, dict) and isinstance(ep.get("id"), str) and ep["id"]
+                                   and (ep.get("title") is None or isinstance(ep.get("title"), str))):
+            p.append(f"{pid}: epic must be null or {{id, title}} (set by state.sh from plan.md's Epic lines)")
         if stage in POST_APPROVAL:
             ids = (pr.get("stories") or {}).get("ids") if isinstance(pr.get("stories"), dict) else None
             if not (isinstance(ids, list) and ids and all(isinstance(i, str) for i in ids)):
@@ -576,25 +622,35 @@ def prepare_status(doc, old, trusted, run_dir=None):
         doc["paused"]["at"] = t
     oprs = {p.get("id"): p for p in old.get("prs") or [] if isinstance(p, dict)}
     bad = []
+    pepics = plan_epics(run_dir) if run_dir else {}
     for pr in doc.get("prs") or []:
         if not isinstance(pr, dict):
             continue
         o = oprs.get(pr.get("id")) or {}
+        if run_dir:  # the PR's epic comes from the plan's Epic lines (null: no epic), never from the document
+            pr["epic"] = pepics.get(pr.get("id"))
         if not trusted and o.get("state") in SHIPPED and pr.get("state") != o.get("state"):
             bad.append(f"{pr.get('id')} is {o['state']} (written by state.sh ship-pr); re-read status.json and keep it")
         if not trusted:  # prUrl is set only by state.sh (ship-pr / draft-pr / ready): a put never changes it
             if pr.get("prUrl") not in (None, o.get("prUrl")):
                 notes.append(f"note: {pr.get('id')}.prUrl is set only by state.sh; kept the recorded value ({o.get('prUrl')})")
             pr["prUrl"] = o.get("prUrl")
+        if not trusted:  # restack is written only by `state.sh restack`
+            if "restack" in pr and pr["restack"] != o.get("restack"):
+                notes.append(f"note: {pr.get('id')}.restack is set only by `state.sh restack`; kept the recorded value")
+            if "restack" in o:
+                pr["restack"] = o["restack"]
+            else:
+                pr.pop("restack", None)
         if not trusted:  # draft and comments are written only by state.sh's GitHub commands
             for k in ("draft", "comments"):
                 if k in o:
                     pr[k] = o[k]
                 else:
                     pr.pop(k, None)
-        if not trusted:  # size is measured and written only by state.sh (size / gate)
+        if not trusted:  # size was written only by state.sh 0.7.0 (runs of that version only): kept, never written now
             if "size" in pr and pr["size"] != o.get("size"):
-                notes.append(f"note: {pr.get('id')}.size is set only by `state.sh size`; kept the recorded value")
+                notes.append(f"note: {pr.get('id')}.size is not written any more (0.7.0 runs only); kept the recorded value")
             if "size" in o:
                 pr["size"] = o["size"]
             else:
@@ -603,9 +659,11 @@ def prepare_status(doc, old, trusted, run_dir=None):
         if state == "reviewed" and o.get("state") != "reviewed" and run_dir:
             g = read_gate(run_dir, pr.get("id"))
             rnd = (pr.get("review") or {}).get("round") if isinstance(pr.get("review"), dict) else None
-            if not g or g.get("gate") == "FAIL" or g.get("round") != rnd:
+            rs = pr.get("restack") if type(pr.get("restack")) is int else 0
+            if not g or g.get("gate") == "FAIL" or g.get("round") != rnd or (g.get("restack") or 0) != rs:
                 why = (f"gate now {(g or {}).get('gate') or 'missing'}" if not g or g.get("gate") == "FAIL"
-                       else f"the gate is for review round {g.get('round')}, the PR is at round {rnd}")
+                       else f"the gate is for review round {g.get('round')}, the PR is at round {rnd}" if g.get("round") != rnd
+                       else f"the gate is from before restack {rs} (restack voids the old gate): review again, then write the gate")
                 bad.append(f"{pr.get('id')}: reviewed needs this round's gate first: `state.sh gate <run> {pr.get('id')} PASS|CONCERNS \"<reason>\"` "
                            f"from the PR Reviewer's reply ({why})")
         pr["agent"] = AGENT_FOR_STATE.get(state)
@@ -697,25 +755,6 @@ def bmad_plan_trace(run):
     return problems
 
 
-MAX_PRS = 5
-MAX_STORIES = 2
-DEFAULT_LINE_LIMIT = 400
-
-
-def pr_line_limit(run, name=None, path=None):
-    """The PR line limit of a repo (repos.json prSizeLimit, 1..100000), matched by name or real path; else 400."""
-    rj = load_json(os.path.join(run, "repos.json"))
-    for r in (rj.get("repos") if isinstance(rj, dict) else None) or []:
-        if not isinstance(r, dict):
-            continue
-        hit = (name is not None and r.get("name") == name) or \
-              (path is not None and isinstance(r.get("path"), str) and os.path.realpath(r["path"]) == path)
-        v = r.get("prSizeLimit")
-        if hit and type(v) is int and 1 <= v <= 100000:
-            return v
-    return DEFAULT_LINE_LIMIT
-
-
 def clean_plan_path(x):
     x = x.strip().strip("`").strip()
     while x.startswith("./"):
@@ -735,64 +774,191 @@ def paths_overlap(a, b):
 
 
 def plan_blocks(plan):
-    """({S id: {files}}, {PR id: {repo, stories, deps, lines, nstories, over}}) read from plan.md's ### S<n> / ### PR<n> blocks."""
+    """({S id: [files]}, {PR id: {repo, stories, deps, epic, check}}) read from plan.md's ### S<n> / ### PR<n> blocks.
+    epic is the raw text of the PR's `- Epic:` line, or None when it has none."""
     stories, prs = {}, {}
     for m in re.finditer(r"(?ms)^###\s+(S\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan):
-        fl = re.search(r"(?m)^\s*-\s*Files:\s*(.*?)\s*$", m.group(2))
+        fl = re.search(r"(?m)^[ \t]*-[ \t]*Files:[ \t]*(.*?)[ \t]*$", m.group(2))
         files = [clean_plan_path(x) for x in fl.group(1).split(",")] if fl else []
         stories[m.group(1)] = [x for x in files if x]
     for m in re.finditer(r"(?ms)^###\s+(PR\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan):
         b = m.group(2)
-        g = lambda k: re.search(rf"(?m)^\s*-\s*{k}:\s*(.*?)\s*$", b)
-        repo, sl, dl, zl, ol = g("Repo"), g("Stories"), g("Depends on"), g("Size"), g("Over limit")
-        size = re.match(r"~?\s*(\d[\d,\s]*?)\s*lines?\s*,\s*(\d+)\s*stor(?:y|ies)\b", zl.group(1)) if zl else None
+        g = lambda k: re.search(rf"(?m)^[ \t]*-[ \t]*{k}:[ \t]*(.*?)[ \t]*$", b)
+        repo, sl, dl, el, cl = g("Repo"), g("Stories"), g("Depends on"), g("Epic"), g("Check")
+        chk = cl.group(1).strip() if cl else ""
+        if len(chk) > 1 and chk.startswith("`") and chk.endswith("`") and chk.count("`") == 2:
+            chk = chk[1:-1].strip()
         prs[m.group(1)] = {
             "repo": repo.group(1).strip("` ") if repo and repo.group(1).strip("` ") else None,
             "stories": re.findall(r"S\d+", sl.group(1)) if sl else [],
             "deps": re.findall(r"PR\d+", dl.group(1)) if dl else [],
-            "lines": int(re.sub(r"\D", "", size.group(1))) if size else None,
-            "over": ol.group(1).strip() if ol and ol.group(1).strip() else None,
+            "epic": el.group(1).strip() if el else None,
+            "check": chk or None,
         }
     return stories, prs
 
 
-def plan_split_problems(run):
-    """Problems with the shape of plan.md's split into stories and PRs (empty list = fine). The single place for it."""
+def plan_story_tickets(plan):
+    """{S id: [ticket ref, ...]} from each story's `- Tickets:` line (`none` and `-` are no ticket)."""
+    out = {}
+    for m in re.finditer(r"(?ms)^###\s+(S\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan):
+        tl = re.search(r"(?m)^[ \t]*-[ \t]*Tickets:[ \t]*(.*?)[ \t]*$", m.group(2))
+        refs = []
+        for part in re.split(r"\s*,\s*", tl.group(1)) if tl else []:
+            tok = part.strip().strip("`").split(" ")[0].strip("`") if part.strip() else ""
+            if tok and tok.lower() not in ("none", "-") and tok not in refs:
+                refs.append(tok)
+        out[m.group(1)] = refs
+    return out
+
+
+def tickets_epics(run):
+    """(ticket ref (lowercased id or custom id) -> epic id or None, epic id -> title or None) from tickets.json,
+    or (None, {}) when the run has no readable tickets.json. An epic is a ticket's parent_id."""
+    tj = load_json(os.path.join(run, "tickets.json"))
+    if not isinstance(tj, dict) or not isinstance(tj.get("tasks"), list):
+        return None, {}
+    emap = {}
+    for t in tj["tasks"]:
+        if not isinstance(t, dict):
+            continue
+        pe = t.get("parent_id") if isinstance(t.get("parent_id"), str) and t.get("parent_id") else None
+        for k in ("id", "custom_id"):
+            if isinstance(t.get(k), str) and t[k]:
+                emap[t[k].lower()] = pe
+    titles = {}
+    for e in tj.get("epics") if isinstance(tj.get("epics"), list) else []:
+        if isinstance(e, dict) and isinstance(e.get("id"), str) and e["id"]:
+            titles[e["id"]] = e["name"] if isinstance(e.get("name"), str) and e["name"] else None
+    return emap, titles
+
+
+def epic_id_of(line):
+    """The epic id in a plan `- Epic:` line (`<id> <title>`), or None for `none`/empty."""
+    tok = (line or "").strip().strip("`").split(" ")[0].strip("`") if (line or "").strip() else ""
+    return None if not tok or tok.lower() in ("none", "-") else tok
+
+
+def epic_title_of(line):
+    """The title after the id in a plan `- Epic:` line (one line, at most 120 characters), or None."""
+    rest = (line or "").strip().strip("`").split(" ", 1)
+    t = re.sub(r"[\x00-\x1f\x7f]+", " ", rest[1]).strip().strip("`").strip() if len(rest) > 1 else ""
+    return t[:120] or None
+
+
+def plan_epics(run):
+    """{PR id: {id, title} or None} from the plan's Epic lines; titles from tickets.json `epics`, else the Epic line's own
+    title, else None."""
+    plan = read(os.path.join(run, "plan.md"))
+    if not plan:
+        return {}
+    _, titles = tickets_epics(run)
+    out = {}
+    for pid, p in plan_blocks(plan)[1].items():
+        e = epic_id_of(p["epic"])
+        out[pid] = {"id": e, "title": titles.get(e) or epic_title_of(p["epic"])} if e else None
+    return out
+
+
+VERSION_FILES = ("VERSION", "plugin.json", "package.json", "tauri.conf.json", "Cargo.toml")
+
+
+def same_repo_deps(prs, pid):
+    """The Depends on entries of pid that are PRs of the same repo (a stack parent; at most one is valid)."""
+    p = prs[pid]
+    return [d for d in p["deps"] if d in prs and p["repo"] and prs[d]["repo"] == p["repo"]]
+
+
+def plan_group_problems(run):
+    """Problems with how plan.md groups stories into PRs (empty list = fine): one PR per (epic, repo), the Epic line, stacks
+    (a same-repo Depends on is a stack, one parent at most), same-repo Files overlap and version files. The single place for it."""
     plan = read(os.path.join(run, "plan.md"))
     if not plan:
         return []
     stories, prs = plan_blocks(plan)
+    tix = plan_story_tickets(plan)
+    emap, _ = tickets_epics(run)
     problems = []
-    if len(prs) > MAX_PRS:
-        problems.append(f"{len(prs)} PRs, at most {MAX_PRS} per run: ask the user to split the request into several runs")
     for sid, files in stories.items():
         if not files:
             problems.append(f"{sid} has no Files: line")
-    pfiles = {}
+    pfiles, epic_of, mixed = {}, {}, set()
     for pid, p in prs.items():
         pfiles[pid] = sorted({f for s in p["stories"] for f in stories.get(s, [])})
-        if p["lines"] is None:
-            problems.append(f"{pid} has no parseable Size: line (use `- Size: ~<n> lines, <k> stories`)")
-        limit = pr_line_limit(run, name=p["repo"])
-        n = len(p["stories"])
-        if (n > MAX_STORIES or (p["lines"] is not None and p["lines"] > limit)) and not p["over"]:
-            problems.append(f"{pid} is over the PR limit ({n} stories, max {MAX_STORIES}; ~{p['lines'] if p['lines'] is not None else '?'} lines, limit {limit}) "
-                            f"with no Over limit: line")
+        refs = []
+        for s in p["stories"]:
+            refs += [r for r in tix.get(s, []) if r not in refs]
+        known = [(r, emap[r.lower()]) for r in refs if emap is not None and r.lower() in emap]
+        epics = list(dict.fromkeys(e for _, e in known if e))
+        noepic = [r for r, e in known if not e]
+        tk = ", ".join(refs) or "no tickets"
+        if len(epics) > 1:
+            problems.append(f"{pid} mixes epics {' and '.join(epics)} (tickets {tk}): one PR per epic")
+            mixed.add(pid)
+        elif epics and noepic:
+            problems.append(f"{pid} mixes epic {epics[0]} with the no-epic ticket {', '.join(noepic)} (tickets {tk}): a no-epic ticket gets its own PR")
+            mixed.add(pid)
+        elif len(noepic) > 1:
+            problems.append(f"{pid} holds {len(noepic)} no-epic tickets ({', '.join(noepic)}): a no-epic ticket gets its own PR")
+            mixed.add(pid)
+        want = epics[0] if len(epics) == 1 and not noepic else None
+        epic_of[pid] = want
+        if pid in mixed:
+            continue
+        if p["epic"] is None:
+            if emap is not None:
+                problems.append(f"{pid} (tickets {tk}) has no Epic: line (expected `- Epic: {want or 'none'}`)")
+        elif epic_id_of(p["epic"]) != want:
+            problems.append(f"{pid} (tickets {tk}) has Epic: {p['epic']!r} but its tickets are in epic {want or 'none'}")
+    groups = {}
+    for pid, e in epic_of.items():
+        if e and pid not in mixed:
+            groups.setdefault((e, prs[pid]["repo"]), []).append(pid)
+    for (e, repo), ids in groups.items():
+        if len(ids) > 1:
+            problems.append(f"epic {e} is split across {' and '.join(ids)} in repo {repo or '?'} (even if stacked): one PR per (epic, repo)")
+    same = {pid: same_repo_deps(prs, pid) for pid in prs}
+    for pid, ds in same.items():
+        if len(ds) > 1:
+            problems.append(f"{pid} depends on {' and '.join(ds)} of the same repo ({prs[pid]['repo']}): at most one same-repo Depends on "
+                            f"(a stack has one parent: chain them, {' <- '.join(ds + [pid])})")
+    parent = {pid: ds[0] for pid, ds in same.items() if ds}
+
+    def ancestors(pid):
+        out, x = [], parent.get(pid)
+        while x and x not in out and x != pid:
+            out.append(x)
+            x = parent.get(x)
+        return out
+
+    seen = set()
+    for pid in prs:
+        x, trail = pid, []
+        while x in parent and x not in trail:
+            trail.append(x)
+            x = parent[x]
+        if x in trail and x in parent:
+            cyc = frozenset(trail[trail.index(x):])
+            if cyc not in seen:
+                seen.add(cyc)
+                problems.append(f"same-repo Depends on cycle: {' -> '.join(sorted(cyc, key=lambda i: int(i[2:])))}")
     ids = list(prs)
     for i, a in enumerate(ids):
         for b in ids[i + 1:]:
             ra, rb = prs[a]["repo"], prs[b]["repo"]
             if not ra or ra != rb:
                 continue
+            chained = a in ancestors(b) or b in ancestors(a)
             for fa in pfiles[a]:
                 for fb in pfiles[b]:
                     hit = paths_overlap(fa, fb)
-                    if hit:
-                        problems.append(f"{a} and {b} ({ra}) both change {hit}")
-    for pid, p in prs.items():
-        for d in p["deps"]:
-            if d in prs and p["repo"] and prs[d]["repo"] == p["repo"]:
-                problems.append(f"{pid} depends on {d} of the same repo ({p['repo']}): same-repo PRs must be independent")
+                    if not hit:
+                        continue
+                    if fa == fb and os.path.basename(fa) in VERSION_FILES:
+                        problems.append(f"{a} and {b} ({ra}) both change the version file {fa}: it goes in one PR per repo")
+                    elif not chained:
+                        problems.append(f"{a} and {b} ({ra}) both change {hit} and neither is stacked on the other: chain them "
+                                        f"(`Depends on`, e.g. {a} <- {b}), never two overlapping children of one parent")
     return problems
 
 
@@ -824,10 +990,10 @@ def gates(doc, run, old=None, plan_trace=True):
                     more = f"; and {len(pr) - 10} more" if len(pr) > 10 else ""
                     return "NOT WRITTEN: BMAD mode: plan.md does not trace to the BMAD documents: " + "; ".join(pr[:10]) + more, out
     if stage == "plan-approval" and plan_trace:
-        sp = plan_split_problems(run)
+        sp = plan_group_problems(run)
         if sp:
             more = f"; and {len(sp) - 10} more" if len(sp) > 10 else ""
-            return "NOT WRITTEN: plan.md split: " + "; ".join(sp[:10]) + more, out
+            return "NOT WRITTEN: plan.md grouping: " + "; ".join(sp[:10]) + more, out
     if tm["halt"] and not resumed(run):
         pid = tm["halt"]
         prs = {p.get("id"): p for p in doc.get("prs") or [] if isinstance(p, dict)}
@@ -851,16 +1017,20 @@ def gates(doc, run, old=None, plan_trace=True):
     return None, out
 
 
-def write_status(run, doc, trusted=False, plan_trace=True):
+def write_status(run, doc, trusted=False, plan_trace=True, guard=None, dry=False):
+    """Validate and write status.json. guard: the .guard.json content to check against instead of the file's (restack moves
+    bases[pid] after the status write); dry: validate and run gates() only, write nothing."""
     dest = os.path.join(run, "status.json")
     old = load_json(dest)
     notes, bad = prepare_status(doc, old, trusted, run)
-    problems = bad + validate_status(doc, run)
+    problems = bad + validate_status(doc, run, guard)
     if problems:
         die(f"NOT WRITTEN: {dest}: " + "; ".join(problems))
     refusal, out = gates(doc, run, old, plan_trace)
     if refusal:
         die(refusal)
+    if dry:
+        return notes + out
     atomic_write(dest, json.dumps(doc, indent=2) + "\n")
     if doc.get("stage") in ("done", "failed"):
         try:
@@ -973,10 +1143,9 @@ def cmd_approve(run, what, by):
                 or not os.path.isfile(os.path.join(run, "plan.md")):
             die(f"NOT APPROVED: the plan can be approved only at stop #1 with plan.md written (stage {st.get('stage')})")
         st["plan"]["approval"] = {"by": by, "at": t}
-        # Freeze what the user approved (written to status.json only if the split check passes): the Over limit reasons,
-        # and each PR's Files. Their presence also marks a plan approved under the size rules (the gate then enforces size).
+        # Freeze what the user approved (written to status.json only if the grouping check passes): each PR's Files.
+        # Their presence also marks a plan approved under the 0.7.0+ rules (the gate then checks overlaps against them).
         fstories, fprs = plan_blocks(read(os.path.join(run, "plan.md")) or "")
-        st["plan"]["overLimit"] = {pid: p["over"] for pid, p in fprs.items() if p["over"]}
         st["plan"]["prFiles"] = {pid: sorted({f for s in p["stories"] for f in fstories.get(s, [])}) for pid, p in fprs.items()}
         st["stage"] = "plan-approval"
         line = "plan approved by the user" if by == "user" else "plan auto-approved (test-mode)"
@@ -1166,6 +1335,19 @@ def cmd_plan(run, what):
     heading = {"prs": "Pull requests", "tickets": "Tickets"}.get(what)
     if not heading:
         die("usage: state.sh plan <run> prs|tickets|stories")
+    if what == "prs":
+        _, prs = plan_blocks(text)
+        titles = {}
+        for pid, p in prs.items():
+            e = epic_id_of(p["epic"])
+            titles[pid] = f"epic {e} {(p['epic'] or '').strip().strip('`')[len(e):].strip()[:40]}".rstrip() if e else "epic none"
+        for pid, p in prs.items():
+            sp = same_repo_deps(prs, pid)
+            head = " | ".join([pid, (p["repo"] or "-")[:40], titles[pid], (",".join(p["stories"]) or "-")[:60],
+                               "depends " + (",".join(p["deps"])[:40] or "-"), "stacked on " + (sp[0] if sp else "-")])
+            print(f"{head} | check {p['check'] or '-'}")
+        if prs:
+            return
     m = re.search(rf"^##\s+{heading}\s*$(.*?)(?=^##\s|\Z)", text, re.M | re.S)
     print((f"## {heading}" + m.group(1)).rstrip() if m else f"(plan.md has no ## {heading} section)")
 
@@ -1210,7 +1392,7 @@ def cmd_base(repo):
     print(f"base={base} baseCommit={commit} remote={remote or 'none'}")
 
 
-def record_guard(run, repo, pr_id, wt, copied=None, remote=None, base=None):
+def record_guard(run, repo, pr_id, wt, copied=None, remote=None, base=None, stack=None):
     path = os.path.join(run, ".guard.json")
     with open(os.path.join(run, ".guard.lock"), "a") as lock:  # two `worktree` calls at once must not lose a record
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -1225,6 +1407,8 @@ def record_guard(run, repo, pr_id, wt, copied=None, remote=None, base=None):
             g["copied"][pr_id] = sorted(set(old) | set(copied))
         if base and pr_id not in (g.get("bases") or {}):  # the base commit the worktree was made from (fixed)
             g.setdefault("bases", {})[pr_id] = base
+        if stack and pr_id not in (g.get("stacks") or {}):  # the PR this one is stacked on (its base is that PR's branch), fixed
+            g.setdefault("stacks", {})[pr_id] = stack
         if remote and pr_id not in (g.get("remotes") or {}):  # the push target, fixed when the worktree is first made
             g.setdefault("remotes", {})[pr_id] = remote
         atomic_write(path, json.dumps(g, indent=2) + "\n")
@@ -1362,6 +1546,33 @@ def run_owns_repo(run, repo):
     return len(folders) == 1 and os.path.isabs(next(iter(folders))) and under(repo, next(iter(folders)))
 
 
+def parent_head(run, st, parent):
+    """(sha, None) of a stack parent's current head, else (None, why): its local branch, else its worktree HEAD (the janitor may
+    have removed the branch), else its pushed branch on the recorded remote."""
+    repo = os.path.realpath(str(parent.get("repoPath") or "/"))
+    branch, wt = canon(repo, st.get("runId"), parent.get("id"))
+    r = git("-C", repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}")
+    if r.returncode == 0 and r.stdout.strip():
+        return r.stdout.strip(), None
+    if os.path.isdir(wt):
+        r = git("-C", wt, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip(), None
+    rem = (guard_rec(run).get("remotes") or {}).get(parent.get("id"))
+    if isinstance(rem, dict) and rem.get("url") and not url_problem(rem["url"]):
+        tip, err = remote_tip(rem["url"], branch)
+        if tip:
+            if git("-C", repo, "cat-file", "-e", f"{tip}^{{commit}}").returncode != 0:
+                f = net_git(rem["url"], ["-C", repo, "fetch", "--no-tags", "--end-of-options", rem["url"], f"refs/heads/{branch}"], cwd=repo)
+                if f.returncode != 0:
+                    return None, f"{parent.get('id')}'s branch {branch} is only on the remote and the fetch failed: {first_line(f.stderr)[:160]}"
+            if git("-C", repo, "cat-file", "-e", f"{tip}^{{commit}}").returncode == 0:
+                return tip, None
+        elif err:
+            return None, f"{parent.get('id')}'s branch {branch} is gone locally and the remote could not be asked: {err[:160]}"
+    return None, f"{parent.get('id')}'s head cannot be found: no branch {branch}, no worktree {wt}, not on the remote"
+
+
 def cmd_worktree(run, repo, pr_id, base):
     run = os.path.realpath(run)
     run_id = os.path.basename(run)
@@ -1371,12 +1582,55 @@ def cmd_worktree(run, repo, pr_id, base):
     if not run_owns_repo(run, repo):
         die(f"NOT MADE: {repo} is not one of this run's repos (not in repos.json, and not inside the start folder in request.md); "
             "nothing was recorded in .guard.json")
-    if git("-C", repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}").returncode != 0:
-        die(f"NOT MADE: base commit {base!r} is not a commit in {repo}; use baseCommit from status.json / state.sh base")
     branch, wt = canon(repo, run_id, pr_id)
     st = load_json(os.path.join(run, "status.json")) or {}
-    rec = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == pr_id), {})
+    st_prs = [p for p in st.get("prs") or [] if isinstance(p, dict)]
+    rec = next((p for p in st_prs if p.get("id") == pr_id), {})
+    # The PR's one same-repo Depends on is its stack parent (status.json's dependsOn, and plan.md's when it is there).
+    sd = same_repo_ids(st_prs, {**rec, "id": pr_id, "repoPath": repo}) if rec else []
+    _, plan_prs = plan_blocks(read(os.path.join(run, "plan.md")) or "")
+    for d in same_repo_deps(plan_prs, pr_id) if pr_id in plan_prs else []:
+        if d not in sd:
+            sd.append(d)
+    if len(sd) > 1:
+        die(f"NOT MADE: {pr_id} depends on {' and '.join(sd)} of the same repo: a stack has one parent (chain them)")
+    parent = sd[0] if sd else None
+    g = guard_rec(run)
     listed = f"worktree {wt}" in git("-C", repo, "worktree", "list", "--porcelain").stdout.splitlines()
+    have = (listed and os.path.isdir(wt)) or bool((g.get("worktrees") or {}).get(pr_id)) \
+        or git("-C", repo, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0
+    stack = None  # (parent id, parent branch)
+    if re.fullmatch(r"PR\d+", base):  # a stacked PR: the base is its parent, a reviewed PR of the same repo
+        if base != parent:
+            die(f"NOT MADE: {base} is not {pr_id}'s one same-repo Depends on ({parent or 'none'}); a stack is built from that parent only")
+        prec = next((p for p in st_prs if p.get("id") == base), None)
+        if prec is None or os.path.realpath(str(prec.get("repoPath") or "/")) != repo:
+            die(f"NOT MADE: {base} is not a PR of {repo} in status.json")
+        recorded = (g.get("stacks") or {}).get(pr_id)
+        if recorded and recorded != base:
+            die(f"NOT MADE: {pr_id} is recorded as stacked on {recorded}, not {base}")
+        if have:  # resume: keep what is recorded
+            eff = (g.get("bases") or {}).get(pr_id) or rec.get("baseCommit") or ""
+            if not eff or git("-C", repo, "rev-parse", "--verify", "--quiet", f"{eff}^{{commit}}").returncode != 0:
+                eff, why = parent_head(run, st, prec)
+                if not eff:
+                    die(f"NOT MADE: {why}")
+        else:
+            if prec.get("state") != "reviewed":
+                die(f"NOT MADE: {pr_id} is stacked on {base}, which is {prec.get('state')}: make its worktree once {base} is reviewed")
+            eff, why = parent_head(run, st, prec)
+            if not eff:
+                die(f"NOT MADE: {why}")
+        stack = (base, canon(repo, run_id, base)[0])
+        base = eff
+    else:
+        if parent and not have:
+            die(f"NOT WRITTEN: {pr_id} is stacked on {parent}: pass {parent} as the base once it is reviewed "
+                f"(`state.sh worktree <run> <repo> {pr_id} {parent}`), not a commit")
+        if git("-C", repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}").returncode != 0:
+            die(f"NOT MADE: base commit {base!r} is not a commit in {repo}; use baseCommit from status.json / state.sh base")
+        if parent and (g.get("stacks") or {}).get(pr_id):
+            stack = (g["stacks"][pr_id], canon(repo, run_id, g["stacks"][pr_id])[0])
     remade = made = False
     if listed and os.path.isdir(wt):
         head = git("-C", wt, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
@@ -1396,15 +1650,20 @@ def cmd_worktree(run, repo, pr_id, base):
             die(f"NOT MADE: git worktree add failed: {first_line(r.stderr)}")
         made = True
     remote = remote_record(run, repo)
+    stack_line = f"base={stack[1]} baseCommit={(g.get('bases') or {}).get(pr_id) or base} stackedOn={stack[0]}" if stack else None
     if not made:
-        record_guard(run, repo, pr_id, wt, remote=remote, base=base)
+        record_guard(run, repo, pr_id, wt, remote=remote, base=base, stack=stack[0] if stack else None)
         print(f"branch={branch} worktree={wt}")
+        if stack_line:
+            print(stack_line)
         return
     # A newly made worktree (fresh or re-made folder): local files, then the install step.
     entry = repo_entry(run, repo)
     copied, refused = copy_files(repo, wt, entry.get("copyFiles"))
-    record_guard(run, repo, pr_id, wt, copied, remote, base)
+    record_guard(run, repo, pr_id, wt, copied, remote, base, stack=stack[0] if stack else None)
     print(f"branch={branch} worktree={wt}" + (" remade=yes" if remade else ""))
+    if stack:
+        print(f"base={stack[1]} baseCommit={(guard_rec(run).get('bases') or {}).get(pr_id) or base} stackedOn={stack[0]}")
     if copied or refused:
         print(f"copied={len(copied)}" + (f" refused: {'; '.join(refused)}" if refused else ""))
     setup = entry.get("setup")
@@ -1414,6 +1673,128 @@ def cmd_worktree(run, repo, pr_id, base):
     cmd = setup.strip() if isinstance(setup, str) else (detect_setup(wt) if new_run else None)
     result, log = run_setup(run, wt, pr_id, cmd or None)
     print(f"setup={result} log={log or '-'}")
+
+
+def move_base(run, pid, sha):
+    """Set .guard.json bases[pid] (restack is the one writer that moves it), under the guard lock. Raises OSError."""
+    path = os.path.join(run, ".guard.json")
+    with open(os.path.join(run, ".guard.lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        g = load_json(path)
+        if not isinstance(g, dict):
+            raise OSError(".guard.json is missing or unreadable")
+        g.setdefault("bases", {})[pid] = sha
+        atomic_write(path, json.dumps(g, indent=2) + "\n")
+
+
+def archive_restack(run, pid, k):
+    """Best effort: copy the old gate and review files to -restack<k> names, so the new rounds 1-3 do not erase them."""
+    notes = []
+    try:
+        gf = os.path.join(run, "gates", f"{pid}.yml")
+        if os.path.isfile(gf):
+            shutil.copy2(gf, os.path.join(run, "gates", f"{pid}-restack{k}.yml"))
+        for n in (1, 2, 3):
+            rf = os.path.join(run, "reviews", f"{pid}-round{n}.md")
+            if os.path.isfile(rf):
+                shutil.copy2(rf, os.path.join(run, "reviews", f"{pid}-restack{k}-round{n}.md"))
+    except OSError as e:
+        notes.append(f"note: the old gate / review files were not copied ({e.strerror or e})")
+    return notes
+
+
+def cmd_restack(run, pid):
+    """Bring a stacked PR's parent changes in with a merge (never a rebase, never a force), then void its review."""
+    run = this_run(run, "NOT RESTACKED")
+    what = "NOT RESTACKED"
+    st = load_status(run)
+    pr, _ = canonical_pr(run, st, pid, what)
+    parent_id = pr.get("stackedOn")
+    if not parent_id:
+        die(f"{what}: {pid} is not stacked on another PR (no stackedOn)")
+    parent = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == parent_id), None)
+    if parent is None:
+        die(f"{what}: {parent_id}, the parent of {pid}, is not in status.json")
+    if parent.get("state") != "reviewed":
+        die(f"{what}: {parent_id} is {parent.get('state')}; restack {pid} once {parent_id} is reviewed again")
+    if pr.get("state") in ("building", "fixing"):  # an Implementer is working in that worktree
+        die(f"{what}: {pid} is {pr.get('state')}; restack it once its Implementer has finished")
+    wt = pr["worktree"]
+    if git("-C", wt, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0:
+        die(f"{what}: a merge is in progress in {wt}; finish or abort it first")
+    dirty = git("-C", wt, "status", "--porcelain")
+    if dirty.returncode != 0 or dirty.stdout.strip():
+        die(f"{what}: {wt} has uncommitted changes (or git status failed); commit or stash them first")
+    phead, why = parent_head(run, st, parent)
+    if not phead:
+        die(f"{what}: {why}")
+    old_k = pr.get("restack") if type(pr.get("restack")) is int else 0
+    old_doc = json.loads(json.dumps(st))
+    guard = guard_rec(run)
+    new_guard = json.loads(json.dumps(guard))
+    new_guard.setdefault("bases", {})[pid] = phead
+
+    def new_doc():
+        doc = json.loads(json.dumps(st))
+        npr = next(p for p in doc["prs"] if p.get("id") == pid)
+        npr["state"], npr["note"], npr["baseCommit"], npr["restack"] = "pending", None, phead, old_k + 1
+        npr["check"] = {**(npr.get("check") if isinstance(npr.get("check"), dict) else {}), "result": "not-run", "summary": None, "log": None}
+        npr["review"] = {"round": 0, "verdict": None, "openFindings": 0, "path": None}
+        mc = doc.get("mergeChecks")
+        if isinstance(mc, dict):
+            doc["mergeChecks"] = {k: v for k, v in mc.items() if k != npr.get("repo") and pid not in (v.get("prs") or [])}
+        return doc
+
+    # The dry run: the same validation and gates() as the real write, before any git change.
+    write_status(run, new_doc(), trusted=True, guard=new_guard, dry=True)
+    pre = git("-C", wt, "rev-parse", "HEAD").stdout.strip()
+    if git("-C", wt, "merge-base", "--is-ancestor", phead, "HEAD").returncode != 0:
+        who = [] if git("-C", wt, "config", "user.email").stdout.strip() else ["-c", "user.name=dcv2", "-c", "user.email=dcv2@localhost"]
+        m = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *who, "-C", wt, "merge", "--no-edit", phead], capture_output=True, text=True)
+        if m.returncode != 0:
+            files = git("-C", wt, "diff", "--name-only", "--diff-filter=U").stdout.split()
+            if git("-C", wt, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0:
+                git("-C", wt, "merge", "--abort")
+            if git("-C", wt, "rev-parse", "HEAD").stdout.strip() != pre:
+                git("-C", wt, "reset", "--keep", pre)
+            if not files:
+                die(f"{what}: git merge of {parent_id} failed: {first_line(m.stderr) or first_line(m.stdout)}")
+            attention(run, st, pr, f"restack onto {parent_id} conflicts in {', '.join(files[:6])}{' and more' if len(files) > 6 else ''}: "
+                      f"merge {parent_id} (`git merge {phead[:12]}`) in the worktree, resolve, commit, then `state.sh restack` again", what)
+    merged = git("-C", wt, "rev-parse", "HEAD").stdout.strip() != pre
+    written = False
+
+    def undo(reason):
+        notes = []
+        if merged and git("-C", wt, "reset", "--keep", pre).returncode != 0:
+            notes.append(f"the merge commit could not be undone: run `git -C {wt} reset --keep {pre}`")
+        if written:
+            try:
+                write_status(run, json.loads(json.dumps(old_doc)), trusted=True)
+            except (SystemExit, OSError):
+                notes.append("status.json could not be put back")
+        die(f"{what}: {reason}; HEAD, baseCommit and bases are unchanged" + (f" ({'; '.join(notes)})" if notes else ""))
+
+    try:
+        write_status(run, new_doc(), trusted=True, guard=new_guard)
+        written = True
+    except SystemExit as e:
+        undo(f"status.json was refused (exit {e.code}); see the message above")
+    except OSError as e:
+        undo(f"status.json could not be written ({e.strerror or e})")
+    try:
+        move_base(run, pid, phead)
+    except OSError as e:
+        undo(f".guard.json could not be written ({e.strerror or e})")
+    notes = archive_restack(run, pid, old_k)
+    try:
+        append_log(run, st.get("stage") or "building", f"{pid} restacked on {parent_id} ({'merged ' + phead[:12] if merged else 'already up to date'}): "
+                   f"pending, check to run again, review rounds start over (restack {old_k + 1})")
+    except OSError:
+        notes.append("note: log.md not written")
+    print(f"restack=ok {pid} parent={parent_id} baseCommit={phead} merge={'new' if merged else 'none'} restack={old_k + 1} state=pending")
+    for n in notes:
+        print(n)
 
 
 def recorded_remote(run, pr):
@@ -1426,48 +1807,64 @@ def recorded_remote(run, pr):
     return remote_record(run, repo) if repo and os.path.isdir(repo) else None
 
 
+def stack_root(st, pr):
+    """The PR at the bottom of pr's stack (pr itself when it is not stacked)."""
+    by = {p.get("id"): p for p in st.get("prs") or [] if isinstance(p, dict)}
+    seen, cur = {pr.get("id")}, pr
+    while cur.get("stackedOn") in by and cur["stackedOn"] not in seen:
+        seen.add(cur["stackedOn"])
+        cur = by[cur["stackedOn"]]
+    return cur
+
+
 def cmd_ship_check(run):
     st = load_status(run)
     for pr in st.get("prs") or []:
-        who = f"{pr.get('id')} {pr.get('repo')}"
+        so = pr.get("stackedOn")
+        who = f"{pr.get('id')} {pr.get('repo')}" + (f": stacked on {so} (ships after it)" if so else "")
+        sep = "; " if so else ": "
         rem = recorded_remote(run, pr)
         if not rem:
-            print(f"{who}: no git remote: will not push or open a PR")
+            print(f"{who}{sep}no git remote: will not push or open a PR")
             continue
+        base = (stack_root(st, pr).get("base") if so else pr.get("base")) or ""  # a stack's parent branch is pushed when the parent ships
         why = url_problem(rem["url"])
         if why:
-            print(f"{who}: remote {rem['url']} cannot be pushed by the run ({why}): needs attention")
-        elif remote_sha(rem["url"], pr.get("base") or ""):
-            print(f"{who}: remote {rem['url']}, base {pr.get('base')} is on the remote")
+            print(f"{who}{sep}remote {rem['url']} cannot be pushed by the run ({why}): needs attention")
+        elif remote_sha(rem["url"], base):
+            print(f"{who}{sep}remote {rem['url']}, base {base} is on the remote")
         else:
-            print(f"{who}: remote {rem['url']}, base {pr.get('base')} is NOT on the remote: needs attention")
+            print(f"{who}{sep}remote {rem['url']}, base {base} is NOT on the remote: needs attention")
 
 
-def size_line(run, pr):
-    z = pr.get("size")
-    if not size_shape_ok(z):
-        return "Size: not measured"
-    text = f"Size: {z['lines']} lines in {z['files']} files ({z['excluded']} excluded), limit {z['limit']}"
-    if z["over"]:
-        g = read_gate(run, pr.get("id"))
-        if z.get("reason"):
-            text += f"; over limit: {z['reason']}"
-        elif g and g.get("gate") == "WAIVED":
-            text += f"; over limit, waived by the user: {g.get('reason')}"
-        else:
-            text += "; over limit, no reason"
-    return text
+def pr_number(url):
+    m = GH_URL.match(str(url or ""))
+    return m.group(3) if m else None
 
 
-def size_lines(run, st, pr):
-    """The PR body's size part: one size line, and one line naming same-repo sibling PRs (they ship separately)."""
-    out = ["", size_line(run, pr)]
-    repo = os.path.realpath(str(pr.get("repoPath") or "/"))
-    sib = [p.get("id") for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") != pr.get("id")
-           and os.path.realpath(str(p.get("repoPath") or "/")) == repo]
-    if sib:
-        out.append(f"Ships with {', '.join(sib)} (same repo): merge one, then re-run the check before merging the next.")
-    return out
+def epic_siblings(st, pr):
+    """The other PRs of the same epic (prs[].epic.id), when the epic has 2 or more PRs in this run."""
+    ep = pr.get("epic")
+    if not (isinstance(ep, dict) and ep.get("id")):
+        return []
+    return [q for q in st.get("prs") or [] if isinstance(q, dict) and q.get("id") != pr.get("id")
+            and isinstance(q.get("epic"), dict) and q["epic"].get("id") == ep["id"]]
+
+
+def stack_epic_lines(st, pr):
+    """The PR body's stack line and Epic section (empty lists when the PR is neither stacked nor in a multi-PR epic)."""
+    lines = []
+    so = pr.get("stackedOn")
+    if so:
+        parent = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == so), {})
+        n = pr_number(parent.get("prUrl"))
+        lines += ["", f"Stacked on #{n}. Merge #{n} first." if n else f"Stacked on {so}. Merge {so} first."]
+    sibs = epic_siblings(st, pr)
+    if sibs:
+        ep = pr["epic"]
+        lines += ["", "## Epic", "", f"Epic {ep['id']}" + (f": {ep['title']}" if ep.get("title") else "") + f" ({len(sibs) + 1} PRs)"]
+        lines += [f"- {q.get('repo')}: {q.get('prUrl') or str(q.get('id')) + ' (not opened yet)'}" for q in sibs]
+    return lines
 
 
 def pr_body(run, st, pr):
@@ -1475,7 +1872,7 @@ def pr_body(run, st, pr):
     prs = {p.get("id"): p for p in st.get("prs") or []}
     chk, rev = pr.get("check") or {}, pr.get("review") or {}
     lines = ["## Stories", ""] + [f"- {s}: {titles.get(s, '')}".rstrip(": ") for s in (pr.get("stories") or {}).get("ids") or []]
-    lines += size_lines(run, st, pr)
+    lines += stack_epic_lines(st, pr)
     lines += ["", f"Check: `{chk.get('command')}`: {chk.get('result')}", f"Review: {rev.get('verdict')} (round {rev.get('round')})"]
     for dep in pr.get("dependsOn") or []:
         d = prs.get(dep) or {}
@@ -1505,15 +1902,23 @@ def cmd_ship_pr(run, pid):
         for m in write_status(run, st, trusted=True):
             print(m)
         print(f"{pid} {state}" + (f": {url}" if url else "") + (f" ({note})" if note else ""))
+        if state == "opened":
+            for n in epic_links(run, st, pr, rem_now[0]):
+                print(n)
 
+    rem_now = [None]
     if pr.get("state") not in ("reviewed", "pushed"):
         die(f"NOT SHIPPED: {pid} is {pr.get('state')}; only reviewed PRs ship")
     # The same protections as github mode: the canonical branch and worktree recorded in .guard.json, no copied file in the
     # commits, a push to the URL recorded when the worktree was made (no hooks, no remote name), `gh -R <owner/name>`.
     pr, rem = canonical_pr(run, st, pid, "NOT SHIPPED")
+    rem_now[0] = rem
+    parent_note = need_parent_pr(st, pr, "NOT SHIPPED")
     wt, branch, base = pr["worktree"], pr["branch"], pr.get("base")
     if not rem:
         return save("local-only", "no git remote: nothing pushed, no PR opened")
+    if parent_note:
+        return save("needs-attention", parent_note)
     url = rem["url"]
     why = url_problem(url)
     if why:
@@ -1527,7 +1932,10 @@ def cmd_ship_pr(run, pid):
         slug = q.stdout.strip() if q.returncode == 0 and re.fullmatch(r"[\w.-]+/[\w.-]+", q.stdout.strip()) else None
     if not slug:
         return save("needs-attention", f"cannot tell which GitHub repo {url} is: nothing pushed; push {branch} by hand and open the PR")
+    # The body is scanned before anything is pushed (epic titles and links are ticket data), so a hit really sent nothing.
+    clean_text(run, st, pr, pr_body(run, st, pr), "the PR body", "NOT SHIPPED")
     if pr["state"] == "reviewed":
+        push_parent(run, st, pr, rem, "NOT SHIPPED")
         if not remote_sha(url, base):
             return save("needs-attention", f"base {base} is not on {url}")
         r = push_branch(wt, url, branch)
@@ -1539,7 +1947,9 @@ def cmd_ship_pr(run, pid):
         return save("opened", None, v.stdout.strip())
     body = os.path.join(run, "pr-bodies", f"{pid}.md")
     os.makedirs(os.path.dirname(body), exist_ok=True)
-    atomic_write(body, pr_body(run, st, pr))
+    text = pr_body(run, st, pr)
+    clean_text(run, st, pr, text, "the PR body", "NOT SHIPPED")
+    atomic_write(body, text)
     title = str(pr.get("title") or pid)
     c = gh(["pr", "create", "--base", base, "--head", branch, "--title", title, "--body-file", body], wt, slug)
     url = next((l.strip() for l in reversed(c.stdout.splitlines()) if l.strip().startswith("http")), None)
@@ -1747,13 +2157,19 @@ def no_copied(run, st, pr, what):
         attention(run, st, pr, f"the branch commits {', '.join(bad)}, copied in from the main checkout (copyFiles); remove it from the commits", what)
 
 
-def clean_text(run, st, pr, text, label, what):
-    """Secret scan before anything is sent; a hit or a scanner that cannot run refuses (a hit: needs-attention)."""
+def clean_text(run, st, pr, text, label, what, soft=False):
+    """Secret scan before anything is sent; a hit or a scanner that cannot run refuses (a hit: needs-attention).
+    soft: return the reason instead (None when clean) and change no state: for the sibling-PR edits, which only give notes."""
     clean, why = scan_secrets(text)
     if clean is None:
+        if soft:
+            return f"{label} not sent: {why}"
         die(f"{what}: {why}")
     if not clean:
+        if soft:
+            return f"{label} not sent: {why}"
         attention(run, st, pr, f"{label} not sent to GitHub: {why}", what)
+    return None
 
 
 REMOTE_HOST = re.compile(r"^(?:https?://(?:[^@/]+@)?|ssh://(?:[^@/]+@)?|[\w.-]+@)([^/:\s]+)")
@@ -1812,7 +2228,7 @@ def story_lines(run, pr):
 
 def draft_body(run, st, pr):
     lines = ["## Stories", ""] + story_lines(run, pr)
-    lines += size_lines(run, st, pr)
+    lines += stack_epic_lines(st, pr)
     lines += ["", f"\U0001F916 Eagle-Eye run {st.get('runId')} — review in progress. Each review round is posted as a comment; "
               "this PR is marked ready for review only after the run's ship approval.", ""]
     return "\n".join(lines)
@@ -1837,11 +2253,134 @@ def title_and_body(run, st, pr, body, what):
     return title, f
 
 
+def need_parent_pr(st, pr, what):
+    """A stacked PR opens against its parent's branch, so the parent's PR must exist first: refuse otherwise."""
+    so = pr.get("stackedOn")
+    if not so:
+        return
+    parent = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == so), None)
+    if parent and not parent.get("prUrl") and parent.get("state") in ("local-only", "pushed", "needs-attention"):
+        return (f"{so} ended {parent.get('state')} with no PR, so this stacked PR was not pushed or opened and is left "
+                f"needs-attention: open {so}'s PR by hand first, then push {pr.get('branch')} and open its PR against {so}'s branch")
+    if not parent or not parent.get("prUrl"):
+        die(f"{what}: {pr.get('id')} is stacked on {so}, which has no PR yet: open {so} first (it ships before {pr.get('id')})")
+    return None
+
+
+def push_parent(run, st, pr, rem, what):
+    """Push the stack parent's branch first (never force) when the remote does not have its head: from the parent's worktree
+    head or recorded head, since its local branch may be gone."""
+    so = pr.get("stackedOn")
+    if not so or not rem:
+        return
+    parent = next(p for p in st["prs"] if isinstance(p, dict) and p.get("id") == so)
+    head, why = parent_head(run, st, parent)
+    if not head:
+        die(f"{what}: {why}")
+    pbranch = canon(parent.get("repoPath") or "/", st.get("runId"), so)[0]
+    if remote_sha(rem["url"], pbranch) == head:
+        return
+    r = net_git(rem["url"], ["-C", pr["worktree"], "push", "--end-of-options", rem["url"], f"{head}:refs/heads/{pbranch}"], cwd=pr["worktree"])
+    if r.returncode != 0:
+        die(f"{what}: {so}'s branch {pbranch} could not be pushed first: {first_line(r.stderr)[:200]}")
+
+
+def soft(fn, *args):
+    """Run a function that may die(): (True, None) or (False, its message); no state changes are made here."""
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(buf):
+            fn(*args)
+        return True, None
+    except SystemExit:
+        return False, " ".join(buf.getvalue().split())[:200] or "refused"
+
+
+def rem_with_slug(rem, cwd):
+    """The recorded remote with its owner/name filled in: a local-mode run (or a local mirror) did not record it, so ask gh."""
+    if not rem or rem.get("repo"):
+        return rem
+    q = run_cmd(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], cwd=cwd, timeout=60)
+    v = q.stdout.strip()
+    return {**rem, "repo": v} if q.returncode == 0 and re.fullmatch(r"[\w.-]+/[\w.-]+", v) else rem
+
+
+def epic_links(run, st, pr, rem):
+    """After a PR with an epic is open: the epic-<id> label on it (created in the repo only if missing) and, when the epic has
+    2+ PRs, the already-open siblings' bodies updated once. Every GitHub write goes through checked_pr and clean_text; a failure
+    is a note (returned), never a state change."""
+    notes = []
+    ep = pr.get("epic")
+    if not (isinstance(ep, dict) and ep.get("id")):
+        return notes
+    sibs = epic_siblings(st, pr)
+    rem = rem_with_slug(rem, pr.get("worktree"))
+    if not pr.get("prUrl") or not rem or not rem.get("repo"):
+        return notes
+    label = f"epic-{ep['id']}"
+    if re.fullmatch(r"epic-[A-Za-z0-9_-]{1,50}", label):
+        ok, why = soft(checked_pr, run, st, pr, rem, "epic label")
+        if not ok:
+            notes.append(f"note: label {label} not applied: {why}")
+        else:
+            ls = gh(["label", "list", "--search", label, "--json", "name", "--limit", "100"], pr["worktree"], rem["repo"], 60)
+            try:
+                have = {x.get("name") for x in json.loads(ls.stdout or "[]") if isinstance(x, dict)} if ls.returncode == 0 else None
+            except ValueError:
+                have = None
+            if have is None:
+                notes.append("note: " + gh_err(ls, f"label {label} not applied: gh label list"))
+            else:
+                if label not in have:
+                    c = gh(["label", "create", label, "--color", "ededed", "--description", f"Eagle-Eye epic {ep['id']}"], pr["worktree"], rem["repo"], 60)
+                    if c.returncode != 0:
+                        notes.append("note: " + gh_err(c, f"label {label} not created: gh label create"))
+                        have = None
+                if have is not None:
+                    e = gh(["pr", "edit", pr["prUrl"], "--add-label", label], pr["worktree"], rem["repo"], 60)
+                    if e.returncode != 0:
+                        notes.append("note: " + gh_err(e, f"label {label} not applied: gh pr edit"))
+    else:
+        notes.append(f"note: epic id {ep['id']!r} is not a safe label name: no label")
+    for sib in sibs:
+        if not sib.get("prUrl") or sib.get("state") not in ("opened", "drafted", "pushed"):
+            continue
+
+        def edit(sib=sib):
+            sp, srem = canonical_pr(run, st, sib["id"], "sibling body")
+            srem = rem_with_slug(srem, sp["worktree"])
+            checked_pr(run, st, sp, srem, "sibling body")
+            body = capped(neutral(final_body(run, st, sp) if sp.get("state") == "opened" else draft_body(run, st, sp)),
+                          "The full text is in the run folder.")
+            bad = clean_text(run, st, sp, body, f"{sib['id']}'s body", "sibling body", soft=True)
+            if bad:
+                die(bad)
+            f = os.path.join(run, "pr-bodies", f"{sib['id']}.md")
+            os.makedirs(os.path.dirname(f), exist_ok=True)
+            atomic_write(f, body)
+            r = gh(["pr", "edit", sp["prUrl"], "--body-file", f], sp["worktree"], srem["repo"])
+            if r.returncode != 0:
+                die(gh_err(r, "gh pr edit"))
+
+        ok, why = soft(edit)
+        if not ok:
+            notes.append(f"note: {sib['id']}'s body not updated with the epic links: {why}")
+    for n in notes:
+        try:
+            append_log(run, st.get("stage") or "shipping", f"{pr['id']} {n}")
+        except OSError:
+            pass
+    return notes
+
+
 def cmd_draft_pr(run, pid):
     st, pr, rem = github_pr(run, pid, ("building", "ship-approval"))
     if pr.get("prUrl"):
         print(f"draft=exists url={pr['prUrl']}")
         return
+    pn = need_parent_pr(st, pr, "NOT DRAFTED")
+    if pn:
+        die(f"NOT DRAFTED: {pn}")
     # Normally called right after the Implementer's first round (state building); a late call still
     # opens the draft (commits + a passing check are what count) and keeps a later state as it is.
     if pr.get("state") not in ("pending", "building", "drafted", "reviewing", "fixing", "reviewed"):
@@ -1864,6 +2403,7 @@ def cmd_draft_pr(run, pid):
     if not rem.get("repo"):
         return failed(f"cannot tell which GitHub repo {rem.get('url')} is")
     no_copied(run, st, pr, "NOT DRAFTED")
+    push_parent(run, st, pr, rem, "NOT DRAFTED")
     if not remote_sha(rem["url"], base):
         return failed(f"base {base} is not on {rem['url']}")
     found, err = find_pr(pr, rem)
@@ -1888,6 +2428,8 @@ def cmd_draft_pr(run, pid):
     pr["comments"] = pr.get("comments") or []
     append_log(run, st.get("stage") or "building", f"{pid} draft PR {how}: {url}")
     save_pr(run, st, pr, f"draft={how} url={url}")
+    for n in epic_links(run, st, pr, rem):
+        print(n)
 
 
 def cmd_push(run, pid):
@@ -1953,7 +2495,8 @@ def cmd_post_review(run, pid, rnd):
         print("posted=no: no draft PR; the review stays in the run folder")
         return
     comments = pr.get("comments") or []
-    old = next((c for c in comments if c.get("round") == rnd), None)
+    rk = pr.get("restack") if type(pr.get("restack")) is int else 0
+    old = next((c for c in comments if c.get("round") == rnd and (c.get("restack") or 0) == rk), None)
     if old:
         print(f"posted=already url={old.get('url')}")
         return
@@ -1962,19 +2505,19 @@ def cmd_post_review(run, pid, rnd):
     if not text:
         die(f"NOT POSTED: {rel} is missing or empty")
     checked_pr(run, st, pr, rem, "NOT POSTED")
-    footer = f"_Eagle-Eye run {st.get('runId')}, review round {rnd}._"
+    footer = f"_Eagle-Eye run {st.get('runId')}, review round {rnd}" + (f" (after restack {rk})" if rk else "") + "._"
     head = git("-C", pr["worktree"], "rev-parse", "HEAD").stdout.strip()
     url = posted_already(pr, rem, footer)
     how = "found"
     if not url:
         body = capped(neutral(text), f"The full review is in the run folder: {rel}.") + f"\n\n{footer}\n"
         clean_text(run, st, pr, body, f"review round {rnd}", "NOT POSTED")
-        url, err = post_comment(run, st, pr, rem, body, f"{pid}-round{rnd}")
+        url, err = post_comment(run, st, pr, rem, body, f"{pid}-restack{rk}-round{rnd}" if rk else f"{pid}-round{rnd}")
         if err:
             print(f"posted=failed reason={err}")
             return
         how = "ok"
-    pr["comments"] = comments + [{"round": rnd, "url": url, "head": head}]
+    pr["comments"] = comments + [{"round": rnd, "url": url, "head": head, **({"restack": rk} if rk else {})}]
     append_log(run, st.get("stage") or "building", f"{pid} review round {rnd} posted: {url}")
     save_pr(run, st, pr, f"posted={how} url={url}")
 
@@ -1987,7 +2530,8 @@ def cmd_comment(run, pid, kind, rnd):
     if not pr.get("prUrl"):
         print("posted=no: no draft PR")
         return
-    entry = next((c for c in pr.get("comments") or [] if c.get("round") == rnd), None)
+    rk = pr.get("restack") if type(pr.get("restack")) is int else 0
+    entry = next((c for c in pr.get("comments") or [] if c.get("round") == rnd and (c.get("restack") or 0) == rk), None)
     if not entry or not entry.get("head"):
         die(f"NOT POSTED: round {rnd}'s review was not posted (`state.sh post-review <run> {pid} {rnd}` first)")
     if entry.get("fixesUrl"):
@@ -2001,7 +2545,7 @@ def cmd_comment(run, pid, kind, rnd):
     checked_pr(run, st, pr, rem, "NOT POSTED")
     if remote_sha(rem["url"], pr["branch"]) != git("-C", wt, "rev-parse", "HEAD").stdout.strip():
         die("NOT POSTED: push the fixes first (`state.sh push <run> <pr id>`)")
-    footer = f"_Eagle-Eye run {st.get('runId')}, round {rnd} fixes._"
+    footer = f"_Eagle-Eye run {st.get('runId')}, round {rnd} fixes" + (f" (after restack {rk})" if rk else "") + "._"
     url, how = posted_already(pr, rem, footer), "found"
     if not url:
         clean, _ = scan_secrets("\n".join(commits))
@@ -2009,7 +2553,7 @@ def cmd_comment(run, pid, kind, rnd):
         body = capped(neutral(f"Round {rnd} fixes: {len(commits)} commit(s)\n\n" + "\n".join(items)), "See the branch for the rest.") + \
             f"\n\nReview round {rnd + 1} follows.\n\n{footer}\n"
         clean_text(run, st, pr, body, f"round {rnd} fixes comment", "NOT POSTED")
-        url, err = post_comment(run, st, pr, rem, body, f"{pid}-round{rnd}-fixes")
+        url, err = post_comment(run, st, pr, rem, body, f"{pid}-restack{rk}-round{rnd}-fixes" if rk else f"{pid}-round{rnd}-fixes")
         if err:
             print(f"posted=failed reason={err}")
             return
@@ -2035,18 +2579,25 @@ def cmd_ready(run, pid):
     if pr.get("state") not in ("reviewed", "pushed"):
         die(f"NOT READY: {pid} is {pr.get('state')}; only reviewed PRs are marked ready")
     st, pr, rem = github_pr(run, pid, ("shipping",))
+    parent_note = need_parent_pr(st, pr, "NOT READY")
 
     def save(state, note=None, url=None):
         pr["state"], pr["note"] = state, note
         if url:
             pr["prUrl"] = url
         save_pr(run, st, pr, f"{pid} {state}" + (f": {url}" if url else "") + (f" ({note})" if note else ""))
+        if state == "opened":
+            for n in epic_links(run, st, pr, rem):
+                print(n)
 
     wt, branch, base = pr["worktree"], pr["branch"], pr.get("base")
     if not rem:
         return save("local-only", "no git remote: nothing pushed, no PR opened")
+    if parent_note:
+        return save("needs-attention", parent_note)
     if not rem.get("repo"):
         return save("needs-attention", f"cannot tell which GitHub repo {rem.get('url')} is")
+    push_parent(run, st, pr, rem, "NOT READY")
     if not remote_sha(rem["url"], base):
         return save("needs-attention", f"base {base} is not on {rem['url']}")
     no_copied(run, st, pr, "NOT READY")
@@ -2175,51 +2726,6 @@ def cmd_writeback(run, force):
     print(f"wrote {dest} ({len(drafts)} drafts)")
 
 
-# Files that do not count toward a PR's size (generated or vendored: lockfiles, minified output, snapshots, build folders).
-SIZE_EXCLUDE = {
-    "names": ("package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "Cargo.lock", "Gemfile.lock",
-              "poetry.lock", "Pipfile.lock", "composer.lock", "go.sum", "uv.lock", "Podfile.lock", "flake.lock"),
-    "globs": ("*.lock", "*.min.js", "*.min.css", "*.map", "*.snap", "*.generated.*"),
-    "dirs": ("dist", "build", "fixtures", "testdata"),  # a folder of this name anywhere in the path
-}
-
-
-class SizeError(Exception):
-    pass
-
-
-def size_excluded(path):
-    parts = path.split("/")
-    return (any(d in SIZE_EXCLUDE["dirs"] for d in parts[:-1]) or parts[-1] in SIZE_EXCLUDE["names"]
-            or any(fnmatch.fnmatch(parts[-1], g) for g in SIZE_EXCLUDE["globs"]))
-
-
-def numstat_records(raw):
-    """[(added, deleted, new path)] from `git diff --numstat -z -M`; a rename is `a\\td\\t\\0old\\0new\\0`; a binary file has `-`."""
-    toks = raw.split("\0")
-    if toks and toks[-1] == "":
-        toks.pop()
-    out, i = [], 0
-    while i < len(toks):
-        parts = toks[i].split("\t", 2)
-        if len(parts) != 3:
-            raise SizeError(f"cannot read git's diff output near {toks[i][:60]!r}")
-        a, d, path = parts
-        if path == "":  # rename or copy record: the two paths follow
-            if i + 2 >= len(toks):
-                raise SizeError("cannot read git's diff output (a rename record is cut short)")
-            path, i = toks[i + 2], i + 3
-        else:
-            i += 1
-        if a == "-" or d == "-":
-            out.append((0, 0, path))
-        elif a.isdigit() and d.isdigit():
-            out.append((int(a), int(d), path))
-        else:
-            raise SizeError(f"cannot read git's diff counts {a!r}/{d!r} for {path}")
-    return out
-
-
 def pr_owned_files(run, st):
     """{PR id: [paths]} the approved Files of each PR (plan.prFiles), else the live plan.md's."""
     frozen = (st.get("plan") or {}).get("prFiles") if isinstance(st.get("plan"), dict) else None
@@ -2229,75 +2735,71 @@ def pr_owned_files(run, st):
     return {pid: sorted({f for s in p["stories"] for f in stories.get(s, [])}) for pid, p in prs.items()}
 
 
-def measure_pr(run, st, pid):
-    """The PR's real diff against its base commit as the `size` record. Raises SizeError (with the reason) when it cannot be measured."""
+class DiffError(Exception):
+    pass
+
+
+def diff_paths(run, st, pid):
+    """The paths the PR's branch changes against its base (.guard.json bases[pid], else baseCommit). Raises DiffError (with
+    the reason) when the worktree, the branch or the base is not there."""
     pr = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == pid), None)
     if pr is None:
-        raise SizeError(f"no {pid} in status.json")
+        raise DiffError(f"no {pid} in status.json")
     if not pr.get("repoPath") or not os.path.isabs(str(pr.get("repoPath"))):
-        raise SizeError(f"{pid} has no repoPath")
+        raise DiffError(f"{pid} has no repoPath")
     repo = os.path.realpath(pr["repoPath"])
     branch, wt = canon(repo, st.get("runId"), pid)
     if pr.get("branch") != branch or os.path.realpath(str(pr.get("worktree") or "")) != wt or not os.path.isdir(wt):
-        raise SizeError(f"{pid} is not on {branch} in its worktree {wt} (made by state.sh worktree); the worktree is missing")
+        raise DiffError(f"{pid} is not on {branch} in its worktree {wt} (made by state.sh worktree); the worktree is missing")
     if git("-C", wt, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() != branch:
-        raise SizeError(f"{wt} is not on {branch}")
+        raise DiffError(f"{wt} is not on {branch}")
     g = guard_rec(run)
     if (g.get("worktrees") or {}).get(pid) != wt:
-        raise SizeError(f"{pid}'s worktree is not recorded in .guard.json (run `state.sh worktree` for it)")
+        raise DiffError(f"{pid}'s worktree is not recorded in .guard.json (run `state.sh worktree` for it)")
     base = (g.get("bases") or {}).get(pid) or pr.get("baseCommit")
     if not base:
-        raise SizeError(f"{pid} has no base commit")
-    head = git("-C", wt, "rev-parse", "HEAD").stdout.strip()
-    r = subprocess.run(["git", "-C", wt, "diff", "--numstat", "-z", "-M", f"{base}..HEAD"], capture_output=True)
+        raise DiffError(f"{pid} has no base commit")
+    r = subprocess.run(["git", "-C", wt, "diff", "--name-only", "-z", "-M", f"{base}..HEAD"], capture_output=True)
     if r.returncode != 0:
-        raise SizeError("git diff failed: " + first_line(r.stderr.decode("utf-8", "replace")))
-    added = deleted = files = excluded = 0
-    changed = []
-    for a, d, path in numstat_records(r.stdout.decode("utf-8", "surrogateescape")):
-        if size_excluded(path):
-            excluded += 1
-            continue
-        added, deleted, files = added + a, deleted + d, files + 1
-        changed.append(path)
-    owned = pr_owned_files(run, st)
-    overlaps = []
+        raise DiffError("git diff failed: " + first_line(r.stderr.decode("utf-8", "replace")))
+    return sorted({x for x in r.stdout.decode("utf-8", "surrogateescape").split("\0") if x})
+
+
+def stack_family(run, st, pid):
+    """The ids of pid's stack ancestors and descendants: prs[].stackedOn, and the plan's same-repo Depends on (a child has
+    no stackedOn until its worktree is made, which is after its parent's gate)."""
+    parent = {p.get("id"): p.get("stackedOn") for p in st.get("prs") or [] if isinstance(p, dict)}
+    _, plan_prs = plan_blocks(read(os.path.join(run, "plan.md")) or "")
+    for q in plan_prs:
+        deps = same_repo_deps(plan_prs, q)
+        if len(deps) == 1 and not parent.get(q):
+            parent[q] = deps[0]
+
+    def chain(x):
+        out, y = [], parent.get(x)
+        while isinstance(y, str) and y and y not in out and y != x:
+            out.append(y)
+            y = parent.get(y)
+        return out
+
+    return set(chain(pid)) | {q for q in parent if q != pid and pid in chain(q)}
+
+
+def gate_overlaps(run, st, pid):
+    """[(path, other PR id)]: paths the PR changes that another PR of the same repo owns (plan.prFiles), leaving out the PR's
+    stack ancestors and descendants (a stacked child may change what its parent changed). Raises DiffError."""
+    changed = diff_paths(run, st, pid)
+    me = next(p for p in st["prs"] if p.get("id") == pid)
+    repo = os.path.realpath(str(me.get("repoPath") or "/"))
+    owned, skip = pr_owned_files(run, st), stack_family(run, st, pid)
+    out = []
     for oid, other in sorted((p.get("id"), p) for p in st.get("prs") or [] if isinstance(p, dict)):
-        if oid == pid or os.path.realpath(str(other.get("repoPath") or "/")) != repo:
+        if oid == pid or oid in skip or os.path.realpath(str(other.get("repoPath") or "/")) != repo:
             continue
         for path in changed:
             if any(paths_overlap(path, f) for f in owned.get(oid) or []):
-                overlaps.append({"path": path, "pr": oid})
-    limit = pr_line_limit(run, path=repo)
-    overlimit = ((st.get("plan") or {}).get("overLimit") or {}) if isinstance(st.get("plan"), dict) else {}
-    return {"lines": added + deleted, "added": added, "deleted": deleted, "files": files, "excluded": excluded, "limit": limit,
-            "over": added + deleted > limit, "reason": overlimit.get(pid) or None, "overlaps": overlaps, "head": head, "at": now()}
-
-
-def record_size(run, pid):
-    """Measure the PR and record it as prs[].size (through the trusted write). Returns the record; raises SizeError."""
-    st = load_status(run)
-    z = measure_pr(run, st, pid)
-    pr = next(p for p in st["prs"] if p.get("id") == pid)
-    pr["size"] = z
-    write_status(run, st, trusted=True)
-    return z
-
-
-def size_summary(z):
-    return (f"size={z['lines']} files={z['files']} excluded={z['excluded']} limit={z['limit']} over={'yes' if z['over'] else 'no'} "
-            f"reason={'set' if z['reason'] else 'none'} overlaps={len(z['overlaps'])}")
-
-
-def cmd_size(run, pid):
-    run = os.path.realpath(run)
-    try:
-        z = record_size(run, pid)
-    except SizeError as e:
-        die(f"NOT MEASURED: {e}")
-    print(size_summary(z))
-    for o in z["overlaps"]:
-        print(f"overlap: {o['path']} ({o['pr']})")
+                out.append((path, oid))
+    return out
 
 
 def cmd_gate(run, pid, gate, reason, review=None):
@@ -2327,26 +2829,24 @@ def cmd_gate(run, pid, gate, reason, review=None):
         if not (verdict or "").startswith("APPROVED"):
             die(f"NOT WRITTEN: {gate} needs the review file {review} to exist with verdict APPROVED (found {verdict or 'no review'}); "
                 "a review asking for changes is FAIL")
-        if isinstance(st.get("plan"), dict) and "overLimit" in st["plan"]:  # a plan approved under the size rules: enforce them
+        if isinstance(st.get("plan"), dict) and isinstance(st["plan"].get("prFiles"), dict):  # a plan approved under the 0.7.0+ rules
             try:
-                z = record_size(run, pid)
-            except SizeError as e:
-                die(f"NOT WRITTEN: {gate} for {pid} needs its size measured, and it cannot be: {e}. "
+                overlaps = gate_overlaps(run, st, pid)
+            except DiffError as e:
+                die(f"NOT WRITTEN: {gate} for {pid} needs its diff checked against the other PRs' files, and it cannot be: {e}. "
                     f"Fix that (state.sh worktree re-makes a missing worktree from its branch), then write the gate again")
-            if z["over"] and not z["reason"]:
-                die(f"NOT WRITTEN: {pid} is {z['lines']} lines, over its limit {z['limit']}, with no over-limit reason: write FAIL "
-                    "\"over the size limit without a reason\" (only the user's reason can waive it at stop #2)")
-            if z["overlaps"]:
+            if overlaps:
                 die(f"NOT WRITTEN: {pid} changes paths another PR of the same repo owns: "
-                    + "; ".join(f"{o['path']} ({o['pr']})" for o in z["overlaps"]) + ". Write FAIL, or WAIVED with the user's reason")
+                    + "; ".join(f"{path} ({oid})" for path, oid in overlaps) + ". Write FAIL, or WAIVED with the user's reason")
         else:
-            print("size: not enforced (plan approved before 0.7.0)")
+            print("overlap: not checked (plan approved before 0.7.0)")
     if gate == "WAIVED":
         if not old or old.get("gate") not in ("CONCERNS", "FAIL"):
             die(f"NOT WRITTEN: WAIVED only replaces a CONCERNS or FAIL gate (now {(old or {}).get('gate') or 'missing'}), "
                 "and only when the user said so, with their reason")
     os.makedirs(os.path.join(run, "gates"), exist_ok=True)
-    body = (f"gate: {gate}\nreason: {json.dumps(reason)}\nupdated: {now()}\nreview: {json.dumps(review)}\nround: {rnd}\n"
+    rs = pr.get("restack") if type(pr.get("restack")) is int else 0
+    body = (f"gate: {gate}\nreason: {json.dumps(reason)}\nupdated: {now()}\nreview: {json.dumps(review)}\nround: {rnd}\nrestack: {rs}\n"
             + (f"waived: {json.dumps(old.get('gate'))}\n" if gate == "WAIVED" else ""))
     atomic_write(os.path.join(run, "gates", f"{pid}.yml"), body)
     append_log(run, st.get("stage") or "building", f"{pid} gate {gate}" + (" (waived by the user)" if gate == "WAIVED" else "") + f": {reason}")
@@ -2497,30 +2997,68 @@ def kept_files(wt, copied):
 
 
 def merged_head(pr, rem, cwd, branch):
-    """(headRefOid, None) for a merged PR of this run's branch in the recorded repo, else (None, why)."""
+    """(headRefOid, None, baseRefName) for a merged PR of this run's branch in the recorded repo, else (None, why, None).
+    The base is GitHub's own: in a stack it is the branch the PR was retargeted to, not the base recorded at ship time."""
     url = pr.get("prUrl")
     if not url:
-        return None, "no PR"
+        return None, "no PR", None
     if not rem or not rem.get("url") or not rem.get("repo"):
-        return None, "no recorded GitHub remote"
+        return None, "no recorded GitHub remote", None
     m = GH_URL.match(str(url))
     hm = REMOTE_HOST.match(rem.get("url") or "")
     hosts = {"github.com"} | ({hm.group(1).lower()} if hm else set())
     if not m or f"{m.group(1)}/{m.group(2)}".lower() != rem["repo"].lower() or url.split("/")[2].lower() not in hosts:
-        return None, f"{url} is not a pull request of {rem['repo']}"
-    r = gh(["pr", "view", url, "--json", "state,mergeCommit,headRefName,headRefOid"], cwd, rem["repo"], 60)
+        return None, f"{url} is not a pull request of {rem['repo']}", None
+    r = gh(["pr", "view", url, "--json", "state,mergeCommit,headRefName,headRefOid,baseRefName"], cwd, rem["repo"], 60)
     if r.returncode != 0:
-        return None, gh_err(r, "gh pr view")
+        return None, gh_err(r, "gh pr view"), None
     try:
         v = json.loads(r.stdout or "{}")
     except ValueError:
-        return None, "gh pr view printed no JSON"
+        return None, "gh pr view printed no JSON", None
+    if not isinstance(v, dict):
+        return None, "gh pr view printed no JSON object", None
     if v.get("headRefName") != branch:
-        return None, f"the PR's head is {v.get('headRefName')}, not {branch}"
+        return None, f"the PR's head is {v.get('headRefName')}, not {branch}", None
     if v.get("state") != "MERGED":
-        return None, f"not merged ({str(v.get('state') or 'unknown').lower()})"
+        return None, f"not merged ({str(v.get('state') or 'unknown').lower()})", None
     oid = str(v.get("headRefOid") or "")
-    return (oid, None) if re.fullmatch(r"[0-9a-f]{40}", oid) else (None, "gh pr view gave no head commit")
+    base = v.get("baseRefName") if isinstance(v.get("baseRefName"), str) and v.get("baseRefName") else None
+    return (oid, None, base) if re.fullmatch(r"[0-9a-f]{40}", oid) else (None, "gh pr view gave no head commit", None)
+
+
+def retarget_children(rem, cwd, branch, new_base):
+    """None when no open PR uses `branch` as its base: those that did were retargeted to new_base and checked. Else why not
+    (the caller then keeps the branch)."""
+    slug = rem["repo"]
+    r = gh(["pr", "list", "--base", branch, "--state", "open", "--json", "url,baseRefName", "--limit", "100"], cwd, slug, 60)
+    if r.returncode != 0:
+        return gh_err(r, "listing the PRs stacked on it: gh pr list --base")
+    try:
+        rows = json.loads(r.stdout or "[]")
+    except ValueError:
+        return "gh pr list printed no JSON"
+    hm = REMOTE_HOST.match(rem.get("url") or "")
+    hosts = {"github.com"} | ({hm.group(1).lower()} if hm else set())
+    rows = rows if isinstance(rows, list) else []
+    if rows and (not new_base or not re.fullmatch(r"[\w][\w./-]{0,200}", str(new_base)) or ".." in str(new_base) or str(new_base).endswith(("/", ".lock"))):
+        return f"no usable base recorded to retarget to ({new_base!r})"
+    for row in rows:
+        url = str(row.get("url") or "") if isinstance(row, dict) else ""
+        m = GH_URL.match(url)
+        if not m or f"{m.group(1)}/{m.group(2)}".lower() != slug.lower() or url.split("/")[2].lower() not in hosts:
+            return f"{url or 'a PR'} stacked on it is not a pull request of {slug}"
+        e = gh(["pr", "edit", url, "--base", new_base], cwd, slug, 60)
+        if e.returncode != 0:
+            return gh_err(e, f"retargeting {url} to {new_base}: gh pr edit --base")
+        v = gh(["pr", "view", url, "--json", "baseRefName"], cwd, slug, 60)
+        try:
+            now_base = json.loads(v.stdout or "{}").get("baseRefName") if v.returncode == 0 else None
+        except (ValueError, AttributeError):
+            now_base = None
+        if now_base != new_base:
+            return f"{url} is not on {new_base} after the retarget (base {now_base!r})"
+    return None
 
 
 def this_run(run, what):
@@ -2544,7 +3082,16 @@ def cmd_cleanup(run):
     results = []
     if mc_sweep(run, extra_repos=[p["repoPath"] for p in by_id.values() if isinstance(p.get("repoPath"), str) and p["repoPath"]]):
         print("merge-check scratch removed")
-    for pid, wt in sorted((g.get("worktrees") or {}).items()):
+    def depth(pid):  # a stack's parents go before their children
+        n, seen, cur = 0, {pid}, by_id.get(pid) or {}
+        while cur.get("stackedOn") in by_id and cur["stackedOn"] not in seen:
+            seen.add(cur["stackedOn"])
+            cur = by_id[cur["stackedOn"]]
+            n += 1
+        return n
+
+    closed_parents = set()
+    for pid, wt in sorted((g.get("worktrees") or {}).items(), key=lambda kv: (depth(kv[0]), kv[0])):
         if not isinstance(wt, str) or not re.fullmatch(r"PR\d+", pid):
             continue
         pr = by_id.get(pid) or {}
@@ -2575,9 +3122,11 @@ def cmd_cleanup(run):
                 r = git("-C", repo, "branch", "-d", "--", branch)  # never -D
                 parts.append(f"branch {branch} deleted" if r.returncode == 0 else f"branch {branch} kept (not merged here)")
         rem = (g.get("remotes") or {}).get(pid)
-        oid, why = merged_head(pr, rem if isinstance(rem, dict) else None, repo, branch)
+        oid, why, merged_base = merged_head(pr, rem if isinstance(rem, dict) else None, repo, branch)
         if not oid:
             parts.append(f"remote branch kept ({why})")
+            if str(why).startswith("not merged (closed"):
+                closed_parents.add(pid)
         else:
             tip, err = remote_tip(rem["url"], branch)
             if err:
@@ -2587,10 +3136,21 @@ def cmd_cleanup(run):
             elif tip != oid:
                 parts.append("remote branch kept (its tip is not the merged PR's head)")
             else:
-                r = delete_remote_branch(rem["url"], branch, oid)
-                gone = r.returncode == 0 or "remote ref does not exist" in (r.stderr or "")
-                parts.append("remote branch deleted" if gone else f"remote branch kept: {first_line(r.stderr)[:200]}")
+                # A PR stacked on this branch is retargeted to this PR's own base on GitHub (and checked) before the branch goes:
+                # deleting the base of an open PR closes it on GitHub. In a chain that base may already have been retargeted, so
+                # GitHub's baseRefName wins over the one recorded at ship time. Any failure keeps the branch.
+                bad = retarget_children(rem, repo, branch, merged_base or pr.get("base"))
+                if bad:
+                    parts.append(f"remote branch kept (not deleted: {bad})")
+                else:
+                    r = delete_remote_branch(rem["url"], branch, oid)
+                    gone = r.returncode == 0 or "remote ref does not exist" in (r.stderr or "")
+                    parts.append("remote branch deleted" if gone else f"remote branch kept: {first_line(r.stderr)[:200]}")
         results.append(f"{pid}: " + "; ".join(parts))
+    for pid, pr in sorted(by_id.items()):
+        if pr.get("stackedOn") in closed_parents:
+            results.append(f"{pid}: note: stacked on {pr['stackedOn']}, which was closed without merge: {pid}'s base is unchanged and "
+                           f"{pr['stackedOn']}'s branch is kept; retarget {pid} by hand if you still want it")
     if not results:
         print("cleanup: this run has no worktrees")
         return
@@ -2723,8 +3283,23 @@ def mc_timeout():
         return 540.0
 
 
-def mc_one(run, repo, name, prs, entry, deadline, total):
-    """Check one repo's PRs on a scratch merge. Returns the mergeChecks record."""
+def stack_sorted(st, prs):
+    """prs with stack parents before their children (depth, then id): a child's branch contains its parent's commits."""
+    by = {p.get("id"): p for p in st.get("prs") or [] if isinstance(p, dict)}
+
+    def depth(p):
+        n, seen, cur = 0, {p.get("id")}, p
+        while cur.get("stackedOn") in by and cur["stackedOn"] not in seen:
+            seen.add(cur["stackedOn"])
+            cur = by[cur["stackedOn"]]
+            n += 1
+        return n
+
+    return sorted(prs, key=lambda p: (depth(p), int(str(p.get("id"))[2:]) if str(p.get("id"))[2:].isdigit() else 0))
+
+
+def mc_one(run, repo, name, prs, entry, deadline, total, base=None):
+    """Check one repo's PRs on a scratch merge. Returns the mergeChecks record. base: the scratch base commit (a stack's root base)."""
     ids = [p["id"] for p in prs]
     rec = {"prs": ids, "result": "none", "error": None, "log": None, "at": now()}
     safe = re.sub(r"[^\w.-]", "_", name) or "repo"
@@ -2744,7 +3319,7 @@ def mc_one(run, repo, name, prs, entry, deadline, total):
             if git("-C", repo, "show-ref", "--verify", "--quiet", f"refs/heads/{p.get('branch')}").returncode != 0:
                 rec.update(result="error", error=f"{p['id']}: branch {p.get('branch')} is missing")
                 return rec
-        base = prs[0].get("baseCommit") or ""
+        base = base or prs[0].get("baseCommit") or ""
         r = git("-c", "core.hooksPath=/dev/null", "-C", repo, "worktree", "add", "--detach", scratch, base)
         if r.returncode != 0:
             rec.update(result="error", error="git worktree add failed: " + first_line(r.stderr)[:200])
@@ -2828,7 +3403,7 @@ def cmd_merge_check(run):
         chk = p.get("check") if isinstance(p.get("check"), dict) else {}
         if p.get("state") == "reviewed" or (p.get("state") == "needs-attention" and chk.get("result") in ("pass", "none")):
             groups.setdefault(os.path.realpath(p["repoPath"]), []).append(p)
-    groups = {r: ps for r, ps in groups.items() if len(ps) >= 2}
+    groups = {r: stack_sorted(st, ps) for r, ps in groups.items() if len(ps) >= 2}
     mc_sweep(run, extra_repos=[os.path.realpath(p["repoPath"]) for p in st.get("prs") or [] if isinstance(p, dict) and p.get("repoPath")])
     if not groups:
         print("merge-check: none")
@@ -2843,7 +3418,7 @@ def cmd_merge_check(run):
             entry = repo_entry(run, repo)
             name = entry.get("name") or prs[0].get("repo") or os.path.basename(repo)
             current = (name, [p["id"] for p in prs])
-            records[name] = mc_one(run, repo, name, prs, entry, deadline, total)
+            records[name] = mc_one(run, repo, name, prs, entry, deadline, total, stack_root(st, prs[0]).get("baseCommit"))
             current = None
             r = records[name]
             lines.append(f"merge-check {name}: {r['result']} ({'+'.join(r['prs'])})" + (f" {r['error']}" if r.get("error") else "")
@@ -2918,7 +3493,7 @@ def main(argv):
     cmd, args = (argv[0] if argv else ""), argv[1:]
     need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0,
             "gate": 4, "report": 1, "mode": 1, "draft-pr": 2, "push": 2, "post-review": 3, "comment": 4, "ready": 2, "bmad-size": 2, "bmad-init": 1, "bmad-check": 1,
-            "cleanup": 1, "size": 2, "merge-check": 1, "request": 2, "request-wait": 2}
+            "cleanup": 1, "restack": 2, "merge-check": 1, "request": 2, "request-wait": 2}
     if cmd not in need or len(args) < need[cmd]:
         die("usage: see the header of state.sh", 2)
     if cmd == "preflight": cmd_preflight(args[0], "resume" in args[1:])
@@ -2945,7 +3520,7 @@ def main(argv):
     elif cmd == "bmad-init": cmd_bmad_init(args[0])
     elif cmd == "bmad-check": cmd_bmad_check(args[0])
     elif cmd == "cleanup": cmd_cleanup(args[0])
-    elif cmd == "size": cmd_size(args[0], args[1])
+    elif cmd == "restack": cmd_restack(args[0], args[1])
     elif cmd == "merge-check": cmd_merge_check(args[0])
     elif cmd == "request": cmd_request(args[0], args[1])
     elif cmd == "request-wait": cmd_request_wait(args[0], args[1], args[2:])

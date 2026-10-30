@@ -451,4 +451,84 @@ mod tests {
         assert!(detail.unwrap().contains("log file"));
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside");
     }
+    /// R1 for a stacked PR: its worktree (made from its parent's branch head) is checked like any other.
+    #[cfg(unix)]
+    #[test]
+    fn a_stacked_pr_is_checked_in_its_own_worktree_made_from_its_parents_head() {
+        let dir = TempDir::new("app_check_stack");
+        let repo = dir.join("ws/mathlib");
+        repo_at(&repo);
+        let wts = dir.join("ws/mathlib-worktrees");
+        let wt = |n: u32| wts.join(format!("dcv2-{RUN}-pr{n}"));
+        run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                &format!("dcv2/{RUN}-pr1"),
+                wt(1).to_str().unwrap(),
+            ],
+        );
+        std::fs::write(wt(1).join("parent.txt"), "from the parent").unwrap();
+        run(&wt(1), &["add", "."]);
+        run(&wt(1), &["commit", "-q", "-m", "parent"]);
+        let parent_head = crate::run::git::git(&wt(1), &["rev-parse", "HEAD"]).unwrap();
+        run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                &format!("dcv2/{RUN}-pr2"),
+                wt(2).to_str().unwrap(),
+                &parent_head,
+            ],
+        );
+        let stray = dir.join("stray");
+        run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "dcv2/not-this-run",
+                stray.to_str().unwrap(),
+                &parent_head,
+            ],
+        );
+        let run_dir = dir.join("runs").join(RUN);
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("repos.json"),
+            json!({"schema": 1, "repos": [{"name": "mathlib", "path": repo, "check": "test -f parent.txt"}]})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            run_dir.join("status.json"),
+            json!({"schema": 1, "stage": "ship-approval", "prs": [
+                {"id": "PR1", "repo": "mathlib", "repoPath": repo, "worktree": wt(1), "check": {"cwd": wt(1)}},
+                {"id": "PR2", "repo": "mathlib", "repoPath": repo, "worktree": wt(2), "stackedOn": "PR1", "check": {"cwd": wt(2)}},
+                {"id": "PR3", "repo": "mathlib", "repoPath": repo, "worktree": stray, "check": {"cwd": stray}}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        rerun_checks(&run_dir, Duration::from_secs(30)).unwrap();
+        let checks = read_app_checks(&run_dir);
+        assert_eq!(checks["PR1"].result, "pass", "{:?}", checks["PR1"]);
+        assert_eq!(
+            checks["PR2"].result, "pass",
+            "a stacked worktree is verified: {:?}",
+            checks["PR2"]
+        );
+        assert_eq!(
+            checks["PR3"].result, "error",
+            "an off-path, off-branch worktree is still refused"
+        );
+    }
 }

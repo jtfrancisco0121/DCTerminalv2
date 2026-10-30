@@ -648,4 +648,60 @@ mod tests {
         run(&work, &["commit", "-q", "-m", "init"]);
         own_worktree_ok(&work);
     }
+    /// A stacked PR's worktree is made from its parent's branch head (not the repo base) at the same contract path.
+    #[test]
+    fn a_stacked_worktree_made_from_a_sibling_branch_is_verified_and_off_path_or_off_branch_ones_are_not(
+    ) {
+        let dir = TempDir::new("janitor_stack");
+        let repo = dir.join("ws/mathlib");
+        repo_at(&repo);
+        let wts = dir.join("ws/mathlib-worktrees");
+        let (one, two) = (
+            wts.join(format!("dcv2-{RUN}-pr1")),
+            wts.join(format!("dcv2-{RUN}-pr2")),
+        );
+        add(&repo, &format!("dcv2/{RUN}-pr1"), &one);
+        std::fs::write(one.join("parent.txt"), "parent").unwrap();
+        run(&one, &["add", "."]);
+        run(&one, &["commit", "-q", "-m", "parent work"]);
+        let parent_head = crate::run::git::git(&one, &["rev-parse", "HEAD"]).unwrap();
+        // The child: its own branch, made from the parent's head.
+        run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                &format!("dcv2/{RUN}-pr2"),
+                two.to_str().unwrap(),
+                &parent_head,
+            ],
+        );
+        assert!(two.join("parent.txt").exists());
+        let repo_s = repo.to_str().unwrap();
+        assert!(verify_worktree(RUN, "PR2", &two, Some(repo_s)).is_ok());
+        // Not where the contract puts it, or on another branch: still refused.
+        assert!(verify_worktree(RUN, "PR1", &two, Some(repo_s))
+            .unwrap_err()
+            .contains("not where this run's worktrees go"));
+        let off_path = dir.join("ws/mathlib-worktrees/elsewhere-pr2");
+        run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "dcv2/other-branch",
+                off_path.to_str().unwrap(),
+                &parent_head,
+            ],
+        );
+        assert!(verify_worktree(RUN, "PR2", &off_path, Some(repo_s)).is_err());
+        run(&two, &["checkout", "-q", "-b", "feature/x"]);
+        assert!(verify_worktree(RUN, "PR2", &two, Some(repo_s))
+            .unwrap_err()
+            .contains("not dcv2/"));
+    }
 }
