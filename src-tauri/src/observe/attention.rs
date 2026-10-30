@@ -179,10 +179,18 @@ pub struct EpicCount {
     pub total: u32,
 }
 
+/// A PR counts as done at these states (used by `prs_done` and epic counts).
+fn pr_state_is_done(state: Option<&str>) -> bool {
+    matches!(
+        state,
+        Some("reviewed" | "drafted" | "opened" | "pushed" | "local-only")
+    )
+}
+
 /// The run's epic groups from status.json `prs[].epic` (`{id, title}`), in
 /// plan order with "No epic" last. A missing or wrong-typed `epic` counts as
 /// no epic; a run with fewer than 2 groups gets none. Done = `opened`,
-/// `merged` or `local-only`.
+/// the same states as `prs_done` (see `pr_state_is_done`).
 pub fn epic_groups(value: Option<&serde_json::Value>) -> Vec<EpicCount> {
     let Some(prs) = value.and_then(|v| v.get("prs")).and_then(|p| p.as_array()) else {
         return Vec::new();
@@ -195,10 +203,7 @@ pub fn epic_groups(value: Option<&serde_json::Value>) -> Vec<EpicCount> {
         total: 0,
     };
     for pr in prs {
-        let done = matches!(
-            pr.get("state").and_then(|s| s.as_str()),
-            Some("opened" | "merged" | "local-only")
-        );
+        let done = pr_state_is_done(pr.get("state").and_then(|s| s.as_str()));
         let epic = pr
             .get("epic")
             .and_then(|e| e.as_object())
@@ -860,12 +865,7 @@ impl Reader {
                 .filter(|w| !w.is_empty()),
             prs_done: prs
                 .iter()
-                .filter(|pr| {
-                    matches!(
-                        pr.state.as_deref(),
-                        Some("reviewed" | "drafted" | "opened" | "pushed" | "local-only")
-                    )
-                })
+                .filter(|pr| pr_state_is_done(pr.state.as_deref()))
                 .count() as u32,
             prs_total: prs.len() as u32,
             epics: epic_groups(value.as_ref()),
@@ -1839,7 +1839,7 @@ mod tests {
         let v = serde_json::json!({"prs": [
             {"id": "PR1", "state": "opened", "epic": {"id": "e1", "title": "Alpha"}},
             {"id": "PR2", "state": "building", "epic": {"id": "e1", "title": "Alpha"}},
-            {"id": "PR3", "state": "merged"},
+            {"id": "PR3", "state": "pushed"},
             {"id": "PR4", "state": "local-only", "epic": {"id": "e2"}},
         ]});
         let groups = epic_groups(Some(&v));
