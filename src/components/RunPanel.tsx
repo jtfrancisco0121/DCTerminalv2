@@ -27,8 +27,6 @@ import {
   reviewText,
   runFinished,
   safeUrl,
-  sizeBadgeText,
-  sizeTitle,
   stageText,
   storiesText,
   wantsAppChecks,
@@ -139,7 +137,6 @@ function PrRow({
   const gate = pr.gateStatus;
   const badge = draftBadge(pr);
   const ci = ciChip(pr);
-  const size = pr.size ?? null;
   const comments = (pr.comments ?? []).filter((c) => safeUrl(c.url));
   return (
     <li className="run-pr" data-testid={`pr-${pr.id}`}>
@@ -150,16 +147,6 @@ function PrRow({
         {badge && (
           <span className={`run-pr-badge run-pr-badge-${badge}`} data-testid={`badge-${pr.id}`}>
             {badge}
-          </span>
-        )}
-        {size && (
-          <span
-            className={`size-badge${size.over ? " size-badge-over" : ""}`}
-            data-testid={`size-${pr.id}`}
-            title={sizeTitle(size)}
-            aria-label={`${sizeBadgeText(size)}: ${sizeTitle(size)}`}
-          >
-            {sizeBadgeText(size)}
           </span>
         )}
       </div>

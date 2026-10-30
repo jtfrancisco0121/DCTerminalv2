@@ -18,12 +18,10 @@ export type Repo = {
   copyFiles?: string[];
   /** Live Claude tests allowed in this repo's checks (repos.json `liveTests`). */
   liveTests?: boolean;
-  /** PR line limit (repos.json `prSizeLimit`); absent: the plugin's default, 400. */
-  prSizeLimit?: number | null;
 };
 
 /** One repo's worktree setup (app settings, keyed by the repo's real path). */
-export type RepoSetup = { setup: string | null; copyFiles: string[]; liveTests?: boolean; prSizeLimit?: number | null };
+export type RepoSetup = { setup: string | null; copyFiles: string[]; liveTests?: boolean };
 
 /** `github`: draft PRs + one review comment per round; `local`: the quiet local loop. */
 export type ReviewMode = "github" | "local";
@@ -146,18 +144,14 @@ export type PrView = {
   ciError?: string | null;
   /** The PR's state on GitHub: `OPEN`, `MERGED`, `CLOSED`; null until read. */
   prState?: string | null;
-  /** The PR's measured size (status.json `prs[].size`, written by state.sh); null when not measured. */
-  size?: PrSize | null;
-};
-
-/** What the app shows of `prs[].size`; `over` is state.sh's verdict, never recomputed here. */
-export type PrSize = {
-  lines: number;
-  files: number;
-  excluded: number;
-  limit: number;
-  over: boolean;
-  reason: string | null;
+  /** The PR's epic (status.json `prs[].epic`, plugin 0.8.0+); absent on older runs. */
+  epic?: { id: string; title: string | null } | null;
+  /** The PR this one is stacked on (`prs[].stackedOn`); absent when not stacked. */
+  stackedOn?: string | null;
+  /** The branch this PR opens against (`prs[].base`). */
+  base?: string | null;
+  /** The PRs this one depends on (`prs[].dependsOn`). */
+  dependsOn?: string[];
 };
 
 /** BMAD planning of a run (auto or on); absent for older runs and runs with it off. */

@@ -46,45 +46,20 @@ describe("start screen choices", () => {
   });
 });
 
-describe("PR line limit", () => {
+describe("worktree setup save", () => {
   const repo: Repo = { name: "mathlib", path: "/w/mathlib", check: null };
   const mocked = vi.mocked(setRepoSetup);
   afterEach(() => {
     cleanup();
     mocked.mockClear();
   });
-  const open = () => {
+
+  it("has no PR line limit field and saves no size limit", async () => {
     render(<WorktreeSetup repos={[repo]} />);
-    return screen.getByLabelText("PR line limit of mathlib") as HTMLInputElement;
-  };
-  const save = () => fireEvent.click(screen.getByText("Save"));
-
-  it("saves a typed limit", async () => {
-    const input = open();
-    expect(input.placeholder).toBe("400");
-    fireEvent.change(input, { target: { value: "600" } });
-    save();
+    expect(screen.queryByLabelText("PR line limit of mathlib")).toBeNull();
+    expect(screen.queryByText(/PR line limit/)).toBeNull();
+    fireEvent.click(screen.getByText("Save"));
     await waitFor(() => expect(mocked).toHaveBeenCalledTimes(1));
-    expect(mocked.mock.calls[0][1].prSizeLimit).toBe(600);
-  });
-
-  it("refuses 0, 4.5 and 100001 without saving", () => {
-    const input = open();
-    for (const bad of ["0", "4.5", "100001", "abc"]) {
-      fireEvent.change(input, { target: { value: bad } });
-      save();
-      expect(screen.getByText("Use a whole number from 1 to 100000.")).toBeTruthy();
-    }
-    expect(mocked).not.toHaveBeenCalled();
-  });
-
-  it("saves an empty field as no limit", async () => {
-    render(<WorktreeSetup repos={[{ ...repo, prSizeLimit: 700 }]} />);
-    const input = screen.getByLabelText("PR line limit of mathlib") as HTMLInputElement;
-    expect(input.value).toBe("700");
-    fireEvent.change(input, { target: { value: "" } });
-    save();
-    await waitFor(() => expect(mocked).toHaveBeenCalledTimes(1));
-    expect(mocked.mock.calls[0][1].prSizeLimit).toBeNull();
+    expect(Object.keys(mocked.mock.calls[0][1]).sort()).toEqual(["copyFiles", "liveTests", "setup"]);
   });
 });
