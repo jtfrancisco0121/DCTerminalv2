@@ -1060,4 +1060,110 @@ else
 fi
 export DCV2_RUN_DIR="$RUN"
 
+echo "# size (prs[].size), plan.overLimit / plan.prFiles, guard lock"
+# szsetup <tag> [over limit text for PR1]: a run <tag> with its own repo "sz<tag>" and two same-repo PRs (PR1 owns src/a.ts etc., PR2 owns other/),
+# the plan approved, the PRs in status building and both worktrees made. Sets SZ (run), SR (repo), SZ1 / SZ2 (worktrees), SZBASE.
+szsetup() {
+  local tag="$1" over="${2:-}"
+  SZ="$d/runs/r-$tag"; SR="$WS/sz$tag"; mkdir -p "$SZ" "$SR"
+  git -C "$SR" init -q -b main
+  seq 1 20 > "$SR/old.txt"; mkdir -p "$SR/src"; echo keep > "$SR/src/keep.txt"
+  git -C "$SR" add -A; git -C "$SR" -c user.name=t -c user.email=t@t commit -q -m init
+  SZBASE="$(git -C "$SR" rev-parse HEAD)"
+  printf 'folder: %s\n' "$WS" > "$SZ/request.md"
+  printf '{"schema":1,"repos":[{"name":"sz%s","path":"%s","check":"true"}]}\n' "$tag" "$SR" > "$SZ/repos.json"
+  { printf '# Plan\n## Stories\n### S1: First\n- Files: src/a.ts, old.txt, new.txt, img.bin, package-lock.json, fixtures/\n### S2: Second\n- Files: other/\n'
+    printf '## Pull requests\n### PR1: First\n- Repo: sz%s\n- Stories: S1\n- Depends on: none\n- Size: ~20 lines, 1 story\n' "$tag"
+    [[ -z "$over" ]] || printf -- '- Over limit: %s\n' "$over"
+    printf '### PR2: Second\n- Repo: sz%s\n- Stories: S2\n- Depends on: none\n- Size: ~20 lines, 1 story\n' "$tag"; } > "$SZ/plan.md"
+  export DCV2_RUN_DIR="$SZ"
+  szstatus plan-approval | bash "$STATE" put "$SZ/status.json" >/dev/null
+  bash "$STATE" approve "$SZ" plan user >/dev/null
+  SZ1="$WS/sz$tag-worktrees/dcv2-r-$tag-pr1"; SZ2="$WS/sz$tag-worktrees/dcv2-r-$tag-pr2"
+  szstatus building | bash "$STATE" put "$SZ/status.json" >/dev/null
+  bash "$STATE" worktree "$SZ" "$SR" PR1 "$SZBASE" >/dev/null
+  bash "$STATE" worktree "$SZ" "$SR" PR2 "$SZBASE" >/dev/null
+}
+# szstatus <stage> [python]: a status document for the current $SZ / $SR run
+szstatus() {
+  python3 - "$SZ" "$SR" "$SZBASE" "$@" <<'PY'
+import json, os, sys
+run, repo, base, stage = sys.argv[1:5]
+extra = sys.argv[5] if len(sys.argv) > 5 else ""
+rid = os.path.basename(run); tag = rid[2:]
+def pr(i):
+    lc = f"pr{i}"
+    return {"id": f"PR{i}", "title": f"PR {i}", "repo": "sz" + tag, "repoPath": repo, "branch": f"dcv2/{rid}-{lc}", "base": "main", "baseCommit": base,
+            "worktree": os.path.join(os.path.dirname(repo), "sz" + tag + "-worktrees", f"dcv2-{rid}-{lc}"), "dependsOn": [],
+            "stories": {"done": 1, "total": 1, "ids": [f"S{i}"]}, "commits": 0, "check": {"command": "true", "result": "pass", "summary": None},
+            "review": {"round": 1, "verdict": "APPROVED", "openFindings": 0, "path": None}, "prUrl": None, "state": "building", "note": None}
+doc = {"schema": 1, "runId": rid, "stage": stage, "waitingFor": "plan-approval" if stage == "plan-approval" else None, "folder": os.path.dirname(repo),
+       "plan": {"path": "plan.md", "reviewRound": 1, "verdict": "APPROVED", "openFindings": 0, "approved": False},
+       "prs": [pr(1), pr(2)] if stage not in ("planning", "plan-approval") else [], "ship": None, "writeback": None, "error": None}
+exec(extra)
+print(json.dumps(doc))
+PY
+}
+szcommit() { git -C "$1" add -A && git -C "$1" -c user.name=t -c user.email=t@t commit -q -m "$2"; }
+szsetup sa
+is "plan.overLimit is {} when no PR has a reason" "$SZ/status.json" plan.overLimit '{}'
+is "plan.prFiles frozen at approve (PR2)" "$SZ/status.json" plan.prFiles.PR2 '["other/"]'
+expect 1 "size of a PR that is not in status.json is refused" bash "$STATE" size "$SZ" PR9
+expect 0 "size of an unchanged PR" bash "$STATE" size "$SZ" PR1
+has "  zero lines" "size=0 files=0 excluded=0 limit=400 over=no reason=none overlaps=0"
+seq 1 10 > "$SZ1/src/a.ts"
+seq 1 5000 > "$SZ1/package-lock.json"
+mkdir -p "$SZ1/fixtures"; seq 1 50 > "$SZ1/fixtures/f.txt"
+szcommit "$SZ1" "lockfile, fixture and 10 lines"
+expect 0 "size: a lockfile and a fixture are not counted" bash "$STATE" size "$SZ" PR1
+has "  10 lines, 1 file, 2 excluded" "size=10 files=1 excluded=2 limit=400 over=no reason=none overlaps=0"
+is "  prs[0].size.lines 10" "$SZ/status.json" prs.0.size.lines 10
+is "  prs[0].size.excluded 2" "$SZ/status.json" prs.0.size.excluded 2
+is "  prs[0].size.over false" "$SZ/status.json" prs.0.size.over false
+is "  prs[0].size.reason null" "$SZ/status.json" prs.0.size.reason null
+python3 - "$SZ/status.json" <<'PY' && ok "  every AD-4 key is there" || bad "  size keys"
+import json, sys
+z = json.load(open(sys.argv[1]))["prs"][0]["size"]
+assert sorted(z) == sorted(["lines", "added", "deleted", "files", "excluded", "limit", "over", "reason", "overlaps", "head", "at"]), sorted(z)
+PY
+git -C "$SZ1" mv old.txt new.txt; echo extra1 >> "$SZ1/new.txt"; echo extra2 >> "$SZ1/new.txt"
+printf '\000\001\002\003' > "$SZ1/img.bin"
+szcommit "$SZ1" "rename with 2 added lines, and a binary file"
+expect 0 "size: a rename counts its changed lines only, a binary file counts 0 lines and 1 file" bash "$STATE" size "$SZ" PR1
+has "  12 lines in 3 files" "size=12 files=3 excluded=2 limit=400 over=no reason=none overlaps=0"
+is "  added 12, deleted 0" "$SZ/status.json" prs.0.size.added 12
+echo "# put never changes prs[].size, plan.overLimit, plan.prFiles"
+expect 0 "put without size keeps the recorded size" bash "$STATE" put "$SZ/status.json" < <(szstatus building)
+is "  size kept" "$SZ/status.json" prs.0.size.lines 12
+expect 0 "put with a forged size on PR1 and a new one on PR2" bash "$STATE" put "$SZ/status.json" < <(szstatus building 'z={"lines":1,"added":1,"deleted":0,"files":1,"excluded":0,"limit":9,"over":False,"reason":None,"overlaps":[],"head":"x","at":"2026-10-30T00:00:00Z"}; doc["prs"][0]["size"]=z; doc["prs"][1]["size"]=z')
+has "  says it kept the recorded value" "size is set only by"
+is "  PR1 size kept" "$SZ/status.json" prs.0.size.lines 12
+is "  PR2 got no size" "$SZ/status.json" prs.1.size null
+expect 0 "put with forged plan.overLimit / plan.prFiles" bash "$STATE" put "$SZ/status.json" < <(szstatus building 'doc["plan"]["overLimit"]={"PR1":"forged"}; doc["plan"]["prFiles"]={"PR2":["src/a.ts"]}')
+has "  says so" "is set only by"
+is "  overLimit kept" "$SZ/status.json" plan.overLimit '{}'
+is "  prFiles kept" "$SZ/status.json" plan.prFiles.PR2 '["other/"]'
+expect 0 "a malformed size from a put is dropped, not stored" bash "$STATE" put "$SZ/status.json" < <(szstatus building 'doc["prs"][0]["size"]={"lines":"many"}')
+is "  the recorded size is still there" "$SZ/status.json" prs.0.size.lines 12
+is "  schema stays 1" "$SZ/status.json" schema 1
+sed -i.bak 's#other/#src/a.ts#' "$SZ/plan.md"; rm -f "$SZ/plan.md.bak"
+expect 0 "size after a plan.md edit still uses the frozen Files" bash "$STATE" size "$SZ" PR1
+is "  prFiles unchanged by the edit" "$SZ/status.json" plan.prFiles.PR2 '["other/"]'
+echo "# size: overlaps and the canonical worktree"
+echo changed > "$SZ2/src/a.ts"; echo new > "$SZ2/src/z.ts"
+szcommit "$SZ2" "PR2 touches PR1's src/a.ts"
+expect 0 "size: a path another same-repo PR owns is an overlap" bash "$STATE" size "$SZ" PR2
+has "  overlaps=1" "overlaps=1"; has "  names the path and PR" "overlap: src/a.ts (PR1)"
+is "  recorded" "$SZ/status.json" prs.1.size.overlaps.0.path '"src/a.ts"'
+rm -rf "$SZ2"; git -C "$SR" worktree prune
+expect 1 "size refused when the worktree is gone" bash "$STATE" size "$SZ" PR2
+has "  says why" "NOT MEASURED"
+is "  the old record is kept" "$SZ/status.json" prs.1.size.overlaps.0.path '"src/a.ts"'
+echo "# two worktree calls at once both end up recorded (guard lock)"
+for i in 3 4 5 6; do bash "$STATE" worktree "$SZ" "$SR" PR$i "$SZBASE" >/dev/null 2>&1 & done
+wait
+n="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["worktrees"]))' "$SZ/.guard.json")"
+[[ "$n" == 6 ]] && ok "  .guard.json records all 6 worktrees" || bad "  .guard.json records $n of 6 worktrees"
+export DCV2_RUN_DIR="$RUN"
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }
