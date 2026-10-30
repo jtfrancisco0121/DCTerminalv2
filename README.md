@@ -64,7 +64,7 @@ flowchart TD
     M --> D([done: report.md])
 ```
 
-A PR that depends on another one starts only when its dependency has been reviewed clean. A run that stops partway can be resumed with `/dcv2:eagle-eye resume run=<run dir>`. A run with an unrecoverable error ends at `failed`, which also writes `report.md`.
+The Planner makes one PR per epic and repo (a ticket's ClickUp parent is its epic; a ticket with none gets its own PR), with no size limit. A PR that depends on another one starts only when its dependency has been reviewed clean; when both are in the same repo the dependent PR is stacked: it is built from the parent's branch, opens against it, and ships after it. A run that stops partway can be resumed with `/dcv2:eagle-eye resume run=<run dir>`. A run with an unrecoverable error ends at `failed`, which also writes `report.md`.
 
 ## Requirements
 
