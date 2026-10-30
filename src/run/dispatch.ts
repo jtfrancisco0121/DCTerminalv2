@@ -33,6 +33,9 @@ export type StartParams = {
   maxImplementers?: number | null;
   runMode?: string | null;
 };
+/** One run per ticket group: a new batch of queue entries (the dispatcher starts them as slots allow). */
+export const dispatchRuns = (base: StartParams, groups: { clickup: { refs: unknown[]; ticketIds: string[] }; label: string }[]) =>
+  invoke<string>("dispatch_runs", { base, groups });
 export const dispatchEnqueue = (params: StartParams, label: string) => invoke<string>("dispatch_enqueue", { params, label });
 
 /** One line for a queue entry's state: its reason, or that it starts when a slot is free. */

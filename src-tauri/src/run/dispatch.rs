@@ -642,6 +642,81 @@ pub async fn dispatch_enqueue(
     .map_err(|e| e.to_string())?
 }
 
+/// One run of a batch: the tickets it takes and its title.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketGroup {
+    pub clickup: super::ClickUpStart,
+    pub label: String,
+}
+
+/// A batch and its queue entries: one entry per group, each with that group's ticket ids and the intake's refs,
+/// the same folder, repos, review and BMAD mode, the account, and the batch id.
+pub fn plan_batch(
+    base: &StartParams,
+    groups: &[TicketGroup],
+    account_id: &str,
+    batch_id: &str,
+) -> (Batch, Vec<Entry>) {
+    let mut runs = Vec::new();
+    let mut entries = Vec::new();
+    for group in groups {
+        let mut params = base.clone();
+        params.clickup = Some(group.clickup.clone());
+        params.dispatch_entry_id = None;
+        let mut scratch = Dispatch::default();
+        let id = enqueue(
+            &mut scratch,
+            params,
+            account_id,
+            &group.label,
+            Some(batch_id.to_string()),
+        );
+        entries.extend(scratch.queue);
+        runs.push(BatchRun {
+            entry_id: id,
+            ticket_ids: group.clickup.ticket_ids.clone(),
+            label: group.label.clone(),
+            run_dir: None,
+            removed: false,
+        });
+    }
+    (
+        Batch {
+            id: batch_id.to_string(),
+            created_at: now_iso(),
+            runs,
+            notified: vec![],
+        },
+        entries,
+    )
+}
+
+/// One run per ticket group: the groups become queue entries of one new batch (the dispatcher starts them
+/// as slots allow, each through the shared start path with its own tickets snapshot). Returns the batch id.
+#[tauri::command]
+pub async fn dispatch_runs(
+    app: AppHandle,
+    base: StartParams,
+    groups: Vec<TicketGroup>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if groups.is_empty() {
+            return Err("No tickets to start.".to_string());
+        }
+        let account_id = account_of(&app, base.window_id.as_deref())?;
+        let batch_id = new_id("b");
+        let (batch, entries) = plan_batch(&base, &groups, &account_id, &batch_id);
+        with(&data_dir(&app), |d| {
+            d.queue.extend(entries);
+            d.batches.push(batch);
+        })?;
+        Ok(batch_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// The account of the window a start is made from (the focused window when none is given).
 pub fn account_of(app: &AppHandle, window_id: Option<&str>) -> Result<String, String> {
     let state = app
@@ -991,6 +1066,111 @@ mod tests {
             state.batches[0].runs[0].run_dir.as_deref(),
             Some("/runs/r-2")
         );
+    }
+
+    fn group(id: &str) -> TicketGroup {
+        TicketGroup {
+            clickup: super::super::ClickUpStart {
+                refs: vec![crate::clickup::intake::IntakeRef {
+                    kind: "list".into(),
+                    id: "L1".into(),
+                    team_id: None,
+                    custom: false,
+                    line: 1,
+                }],
+                ticket_ids: vec![id.into()],
+            },
+            label: format!("Ticket {id}"),
+        }
+    }
+
+    #[test]
+    fn three_tickets_become_three_entries_of_one_batch_each_with_only_its_own_ticket() {
+        let mut base = params("Do the tickets");
+        base.repos = Some(vec!["api".into()]);
+        base.review_mode = Some("github".into());
+        base.bmad_mode = Some("auto".into());
+        let groups = vec![group("t1"), group("t2"), group("t3")];
+        let (batch, entries) = plan_batch(&base, &groups, "acct-9", "b-1");
+        assert_eq!(entries.len(), 3);
+        let ids: HashSet<&str> = entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids.len(), 3, "distinct entry ids");
+        for (entry, tid) in entries.iter().zip(["t1", "t2", "t3"]) {
+            let c = entry.params.clickup.as_ref().unwrap();
+            assert_eq!(c.ticket_ids, [tid], "only its own ticket");
+            assert_eq!(c.refs.len(), 1, "the intake's refs go with each run");
+            assert_eq!(entry.account_id, "acct-9");
+            assert_eq!(entry.batch_id.as_deref(), Some("b-1"));
+            assert_eq!(entry.params.repos, base.repos);
+            assert_eq!(entry.params.review_mode.as_deref(), Some("github"));
+            assert_eq!(entry.params.bmad_mode.as_deref(), Some("auto"));
+        }
+        assert_eq!(
+            batch
+                .runs
+                .iter()
+                .map(|r| r.ticket_ids.clone())
+                .collect::<Vec<_>>(),
+            [["t1"], ["t2"], ["t3"]]
+        );
+        assert!(batch.runs.iter().all(|r| !r.removed && r.run_dir.is_none()));
+    }
+
+    #[test]
+    fn three_runs_of_one_repo_get_distinct_run_ids_folders_and_branches_with_no_ticket_bodies_in_request_md(
+    ) {
+        use super::super::folder::{create_run, RunMeta};
+        let dir = crate::test_support::TempDir::new("batch_runs");
+        let repos = vec![crate::run::repos::Repo {
+            name: "api".into(),
+            path: "/w/api".into(),
+            check: None,
+            setup: None,
+            copy_files: vec![],
+            live_tests: false,
+        }];
+        let meta = RunMeta {
+            account_id: "a".into(),
+            ..Default::default()
+        };
+        let mut made = Vec::new();
+        for tid in ["t1", "t2", "t3"] {
+            // The request is the user's words plus "- <id> <title>" lines: never a ticket body.
+            let request = format!("Do the tickets\n\nTickets from ClickUp (1; their details are in tickets.json):\n- {tid} Title {tid}\n");
+            made.push(
+                create_run(
+                    dir.path(),
+                    std::path::Path::new("/w"),
+                    &repos,
+                    &[],
+                    &request,
+                    &meta,
+                )
+                .unwrap(),
+            );
+        }
+        let run_ids: HashSet<&str> = made.iter().map(|m| m.run_id.as_str()).collect();
+        let run_dirs: HashSet<&str> = made.iter().map(|m| m.run_dir.as_str()).collect();
+        assert_eq!((run_ids.len(), run_dirs.len()), (3, 3));
+        let branches: HashSet<String> = made
+            .iter()
+            .map(|m| format!("dcv2/{}-pr1", m.run_id))
+            .collect();
+        assert_eq!(
+            branches.len(),
+            3,
+            "branch names derived from the run ids do not collide"
+        );
+        for (m, tid) in made.iter().zip(["t1", "t2", "t3"]) {
+            let request =
+                std::fs::read_to_string(std::path::Path::new(&m.run_dir).join("request.md"))
+                    .unwrap();
+            assert!(request.contains(&format!("- {tid} Title {tid}")));
+            assert!(
+                !request.contains("description"),
+                "no ticket bodies in request.md"
+            );
+        }
     }
 
     #[test]

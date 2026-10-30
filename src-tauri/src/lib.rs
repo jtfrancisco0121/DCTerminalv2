@@ -204,6 +204,7 @@ pub fn run() {
             run::compact_text,
             run::dispatch::dispatch_overview,
             run::dispatch::dispatch_enqueue,
+            run::dispatch::dispatch_runs,
             run::dispatch::dispatch_move,
             run::dispatch::dispatch_cancel,
             run::dispatch::dispatch_start_now,

@@ -1,4 +1,4 @@
-import { dispatchEnqueue, dispatchOverview, type DispatchOverview } from "../run/dispatch";
+import { dispatchEnqueue, dispatchOverview, dispatchRuns, type DispatchOverview } from "../run/dispatch";
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -27,6 +27,7 @@ import { getSettings } from "../bridge";
 import { errorText } from "./InlineNotice";
 import { MemoryPanel } from "./MemoryPanel";
 import { ClickUpIntake } from "../clickup/ClickUpIntake";
+import { splitGroups, type SplitChoice } from "../clickup/groups";
 import type { ClickUpStart } from "../clickup/api";
 
 type Props = {
@@ -147,6 +148,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   const [duplicate, setDuplicate] = useState<{ run: DuplicateRun; role: string } | null>(null);
   const [tickets, setTickets] = useState<ClickUpStart | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [split, setSplit] = useState<SplitChoice>({ perTicket: false, letters: {} });
   const [tooMany, setTooMany] = useState<string | null>(null);
   // The repos ticked for this run (all, until you untick; reset with the folder), and the implementer count.
   const [unticked, setUnticked] = useState<ReadonlySet<string>>(new Set());
@@ -246,6 +248,34 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
       setError("Say what should be done.");
       return;
     }
+    const groups = tickets && role === "eagle-eye" ? splitGroups(tickets.ticketIds, split) : [];
+    if (groups.length > 1) {
+      // One run per ticket (or group): they become one batch of queue entries, started as slots allow.
+      setBusy(true);
+      setError(null);
+      try {
+        const said = requestOverride ?? (request.trim() || "Do the ClickUp tickets below.");
+        await dispatchRuns(
+          {
+            windowId,
+            folder: folder.trim(),
+            request: said,
+            role,
+            reviewMode: reviewOnGitHub ? "github" : "local",
+            bmadMode,
+            repos: tickedRepos,
+            maxImplementers: implementers !== null ? implementersValue : null,
+          },
+          groups.map((ids, at) => ({ clickup: { refs: tickets!.refs, ticketIds: ids }, label: `${said.split("\n")[0]!.slice(0, 60)} (${at + 1}/${groups.length}: ${ids.join(", ")})` })),
+        );
+        setMessage(`${groups.length} runs queued: each starts when a slot is free (see Runs).`);
+      } catch (err) {
+        setError(errorText(err));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     if (role === "eagle-eye" && !bypassCap) {
       try {
         const o = await dispatchOverview();
@@ -328,6 +358,8 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
     busy,
   });
   const runs = (overview?.runs ?? []).slice(0, EARLIER_RUNS);
+  const runCount = tickets ? splitGroups(tickets.ticketIds, split).length : 1;
+  const startLabel = runCount > 1 ? `Start Eagle-Eye (${runCount} runs)` : "Start Eagle-Eye";
 
   return (
     <div className="run-start">
@@ -411,7 +443,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           onChange={(event) => setRequest(event.target.value)}
         />
       </label>
-      <ClickUpIntake windowId={windowId} onChange={setTickets} onTooMany={setTooMany} disabled={busy} />
+      <ClickUpIntake windowId={windowId} onChange={setTickets} onTooMany={setTooMany} onSplit={setSplit} disabled={busy} />
       <label className="check-label">
         <input
           type="checkbox"
@@ -491,7 +523,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           aria-describedby={startReason ? "start-reason" : undefined}
           onClick={() => void launch("eagle-eye")}
         >
-          Start Eagle-Eye
+          {startLabel}
         </button>
         <button type="button" className="link-button" onClick={onPlainTab}>
           Plain terminal tab instead

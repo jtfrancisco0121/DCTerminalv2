@@ -1,3 +1,4 @@
+import { type SplitChoice } from "./groups";
 import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { errorText } from "../components/InlineNotice";
@@ -15,6 +16,8 @@ type Props = {
   onChange: (start: ClickUpStart | null) => void;
   /** The backend's "too many tickets" text while more than 100 are kept; null otherwise. */
   onTooMany?: (text: string | null) => void;
+  /** With 2 or more tickets: one run with all of them (default) or one run per ticket, with optional group letters. */
+  onSplit?: (choice: SplitChoice) => void;
   disabled?: boolean;
 };
 
@@ -23,13 +26,19 @@ type Props = {
  * ones you don't want. Start then snapshots the rest into `tickets.json`
  * and names them (id + title) in request.md. Uses the window's account token.
  */
-export function ClickUpIntake({ windowId, onChange, onTooMany, disabled }: Props) {
+export function ClickUpIntake({ windowId, onChange, onTooMany, onSplit, disabled }: Props) {
   const [text, setText] = useState("");
   const [fetched, setFetched] = useState<{ refs: IntakeRef[]; preview: IntakePreview } | null>(null);
   const [removed, setRemoved] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const parsed = parseIntakeRefs(text);
+  const [perTicket, setPerTicket] = useState(false);
+  const [letters, setLetters] = useState<Record<string, string>>({});
+  const several = (fetched?.preview.tickets ?? []).filter((t) => !removed.has(t.id)).length >= 2;
+  useEffect(() => {
+    onSplit?.({ perTicket: several && perTicket, letters });
+  }, [onSplit, several, perTicket, letters]);
 
   const kept = (fetched?.preview.tickets ?? []).filter((t) => !removed.has(t.id));
   // The backend's text, only while the kept count is still over the limit it names.
@@ -117,6 +126,17 @@ export function ClickUpIntake({ windowId, onChange, onTooMany, disabled }: Props
               {tooMany}
             </p>
           )}
+          {several && (
+            <fieldset className="intake-split" aria-label="Runs for these tickets">
+              <label className="check-label">
+                <input type="radio" name="intake-split" checked={!perTicket} onChange={() => setPerTicket(false)} /> One run with all tickets
+              </label>
+              <label className="check-label">
+                <input type="radio" name="intake-split" checked={perTicket} onChange={() => setPerTicket(true)} /> One run per ticket
+              </label>
+              {perTicket && <p className="hint">Give tickets the same group letter to share a run; tickets with no letter get a run each.</p>}
+            </fieldset>
+          )}
           {kept.length > 0 && (
             <ul>
               {kept.map((t) => (
@@ -155,6 +175,16 @@ export function ClickUpIntake({ windowId, onChange, onTooMany, disabled }: Props
                   >
                     remove
                   </button>
+                  {several && perTicket && (
+                    <input
+                      className="text-input text-input-narrow"
+                      aria-label={`Group letter for ${t.customId ?? t.id}`}
+                      maxLength={1}
+                      size={2}
+                      value={letters[t.id] ?? ""}
+                      onChange={(event) => setLetters({ ...letters, [t.id]: event.target.value })}
+                    />
+                  )}
                 </li>
               ))}
             </ul>

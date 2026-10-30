@@ -101,6 +101,12 @@ export function RunsView({ windowId, onClose, onStarted }: Props) {
                   — {stageText(run.stage)}
                   {run.folder ? ` · ${run.folder}` : ""}
                 </span>
+                {(run.ticketIds ?? []).length > 0 && (
+                  <span className="hint" data-testid={`tickets-${run.runId}`}>
+                    {" "}
+                    · {(run.ticketIds ?? []).join(", ")}
+                  </span>
+                )}
               </div>
               <div className="runs-facts hint">
                 <span title={run.createdAt ?? undefined}>{relativeDate(run.createdAt) || "—"}</span>
