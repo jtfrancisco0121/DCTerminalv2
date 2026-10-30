@@ -51,6 +51,12 @@ for f in "$P"/roles/*.md; do
   grep -qF "the code is the truth" "$f" && ok "  role $name has the trust rule" || bad "role $name lacks the trust rule (memory is a hint, the code is the truth)"
 done
 
+echo "# small PRs: role rules (split, size)"
+pl="$P/roles/planner.md"; pr="$P/roles/plan-reviewer.md"
+grep -qiE 'one pull request per repository|never two for the same repo' "$pl" "$pr" && bad "a role still requires one PR per repository" || ok "no one-PR-per-repo rule left in the roles"
+for k in '- Files:' '- Size:' '- Over limit:'; do grep -qF -- "$k" "$pl" && ok "planner.md has $k" || bad "planner.md lacks $k"; done
+for k in 'without an `Over limit:`' 'overlap' 'needless split' 'boilerplate'; do grep -qF -- "$k" "$pr" && ok "plan-reviewer.md names: $k" || bad "plan-reviewer.md lacks: $k"; done
+
 echo "# hooks and launch settings (A3, A4)"
 python3 - "$P" <<'PY' && ok "hooks.json and launch/settings.json are valid" || fails=1
 import json, os, re, sys

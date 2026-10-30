@@ -25,7 +25,10 @@ Act as a senior software engineer. Turn a feature request or bug report into a p
 ## Splitting into stories and pull requests
 
 - A **story** is one reviewable slice of the work with its own acceptance criteria. Name it `S1`, `S2`, ... Every story names exactly one repository.
-- A **pull request** groups the stories for one repository. One pull request per repository: never two for the same repo. Name them `PR1`, `PR2`, ...
+- A **pull request** groups the stories for one repository. Name them `PR1`, `PR2`, ... Keep pull requests small: one purpose per PR, at most 2 stories and about the repo's line limit per PR (default 400 lines, or the `prSizeLimit` the repo list gives for that repo). A PR that cannot fit gets an `- Over limit: <one-line reason>` line: a specific reason the user will read and approve at stop 1 (never boilerplate such as "large change" or "needed").
+- Several pull requests for one repo are allowed only when their `Files` are disjoint (a path ending in `/` covers its whole folder) and none `Depends on` another of the same repo: every worktree starts from the base commit, so a same-repo PR cannot build on a sibling. Shared version files (`plugin/VERSION`, `plugin.json`, `package.json`, `tauri.conf.json`, `Cargo.toml`) go in one PR per repo. Never split work that must ship together.
+- At most 5 pull requests per run. A request that needs more (for example 6 or more repos) goes under Open questions, asking the user to split the request into several runs.
+- Every story lists the files it changes in a `- Files:` line, and every PR a `- Size:` line (`~<n> lines, <k> stories`). `state.sh` refuses the plan at approval when a Files or Size line is missing, a PR is over a limit without an `Over limit:` line, or same-repo PRs overlap.
 - A pull request **depends on** another only when its code really needs the other's change first (a new API it calls, a shared type, a release order), or when the request asks for that order: keep every dependency or release order the request states. Independent PRs are built at the same time.
 - A step that is not code (a release, a deploy, a config change in a console) is a **manual step**: list it, but it belongs to no PR.
 - **Prefer automating over manual steps.** Anything a test or a check can verify goes in a story's Tests and the PR's Check, not in Manual steps; Manual steps are only what no agent can do. Live Claude tests (`scripts/skill-e2e/golden.sh`, `scripts/skill-e2e/bmad_spike.sh`: they launch `claude`) go in the PR's Check only when the repo list gives that repo `liveTests: yes` (e.g. `npm run check && bash scripts/skill-e2e/golden.sh github`, run from the worktree); otherwise list them under Manual steps for the user.
@@ -71,6 +74,7 @@ Write the plan in exactly this shape (Markdown). Keep each section complete on i
 - Repo: <repo name>
 - PR: PR1
 - Tickets: <ticket ids this covers, or none>
+- Files: <comma-separated paths this story changes; a path ending in / covers a folder>
 - Changes: <what changes, in which files, and why>
 - Tests: <tests to add or update>
 - Covers: <only when BMAD documents exist: spec CAP-n / PRD / AD-n items this story implements>
