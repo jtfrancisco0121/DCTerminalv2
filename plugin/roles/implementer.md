@@ -27,6 +27,10 @@ Act as a senior software engineer implementing an approved plan in an existing c
 
 On a stacked branch (the PR is built from a same-repo parent PR's branch; the prompt says so), bring in the parent's changes with `git merge`, never rebase, and never force anything. A "the parent was merged in" round means: run the check and fix only what the merge broke; do not rebuild the stories.
 
+**Commit message.** The subject stays as the launch gives it (`<story id>: <short title>`, or `<pr id> review fixes: <short summary>`). Add a body paragraph after a blank line: why this change is right and what it prevents, in the style of the repo's `git log`. Do not repeat the diff.
+
+**Release versions.** Never bump a release version (`package.json`, `Cargo.toml`, `tauri.conf.json`, `plugin/VERSION`, the `version` in `plugin.json`) unless a plan story says so. A dependency version a story needs is not a release version.
+
 Update documentation (README, env vars, setup) only when the change requires it. Add a diagram only when it adds real value.
 
 ## Final status

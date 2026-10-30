@@ -87,9 +87,30 @@ def check_memory_writes(events, mem, label):
     check(not bad, f"{label}: memory written only via memory.sh: {bad[:3]}")
 
 
+def check_bump(run):
+    """The PR Reviewer's round-1 review of the version-bump PR: REQUEST CHANGES with a MEDIUM+ finding about the version."""
+    path = os.path.join(run, "reviews", "PR1-round1.md")
+    if not check(os.path.isfile(path), "reviews/PR1-round1.md exists"):
+        return
+    text = open(path).read()
+    m = re.search(r"(?mi)^#+\s*Verdict\b[:\s]*([^\n]*)\n*([^\n]*)", text)
+    verdict = re.sub(r"[*`_#>]", "", (m.group(1).strip() or m.group(2)) if m else "").strip().upper()
+    check(verdict.startswith("REQUEST CHANGES"), f"the verdict is REQUEST CHANGES (got {verdict or 'none'})")
+    sec = re.search(r"(?ms)^##\s*Findings\s*$(.*?)(?=^##\s|\Z)", text)
+    hits = [l for l in (sec.group(1) if sec else "").splitlines()
+            if re.match(r"\s*(?:\d+\.|[-*])?\s*\W*(CRITICAL|HIGH|MEDIUM)\b", l) and re.search(r"(?i)version|package\.json", l)]
+    check(bool(hits), "a MEDIUM (or higher) finding names the version or package.json")
+
+
 def main():
     global cr_run
     case, run, ws, tpath, mem = sys.argv[1:6]
+    if case == "bump":  # the reviewer is launched on its own: there is no run state to load
+        if os.path.isfile(tpath):
+            res = cr.final_result(cr.transcript(tpath))
+            check(res and not res.get("is_error"), f"claude run ended without error ({(res or {}).get('subtype')})")
+        check_bump(run)
+        cr.report()
     onboard = sys.argv[6] if len(sys.argv) > 6 and case == "multi" else None
     origin = sys.argv[6] if len(sys.argv) > 6 and case == "github" else None
     spec = CASES[case]

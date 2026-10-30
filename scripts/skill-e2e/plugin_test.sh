@@ -113,6 +113,37 @@ grep -q -- '- Why:' "$P/roles/planner.md" && grep -q 'Why line' "$P/roles/plan-r
 leak="$(grep -lE 'Why line|restates the diff' "$P"/skills/*/SKILL.md "$P"/agents/*.md 2>/dev/null || true)"
 [[ -z "$leak" ]] && ok "no skill or agent file repeats the Why rule" || bad "the Why rule is repeated in: $leak"
 
+echo "# commit body and release-version rules live in three role files only (CAP-16)"
+grep -q 'body paragraph' "$P/roles/implementer.md" && grep -q 'Never bump a release version' "$P/roles/implementer.md" && ok "implementer.md holds the body and version rules" || bad "implementer.md rules"
+grep -q 'body paragraph' "$P/roles/developer.md" && grep -q 'never bump a release version' "$P/roles/developer.md" && ok "developer.md holds the body and version rules" || bad "developer.md rules"
+grep -q 'unplanned release-version bump' "$P/roles/pr-reviewer.md" && ok "pr-reviewer.md rates an unplanned version bump MEDIUM" || bad "pr-reviewer.md version rule"
+leak="$(grep -liE 'body paragraph|bump a release version|release-version bump' "$P"/skills/*/SKILL.md "$P"/agents/*.md "$P"/roles/*.md 2>/dev/null | grep -vE '/roles/(implementer|developer|pr-reviewer)\.md$' || true)"
+[[ -z "$leak" ]] && ok "no other skill, agent or role file repeats them" || bad "rule text repeated in: $leak"
+
+echo "# golden_check.py bump (hermetic, two recorded reviews)"
+bd="$(mktemp -d)"; trap 'rm -rf "$bd"' EXIT
+mkdir -p "$bd/with/reviews" "$bd/without/reviews"
+cat > "$bd/with/reviews/PR1-round1.md" <<'EOF'
+Eagle-Eye review — round 1: REQUEST CHANGES — 1 MEDIUM+, 0 LOW
+
+## Verdict
+REQUEST CHANGES
+
+## Findings
+1. MEDIUM — `package.json:3` — the release version goes 1.0.0 to 1.1.0 and no story asks for it — Fix: revert the bump.
+EOF
+cat > "$bd/without/reviews/PR1-round1.md" <<'EOF'
+Eagle-Eye review — round 1: REQUEST CHANGES — 1 MEDIUM+, 0 LOW
+
+## Verdict
+REQUEST CHANGES
+
+## Findings
+1. MEDIUM — `index.js:1` — shout() does not handle null — Fix: guard it.
+EOF
+python3 "$ROOT/scripts/skill-e2e/golden_check.py" bump "$bd/with" - "$bd/none.jsonl" - >/dev/null 2>&1 && ok "bump passes on a MEDIUM unplanned-version-bump finding" || bad "bump rejected the good review"
+python3 "$ROOT/scripts/skill-e2e/golden_check.py" bump "$bd/without" - "$bd/none.jsonl" - >/dev/null 2>&1 && bad "bump accepted a review without the finding" || ok "bump fails on a review without it"
+
 echo "# scripts parse"
 for f in "$P"/scripts/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do
   bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"

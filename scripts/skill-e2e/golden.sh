@@ -21,6 +21,10 @@
 #           a space (like Application Support): the Planner writes the spec and the architecture
 #           under <run>/bmad/output, state.sh bmad-check passes, plan.md cites the spec items, and
 #           the repo gets no BMAD files. Not in the default set: `golden.sh bmad`.
+#   bump  : a PR branch (fixtures/golden/version-bump/) whose commits make the planned change and also
+#           bump package.json's version, which no story asks for: the PR Reviewer, launched for round 1
+#           of that PR, must write a REQUEST CHANGES review with a MEDIUM finding naming the version.
+#           Not in the default set: `golden.sh bump`.
 #   fix also writes meta.json bmad.mode "off" (the unchanged flow).
 #
 # Env as run.sh (DCV2_E2E_MODEL default haiku, DCV2_E2E_TIMEOUT, DCV2_E2E_TMP). Uses the current
@@ -234,10 +238,30 @@ EOF
   python3 "$E2E_DIR/golden_check.py" bmad "$run" "$ws" "$TMP/bmad.jsonl" "$TMP/memory"
 }
 
+case_bump() {
+  local fx="$E2E_DIR/../../fixtures/golden/version-bump" ws="$TMP/ws-bump" run="$TMP/runs/r-golden-bump"
+  mkdir -p "$ws" "$run"
+  cp -R "$fx/repo" "$ws/shout"
+  git_init_repo "$ws/shout"
+  local base; base="$(git -C "$ws/shout" rev-parse HEAD)"
+  git -C "$ws/shout" switch -q -c dcv2/r-golden-bump-pr1
+  cp "$fx/change/index.js" "$ws/shout/index.js"
+  git -C "$ws/shout" commit -q -am "S1: Add the exclamation mark"
+  sed -i.bak 's/"version": "1.0.0"/"version": "1.1.0"/' "$ws/shout/package.json" && rm -f "$ws/shout/package.json.bak"
+  git -C "$ws/shout" commit -q -am "S1: Tidy package metadata"
+  { echo "folder: $ws"; echo; cat "$fx/request.md"; } > "$run/request.md"
+  cp "$fx/plan.md" "$run/plan.md"
+  CLAUDE_ARGS="--settings $SETTINGS" \
+    run_claude "$ws/shout" "$PLUGIN" "$TMP/bump.jsonl" \
+      "Use the Task tool to launch the dcv2:pr-reviewer sub-agent for round 1 with this input: run=$run, pr=PR1 (repo shout, stories S1, check npm run check), worktree=$ws/shout, branch=dcv2/r-golden-bump-pr1, base=$base, round=1. When it has finished, reply with its result." \
+      DCV2_RUN_DIR="$run" DCV2_MEMORY_DIR="$TMP/memory"
+  python3 "$E2E_DIR/golden_check.py" bump "$run" "$ws" "$TMP/bump.jsonl" "$TMP/memory"
+}
+
 status=0
 pids=()
 for c in "${CASES[@]}"; do
-  declare -F "case_$c" >/dev/null || fail "unknown case $c (multi, dep, fix, github, bmad)"
+  declare -F "case_$c" >/dev/null || fail "unknown case $c (multi, dep, fix, github, bmad, bump)"
   ( "case_$c" > "$TMP/$c.out" 2>&1 ) &
   pids+=("$!")
   note "started case $c (output $TMP/$c.out)"

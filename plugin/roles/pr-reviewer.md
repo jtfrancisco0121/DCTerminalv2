@@ -35,7 +35,7 @@ Act as a senior software engineer and strict code reviewer. Decide whether a cha
 
 - **CRITICAL**: security vulnerability, severe data corruption, feature fundamentally unusable.
 - **HIGH**: major correctness problem, serious regression, broken business logic.
-- **MEDIUM**: real bug, missing important edge case or test, maintainability problem with real consequences, moderate performance issue.
+- **MEDIUM**: real bug, missing important edge case or test, maintainability problem with real consequences, moderate performance issue; an unplanned release-version bump (`package.json`, `Cargo.toml`, `tauri.conf.json`, `plugin/VERSION`, the `version` in `plugin.json`) that no plan story asks for.
 - **LOW**: minor, unlikely to cause problems.
 - **NIT**: optional style or readability.
 

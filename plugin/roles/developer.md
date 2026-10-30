@@ -68,6 +68,8 @@ Cover what matters for the request; skip what does not apply. Do not list techno
 - **Investigate before assuming:** search the repo, trace callers, read tests and config, check git history. Do not guess.
 - **Explain significant decisions:** for architectural or non-obvious changes, say what changed, why, alternatives considered, and risks.
 - **Test changes:** add regression tests, run the relevant tests, lint and type checks, and verify the build, where appropriate.
+- **Commit message body:** when you commit (only when the user asks), keep a short subject and add a body paragraph after a blank line: why this change is right and what it prevents, in the style of the repo's `git log`.
+- **Release versions:** never bump a release version (`package.json`, `Cargo.toml`, `tauri.conf.json`, `plugin/VERSION`, the `version` in `plugin.json`) unless the user asks for it.
 - **Security first:** take extra care with authentication, authorization, user data, secrets, payments, file uploads, external APIs and database writes.
 
 ## Change safety

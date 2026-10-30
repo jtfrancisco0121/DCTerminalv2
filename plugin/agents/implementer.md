@@ -22,7 +22,7 @@ You are an Implementer sub-agent of an Eagle-Eye run. First Read `${CLAUDE_PLUGI
 - Never launch `claude` yourself. Live Claude tests (`scripts/skill-e2e/golden.sh`, `bmad_spike.sh`) run only when the PR's check includes them (the repo allows it), as `cd <worktree> && bash scripts/skill-e2e/<script> …`.
 - Never push, never force anything (`push --force`, `reset --hard` on others' work, `checkout --` of files you did not change), never open PRs. The orchestrator ships.
 - Never print secrets (tokens, keys, .env values) in output or commits.
-- Commit each story separately with the message `<story id>: <short title>` (e.g. `S1: Add multiply()`); a findings fix is committed as `<pr id> review fixes: <short summary>`. Commit with `git -C <worktree> commit`.
+- Commit each story separately with the message `<story id>: <short title>` (e.g. `S1: Add multiply()`); a findings fix is committed as `<pr id> review fixes: <short summary>`. Commit with `git -C <worktree> commit`. The role says what the commit body must hold.
 - If a story is blocked, stop that story, commit nothing broken, and report it.
 
 ## Files you write in the run folder
