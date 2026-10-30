@@ -168,6 +168,78 @@ pub struct TabFacts {
     pub subagents_running: u32,
 }
 
+/// One epic's PRs of a run: `done` of `total` (`id` and `title` are None for
+/// the "No epic" group).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EpicCount {
+    pub id: Option<String>,
+    pub title: Option<String>,
+    pub done: u32,
+    pub total: u32,
+}
+
+/// A PR counts as done at these states (used by `prs_done` and epic counts).
+fn pr_state_is_done(state: Option<&str>) -> bool {
+    matches!(
+        state,
+        Some("reviewed" | "drafted" | "opened" | "pushed" | "local-only")
+    )
+}
+
+/// The run's epic groups from status.json `prs[].epic` (`{id, title}`), in
+/// plan order with "No epic" last. A missing or wrong-typed `epic` counts as
+/// no epic; a run with fewer than 2 groups gets none. Done = the same states
+/// as `prs_done` (see `pr_state_is_done`).
+pub fn epic_groups(value: Option<&serde_json::Value>) -> Vec<EpicCount> {
+    let Some(prs) = value.and_then(|v| v.get("prs")).and_then(|p| p.as_array()) else {
+        return Vec::new();
+    };
+    let mut groups: Vec<EpicCount> = Vec::new();
+    let mut none = EpicCount {
+        id: None,
+        title: None,
+        done: 0,
+        total: 0,
+    };
+    for pr in prs {
+        let done = pr_state_is_done(pr.get("state").and_then(|s| s.as_str()));
+        let epic = pr
+            .get("epic")
+            .and_then(|e| e.as_object())
+            .and_then(|e| e.get("id").and_then(|i| i.as_str()).map(|id| (id, e)))
+            .filter(|(id, _)| !id.is_empty());
+        let group = match epic {
+            Some((id, e)) => match groups.iter().position(|g| g.id.as_deref() == Some(id)) {
+                Some(i) => &mut groups[i],
+                None => {
+                    groups.push(EpicCount {
+                        id: Some(id.to_string()),
+                        title: e
+                            .get("title")
+                            .and_then(|t| t.as_str())
+                            .filter(|t| !t.is_empty())
+                            .map(str::to_string),
+                        done: 0,
+                        total: 0,
+                    });
+                    groups.last_mut().expect("just pushed")
+                }
+            },
+            None => &mut none,
+        };
+        group.total += 1;
+        group.done += u32::from(done);
+    }
+    if none.total > 0 {
+        groups.push(none);
+    }
+    if groups.len() < 2 {
+        groups.clear();
+    }
+    groups
+}
+
 /// What the detector sees of one run at one tick.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct RunFacts {
@@ -178,6 +250,8 @@ pub struct RunFacts {
     pub waiting_for: Option<String>,
     pub prs_done: u32,
     pub prs_total: u32,
+    /// PR counts per epic (see [`epic_groups`]); empty with fewer than 2 groups.
+    pub epics: Vec<EpicCount>,
     /// PRs whose app check failed, timed out or errored.
     pub failed_checks: BTreeSet<String>,
     /// PR id → outcome (`cleaned` / `kept`) of final cleanup records.
@@ -505,6 +579,8 @@ pub struct TabSnap {
     pub stalled: bool,
     pub prs_done: u32,
     pub prs_total: u32,
+    /// The run's epic groups; empty unless it has 2 or more.
+    pub epics: Vec<EpicCount>,
 }
 
 impl TabSnap {
@@ -551,6 +627,7 @@ impl Snapshot {
                         stalled: t.stalled,
                         prs_done: run.map_or(0, |r| r.prs_done),
                         prs_total: run.map_or(0, |r| r.prs_total),
+                        epics: run.map(|r| r.epics.clone()).unwrap_or_default(),
                     }
                 })
                 .collect(),
@@ -788,14 +865,10 @@ impl Reader {
                 .filter(|w| !w.is_empty()),
             prs_done: prs
                 .iter()
-                .filter(|pr| {
-                    matches!(
-                        pr.state.as_deref(),
-                        Some("reviewed" | "drafted" | "opened" | "pushed" | "local-only")
-                    )
-                })
+                .filter(|pr| pr_state_is_done(pr.state.as_deref()))
                 .count() as u32,
             prs_total: prs.len() as u32,
+            epics: epic_groups(value.as_ref()),
             failed_checks: checks
                 .into_iter()
                 .filter(|(_, check)| matches!(check.result.as_str(), "fail" | "timeout" | "error"))
@@ -1759,6 +1832,109 @@ mod tests {
         assert!(recent_enough(Some("2026-10-01T12:00:00Z"), now));
         assert!(!recent_enough(Some("2026-09-01T12:00:00Z"), now));
         assert!(!recent_enough(None, now));
+    }
+
+    #[test]
+    fn epic_groups_count_done_and_total_per_epic() {
+        let v = serde_json::json!({"prs": [
+            {"id": "PR1", "state": "opened", "epic": {"id": "e1", "title": "Alpha"}},
+            {"id": "PR2", "state": "building", "epic": {"id": "e1", "title": "Alpha"}},
+            {"id": "PR3", "state": "pushed"},
+            {"id": "PR4", "state": "local-only", "epic": {"id": "e2"}},
+        ]});
+        let groups = epic_groups(Some(&v));
+        let got: Vec<_> = groups
+            .iter()
+            .map(|g| (g.id.as_deref(), g.title.as_deref(), g.done, g.total))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (Some("e1"), Some("Alpha"), 1, 2),
+                (Some("e2"), None, 1, 1),
+                (None, None, 1, 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn epic_done_counts_add_up_to_the_runs_done_count() {
+        let states = [
+            "reviewed",
+            "drafted",
+            "opened",
+            "pushed",
+            "local-only",
+            "pending",
+            "building",
+            "needs-attention",
+        ];
+        let prs: Vec<_> = states
+            .iter()
+            .enumerate()
+            .map(|(at, state)| {
+                let epic = if at % 2 == 0 {
+                    serde_json::json!({"id": "e1"})
+                } else {
+                    serde_json::json!({"id": "e2"})
+                };
+                serde_json::json!({"id": format!("PR{}", at + 1), "state": state, "epic": epic})
+            })
+            .collect();
+        let v = serde_json::json!({ "prs": prs });
+        let done: u32 = epic_groups(Some(&v)).iter().map(|g| g.done).sum();
+        let run_done = states.iter().filter(|s| pr_state_is_done(Some(s))).count() as u32;
+        assert_eq!(run_done, 5);
+        assert_eq!(done, run_done);
+    }
+
+    #[test]
+    fn zero_or_one_epic_group_gives_none_and_old_or_wrong_epics_count_as_no_epic() {
+        assert!(epic_groups(None).is_empty());
+        let one = serde_json::json!({"prs": [
+            {"id": "PR1", "state": "opened", "epic": {"id": "e1"}},
+            {"id": "PR2", "state": "opened", "epic": {"id": "e1"}},
+        ]});
+        assert!(epic_groups(Some(&one)).is_empty());
+        let old = serde_json::json!({"prs": [{"id": "PR1"}, {"id": "PR2"}]});
+        assert!(epic_groups(Some(&old)).is_empty());
+        let wrong = serde_json::json!({"prs": [
+            {"id": "PR1", "epic": "e1"},
+            {"id": "PR2", "epic": {"id": 7}},
+            {"id": "PR3", "epic": null},
+            {"id": "PR4", "epic": {"id": "e1"}},
+        ]});
+        let g = epic_groups(Some(&wrong));
+        let got: Vec<_> = g.iter().map(|g| (g.id.as_deref(), g.total)).collect();
+        assert_eq!(got, vec![(Some("e1"), 1), (None, 3)]);
+    }
+
+    #[test]
+    fn active_runs_carry_the_epic_groups() {
+        let mut r = run("r1");
+        r.epics = vec![
+            EpicCount {
+                id: Some("e1".into()),
+                title: None,
+                done: 1,
+                total: 2,
+            },
+            EpicCount {
+                id: None,
+                title: None,
+                done: 0,
+                total: 1,
+            },
+        ];
+        let tabs = vec![TabFacts {
+            run_id: Some("r1".into()),
+            run_dir: Some("/runs/r1".into()),
+            ..tab("t1")
+        }];
+        let runs = HashMap::from([("r1".to_string(), r)]);
+        let snapshot = Snapshot::build(&tabs, &runs);
+        assert_eq!(snapshot.active_runs()[0].epics.len(), 2);
+        assert_eq!(snapshot.active_runs()[0].epics[0].total, 2);
     }
 
     #[test]

@@ -414,6 +414,7 @@ pub(crate) mod tests {
             limits: LIMITS,
             note: String::new(),
             tasks: vec![sample("86x1", "Export")],
+            epics: vec![],
         }
     }
 
