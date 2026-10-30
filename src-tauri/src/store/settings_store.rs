@@ -398,17 +398,10 @@ pub struct RepoSetup {
     /// Implementer and PR Reviewer may run scripts/skill-e2e/golden.sh.
     #[serde(default)]
     pub live_tests: bool,
-    /// "PR line limit" (repos.json `prSizeLimit`): how many changed lines a
-    /// PR of this repo may have before the plan needs an over-limit reason;
-    /// `None`: the plugin's default (400).
-    #[serde(default)]
-    pub pr_size_limit: Option<u32>,
 }
 
 pub const MAX_COPY_FILES: usize = 20;
 const MAX_SETUP_CHARS: usize = 400;
-/// The PR line limit a repo may set (repos.json `prSizeLimit`), inclusive.
-pub const PR_SIZE_LIMIT_RANGE: std::ops::RangeInclusive<u32> = 1..=100_000;
 
 /// A relative path inside the repo: no `..`, not absolute, no control
 /// characters, no `.git` component anywhere.
@@ -453,16 +446,10 @@ pub fn clean_repo_setup(next: RepoSetup) -> Result<RepoSetup, String> {
     if files.len() > MAX_COPY_FILES {
         return Err(format!("At most {MAX_COPY_FILES} files to copy."));
     }
-    if let Some(limit) = next.pr_size_limit {
-        if !PR_SIZE_LIMIT_RANGE.contains(&limit) {
-            return Err("Use a whole number from 1 to 100000.".into());
-        }
-    }
     Ok(RepoSetup {
         setup,
         copy_files: files,
         live_tests: next.live_tests,
-        pr_size_limit: next.pr_size_limit,
     })
 }
 
@@ -798,7 +785,6 @@ mod tests {
                 setup: None,
                 copy_files: vec![bad.into()],
                 live_tests: false,
-                pr_size_limit: None,
             };
             assert!(store.set_repo_setup("/w/a", next).is_err(), "{bad}");
         }
@@ -814,32 +800,12 @@ mod tests {
                         "cfg/.env.local".into(),
                     ],
                     live_tests: true,
-                    pr_size_limit: Some(600),
                 },
             )
             .unwrap();
         assert_eq!(saved.setup.as_deref(), Some("pnpm i"));
         assert_eq!(saved.copy_files, [".env", "cfg/.env.local"]);
         assert!(saved.live_tests);
-        assert_eq!(saved.pr_size_limit, Some(600));
-        for bad in [0, 100_001] {
-            let next = RepoSetup {
-                pr_size_limit: Some(bad),
-                ..RepoSetup::default()
-            };
-            let err = store.set_repo_setup("/w/a", next).unwrap_err();
-            assert_eq!(err, "Use a whole number from 1 to 100000.", "{bad}");
-        }
-        for ok in [1, 100_000] {
-            let next = RepoSetup {
-                pr_size_limit: Some(ok),
-                ..RepoSetup::default()
-            };
-            assert_eq!(
-                store.set_repo_setup("/w/b", next).unwrap().pr_size_limit,
-                Some(ok)
-            );
-        }
         store.set_repo_setup("/w/b", RepoSetup::default()).unwrap();
         assert!(store
             .set_repo_setup(
@@ -848,7 +814,6 @@ mod tests {
                     setup: Some("a\nb".into()),
                     copy_files: vec![],
                     live_tests: false,
-                    pr_size_limit: None,
                 }
             )
             .is_err());
@@ -1056,6 +1021,24 @@ mod tests {
             old.terminal.option_as_meta,
             "a missing key keeps its default"
         );
+    }
+
+    #[test]
+    fn an_old_pr_size_limit_in_saved_settings_loads_and_is_not_written_back() {
+        let dir = TempDir::new("settings_old_limit");
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"schemaVersion":1,"worktreeSetup":{"/w/a":{"setup":"pnpm i","prSizeLimit":600}}}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(
+            store.repo_setup("/w/a").and_then(|r| r.setup.as_deref()),
+            Some("pnpm i")
+        );
+        store.save().unwrap();
+        let text = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+        assert!(!text.contains("prSizeLimit"));
     }
 
     #[test]

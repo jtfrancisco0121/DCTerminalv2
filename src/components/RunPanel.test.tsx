@@ -85,7 +85,15 @@ describe("PR card actions", () => {
 
 describe("PR size and PRs of one repo", () => {
   it("shows a size badge per PR with a recorded size, an over-limit marker in words, and none without a size", () => {
-    renderPanel();
+    // The fixture no longer carries `size`; give the page an older status.json's.
+    const prs = view.prs.map((pr) =>
+      pr.id === "PR1"
+        ? { ...pr, size: { lines: 312, files: 6, excluded: 1, limit: 400, over: false, reason: null } }
+        : pr.id === "PR2"
+          ? { ...pr, size: { lines: 512, files: 9, excluded: 0, limit: 400, over: true, reason: "the parser and its table must ship together" } }
+          : pr,
+    );
+    renderPanel({ prs });
     expect(screen.getByTestId("size-PR1").textContent).toBe("312 lines");
     expect(screen.getByTestId("size-PR1").getAttribute("title")).toBe("6 files, 1 excluded, limit 400");
     const over = screen.getByTestId("size-PR2");

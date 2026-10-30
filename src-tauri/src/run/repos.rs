@@ -29,9 +29,6 @@ pub struct Repo {
     /// written only when true.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub live_tests: bool,
-    /// PR line limit (app setting); written only when set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pr_size_limit: Option<u32>,
 }
 
 impl Repo {
@@ -42,7 +39,6 @@ impl Repo {
             self.setup = s.setup.clone();
             self.copy_files = s.copy_files.clone();
             self.live_tests = s.live_tests;
-            self.pr_size_limit = s.pr_size_limit;
         }
         self
     }
@@ -101,7 +97,6 @@ fn repo_entry(path: &Path) -> Repo {
         setup: None,
         copy_files: Vec::new(),
         live_tests: false,
-        pr_size_limit: None,
     }
 }
 

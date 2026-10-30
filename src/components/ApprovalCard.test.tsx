@@ -13,9 +13,19 @@ function card(prs = view.prs) {
 
 afterEach(cleanup);
 
+// The fixture no longer carries `size` (the app stopped reading it); these
+// tests give the page the sizes an older status.json would have shown.
+const sized = view.prs.map((pr) =>
+  pr.id === "PR1"
+    ? { ...pr, size: { lines: 312, files: 6, excluded: 1, limit: 400, over: false, reason: null } }
+    : pr.id === "PR2"
+      ? { ...pr, size: { lines: 512, files: 9, excluded: 0, limit: 400, over: true, reason: "the parser and its table must ship together" } }
+      : pr,
+);
+
 describe("ApprovalCard at the ship approval", () => {
   it("has a Size column: the lines, or a dash without a recorded size", () => {
-    card();
+    card(sized);
     expect(screen.getByRole("columnheader", { name: "Size" })).toBeTruthy();
     expect(screen.getByTestId("approval-size-PR1").textContent).toBe("312");
     expect(screen.getByTestId("approval-size-PR3").textContent).toBe("–");
@@ -23,7 +33,7 @@ describe("ApprovalCard at the ship approval", () => {
   });
 
   it("shows an over-limit PR's limit and approved reason in its row", () => {
-    card();
+    card(sized);
     const row = within(screen.getByTestId("approval-PR2"));
     const over = row.getByTestId("approval-over-PR2");
     expect(over.textContent).toBe("over 400: the parser and its table must ship together");
