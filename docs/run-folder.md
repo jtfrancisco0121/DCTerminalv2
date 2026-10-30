@@ -18,6 +18,7 @@ The contract between the `dcv2:eagle-eye` skill and the app. The app creates the
   pr-bodies/        skill   PR<n>.md (the GitHub PR body state.sh ship-pr / draft-pr / ready opened or set)
   pr-comments/      skill   PR<n>-round<n>.md, PR<n>-round<n>-fixes.md (github mode: exactly what was posted)
   logs/PR<n>-setup.txt skill the worktree setup step's output (state.sh worktree)
+  (scope)           skill   `state.sh scope <run> <PR>` prints the PR's Scope (areas touched with file counts, dependency changes from `git diff <base commit>..HEAD`; lock files and unknown manifests: `changed`); it feeds the PR body's `## Scope`, local git only
   gates/            skill   PR<n>.yml (A1: the PR Reviewer step's gate, written by state.sh gate)
   report.md         skill   the run report (R10), written by state.sh at done / failed
   memory-update.md  skill   what the end-of-run memory update changed (or why nothing)

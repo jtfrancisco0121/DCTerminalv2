@@ -277,6 +277,43 @@ expect 0 "plan decisions" bash "$STATE" plan "$RUN" decisions
 has "  decision bullet" "- 2026-10-30 | use x | because y | rules out: z"
 cp "$d/plan.bak" "$RUN/plan.md"
 
+echo "# scope (PR body Scope)"
+SC="$d/scope-repo"; SRUN="$d/runs/r-scope"; mkdir -p "$SC/src" "$SC/web" "$SRUN"
+git -C "$SC" init -q -b main
+printf '{"dependencies":{"keep":"1.0.0","gone":"2.0.0"}}\n' > "$SC/package.json"
+printf '[package]\nname = "x"\n\n[dependencies]\nserde = "1.0.100"\ntokio = { version = "1.0", features = ["rt"] }\n' > "$SC/Cargo.toml"
+printf 'flask==2.0\nrequests>=2\n' > "$SC/requirements.txt"
+printf 'module x\n\nrequire (\n\tgithub.com/a/b v1.0.0\n)\n' > "$SC/go.mod"
+printf 'lock1\n' > "$SC/package-lock.json"; printf 'src\n' > "$SC/src/a.rs"
+git -C "$SC" add -A; git -C "$SC" -c user.name=t -c user.email=t@t commit -q -m base
+SBASE="$(git -C "$SC" rev-parse HEAD)"
+printf '{"dependencies":{"keep":"1.0.0","left-pad":"1.3.0"}}\n' > "$SC/package.json"
+printf '[package]\nname = "x"\n\n[dependencies]\nserde = "1.0.200"\ntokio = { version = "1.0", features = ["rt"] }\n' > "$SC/Cargo.toml"
+printf 'flask==2.1\n' > "$SC/requirements.txt"
+printf 'module x\n\nrequire (\n\tgithub.com/a/b v1.2.0\n\tgithub.com/c/d v0.1.0\n)\n' > "$SC/go.mod"
+printf 'lock2\n' > "$SC/package-lock.json"; printf 'g\n' > "$SC/Gemfile"; printf 'r\n' > "$SC/NOTES.md"
+printf 'src2\n' > "$SC/src/b.rs"; printf 'src3\n' > "$SC/src/c.rs"; printf 'w\n' > "$SC/web/i.ts"
+git -C "$SC" add -A; git -C "$SC" -c user.name=t -c user.email=t@t commit -q -m change
+python3 - "$SRUN" "$SC" "$SBASE" <<'PY'
+import json, sys
+run, wt, base = sys.argv[1:4]
+json.dump({"schema": 1, "runDir": run, "repos": [wt], "worktrees": {"PR1": wt}, "bases": {"PR1": base}}, open(run + "/.guard.json", "w"))
+PY
+expect 0 "scope" bash "$STATE" scope "$SRUN" PR1
+has "  areas with counts" "Areas: (root) (7 files), src (2 files), web (1 file)"
+has "  npm add" "package.json: added left-pad 1.3.0"
+has "  npm remove" "package.json: removed gone"
+has "  cargo bump" "Cargo.toml: bumped serde 1.0.100 → 1.0.200"
+hasnt "  unchanged dep not listed" "tokio"
+has "  requirements bump" "requirements.txt: bumped flask ==2.0 → ==2.1"
+has "  requirements removal" "requirements.txt: removed requests"
+has "  go bump" "go.mod: bumped github.com/a/b v1.0.0 → v1.2.0"
+has "  go add" "go.mod: added github.com/c/d v0.1.0"
+has "  lock file is changed" "package-lock.json: changed"
+has "  unknown manifest is changed" "Gemfile: changed"
+expect 0 "scope, unknown PR" bash "$STATE" scope "$SRUN" PR9
+[[ -z "$out" ]] && ok "  no worktree, no lines" || bad "  scope PR9: $out"
+
 echo "# base (8)"
 expect 0 "base, no remote" bash "$STATE" base "$R"
 has "  main, no remote" "base=main baseCommit=$BASE remote=none"

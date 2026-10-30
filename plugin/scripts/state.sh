@@ -15,6 +15,8 @@
 #                                             record the user's yes at stop #1 / #2 (test: only when
 #                                             DCV2_TEST_MODE has auto-approve); ship also sets stage shipping
 #   state.sh plan <run> prs|tickets|stories   print only that part of plan.md
+#   state.sh scope <run> <pr id>              print the PR's Scope: areas touched with file counts and dependency
+#                                             changes (added / removed / bumped; lock files and unknown manifests: changed)
 #   state.sh base <repo path>                 print "base=<b> baseCommit=<sha> remote=<name|none>"
 #   state.sh worktree <run> <repo path> <pr id> <base commit>
 #                                             make (or reuse / re-make) the PR's worktree beside the
@@ -2019,6 +2021,166 @@ def cmd_gate(run, pid, gate, reason, review=None):
     print(f"wrote gates/{pid}.yml: {gate}")
 
 
+LOCK_NAMES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json", "Cargo.lock", "go.sum", "poetry.lock",
+              "Pipfile.lock", "composer.lock", "Gemfile.lock", "uv.lock", "bun.lockb", "bun.lock"}
+OTHER_MANIFESTS = {"Gemfile", "Pipfile", "composer.json", "pom.xml", "build.gradle", "build.gradle.kts", "setup.py", "setup.cfg",
+                   "Package.swift", "Podfile", "pubspec.yaml", "mix.exs", "deno.json"}
+
+
+def scope_base(wt, base):
+    """The commit the PR's branch started from: the recorded one, else the merge-base with a known base ref."""
+    if base and git("-C", wt, "cat-file", "-e", f"{base}^{{commit}}").returncode == 0:
+        return base
+    for ref in ("origin/HEAD", "origin/main", "origin/master", "main", "master"):
+        r = git("-C", wt, "merge-base", "HEAD", ref)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    return None
+
+
+def manifest_kind(path):
+    name = path.rsplit("/", 1)[-1]
+    if name in LOCK_NAMES or name.endswith(".lock"):
+        return "changed"
+    if name == "package.json": return "npm"
+    if name == "Cargo.toml": return "cargo"
+    if re.fullmatch(r"requirements[\w.-]*\.txt", name): return "req"
+    if name == "go.mod": return "go"
+    if name == "pyproject.toml": return "pyproject"
+    if name in OTHER_MANIFESTS: return "changed"
+    return None
+
+
+def parse_manifest(kind, text):
+    """name -> version for the manifest kinds scope_lines compares. Text parsing only (Python 3.9 stdlib)."""
+    deps = {}
+    if kind == "npm":
+        try:
+            doc = json.loads(text) if text.strip() else {}
+        except ValueError:
+            return deps
+        for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+            for n, v in (doc.get(key) or {}).items() if isinstance(doc.get(key), dict) else []:
+                deps[n] = str(v)
+    elif kind in ("cargo", "pyproject"):
+        section, in_array = "", False
+        for raw in text.splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            m = re.match(r"^\[(.+?)\]$", line)
+            if m:
+                section, in_array = m.group(1).strip(), False
+                dm = re.match(r"^(?:target\..+\.)?(dependencies|dev-dependencies|build-dependencies)\.([\w.-]+)$", section)
+                if dm and kind == "cargo":
+                    deps[dm.group(2)] = "*"
+                continue
+            if kind == "cargo":
+                if re.fullmatch(r"(?:target\..+\.)?(dependencies|dev-dependencies|build-dependencies)", section):
+                    km = re.match(r'^([\w.-]+)\s*=\s*(.+)$', line)
+                    if km:
+                        vm = re.match(r'^"([^"]*)"', km.group(2)) or re.search(r'version\s*=\s*"([^"]*)"', km.group(2))
+                        deps[km.group(1)] = vm.group(1) if vm else "*"
+                else:
+                    dm = re.match(r"^(?:target\..+\.)?(?:dependencies|dev-dependencies|build-dependencies)\.([\w.-]+)$", section)
+                    if dm and line.startswith("version"):
+                        vm = re.search(r'"([^"]*)"', line)
+                        deps[dm.group(1)] = vm.group(1) if vm else "*"
+            else:
+                if re.fullmatch(r"tool\.poetry\.(dev-)?dependencies|tool\.poetry\.group\.[\w-]+\.dependencies", section):
+                    km = re.match(r'^([\w.-]+)\s*=\s*"([^"]*)"', line)
+                    if km and km.group(1).lower() != "python":
+                        deps[km.group(1)] = km.group(2)
+                    continue
+                km = re.match(r"^([\w-]+)\s*=\s*\[(.*)$", line)
+                if km and section in ("project", "project.optional-dependencies", "dependency-groups") and \
+                        (section != "project" or km.group(1) == "dependencies"):
+                    in_array, line = True, km.group(2)
+                elif not in_array:
+                    continue
+                for q in re.findall(r'"([^"]+)"', line):
+                    pm = re.match(r"^([A-Za-z0-9_.-]+)\s*(.*)$", q)
+                    if pm:
+                        deps[pm.group(1)] = pm.group(2).strip() or "*"
+                if "]" in line:
+                    in_array = False
+    elif kind == "req":
+        for line in text.splitlines():
+            line = line.split("#", 1)[0].strip()
+            m = re.match(r"^([A-Za-z0-9_.-]+)(?:\[[^\]]*\])?\s*(.*)$", line)
+            if m and not line.startswith("-"):
+                deps[m.group(1)] = m.group(2).strip() or "*"
+    elif kind == "go":
+        block = False
+        for line in text.splitlines():
+            line = line.split("//", 1)[0].strip()
+            if line.startswith("require ("):
+                block = True
+                continue
+            if block and line == ")":
+                block = False
+                continue
+            m = re.match(r"^(?:require\s+)?([\w./~-]+)\s+(v[\w.+-]+)$", line) if (block or line.startswith("require ")) else None
+            if m:
+                deps[m.group(1)] = m.group(2)
+    return deps
+
+
+def git_show(wt, rev, path):
+    r = git("-C", wt, "show", f"{rev}:{path}")
+    return r.stdout if r.returncode == 0 else ""
+
+
+def scope_lines(run, pid):
+    """Markdown lines for the PR body's Scope: areas touched (with file counts) and dependency changes.
+    Local git only. Returns [] when the worktree or base cannot be found."""
+    g = guard_rec(run)
+    wt = (g.get("worktrees") or {}).get(pid)
+    if not wt or not os.path.isdir(wt):
+        return []
+    base = scope_base(wt, (g.get("bases") or {}).get(pid))
+    if not base:
+        return []
+    r = git("-C", wt, "diff", "--numstat", "--no-renames", "-z", f"{base}..HEAD")
+    if r.returncode != 0:
+        return []
+    paths = []
+    for rec in r.stdout.split("\0"):
+        parts = rec.split("\t", 2)
+        if len(parts) == 3 and parts[2]:
+            paths.append(parts[2])
+    if not paths:
+        return []
+    areas = {}
+    for p in paths:
+        a = p.split("/", 1)[0] if "/" in p else "(root)"
+        areas[a] = areas.get(a, 0) + 1
+    order = sorted(areas.items(), key=lambda kv: (-kv[1], kv[0]))
+    lines = ["Areas: " + ", ".join(f"{a} ({n} file{'s' if n != 1 else ''})" for a, n in order)]
+    for p in sorted(paths):
+        kind = manifest_kind(p)
+        if kind is None:
+            continue
+        if kind == "changed":
+            lines.append(f"- {p}: changed")
+            continue
+        old, new = parse_manifest(kind, git_show(wt, base, p)), parse_manifest(kind, git_show(wt, "HEAD", p))
+        for n in sorted(new):
+            if n not in old:
+                lines.append(f"- {p}: added {n} {new[n]}")
+            elif old[n] != new[n]:
+                lines.append(f"- {p}: bumped {n} {old[n]} → {new[n]}")
+        for n in sorted(old):
+            if n not in new:
+                lines.append(f"- {p}: removed {n}")
+    return lines
+
+
+def cmd_scope(run, pid):
+    for l in scope_lines(run, pid):
+        print(l)
+
+
 def plan_pr_why(plan, pid):
     """The first `- Why:` line of a PR block, trimmed ('' when there is none)."""
     for m in re.finditer(r"^###\s+(PR\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan, re.M | re.S):
@@ -2324,13 +2486,14 @@ def main(argv):
     cmd, args = (argv[0] if argv else ""), argv[1:]
     need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0,
             "gate": 4, "report": 1, "mode": 1, "draft-pr": 2, "push": 2, "post-review": 3, "comment": 4, "ready": 2, "bmad-size": 2, "bmad-init": 1, "bmad-check": 1,
-            "cleanup": 1, "request": 2, "request-wait": 2}
+            "cleanup": 1, "scope": 2, "request": 2, "request-wait": 2}
     if cmd not in need or len(args) < need[cmd]:
         die("usage: see the header of state.sh", 2)
     if cmd == "preflight": cmd_preflight(args[0], "resume" in args[1:])
     elif cmd == "testmode": cmd_testmode()
     elif cmd == "put": cmd_put(args[0])
     elif cmd == "approve": cmd_approve(args[0], args[1], args[2])
+    elif cmd == "scope": cmd_scope(args[0], args[1])
     elif cmd == "plan": cmd_plan(args[0], args[1], args[2] if len(args) > 2 else None)
     elif cmd == "base": cmd_base(args[0])
     elif cmd == "worktree": cmd_worktree(args[0], args[1], args[2], args[3])
