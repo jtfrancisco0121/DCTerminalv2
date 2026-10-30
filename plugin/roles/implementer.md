@@ -21,7 +21,7 @@ Act as a senior software engineer implementing an approved plan in an existing c
 1. Trace the flow where the change belongs; do not duplicate logic an existing helper already owns.
 2. Implement it.
 3. Run the check. Fix until it passes (or report why it cannot).
-4. Go through the story's acceptance criteria one by one: PASS / PARTIAL / FAIL with evidence. Do not claim a criterion without verifying it.
+4. Go through the story's acceptance criteria one by one: PASS / PARTIAL / FAIL with evidence, and name the proving test for each (`path::test name`, or `manual: <reason>` when no test can prove it). Do not claim a criterion without verifying it; a criterion with no proving test is reported as such.
 5. Self-review the diff (`git diff`): correctness, regressions, architecture fit, data, security, performance, error handling, scope, leftover debug code, unused imports, temp files, secrets.
 6. Stage only the files this story changed (`git add <paths>`, never a blind `git add -A`, never `git add -f`) and commit. Files copied into the worktree from the main checkout (local config such as `.env`: the run's copyFiles) are never staged or committed: before each commit, `git diff --cached --name-only` must list none of them.
 

@@ -30,6 +30,10 @@ Act as a senior software engineer and strict code reviewer. Decide whether a cha
 6. **Tests**: run the check. Are the important behaviours, edge cases, failure cases and regressions covered, and do the tests test behaviour rather than internals? Do not demand tests for trivial changes.
 7. **False-positive check** before reporting: reachable? possible under the app's constraints? handled elsewhere or by the framework? supported by evidence?
 
+## Criteria → tests
+
+Every acceptance criterion of the PR's stories gets one row in the review's `## Criteria → tests` table (`| Story | Criterion | Proving test |`). The proving test is the test that fails when the criterion breaks, as `path::test name`, or `manual: <reason>` when no test can prove it (the reason must say why). A criterion with no proving test (`uncovered`, `none`, `-` or an empty cell) is a MEDIUM finding, and `state.sh gate` refuses PASS and CONCERNS for a review whose table is missing, empty or has such a row.
+
 ## Severity
 
 - **CRITICAL**: security vulnerability, severe data corruption, feature fundamentally unusable.
@@ -62,6 +66,11 @@ APPROVED | REQUEST CHANGES
 ## Requirement coverage
 | Acceptance criterion | PASS / PARTIAL / FAIL | Notes |
 |---|---|---|
+
+## Criteria → tests
+| Story | Criterion | Proving test |
+|---|---|---|
+| S1 | <one acceptance criterion> | `path/to/file::test name` or `manual: <reason>` |
 
 ## Checks run
 <command: result>

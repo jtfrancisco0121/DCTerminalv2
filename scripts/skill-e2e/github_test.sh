@@ -348,7 +348,7 @@ is "  url still listed" "$RUN/writeback.json" drafts.0.prs.0.url '"https://githu
 grep -q '"opened"' "$RUN/writeback.json" && bad "  internal key leaked" || ok "  no internal keys"
 
 echo "# gate reads the comment-friendly first line"
-printf 'Eagle-Eye review — round 1: APPROVED — 0 MEDIUM+, 1 LOW\n\n## Findings\n1. LOW — a.js:1 — x — y\n' > "$RUN/reviews/PR1-round1.md"
+printf 'Eagle-Eye review — round 1: APPROVED — 0 MEDIUM+, 1 LOW\n\n## Findings\n1. LOW — a.js:1 — x — y\n\n## Criteria → tests\n| Story | Criterion | Proving test |\n|---|---|---|\n| S1 | multiply | a.test.js::multiply |\n' > "$RUN/reviews/PR1-round1.md"
 st building reviewing pending
 expect 0 "gate PASS from the first line" S gate "$RUN" PR1 PASS "clean"
 

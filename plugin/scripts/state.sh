@@ -55,7 +55,7 @@
 #   state.sh gate <run> <pr id> PASS|CONCERNS|FAIL|WAIVED "<reason>" [--review <file>]
 #                                             write gates/<pr id>.yml (A1). PASS/CONCERNS need the review
 #                                             file (default reviews/<pr>-round<review.round>.md) to say
-#                                             APPROVED; WAIVED only over a CONCERNS/FAIL gate, with the
+#                                             APPROVED and to carry a full `## Criteria -> tests` table; WAIVED only over a CONCERNS/FAIL gate, with the
 #                                             user's reason
 #   state.sh report <run>                     write report.md from status.json, plan.md, log.md and the
 #                                             gates (R10); put does it itself at stage done / failed
@@ -2068,6 +2068,32 @@ def cmd_writeback(run, force):
     print(f"wrote {dest} ({len(drafts)} drafts)")
 
 
+def criteria_problems(text):
+    """The review's `## Criteria -> tests` table (| Story | Criterion | Proving test |): a list of problems, empty when
+    every criterion row names a proving test (`path::test name` or `manual: <reason>`)."""
+    m = re.search(r"^#+\s*Criteria\s*(?:\u2192|->|=>|to)\s*tests\s*$(.*?)(?=^#+\s|\Z)", text or "", re.M | re.I | re.S)
+    if not m:
+        return ["the review has no `## Criteria \u2192 tests` table"]
+    rows = []
+    for line in m.group(1).splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if re.fullmatch(r"[\s:|-]*", line) or (cells and cells[0].lower() == "story"):
+            continue
+        rows.append(cells)
+    if not rows:
+        return ["the `## Criteria \u2192 tests` table has no rows"]
+    bad = []
+    for cells in rows:
+        story, crit, proof = (cells + ["", "", ""])[:3]
+        p = re.sub(r"[`*]", "", proof).strip()
+        if not p or p.lower() in ("none", "-", "\u2014", "n/a", "uncovered") or re.fullmatch(r"manual:?\s*", p, re.I):
+            bad.append(f"{story or '?'}: {crit[:100] or '(no criterion text)'}")
+    return bad
+
+
 def cmd_gate(run, pid, gate, reason, review=None):
     if gate not in GATES:
         die(f"NOT WRITTEN: gate must be one of {', '.join(GATES)} (got {gate!r})")
@@ -2095,6 +2121,10 @@ def cmd_gate(run, pid, gate, reason, review=None):
         if not (verdict or "").startswith("APPROVED"):
             die(f"NOT WRITTEN: {gate} needs the review file {review} to exist with verdict APPROVED (found {verdict or 'no review'}); "
                 "a review asking for changes is FAIL")
+        problems = criteria_problems(text)
+        if problems:
+            die(f"NOT WRITTEN: {gate} needs every acceptance criterion mapped to a proving test in the review's "
+                f"`## Criteria \u2192 tests` table (`path::test name` or `manual: <reason>`); not mapped: " + "; ".join(problems[:10]))
     if gate == "WAIVED":
         if not old or old.get("gate") not in ("CONCERNS", "FAIL"):
             die(f"NOT WRITTEN: WAIVED only replaces a CONCERNS or FAIL gate (now {(old or {}).get('gate') or 'missing'}), "
