@@ -258,7 +258,7 @@ bash "$STATE" log "$RUN" building <<<'PR9 old event' >/dev/null
 
 echo "# plan sections (16)"
 expect 0 "plan prs" bash "$STATE" plan "$RUN" prs
-has "  has PR2" "PR2 | rr | epic none | S2 | depends - | stacked on - | check -"; hasnt "  stops before Manual steps" "Manual steps"
+has "  has PR2" "PR2 | rr | epic none | S2 | depends - | stacked on - | why - | check -"; hasnt "  stops before Manual steps" "Manual steps"
 expect 0 "plan tickets" bash "$STATE" plan "$RUN" tickets
 has "  has t1" "- t1 | T-1"; hasnt "  stops before Risks" "secret risk text"
 expect 0 "plan stories" bash "$STATE" plan "$RUN" stories
@@ -1054,8 +1054,8 @@ is "  PR3 epic E2 has no title in epics: the plan's Epic line title is used" "$S
 is "  PR6 (Epic: none) has epic null" "$SP/status.json" prs.3.epic null
 echo "# plan <run> prs: one compact line per PR"
 expect 0 "plan prs" bash "$STATE" plan "$SP" prs
-has "  PR1 line" "PR1 | r | epic E1 Epic one | S1,S2 | depends - | stacked on - | check true"
-has "  PR6 line (no epic)" "PR6 | r | epic none | S11 | depends - | stacked on - | check true"
+has "  PR1 line" "PR1 | r | epic E1 Epic one | S1,S2 | depends - | stacked on - | why - | check true"
+has "  PR6 line (no epic)" "PR6 | r | epic none | S11 | depends - | stacked on - | why - | check true"
 echo "# accepted shapes"
 splan < <(for i in $(seq 1 17); do st S$i "f$i"; done; echo "## Pull requests"
           prb PR1 r1 "S1, S2, S3, S4, S5, S6" none none; for i in $(seq 2 12); do prb PR$i r$i S$((i + 5)) none none; done)
@@ -1081,12 +1081,12 @@ splan < <(st S1 a t1; st S2 b t4; st S3 c t6; st S4 d t9; echo "## Pull requests
           prb PR3 r2 S3 none "E3 Three"; prb PR4 r S4 "PR1, PR2, PR3" "E4 Four")
 spok "one same-repo and two cross-repo Depends on"
 expect 0 "  plan prs: only the same-repo Depends on is a stack" bash "$STATE" plan "$SP" prs
-has "  PR4 depends on all three" "PR4 | r | epic E4 Four | S4 | depends PR1,PR2,PR3 | stacked on PR1 | check true"
-has "  PR2 depends on nothing: stacked on -" "PR2 | rr | epic E2 Two | S2 | depends - | stacked on - | check true"
+has "  PR4 depends on all three" "PR4 | r | epic E4 Four | S4 | depends PR1,PR2,PR3 | stacked on PR1 | why - | check true"
+has "  PR2 depends on nothing: stacked on -" "PR2 | rr | epic E2 Two | S2 | depends - | stacked on - | why - | check true"
 splan < <(st S1 a t1; st S2 b t4; echo "## Pull requests"; prb PR1 r S1 none "E1 One"; prb PR2 rr S2 PR1 "E2 Two")
 spok "cross-repo dependency"
 expect 0 "  plan prs" bash "$STATE" plan "$SP" prs
-has "  a cross-repo dependency is not a stack" "PR2 | rr | epic E2 Two | S2 | depends PR1 | stacked on - | check true"
+has "  a cross-repo dependency is not a stack" "PR2 | rr | epic E2 Two | S2 | depends PR1 | stacked on - | why - | check true"
 splan < <(st S1 a t1; st S2 b t4; echo "## Pull requests"; prb PR1 r S1 none "E1 One"; prb PR2 r S2 PR1 "E2 Two")
 expect 0 "plan prs: a same-repo Depends on with disjoint Files" bash "$STATE" plan "$SP" prs
 has "  is a stack" "stacked on PR1"
@@ -1095,6 +1095,27 @@ printf '%s\n' "${#long}" | grep -qE '^(8|9)[0-9]$' && ok "  the check fixture is
 splan < <(st S1 a t1; echo "## Pull requests"; printf '### PR1: t\n- Repo: r\n- Stories: S1\n- Depends on: none\n- Epic: E1 One\n- Check: `%s`\n' "$long")
 expect 0 "plan prs: a long check command is printed whole" bash "$STATE" plan "$SP" prs
 has "  the whole command" "| check $long"
+echo "# Why line per PR"
+splan < <(st S1 a t1; st S2 b t4; echo "## Pull requests"
+          printf '### PR1: t\n- Repo: r\n- Stories: S1\n- Depends on: none\n- Epic: E1 One\n- Why: Users lose their draft when the app quits.\n- Check: true\n'
+          printf '### PR2: t\n- Repo: rr\n- Stories: S2\n- Depends on: none\n- Epic: E2 Two\n- Why: a | b\x01c\n- Check: `npm test -- --run`\n')
+expect 0 "plan prs with Why lines" bash "$STATE" plan "$SP" prs
+has "  PR1 Why sits before check" "stacked on - | why Users lose their draft when the app quits. | check true"
+has "  a | in a Why is neutralised, a control character is a space" "| why a / b c | check "
+has "  the check is still the last field" "| check npm test -- --run"
+splan < <(st S1 a t1; echo "## Pull requests"
+          printf '### PR1: t\n- Repo: r\n- Stories: S1\n- Depends on: none\n- Epic: E1 One\n- Why: %s\n- Check: true\n' "$(printf 'w%.0s' $(seq 1 300))")
+expect 0 "plan prs with a 300-character Why" bash "$STATE" plan "$SP" prs
+python3 - "$out" <<'PY' && ok "  the Why is cut at 200 characters" || bad "  Why cap: $out"
+import sys
+w = sys.argv[1].split(" | why ")[1].split(" | check ")[0]
+assert len(w) == 200, len(w)
+PY
+splan < <(st S1 a t1; echo "## Pull requests"; prb PR1 r S1 none "E1 One")
+expect 0 "plan prs without a Why line prints why -" bash "$STATE" plan "$SP" prs
+has "  why -" "| why - | check true"
+spok "a plan without Why lines is approved as before"
+
 echo "# refused groupings"
 splan < <(st S1 a t1; st S2 b t4; echo "## Pull requests"; prb PR1 r "S1, S2" none "E1 One")
 spboth "two epics in one PR" "PR1 mixes epics E1 and E2"

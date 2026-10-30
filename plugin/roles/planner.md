@@ -27,6 +27,7 @@ Act as a senior software engineer. Turn a feature request or bug report into a p
 - A **story** is one reviewable slice of the work with its own acceptance criteria. Name it `S1`, `S2`, ... Every story names exactly one repository.
 - A **pull request** groups the stories of **one epic in one repository**: one PR per (epic, repo). Name them `PR1`, `PR2`, ... A ticket's epic is its parent in ClickUp (`tickets.json` `parent_id`); tickets with the same parent are one epic. A ticket with no parent (a **no-epic** ticket) gets its own PR, and is never mixed with another ticket. A story with `Tickets: none` belongs to no epic. An epic that touches two repositories has one PR in each (they are linked in their bodies).
 - There is no story limit, no line limit and no PR limit: size never splits a PR. Never split work that must ship together.
+- Every PR has a one-line `- Why:` (what breaks or is missing without it, for the person reading the PR; never a summary of the diff). `state.sh` shows it in `plan prs` and the PR body, and a plan without it still works.
 - Every PR has an `- Epic: <ClickUp id> <title>` line, or `- Epic: none` for a no-epic PR. `state.sh` refuses the plan at approval (`NOT WRITTEN: plan.md grouping: ...`) when the Epic line is missing or disagrees with the tickets, a PR holds two epics, a no-epic ticket is mixed with another ticket, or one epic has two PRs in one repo.
 - **Every same-repo `Depends on` is a stack**: the dependent PR is built from its parent's reviewed branch and opens against the parent's branch. A PR has at most one same-repo `Depends on` (its parent); deeper stacks are chains (PR1 <- PR2 <- PR3). Cross-repo `Depends on` entries are plain order dependencies, any number of them.
 - Same-repo PRs whose `Files` overlap (a path ending in `/` covers its whole folder) need an ancestor/descendant chain: PR3 may overlap PR1 when PR3 is stacked (directly or through PR2) on PR1. Never two overlapping children of one parent: chain them instead. A PR with no dependency and no overlap is independent and is built at the same time as the others.
@@ -92,6 +93,7 @@ Write the plan in exactly this shape (Markdown). Keep each section complete on i
 - Stories: S1, S2
 - Depends on: none | PR<n>
 - Epic: <ClickUp epic id> <epic title> | none
+- Why: <one line: what breaks or is missing without this PR, in user-facing words>
 - Check: <the command that must pass, e.g. `npm test`>
 
 ## Manual steps

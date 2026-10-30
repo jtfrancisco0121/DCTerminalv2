@@ -108,6 +108,11 @@ assert all(r.startswith(("Read(./", "Read(**/node_modules", "Read(**/dist", "Rea
     "only unambiguous build output is denied at any depth; target/ and coverage/ only at the start folder (and one level down)"
 PY
 
+echo "# the Why-line rule lives in the planner and plan-reviewer roles only"
+grep -q -- '- Why:' "$P/roles/planner.md" && grep -q 'Why line' "$P/roles/plan-reviewer.md" && ok "planner.md and plan-reviewer.md hold the Why rule" || bad "Why rule missing from the roles"
+leak="$(grep -lE 'Why line|restates the diff' "$P"/skills/*/SKILL.md "$P"/agents/*.md 2>/dev/null || true)"
+[[ -z "$leak" ]] && ok "no skill or agent file repeats the Why rule" || bad "the Why rule is repeated in: $leak"
+
 echo "# scripts parse"
 for f in "$P"/scripts/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do
   bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"

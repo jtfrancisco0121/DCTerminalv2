@@ -773,6 +773,13 @@ def paths_overlap(a, b):
     return None
 
 
+def plan_why(text):
+    """A PR's `- Why:` line as one safe line: control characters and `|` neutralised, at most 200 characters; None when empty."""
+    t = re.sub(r"[\x00-\x1f\x7f]+", " ", text or "").replace("|", "/")
+    t = " ".join(t.split())
+    return t[:200].rstrip() or None
+
+
 def plan_blocks(plan):
     """({S id: [files]}, {PR id: {repo, stories, deps, epic, check}}) read from plan.md's ### S<n> / ### PR<n> blocks.
     epic is the raw text of the PR's `- Epic:` line, or None when it has none."""
@@ -784,7 +791,7 @@ def plan_blocks(plan):
     for m in re.finditer(r"(?ms)^###\s+(PR\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan):
         b = m.group(2)
         g = lambda k: re.search(rf"(?m)^[ \t]*-[ \t]*{k}:[ \t]*(.*?)[ \t]*$", b)
-        repo, sl, dl, el, cl = g("Repo"), g("Stories"), g("Depends on"), g("Epic"), g("Check")
+        repo, sl, dl, el, cl, wl = g("Repo"), g("Stories"), g("Depends on"), g("Epic"), g("Check"), g("Why")
         chk = cl.group(1).strip() if cl else ""
         if len(chk) > 1 and chk.startswith("`") and chk.endswith("`") and chk.count("`") == 2:
             chk = chk[1:-1].strip()
@@ -794,6 +801,7 @@ def plan_blocks(plan):
             "deps": re.findall(r"PR\d+", dl.group(1)) if dl else [],
             "epic": el.group(1).strip() if el else None,
             "check": chk or None,
+            "why": plan_why(wl.group(1) if wl else None),
         }
     return stories, prs
 
@@ -1344,7 +1352,8 @@ def cmd_plan(run, what):
         for pid, p in prs.items():
             sp = same_repo_deps(prs, pid)
             head = " | ".join([pid, (p["repo"] or "-")[:40], titles[pid], (",".join(p["stories"]) or "-")[:60],
-                               "depends " + (",".join(p["deps"])[:40] or "-"), "stacked on " + (sp[0] if sp else "-")])
+                               "depends " + (",".join(p["deps"])[:40] or "-"), "stacked on " + (sp[0] if sp else "-"),
+                               "why " + (p["why"] or "-")])
             print(f"{head} | check {p['check'] or '-'}")
         if prs:
             return
