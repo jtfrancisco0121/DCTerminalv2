@@ -83,6 +83,23 @@ assert all(r.startswith(("Read(./", "Read(**/node_modules", "Read(**/dist", "Rea
     "only unambiguous build output is denied at any depth; target/ and coverage/ only at the start folder (and one level down)"
 PY
 
+echo "# commit body and version-bump rules (AD-10)"
+VFILES=('package.json` `version' 'src-tauri/Cargo.toml` `[package] version' 'src-tauri/tauri.conf.json` `version' 'plugin/VERSION' 'plugin/.claude-plugin/plugin.json` `version')
+for r in implementer developer; do
+  grep -qF 'why paragraph' "$P/roles/$r.md" && grep -qF 'S<n>: <short title>' "$P/roles/$r.md" && grep -qF 'review fixes: <short summary>' "$P/roles/$r.md" \
+    && ok "$r.md requires a commit body after the subject" || bad "$r.md lacks the commit body rule"
+done
+for r in implementer developer pr-reviewer; do
+  for v in "${VFILES[@]}"; do
+    grep -qF "$v" "$P/roles/$r.md" && ok "  $r.md lists $v" || bad "$r.md does not list the version file $v"
+  done
+done
+grep -qE 'unplanned change to a release version file' "$P/roles/pr-reviewer.md" && grep -qE '\*\*MEDIUM\*\*: an unplanned change' "$P/roles/pr-reviewer.md" \
+  && ok "pr-reviewer.md classes an unplanned version bump as MEDIUM" || bad "pr-reviewer.md: unplanned version bump is not MEDIUM"
+F="$ROOT/fixtures/reviews/unplanned-version-bump.md"
+grep -qE '^1\. MEDIUM .*version' "$F" && grep -q '^## Criteria → tests' "$F" && head -1 "$F" | grep -q '^Eagle-Eye review' \
+  && ok "fixture review flags the unplanned bump MEDIUM, with the criteria table" || bad "fixture review structure"
+
 echo "# scripts parse"
 for f in "$P"/scripts/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do
   bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"

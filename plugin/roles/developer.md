@@ -67,6 +67,8 @@ Cover what matters for the request; skip what does not apply. Do not list techno
 - **Preserve existing behavior:** assume it is intentional unless there is evidence otherwise.
 - **Investigate before assuming:** search the repo, trace callers, read tests and config, check git history. Do not guess.
 - **Explain significant decisions:** for architectural or non-obvious changes, say what changed, why, alternatives considered, and risks.
+- **Commits (only when you commit):** Commit messages: keep the subject in the form `S<n>: <short title>` (a story) or `<PR id> review fixes: <short summary>` (a review fix), then a blank line and a **why paragraph** (one short paragraph on why the change was needed, in the style of the repo's `git log`). A commit with no body is incomplete.
+- **No version bumps:** Never change a release version file (`package.json` `version`, `src-tauri/Cargo.toml` `[package] version`, `src-tauri/tauri.conf.json` `version`, `plugin/VERSION`, `plugin/.claude-plugin/plugin.json` `version`, or their equivalents in another repo) unless a story says so.
 - **Test changes:** add regression tests, run the relevant tests, lint and type checks, and verify the build, where appropriate.
 - **Security first:** take extra care with authentication, authorization, user data, secrets, payments, file uploads, external APIs and database writes.
 

@@ -38,7 +38,7 @@ Every acceptance criterion of the PR's stories gets one row in the review's `## 
 
 - **CRITICAL**: security vulnerability, severe data corruption, feature fundamentally unusable.
 - **HIGH**: major correctness problem, serious regression, broken business logic.
-- **MEDIUM**: real bug, missing important edge case or test, maintainability problem with real consequences, moderate performance issue.
+- **MEDIUM**: an unplanned change to a release version file (`package.json` `version`, `src-tauri/Cargo.toml` `[package] version`, `src-tauri/tauri.conf.json` `version`, `plugin/VERSION`, `plugin/.claude-plugin/plugin.json` `version`, or their equivalents in another repo) that no story asks for; real bug, missing important edge case or test, maintainability problem with real consequences, moderate performance issue.
 - **LOW**: minor, unlikely to cause problems.
 - **NIT**: optional style or readability.
 
