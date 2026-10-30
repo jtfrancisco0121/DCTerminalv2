@@ -116,7 +116,15 @@ impl Notifier for AppNotifier {
         RunLogNotifier.notify(event, app_active);
         // The phone gets the app-only kinds, whatever the Mac's switches say.
         if let Ok(settings) = self.app.state::<Mutex<SettingsStore>>().lock() {
-            self.push.push(event, settings.push());
+            // `run.batchPushes` turns only the batch and wave milestone pushes off: the desktop notification
+            // below and every approval notification are unchanged.
+            let milestone = matches!(
+                event.kind,
+                Kind::BatchPlanned | Kind::BatchReady | Kind::WaveReady
+            );
+            if !(milestone && !settings.run().batch_pushes) {
+                self.push.push(event, settings.push());
+            }
         }
         let sinks = route(event.kind, &self.settings(), app_active);
         if sinks.in_app {

@@ -24,6 +24,7 @@ vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     options = {};
     loadAddon() {}
+    registerLinkProvider() {}
     onSelectionChange() {}
     onData(handler: (data: string) => void) {
       inputs.push(handler);

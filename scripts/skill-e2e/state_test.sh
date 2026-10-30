@@ -176,9 +176,20 @@ expect 1 "reviewed refused with a FAIL gate" put < <(status building reviewed pe
 expect 0 "WAIVED over FAIL (the user's reason)" bash "$STATE" gate "$RUN" PR1 WAIVED "user: the 0 case is out of scope"
 grep -q '^waived: "FAIL"$' "$RUN/gates/PR1.yml" && ok "  records what was waived" || bad "  gate file: $(cat "$RUN/gates/PR1.yml")"
 printf '## Verdict\n**APPROVED**\n' > "$RUN/reviews/PR1-round1.md"
+expect 1 "gate PASS: APPROVED but no criteria table" bash "$STATE" gate "$RUN" PR1 PASS "clean"
+has "  names the missing table" "Criteria → tests"
+printf '## Verdict\nAPPROVED\n\n## Criteria -> tests\n| Story | Criterion | Proving test |\n|---|---|---|\n| S1 | a covered one | a_test.sh::covers |\n| S1 | the rate limit is applied | uncovered |\n' > "$RUN/reviews/PR1-round1.md"
+expect 1 "gate PASS: one uncovered row" bash "$STATE" gate "$RUN" PR1 PASS "clean"
+has "  names the uncovered criterion" "the rate limit is applied"
+hasnt "  does not name the covered one" "a covered one"
+printf '## Verdict\nAPPROVED\n\n## Criteria → tests\n| Story | Criterion | Proving test |\n|---|---|---|\n| S1 | bare manual | manual: |\n' > "$RUN/reviews/PR1-round1.md"
+expect 1 "gate PASS: manual with no reason" bash "$STATE" gate "$RUN" PR1 PASS "clean"
+printf '## Verdict\nAPPROVED\n\n## Criteria → tests\n| Story | Criterion | Proving test |\n|---|---|---|\n' > "$RUN/reviews/PR1-round1.md"
+expect 1 "gate PASS: empty table" bash "$STATE" gate "$RUN" PR1 PASS "clean"
+printf '## Verdict\nAPPROVED\n\n## Criteria → tests\n| Story | Criterion | Proving test |\n|---|---|---|\n| S1 | multiply adds | x_test.sh::multiply |\n| S1 | docs only | manual: trivial wording change |\n' > "$RUN/reviews/PR1-round1.md"
 expect 0 "gate PASS over an APPROVED review" bash "$STATE" gate "$RUN" PR1 PASS "no findings; check passes"
 expect 1 "WAIVED over PASS refused" bash "$STATE" gate "$RUN" PR1 WAIVED "x"
-printf '## Verdict\nAPPROVED\n' > "$RUN/reviews/PR2-round1.md"
+printf '## Verdict\nAPPROVED\n\n## Criteria → tests\n| Story | Criterion | Proving test |\n|---|---|---|\n| S1 | multiply adds | scripts/x_test.sh::multiply adds |\n' > "$RUN/reviews/PR2-round1.md"
 expect 0 "gate CONCERNS for PR2" bash "$STATE" gate "$RUN" PR2 CONCERNS "1 LOW: naming"
 expect 1 "reviewed refused when the gate is from an earlier round (MEDIUM 5)" put < <(status building reviewed pending 'doc["prs"][0]["review"]["round"]=2')
 has "  says which round" "round 1, the PR is at round 2"
@@ -254,6 +265,65 @@ expect 0 "plan tickets" bash "$STATE" plan "$RUN" tickets
 has "  has t1" "- t1 | T-1"; hasnt "  stops before Risks" "secret risk text"
 expect 0 "plan stories" bash "$STATE" plan "$RUN" stories
 has "  story headings" "### S2: Prefix results"; hasnt "  headings only" "Tickets: t1"
+
+expect 0 "plan why, none yet" bash "$STATE" plan "$RUN" why PR1
+[[ -z "$out" ]] && ok "  no Why line gives an empty result" || bad "  why: $out"
+expect 0 "plan decisions, none yet" bash "$STATE" plan "$RUN" decisions
+has "  no Decisions section" "no ## Decisions section"
+cp "$RUN/plan.md" "$d/plan.bak"
+python3 - "$RUN/plan.md" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace("### PR1: Fix multiply\n- Repo: r\n", "### PR1: Fix multiply\n- Repo: r\n- Why:   multiply returns the wrong value without it  \n")
+s += "\n## Decisions\n- 2026-10-30 | use x | because y | rules out: z\n"
+open(p, "w").write(s)
+PY
+expect 0 "plan why PR1" bash "$STATE" plan "$RUN" why PR1
+[[ "$out" == "multiply returns the wrong value without it" ]] && ok "  Why is trimmed" || bad "  why: $out"
+expect 0 "plan why PR2 (no line)" bash "$STATE" plan "$RUN" why PR2
+[[ -z "$out" ]] && ok "  PR2 has no Why" || bad "  why PR2: $out"
+expect 0 "plan prs with a Why" bash "$STATE" plan "$RUN" prs
+has "  Why line is printed" "- Why:   multiply returns the wrong value"
+expect 0 "plan decisions" bash "$STATE" plan "$RUN" decisions
+has "  decision bullet" "- 2026-10-30 | use x | because y | rules out: z"
+cp "$d/plan.bak" "$RUN/plan.md"
+
+echo "# scope (PR body Scope)"
+SC="$d/scope-repo"; SRUN="$d/runs/r-scope"; mkdir -p "$SC/src" "$SC/web" "$SRUN"
+git -C "$SC" init -q -b main
+printf '{"dependencies":{"keep":"1.0.0","gone":"2.0.0"}}\n' > "$SC/package.json"
+printf '[package]\nname = "x"\n\n[dependencies]\nserde = "1.0.100"\ntokio = { version = "1.0", features = ["rt"] }\n' > "$SC/Cargo.toml"
+printf 'flask==2.0\nrequests>=2\n' > "$SC/requirements.txt"
+printf 'module x\n\nrequire (\n\tgithub.com/a/b v1.0.0\n)\n' > "$SC/go.mod"
+printf 'lock1\n' > "$SC/package-lock.json"; printf 'src\n' > "$SC/src/a.rs"
+git -C "$SC" add -A; git -C "$SC" -c user.name=t -c user.email=t@t commit -q -m base
+SBASE="$(git -C "$SC" rev-parse HEAD)"
+printf '{"dependencies":{"keep":"1.0.0","left-pad":"1.3.0"}}\n' > "$SC/package.json"
+printf '[package]\nname = "x"\n\n[dependencies]\nserde = "1.0.200"\ntokio = { version = "1.0", features = ["rt"] }\n' > "$SC/Cargo.toml"
+printf 'flask==2.1\n' > "$SC/requirements.txt"
+printf 'module x\n\nrequire (\n\tgithub.com/a/b v1.2.0\n\tgithub.com/c/d v0.1.0\n)\n' > "$SC/go.mod"
+printf 'lock2\n' > "$SC/package-lock.json"; printf 'g\n' > "$SC/Gemfile"; printf 'r\n' > "$SC/NOTES.md"
+printf 'src2\n' > "$SC/src/b.rs"; printf 'src3\n' > "$SC/src/c.rs"; printf 'w\n' > "$SC/web/i.ts"
+git -C "$SC" add -A; git -C "$SC" -c user.name=t -c user.email=t@t commit -q -m change
+python3 - "$SRUN" "$SC" "$SBASE" <<'PY'
+import json, sys
+run, wt, base = sys.argv[1:4]
+json.dump({"schema": 1, "runDir": run, "repos": [wt], "worktrees": {"PR1": wt}, "bases": {"PR1": base}}, open(run + "/.guard.json", "w"))
+PY
+expect 0 "scope" bash "$STATE" scope "$SRUN" PR1
+has "  areas with counts" "Areas: (root) (7 files), src (2 files), web (1 file)"
+has "  npm add" "package.json: added left-pad 1.3.0"
+has "  npm remove" "package.json: removed gone"
+has "  cargo bump" "Cargo.toml: bumped serde 1.0.100 → 1.0.200"
+hasnt "  unchanged dep not listed" "tokio"
+has "  requirements bump" "requirements.txt: bumped flask ==2.0 → ==2.1"
+has "  requirements removal" "requirements.txt: removed requests"
+has "  go bump" "go.mod: bumped github.com/a/b v1.0.0 → v1.2.0"
+has "  go add" "go.mod: added github.com/c/d v0.1.0"
+has "  lock file is changed" "package-lock.json: changed"
+has "  unknown manifest is changed" "Gemfile: changed"
+expect 0 "scope, unknown PR" bash "$STATE" scope "$SRUN" PR9
+[[ -z "$out" ]] && ok "  no worktree, no lines" || bad "  scope PR9: $out"
 
 echo "# base (8)"
 expect 0 "base, no remote" bash "$STATE" base "$R"
@@ -411,6 +481,51 @@ git -C "$AL" remote add origin github-work:o/rr
 expect 0 "worktree for a repo whose remote is an ssh host alias" bash "$STATE" worktree "$RUN" "$AL" PR3 "$(git -C "$AL" rev-parse HEAD)"
 is "  recorded as owner/name" "$RUN/.guard.json" remotes.PR3.repo '"o/rr"'
 is "  with its URL" "$RUN/.guard.json" remotes.PR3.url '"github-work:o/rr"'
+
+echo "# PR body sections (one builder; local mode neutralises, caps and scans)"
+cp "$RUN/plan.md" "$d/plan.body.bak"; [[ -e "$RUN/tickets.json" ]] && cp "$RUN/tickets.json" "$d/tickets.body.bak" || true
+python3 - "$RUN/plan.md" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace("### PR2: Prefix\n- Repo: rr\n", "### PR2: Prefix\n- Repo: rr\n- Why: results have no prefix without it\n")
+open(p, "w").write(s)
+PY
+mkdir -p "$RUN/reviews"
+printf 'Eagle-Eye review — round 1: REQUEST CHANGES — 2 MEDIUM+, 0 LOW\n\n## Verdict\nREQUEST CHANGES\n\n## Findings\n1. MEDIUM — `a.py:3` — missing guard, ping @alice about o/r#5 — Fix: add it\n2. HIGH — `b.py:1` — leaks token=ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 — Fix: remove\n3. LOW — `c.py:1` — nit\n' > "$RUN/reviews/PR2-round1.md"
+printf 'Eagle-Eye review — round 2: APPROVED — 0 MEDIUM+, 0 LOW\n\n## Verdict\nAPPROVED\n\n## Findings\nNone.\n' > "$RUN/reviews/PR2-round2.md"
+printf '{"tasks":[{"id":"t2","custom_id":"T-2","name":"Prefix for @bob in o/r#9","url":"https://x/t2","description":"SECRET BODY TEXT"}]}\n' > "$RUN/tickets.json"
+python3 - "$RUN/status.json" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1])); pr = st["prs"][1]; pr["state"] = "pushed"; pr["prUrl"] = None; pr["review"]["round"] = 2
+json.dump(st, open(sys.argv[1], "w"))
+PY
+rm -f "$d/gh-has-pr"; : > "$d/gh.log"
+expect 0 "ship-pr builds the sectioned body" bash "$STATE" ship-pr "$RUN" PR2
+B2="$RUN/pr-bodies/PR2.md"
+python3 - "$B2" <<'PY' && ok "  sections in order: Why, What it adds, Review, Verification, Tickets" || bad "  body: $(cat "$B2")"
+import re, sys
+t = open(sys.argv[1]).read()
+h = re.findall(r"^## (.+)$", t, re.M)
+want = ["Why", "What it adds", "Review", "Verification", "Tickets"]
+sys.exit(0 if [x for x in h if x in want] == want and h.index("Why") < h.index("What it adds") else 1)
+PY
+grep -q "results have no prefix without it" "$B2" && ok "  Why from the plan" || bad "  no Why"
+grep -q "Round 1 MEDIUM: a.py:3 — missing guard" "$B2" && ok "  a fixed MEDIUM finding is listed" || bad "  body: $(cat "$B2")"
+grep -q "ghp_" "$B2" && bad "  a secret-like finding reached the body" || ok "  the secret-like finding line was dropped"
+grep -q "nit" "$B2" && bad "  a LOW finding is listed" || ok "  LOW findings are not listed"
+grep -q "@alice" "$B2" && bad "  @mention not neutralised" || ok "  finding @mention neutralised"
+grep -q "@bob" "$B2" && bad "  ticket @mention not neutralised" || ok "  ticket name neutralised"
+grep -q "SECRET BODY TEXT" "$B2" && bad "  a ticket body leaked" || ok "  no ticket bodies"
+grep -q "Prefix for" "$B2" && ok "  ticket name listed" || bad "  no ticket line"
+grep -qE "\bNone\b|\bnull\b" "$B2" && bad "  None/null in the body: $(cat "$B2")" || ok "  no None or null"
+grep -q "^## Scope" "$B2" && bad "  empty Scope section present" || ok "  a section with no data is left out"
+cp "$d/plan.body.bak" "$RUN/plan.md"; [[ -e "$d/tickets.body.bak" ]] && cp "$d/tickets.body.bak" "$RUN/tickets.json" || rm -f "$RUN/tickets.json"
+rm -rf "$RUN/reviews"
+python3 - "$RUN/status.json" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1])); pr = st["prs"][1]; pr["prUrl"] = "https://github.com/o/rr/pull/7"; pr["review"]["round"] = 1
+json.dump(st, open(sys.argv[1], "w"))
+PY
 
 echo "# writeback (5, 15)"
 cat > "$RUN/tickets.json" <<'EOF'
@@ -983,5 +1098,85 @@ echo "# report: what the run could not do"
 bash "$STATE" log "$CRUN" <<<'not done: re-run the checks (the app did not answer: is DCTerminalv2 running?)' >/dev/null
 expect 0 "report" bash "$STATE" report "$CRUN"
 grep -q '^## Not done by the run' "$CRUN/report.md" && grep -qF -- '- re-run the checks (the app did not answer' "$CRUN/report.md" && ok "  listed in report.md" || bad "  report: $(cat "$CRUN/report.md")"
+
+echo "# epic-plan mode: waves, refusals, and the full sequence (CAP-11)"
+B="$d/Epic Dir/runs/r-b"; mkdir -p "$B"; export DCV2_RUN_DIR="$B"
+printf 'folder: %s\n' "$WS" > "$B/request.md"
+printf '{"schema":1,"repos":[{"name":"r","path":"%s","check":null}]}\n' "$R" > "$B/repos.json"
+printf '{"schema":1,"mode":"epic-plan","bmad":{"mode":"auto","version":"x"}}\n' > "$B/meta.json"
+python3 -c 'import json, sys
+json.dump({"tasks": [{"id": f"t{i}", "custom_id": f"C-{i}", "name": f"Ticket {i}"} for i in range(1, 9)]}, open(sys.argv[1], "w"))' "$B/tickets.json"
+wave() { printf '%s\n' "$@" > "$B/waves.md"; }
+W1=("## Wave 1: Foundations" "- Tickets: t1, t2, C-3" "- Depends on: none" "- Why: everything else needs these")
+W2=("## Wave 2: Features" "- Tickets: t4, t5, t6" "- Depends on: Wave 1" "- Why: built on the foundations")
+OOS=("## Out of scope" "- t7: a separate project" "- t8: waits on a vendor")
+expect 0 "epic: put planning" bput < <(bstatus planning)
+expect 1 "epic: waves refused with no waves.md" bash "$STATE" waves "$B"
+wave "${W1[@]}" "${W2[@]}" "## Out of scope" "- t7: a separate project"
+expect 1 "waves: a ticket in no wave is refused" bash "$STATE" waves "$B"
+has "  names the missing ticket" "ticket t8 is in no wave"
+wave "${W1[@]}" "## Wave 2: Features" "- Tickets: t4, t5, t6, t1" "- Depends on: Wave 1" "- Why: x" "${OOS[@]}"
+expect 1 "waves: a duplicate ticket is refused" bash "$STATE" waves "$B"
+has "  names it" "ticket t1 is in 2 places"
+wave "## Wave 1: Too big" "- Tickets: t1, t2, t3, t4, t5, t6, t7" "- Depends on: none" "- Why: x" "## Out of scope" "- t8: later"
+expect 1 "waves: a 7-ticket wave is refused" bash "$STATE" waves "$B"
+has "  names the size rule" "has 7 ticket(s)"
+wave "## Wave 1: Too small" "- Tickets: t1, t2" "- Depends on: none" "- Why: x" "${W2[@]}" "## Out of scope" "- t3: x" "- t7: y" "- t8: z"
+expect 1 "waves: a 2-ticket wave is refused when 3 or more are in scope" bash "$STATE" waves "$B"
+wave "## Wave 1: First" "- Tickets: t1, t2, t3" "- Depends on: Wave 2" "- Why: x" "## Wave 2: Second" "- Tickets: t4, t5, t6" "- Depends on: none" "- Why: y" "${OOS[@]}"
+expect 1 "waves: a forward dependency is refused" bash "$STATE" waves "$B"
+has "  says earlier waves only" "dependencies name earlier waves only"
+wave "## Wave 1: First" "- Tickets: t1, t2, t3" "- Depends on: none" "- Why: x" "## Wave 2: Second" "- Tickets: t4, t5, nope" "- Depends on: Wave 1" "- Why: y" "${OOS[@]}"
+expect 1 "waves: an unknown ticket is refused" bash "$STATE" waves "$B"
+[[ ! -e "$B/waves.json" ]] && ok "  no waves.json after a refusal" || bad "  waves.json written"
+expect 1 "epic: with no sizing and no waves digest, plan-approval is refused" bput < <(bstatus plan-approval)
+echo "# epic-plan mode: refusals"
+expect 1 "epic: worktree refused" bash "$STATE" worktree "$B" "$R" PR1 "$BASE"
+has "  says epic-plan" "epic-plan run"
+for c in draft-pr ship-pr push ready; do expect 1 "epic: $c refused" bash "$STATE" "$c" "$B" PR1; done
+expect 1 "epic: stage building refused" bput < <(bstatus building)
+bmod() { python3 -c 'import json,sys; doc=json.load(sys.stdin); exec(sys.argv[1]); print(json.dumps(doc))' "$1"; }
+expect 1 "epic: a non-empty prs[] refused" bput < <(bstatus planning | bmod 'doc["prs"]=[{"id":"PR1","state":"pending"}]')
+echo "# epic-plan mode: the full sequence (BMAD auto, tickets.json, no plan.md)"
+expect 0 "epic: bmad-size Large" bsize Large --by planner
+expect 0 "epic: bmad-init" bash "$STATE" bmad-init "$B"
+mkdocs
+expect 0 "epic: bmad-check passes" bash "$STATE" bmad-check "$B"
+wave "${W1[@]}" "${W2[@]}" "${OOS[@]}"
+expect 0 "epic: waves passes" bash "$STATE" waves "$B"
+has "  counts" "waves=pass 2 wave(s), 6 ticket(s) in scope, 2 out of scope"
+[[ -f "$B/waves.json" ]] && ok "  waves.json written" || bad "  no waves.json"
+is "  wave 1 tickets use the ticket ids" "$B/waves.json" waves.0.tickets '["t1", "t2", "t3"]'
+is "  wave 2 depends on 1" "$B/waves.json" waves.1.dependsOn '[1]'
+python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["waves"]["digest"] else 1)' "$B/status.json" && ok "  status.json waves digest recorded" || bad "  no waves digest"
+is "  status.json schema stays 1" "$B/status.json" schema 1
+echo "x" >> "$B/waves.md"
+expect 1 "epic: plan-approval refused on a digest mismatch" bput < <(bstatus plan-approval)
+has "  says waves.md changed" "waves.md changed"
+expect 1 "epic: approve refused on a digest mismatch" bash "$STATE" approve "$B" plan user
+sed '$d' "$B/waves.md" > "$B/waves.tmp" && mv "$B/waves.tmp" "$B/waves.md"
+expect 0 "epic: plan-approval put (no plan.md exists)" bput < <(bstatus plan-approval)
+expect 0 "epic: put with a forged waves field" bput < <(bstatus plan-approval | bmod 'doc["waves"]={"digest":"forged","at":"x"}')
+python3 -c 'import json,sys; sys.exit(1 if json.load(open(sys.argv[1]))["waves"]["digest"]=="forged" else 0)' "$B/status.json" && ok "  the forged waves value was not kept" || bad "  forged digest kept"
+expect 0 "epic: approve plan user (no plan.md)" bash "$STATE" approve "$B" plan user
+[[ ! -e "$B/plan.md" ]] && ok "  there is no plan.md" || bad "  plan.md exists"
+expect 0 "epic: writeback writes nothing" bash "$STATE" writeback "$B"
+has "  says so" "epic-plan run: no writeback"
+[[ ! -e "$B/writeback.json" ]] && ok "  no writeback.json" || bad "  writeback.json written"
+expect 0 "epic: put done with no shipApproval, ship or writeback.json" bput < <(bstatus done)
+is "  stage done" "$B/status.json" stage '"done"'
+echo "# the same sequence in a normal run still refuses done without shipApproval, ship and writeback.json"
+B="$d/Normal Dir/runs/r-b"; mkdir -p "$B"; export DCV2_RUN_DIR="$B"
+printf 'folder: %s\n' "$WS" > "$B/request.md"
+printf '{"schema":1,"bmad":{"mode":"off"}}\n' > "$B/meta.json"
+printf '{"tasks":[{"id":"t1","name":"T"}]}\n' > "$B/tickets.json"
+printf '# Plan\n## Stories\n### S1: x\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n' > "$B/plan.md"
+expect 0 "normal: put planning" bput < <(bstatus planning)
+expect 0 "normal: approve plan" bash "$STATE" approve "$B" plan user
+expect 1 "normal: done refused without shipApproval" bput < <(bstatus done)
+has "  needs the ship approval" "ship approval"
+expect 1 "normal: waves refused" bash "$STATE" waves "$B"
+expect 0 "normal: writeback is not skipped" bash "$STATE" writeback "$B"
+[[ -f "$B/writeback.json" ]] && ok "  writeback.json written in a normal run" || bad "  no writeback.json"
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

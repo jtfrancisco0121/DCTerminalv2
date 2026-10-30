@@ -33,6 +33,19 @@ pub struct TerminalSettings {
     /// Copy a finished selection to the clipboard. Off by default.
     #[serde(default)]
     pub copy_on_select: bool,
+    /// Offer to compact a big paste (above 200 lines or 16 KB). On by default.
+    #[serde(default = "default_true")]
+    pub compact_paste: bool,
+    /// What a Cmd+click on a file path opens it in: `finder` (default), `vscode`, `cursor`, `zed` or
+    /// `sublime`. A fixed list: there is no free-form command.
+    #[serde(default = "default_file_link_editor")]
+    pub file_link_editor: String,
+}
+
+pub const FILE_LINK_EDITORS: &[&str] = &["finder", "vscode", "cursor", "zed", "sublime"];
+
+fn default_file_link_editor() -> String {
+    "finder".into()
 }
 
 impl Default for TerminalSettings {
@@ -42,6 +55,8 @@ impl Default for TerminalSettings {
             font_size: default_font_size(),
             option_as_meta: default_option_as_meta(),
             copy_on_select: false,
+            compact_paste: true,
+            file_link_editor: default_file_link_editor(),
         }
     }
 }
@@ -463,9 +478,25 @@ pub struct RunSettings {
     /// `DCV2_STOP_HOOKS` (A3 kill switch).
     #[serde(default = "default_true")]
     pub stop_hooks: bool,
+    /// `DCV2_SLOP_CHECK`: the Stop hook also reports slop in the lines a PR added.
+    #[serde(default = "default_true")]
+    pub slop_check: bool,
     /// R2 watchdog: minutes with no progress before the panel says so; 0 is off.
     #[serde(default = "default_watchdog_minutes")]
     pub watchdog_minutes: u32,
+    /// How many runs may be live at once (dispatcher slots), 1..=8.
+    #[serde(default = "default_max_active_runs")]
+    pub max_active_runs: u32,
+    /// Hold queued starts while the entry's account is at or past this percent of its five-hour usage (None: off).
+    #[serde(default)]
+    pub usage_hold_percent: Option<u32>,
+    /// Phone pushes for the batch and wave milestones (`batch-planned`, `batch-ready`, `wave-ready`); the
+    /// desktop notification for each is always raised.
+    #[serde(default = "default_true")]
+    pub batch_pushes: bool,
+    /// A ready wave starts on its own (through the cap) instead of waiting for "Start wave".
+    #[serde(default)]
+    pub auto_start_waves: bool,
     /// "Clean up merged runs automatically" (plan 2026-10-27): finished
     /// runs' merged PRs lose their worktree, local and remote branch.
     #[serde(default = "default_true")]
@@ -473,6 +504,10 @@ pub struct RunSettings {
 }
 
 pub const WATCHDOG_MINUTES_LIMIT: u32 = 240;
+
+fn default_max_active_runs() -> u32 {
+    2
+}
 
 fn default_watchdog_minutes() -> u32 {
     crate::observe::watchdog::DEFAULT_MINUTES
@@ -493,7 +528,12 @@ impl Default for RunSettings {
         Self {
             max_implementers: default_max_implementers(),
             stop_hooks: true,
+            slop_check: true,
             watchdog_minutes: default_watchdog_minutes(),
+            max_active_runs: default_max_active_runs(),
+            usage_hold_percent: None,
+            batch_pushes: true,
+            auto_start_waves: false,
             auto_cleanup: true,
         }
     }
@@ -554,6 +594,9 @@ impl SettingsStore {
             return Err("shell path cannot contain a newline".to_string());
         }
         next.font_size = next.font_size.clamp(8, 32);
+        if !FILE_LINK_EDITORS.contains(&next.file_link_editor.as_str()) {
+            next.file_link_editor = default_file_link_editor();
+        }
         self.data.terminal = next;
         self.save()
     }
@@ -582,7 +625,12 @@ impl SettingsStore {
         self.data.run = RunSettings {
             max_implementers: next.max_implementers.clamp(1, MAX_IMPLEMENTERS_LIMIT),
             stop_hooks: next.stop_hooks,
+            slop_check: next.slop_check,
             watchdog_minutes: next.watchdog_minutes.min(WATCHDOG_MINUTES_LIMIT),
+            max_active_runs: next.max_active_runs.clamp(1, MAX_IMPLEMENTERS_LIMIT),
+            usage_hold_percent: next.usage_hold_percent.map(|p| p.clamp(1, 100)),
+            batch_pushes: next.batch_pushes,
+            auto_start_waves: next.auto_start_waves,
             auto_cleanup: next.auto_cleanup,
         };
         self.save()
@@ -994,6 +1042,8 @@ mod tests {
                 font_size: 99,
                 option_as_meta: false,
                 copy_on_select: true,
+                compact_paste: true,
+                file_link_editor: "finder".into(),
             })
             .unwrap();
         assert!(store

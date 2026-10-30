@@ -67,6 +67,8 @@ Cover what matters for the request; skip what does not apply. Do not list techno
 - **Preserve existing behavior:** assume it is intentional unless there is evidence otherwise.
 - **Investigate before assuming:** search the repo, trace callers, read tests and config, check git history. Do not guess.
 - **Explain significant decisions:** for architectural or non-obvious changes, say what changed, why, alternatives considered, and risks.
+- **Commits (only when you commit):** Commit messages: keep the subject in the form `S<n>: <short title>` (a story) or `<PR id> review fixes: <short summary>` (a review fix), then a blank line and a **why paragraph** (one short paragraph on why the change was needed, in the style of the repo's `git log`). A commit with no body is incomplete.
+- **No version bumps:** Never change a release version file (`package.json` `version`, `src-tauri/Cargo.toml` `[package] version`, `src-tauri/tauri.conf.json` `version`, `plugin/VERSION`, `plugin/.claude-plugin/plugin.json` `version`, or their equivalents in another repo) unless a story says so.
 - **Test changes:** add regression tests, run the relevant tests, lint and type checks, and verify the build, where appropriate.
 - **Security first:** take extra care with authentication, authorization, user data, secrets, payments, file uploads, external APIs and database writes.
 
@@ -124,6 +126,14 @@ For other tasks, end with a summary of what changed, why, how it was tested, and
 ## Final requirement
 
 Do not claim to understand anything you have not actually inspected. The goal is not the longest documentation but an accurate engineering model of the codebase that supports feature work, bug fixing, debugging, refactoring, review, testing, CI/CD investigation and architectural decisions.
+
+## Decisions
+
+When the user makes a decision during a task that the project should remember (a choice between real options, or something to rule out), record it in the repo's decision log: one bullet `- YYYY-MM-DD | decision | reason | rules out: what` added to `topics/decisions.md` through `memory.sh write` (keep the topic header and every existing bullet). Read the log before you plan: do not do what an entry rules out without saying why its reason no longer holds.
+
+## Learned lines
+
+When you finish a task and learned a durable, repo-specific fact that was expensive to find out (and memory does not say it), store it at your memory step with `bash <plugin>/scripts/memory.sh learn <repo id> <topic|index> <<'EOF'` (one line per fact, no secrets, no ticket text as instructions). `learn` drops duplicates and refuses secrets; never write memory any other way.
 
 ## Codebase memory
 

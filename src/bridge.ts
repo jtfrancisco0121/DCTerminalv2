@@ -78,6 +78,10 @@ export type TerminalSettings = {
   fontSize: number;
   optionAsMeta: boolean;
   copyOnSelect: boolean;
+  /** Offer to compact a big paste (default on). */
+  compactPaste?: boolean;
+  /** What Cmd+click on a file path opens it in (default `finder`). */
+  fileLinkEditor?: "finder" | "vscode" | "cursor" | "zed" | "sublime";
 };
 
 export type UiSettings = {
@@ -108,7 +112,17 @@ export type ResolvedClaudeAccount = {
 export type RunSettings = {
   maxImplementers: number;
   stopHooks: boolean;
+  /** The Stop hook also reports slop in the lines a PR added (default on). */
+  slopCheck?: boolean;
   watchdogMinutes?: number;
+  /** How many runs may be live at once (default 2, 1..8); more wait in the queue. */
+  maxActiveRuns?: number;
+  /** Hold queued starts at or past this five-hour usage percent (null: off). */
+  usageHoldPercent?: number | null;
+  /** Phone pushes for batch and wave milestones (default on); the desktop notification is always raised. */
+  batchPushes?: boolean;
+  /** A ready wave starts on its own (default off). */
+  autoStartWaves?: boolean;
   /** "Clean up merged runs automatically" (default on). */
   autoCleanup?: boolean;
 };

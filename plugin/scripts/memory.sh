@@ -14,6 +14,16 @@
 #   memory.sh write <id | workspace:<id>> <relative file>  < content
 #                                                the only write path for agents: caps, secret scan,
 #                                                pinned lines, topic header; rejects with a reason
+#   topics/decisions.md (repo or workspace) is the decision log: only bullets
+#                                                `- YYYY-MM-DD | decision | reason | rules out: what` (plus the topic header);
+#                                                `write` rejects any other line, compose loads it right after contracts
+#   memory.sh learn <id | workspace:<id>> <topic | index>  < lines
+#                                                add each stdin line under the file's `## Gotchas` (the Learned: lines
+#                                                of a run). Prints one `added`, `duplicate` or `refused <reason>` line
+#                                                per input line: a line equal to an existing one (normalised) or with
+#                                                word-set Jaccard >= 0.8 is a duplicate, a secret-like line is refused
+#                                                (the rest are kept), caps as in `write`. write and learn hold a lock
+#                                                on <root>/.lock, so two runs finishing together keep both lines
 #   memory.sh touched <repo path> <from> [<to>]  agent helper: topics whose covered paths changed in
 #                                                `git diff <from>..<to>` (to defaults to HEAD), and
 #                                                changed paths no topic covers
@@ -28,7 +38,7 @@ command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1 ||
   echo "memory.sh: python3 is missing or does not run" >&2; exit 1; }
 
 IFS= read -r -d '' PY <<'PY' || true
-import fnmatch, hashlib, json, math, os, re, subprocess, sys, tempfile
+import datetime, fcntl, fnmatch, hashlib, json, math, os, re, subprocess, sys, tempfile
 
 CAPS = {"index": 8 * 1024, "topic": 12 * 1024, "workspace": 8 * 1024}
 COMPOSE_CAP = 40 * 1024
@@ -342,6 +352,7 @@ def cmd_status(folder):
     print(json.dumps(out, indent=2))
 
 
+DECISIONS_TITLE = "{} decisions (a plan that contradicts an entry must state why its reason no longer holds)"
 FENCE_OPEN, FENCE_CLOSE = "<memory-notes", "</memory-notes>"
 
 
@@ -385,6 +396,10 @@ def cmd_compose(folder, out):
         if ctext is not None:
             any_mem = True
             parts.append(section("Workspace contracts (binding)", ctext, CAPS["topic"]))
+        dtext = read(os.path.join(wdir, "topics", "decisions.md"))
+        if dtext is not None:
+            any_mem = True
+            parts.append(section(DECISIONS_TITLE.format("Workspace"), dtext, CAPS["topic"]))
         stale += [f"workspace:{wid} topics/{t['name']}.md" for t in topics_of(wdir, None, names) if t["stale"]]
     for r in repos:
         rid = repo_id(r)
@@ -398,6 +413,9 @@ def cmd_compose(folder, out):
         ctext = read(os.path.join(d, "topics", "contracts.md"))
         if ctext is not None:
             parts.append(section(f"Repo {os.path.basename(r)} contracts (binding)", ctext, CAPS["topic"]))
+        dtext = read(os.path.join(d, "topics", "decisions.md"))
+        if dtext is not None:
+            parts.append(section(DECISIONS_TITLE.format(f"Repo {os.path.basename(r)}"), dtext, CAPS["topic"]))
         stale += [f"{rid} topics/{t['name']}.md (checked at {t['checkedAt'] or 'unknown'})" for t in topics_of(d, r) if t["stale"]]
     if not any_mem:
         text = "\n".join(head + [f"No codebase memory yet for `{os.path.realpath(folder)}`: `/dcv2:onboard` creates it. Until then, work from the code."]) + "\n"
@@ -415,6 +433,121 @@ def cmd_compose(folder, out):
         text += "\n" + p
     atomic_write(out, text)
     print(f"wrote {out} ({len(text.encode())} bytes, {len(stale)} stale topics)")
+
+
+LOCK_FILE = None
+
+
+def take_lock(root):
+    """An exclusive lock on <root>/.lock for the rest of this process (read-merge-write must not interleave)."""
+    global LOCK_FILE
+    os.makedirs(root, exist_ok=True)
+    LOCK_FILE = open(os.path.join(root, ".lock"), "a+")
+    fcntl.flock(LOCK_FILE, fcntl.LOCK_EX)
+
+
+def resolve_target(root, target, rel):
+    """(file path, kind) of a memory file; dies like `write` for a target or file that is not allowed."""
+    if target.startswith("workspace:"):
+        tid, kind_dir = target[len("workspace:"):], "workspaces"
+    else:
+        tid, kind_dir = target, None
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*(__[a-z0-9._-]+)*", tid or "") or ".." in tid:
+        die(f"REJECTED: {target!r} is not a repo id (memory.sh id <repo path>) or workspace:<id>")
+    base = os.path.join(root, kind_dir, tid) if kind_dir else os.path.join(root, tid)
+    return os.path.join(base, rel), ("topic" if rel.startswith("topics/") else ("workspace" if rel == "workspace.md" else "index"))
+
+
+def norm_line(text):
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", text.lower()).split())
+
+
+def jaccard(a, b):
+    a, b = set(a.split()), set(b.split())
+    return len(a & b) / len(a | b) if a and b else 0.0
+
+
+LEARN_MAX = 300
+
+
+def cmd_learn(target, name):
+    root = root_dir()
+    rel = "index.md" if name == "index" else f"topics/{name}.md"
+    if name != "index" and not TOPIC_RE.match(rel):
+        die(f"REJECTED: {name!r} is not a topic name (lowercase, a-z 0-9 -) or `index`")
+    if target.startswith("workspace:") and name == "index":
+        rel = "workspace.md"
+    if name == "decisions":
+        die("REJECTED: the decision log takes only `- YYYY-MM-DD | decision | reason | rules out: what` bullets: write it with memory.sh write")
+    dest, kind = resolve_target(root, target, rel)
+    lines = [l.strip() for l in sys.stdin.read().splitlines() if l.strip()]
+    if not lines:
+        die("REJECTED: no lines on stdin")
+    take_lock(root)
+    old = read(dest)
+    if old is None:
+        die(f"REJECTED: {rel} does not exist for {target}: write it first (memory.sh write)")
+    text = old
+    known = [norm_line(l) for l in old.splitlines() if norm_line(l)]
+    results = []
+    for raw in lines:
+        line = re.sub(r"^(?:[-*]\s+)?(?:Learned:\s*)?", "", raw).strip()
+        if not line:
+            results.append("refused empty line")
+            continue
+        if len(line) > LEARN_MAX:
+            results.append(f"refused too long (at most {LEARN_MAX} characters)")
+            continue
+        if secret_hits(line):
+            results.append("refused looks like a secret (never store tokens, keys or .env values)")
+            continue
+        n = norm_line(line)
+        if any(n == k or jaccard(n, k) >= 0.8 for k in known):
+            results.append("duplicate")
+            continue
+        m = re.search(r"^##\s+Gotchas\s*$", text, re.M)
+        if m:
+            nxt = re.search(r"^##\s", text[m.end():], re.M)
+            end = m.end() + nxt.start() if nxt else len(text)
+            section = text[m.end():end].rstrip("\n")
+            new = text[:m.end()] + section + f"\n- {line}\n" + ("\n" + text[end:] if nxt else "")
+        else:
+            new = text.rstrip("\n") + f"\n\n## Gotchas\n\n- {line}\n"
+        if len(new.encode()) > CAPS[kind]:
+            results.append(f"refused {rel} is over the {CAPS[kind]} byte cap: condense it first (memory.sh write)")
+            continue
+        text = new
+        known.append(n)
+        results.append("added")
+    if text != old:
+        atomic_write(dest, text)
+    print("\n".join(results))
+
+
+DECISION = re.compile(r"^- (\d{4}-\d{2}-\d{2}) \| ([^|]+?) \| ([^|]+?) \| rules out: ([^|]+?)\s*$")
+
+
+def decision_problems(content):
+    """Lines of a decisions topic that are not `- YYYY-MM-DD | decision | reason | rules out: what` (header lines and
+    blank lines are fine). Returns (line number, why) for each, and checks there is at least one decision."""
+    bad, n_ok = [], 0
+    for i, line in enumerate(content.splitlines(), 1):
+        t = line.strip()
+        if not t or t.startswith("# ") or t.startswith("covers:") or t.startswith("checked-at:"):
+            continue
+        m = DECISION.match(line)
+        try:
+            if m:
+                datetime.date.fromisoformat(m.group(1))
+        except ValueError:
+            m = None
+        if m:
+            n_ok += 1
+        else:
+            bad.append((i, t[:60]))
+    if not bad and not n_ok:
+        bad.append((0, "no decision bullet"))
+    return bad
 
 
 def cmd_write(target, rel):
@@ -441,6 +574,12 @@ def cmd_write(target, rel):
     hits = secret_hits(content)
     if hits:
         die("REJECTED: looks like a secret on line " + ", ".join(f"{n} ({k})" for n, k in hits[:5]) + ": remove it (never store tokens, keys or .env values)")
+    if rel == "topics/decisions.md":
+        bad = decision_problems(content)
+        if bad:
+            die("REJECTED: topics/decisions.md holds only bullets of the form `- YYYY-MM-DD | decision | reason | rules out: what` "
+                "(the topic header lines are fine); not in that form: "
+                + "; ".join(f"line {n} ({t!r})" if n else t for n, t in bad[:5]))
     if kind == "topic":
         h = topic_header(content)
         if not h["covers"] or not h["checkedAt"]:
@@ -451,6 +590,7 @@ def cmd_write(target, rel):
             die(f"REJECTED: covers must be paths relative to the repo (got {bad[0]!r})")
         if not all(re.fullmatch(r"[0-9a-fA-F]{7,40}", v) for v in checked_map(h["checkedAt"]).values()) or not checked_map(h["checkedAt"]):
             die("REJECTED: checked-at must be a commit sha (or `<repo>=<sha>, ...` in a workspace topic)")
+    take_lock(root)
     old = read(dest)
     if old is not None:
         new_lines = set(l.rstrip() for l in content.splitlines())
@@ -496,13 +636,14 @@ if "--root" in args:
     ROOT = args[i + 1]
     del args[i:i + 2]
 cmd, rest = (args[0] if args else ""), args[1:]
-need = {"id": 1, "compose": 2, "status": 1, "write": 2, "touched": 2, "scan": 0}
+need = {"id": 1, "compose": 2, "status": 1, "write": 2, "learn": 2, "touched": 2, "scan": 0}
 if cmd not in need or len(rest) < need[cmd]:
-    die("usage: memory.sh id <repo> | compose <folder> <out> | status <folder> | write <id> <file> < content | touched <repo> <from> [<to>] | scan < text")
+    die("usage: memory.sh id <repo> | compose <folder> <out> | status <folder> | write <id> <file> < content | learn <id> <topic|index> < lines | touched <repo> <from> [<to>] | scan < text")
 if cmd == "id": cmd_id(rest[0])
 elif cmd == "compose": cmd_compose(rest[0], rest[1])
 elif cmd == "status": cmd_status(rest[0])
 elif cmd == "write": cmd_write(rest[0], rest[1])
+elif cmd == "learn": cmd_learn(rest[0], rest[1])
 elif cmd == "touched": cmd_touched(rest[0], rest[1], rest[2] if len(rest) > 2 else "HEAD")
 elif cmd == "scan":
     found = secret_hits(sys.stdin.read())

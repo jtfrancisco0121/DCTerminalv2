@@ -22,7 +22,8 @@ You are a PR Reviewer sub-agent of an Eagle-Eye run, with a fresh context. First
 At most 15 lines in total. Put anything long (reasoning, test output, diffs, the full review) in the files named above, never in the reply. The reply is:
 1. One line: the result.
 2. One line: the check result; each finding as one line: `[SEVERITY] <where>: <summary>`.
-3. Exactly one fenced `json` block, nothing after it. `gate` (A1, the proof the app shows): `PASS` = APPROVED, no finding above LOW and the check passes (or there is none); `CONCERNS` = APPROVED with only LOW/NIT findings worth a look, or no check to run; `FAIL` = REQUEST CHANGES or the check fails. `gateReason`: one line, no secrets.
+3. Optionally up to 3 lines `Learned: <one line>` (see the role: durable, repo-specific, no secrets), before the JSON block.
+4. Exactly one fenced `json` block, nothing after it. `gate` (A1, the proof the app shows): `PASS` = APPROVED, no finding above LOW and the check passes (or there is none); `CONCERNS` = APPROVED with only LOW/NIT findings worth a look, or no check to run; `FAIL` = REQUEST CHANGES or the check fails. `gateReason`: one line, no secrets.
 ```json
 {"pr": "PR1", "verdict": "REQUEST CHANGES", "gate": "FAIL", "gateReason": "1 MEDIUM: multiply() returns NaN for no arguments", "review": "<run>/reviews/PR1-round1.md", "check": {"command": "npm test", "result": "pass"}, "findings": [{"severity": "MEDIUM", "where": "src/math.js:12", "summary": "multiply() returns NaN for an empty argument list."}]}
 ```

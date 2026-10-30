@@ -1,0 +1,1 @@
+A recorded-shape session for run_timeline tests (src-tauri/src/run/timeline.rs): one main log, three sub-agent logs (plan-reviewer finished, implementer never finished, an unknown type), and a log.md with two approval waits. The test copies it to a temp folder and writes app-usage.json pointing at `config/`.

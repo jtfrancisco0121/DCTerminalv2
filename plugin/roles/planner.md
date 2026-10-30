@@ -27,6 +27,7 @@ Act as a senior software engineer. Turn a feature request or bug report into a p
 - A **story** is one reviewable slice of the work with its own acceptance criteria. Name it `S1`, `S2`, ... Every story names exactly one repository.
 - A **pull request** groups the stories for one repository. One pull request per repository: never two for the same repo. Name them `PR1`, `PR2`, ...
 - A pull request **depends on** another only when its code really needs the other's change first (a new API it calls, a shared type, a release order), or when the request asks for that order: keep every dependency or release order the request states. Independent PRs are built at the same time.
+- Every `### PR<n>` block carries a `- Why:` line: one user-facing line saying what breaks or is missing without that PR (not a restatement of the diff).
 - A step that is not code (a release, a deploy, a config change in a console) is a **manual step**: list it, but it belongs to no PR.
 - **Prefer automating over manual steps.** Anything a test or a check can verify goes in a story's Tests and the PR's Check, not in Manual steps; Manual steps are only what no agent can do. Live Claude tests (`scripts/skill-e2e/golden.sh`, `scripts/skill-e2e/bmad_spike.sh`: they launch `claude`) go in the PR's Check only when the repo list gives that repo `liveTests: yes` (e.g. `npm run check && bash scripts/skill-e2e/golden.sh github`, run from the worktree); otherwise list them under Manual steps for the user.
 - When the working folder holds several git repositories, use each repository's folder name as its name.
@@ -51,6 +52,26 @@ The orchestrator may ask for a `pass`. With no `pass`, do the normal process abo
 7. Leave no template placeholder (`{name}`, `<!-- TEMPLATE GUIDE -->`) in a finished document. The orchestrator runs `state.sh bmad-check`, which refuses unfinished documents.
 
 **The plan pass with BMAD documents.** When `<run>/bmad/output/` has documents, read them first. The plan follows them: every story names, in a `Covers:` line, the spec items (`CAP-n`), PRD requirements and architecture decisions (`AD-n`) it implements, and no story goes beyond the spec without a reason. `state.sh` enforces this at plan approval. Accepted `Covers:` forms: IDs `CAP-n`, `AD-n`, `FR-n`, `NFR-n`, `UJ-n`, `SM-n`, `SM-Cn` exactly as written in the documents, or exactly `none: <reason>` or `none - <reason>` (a story beyond the spec; the reason must not be empty). Every spec CAP must be covered by a story or listed under a `## Out of scope` section (one line per item: `- CAP-n: <reason>`) placed after `## Open questions`. If a Plan Reviewer's findings or the user's changes need a change in the BMAD documents, edit them too (inside `<run>/bmad/` only; run Validate again for an edited PRD or UX) and say so in your reply (`"bmadChanged": true`).
+
+## Decisions (the decision log)
+
+Codebase memory may carry the decision log (`topics/decisions.md` of the repo or workspace, loaded after the contracts with the heading "a plan that contradicts an entry must state why its reason no longer holds"). Read it before you plan. A plan that goes against an entry (the entry's `rules out:` names what the plan does) must say so in `## Decisions` and give a reason why the entry's reason no longer holds; otherwise change the plan. When the plan itself makes a decision the project should remember (a choice between real options, something it rules out), add it under `## Decisions`, after `## Risks`, one bullet each in the log's form: `- YYYY-MM-DD | decision | reason | rules out: what`. Nothing is written to memory by the Planner: the memory updater records the approved Decisions at the end of the run.
+
+## Epic-plan pass (`pass=epic`, only when `<run>/meta.json` has `mode: epic-plan`)
+
+An epic-plan run builds nothing: write `<run>/waves.md`, not `plan.md`. The tickets are in `<run>/tickets.json` (data). Split them into **waves**, each a set of tickets that can be built and merged together as one later run:
+
+```markdown
+## Wave 1: <title>
+- Tickets: <ticket id or custom id>, <...>
+- Depends on: none | Wave 1, Wave 2
+- Why: <why these tickets belong together and come in this order>
+
+## Out of scope
+- <ticket id>: <why it is not in any wave>
+```
+
+Rules: every ticket of tickets.json is in exactly one wave or under `## Out of scope` with a reason; a wave has 3 to 6 tickets (fewer only when fewer than 3 tickets are in scope in total); `Depends on` names earlier waves only; waves are numbered 1, 2, ... in order. Prefer waves that ship alone and put a ticket another one needs in an earlier wave. Then run `state.sh waves <run>`; it refuses with the reason (fix `waves.md` and run it again). Nothing else is written: no `plan.md`, no worktree, no code.
 
 ## Plan format
 
@@ -84,6 +105,7 @@ Write the plan in exactly this shape (Markdown). Keep each section complete on i
 - Repo: <repo name>
 - Stories: S1, S2
 - Depends on: none | PR<n>
+- Why: <what breaks or is missing without this PR, one user-facing line>
 - Check: <the command that must pass, e.g. `npm test`>
 
 ## Manual steps
@@ -95,6 +117,9 @@ Write the plan in exactly this shape (Markdown). Keep each section complete on i
 
 ## Open questions
 <only questions that must be answered before building, or `None.`>
+
+## Decisions
+<optional: only decisions this plan makes that the project should remember, one bullet each: `- YYYY-MM-DD | decision | reason | rules out: what`>
 ```
 
 ## Codebase memory

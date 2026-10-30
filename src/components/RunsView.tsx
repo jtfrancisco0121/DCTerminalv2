@@ -6,6 +6,9 @@ import { minutesText, relativeDate, runMatches, safeUrl, stageText } from "../ru
 import { Dialog } from "./Dialog";
 import { errorText } from "./InlineNotice";
 import { TextDialog } from "./RunPanel";
+import { QueueSection } from "./QueueSection";
+import { BatchOverview } from "./BatchOverview";
+import { EpicsSection } from "./EpicsSection";
 
 type Props = {
   windowId: string;
@@ -56,6 +59,9 @@ export function RunsView({ windowId, onClose, onStarted }: Props) {
 
   return (
     <Dialog title="Runs" onClose={onClose} className="runs-dialog">
+      <QueueSection />
+      <BatchOverview />
+      <EpicsSection />
       <div className="runs-filters">
         <input
           className="text-input"
@@ -99,6 +105,12 @@ export function RunsView({ windowId, onClose, onStarted }: Props) {
                   — {stageText(run.stage)}
                   {run.folder ? ` · ${run.folder}` : ""}
                 </span>
+                {(run.ticketIds ?? []).length > 0 && (
+                  <span className="hint" data-testid={`tickets-${run.runId}`}>
+                    {" "}
+                    · {(run.ticketIds ?? []).join(", ")}
+                  </span>
+                )}
               </div>
               <div className="runs-facts hint">
                 <span title={run.createdAt ?? undefined}>{relativeDate(run.createdAt) || "—"}</span>

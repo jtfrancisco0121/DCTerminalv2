@@ -78,8 +78,13 @@ const runKey = (r: RunSettings) =>
   JSON.stringify({
     maxImplementers: r.maxImplementers,
     stopHooks: r.stopHooks,
+    slopCheck: r.slopCheck ?? true,
     autoCleanup: r.autoCleanup ?? true,
     watchdogMinutes: r.watchdogMinutes ?? 10,
+    maxActiveRuns: r.maxActiveRuns ?? 2,
+    usageHoldPercent: r.usageHoldPercent ?? null,
+    batchPushes: r.batchPushes ?? true,
+    autoStartWaves: r.autoStartWaves ?? false,
   });
 
 /** "Unsaved changes" beside a section's Save button. */
@@ -527,6 +532,28 @@ export function SettingsPage({ view, onSaved, onClose, section }: Props) {
           />{" "}
           Copy a selection to the clipboard
         </label>
+        <label className="field-label">
+          Cmd+click on a file path in the terminal opens it in
+          <select
+            className="text-input text-input-narrow"
+            value={terminal.fileLinkEditor ?? "finder"}
+            onChange={(event) => setTerminal({ ...terminal, fileLinkEditor: event.target.value as NonNullable<TerminalSettings["fileLinkEditor"]> })}
+          >
+            <option value="finder">Finder (reveal)</option>
+            <option value="vscode">VS Code</option>
+            <option value="cursor">Cursor</option>
+            <option value="zed">Zed</option>
+            <option value="sublime">Sublime Text</option>
+          </select>
+        </label>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={terminal.compactPaste ?? true}
+            onChange={(event) => setTerminal({ ...terminal, compactPaste: event.target.checked })}
+          />{" "}
+          Offer to compact a big paste (above 200 lines or 16 KB; you choose each time)
+        </label>
         <div className="button-row">
           <button type="button" className="primary-button" onClick={() => void saveTerminal()}>
             Save terminal settings
@@ -548,6 +575,44 @@ export function SettingsPage({ view, onSaved, onClose, section }: Props) {
             onChange={(event) => setRun({ ...runSettings, maxImplementers: Number(event.target.value) || 3 })}
           />
         </label>
+        <label className="field-label">
+          Runs live at once (the rest wait in the queue)
+          <input
+            className="text-input text-input-narrow"
+            type="number"
+            min={1}
+            max={8}
+            value={runSettings.maxActiveRuns ?? 2}
+            onChange={(event) => setRun({ ...runSettings, maxActiveRuns: Number(event.target.value) || 2 })}
+          />
+        </label>
+        <label className="field-label">
+          Hold queued starts at this five-hour usage percent (empty is off)
+          <input
+            className="text-input text-input-narrow"
+            type="number"
+            min={1}
+            max={100}
+            value={runSettings.usageHoldPercent ?? ""}
+            onChange={(event) => setRun({ ...runSettings, usageHoldPercent: event.target.value === "" ? null : Number(event.target.value) })}
+          />
+        </label>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={runSettings.batchPushes ?? true}
+            onChange={(event) => setRun({ ...runSettings, batchPushes: event.target.checked })}
+          />{" "}
+          Phone pushes when a batch has every plan ready, or is ready to ship (the Mac is always told)
+        </label>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={runSettings.autoStartWaves ?? false}
+            onChange={(event) => setRun({ ...runSettings, autoStartWaves: event.target.checked })}
+          />{" "}
+          Start a ready wave on its own (through the run limit)
+        </label>
         <label className="check-label">
           <input
             type="checkbox"
@@ -555,6 +620,14 @@ export function SettingsPage({ view, onSaved, onClose, section }: Props) {
             onChange={(event) => setRun({ ...runSettings, stopHooks: event.target.checked })}
           />{" "}
           Run the repo's checks when an agent stops (stop hooks)
+        </label>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={runSettings.slopCheck ?? true}
+            onChange={(event) => setRun({ ...runSettings, slopCheck: event.target.checked })}
+          />{" "}
+          Also report slop in the lines an agent added (leftover debugging, filler comments) when it stops
         </label>
         <label className="check-label">
           <input

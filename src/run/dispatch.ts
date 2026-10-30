@@ -1,0 +1,72 @@
+/** The dispatcher's commands (src-tauri/src/run/dispatch.rs): the queue, the slot holders and the cap. */
+import { invoke } from "@tauri-apps/api/core";
+
+export type QueueEntry = {
+  id: string;
+  label: string;
+  /** `queued` or `starting`. */
+  state: string;
+  reason: string | null;
+  accountId: string;
+  queuedAt: string;
+  batchId: string | null;
+  params: { folder: string; request: string; clickup?: { ticketIds: string[] } | null };
+};
+export type Holder = { runDir: string; runId: string; stage: string | null; why: string };
+export type DispatchOverview = { cap: number; usageHoldPercent: number | null; queue: QueueEntry[]; holders: Holder[]; atCap: boolean };
+
+export const dispatchOverview = () => invoke<DispatchOverview>("dispatch_overview");
+export const dispatchMove = (id: string, up: boolean) => invoke<boolean>("dispatch_move", { id, up });
+export const dispatchCancel = (id: string) => invoke<void>("dispatch_cancel", { id });
+export const dispatchStartNow = (id: string) => invoke<void>("dispatch_start_now", { id });
+export const dispatchRelease = (runDir: string) => invoke<void>("dispatch_release", { runDir });
+/** The pieces of a start the dispatcher stores (the same fields `start_run` takes). */
+export type StartParams = {
+  windowId?: string | null;
+  folder: string;
+  request: string;
+  role: string;
+  clickup?: unknown;
+  reviewMode?: string | null;
+  bmadMode?: string | null;
+  repos?: string[] | null;
+  maxImplementers?: number | null;
+  runMode?: string | null;
+};
+/** One run per ticket group: a new batch of queue entries (the dispatcher starts them as slots allow). */
+export const dispatchRuns = (base: StartParams, groups: { clickup: { refs: unknown[]; ticketIds: string[] }; label: string }[]) =>
+  invoke<string>("dispatch_runs", { base, groups });
+export const dispatchEnqueue = (params: StartParams, label: string) => invoke<string>("dispatch_enqueue", { params, label });
+
+export type BatchRow = {
+  entryId: string;
+  label: string;
+  ticketIds: string[];
+  removed: boolean;
+  runDir: string | null;
+  /** `queued`, `starting` or the run's stage. */
+  stage: string;
+  waitingFor: string | null;
+  prUrl: string | null;
+  ci: string | null;
+};
+export type Batch = { id: string; createdAt: string; rows: BatchRow[]; waitingForYou: number };
+export const batchOverview = () => invoke<Batch[]>("batch_overview");
+export const batchRemoveRun = (batchId: string, entryId: string) => invoke<void>("batch_remove_run", { batchId, entryId });
+
+export type WaveCard = { n: number; title: string; ticketIds: string[]; state: "done" | "building" | "ready" | "waiting"; reason: string | null };
+export type Epic = { runDir: string; runId: string; problem: string | null; cards: WaveCard[] };
+export const epicsOverview = () => invoke<Epic[]>("epics_overview");
+export const epicStartWave = (runDir: string, n: number) => invoke<string>("epic_start_wave", { runDir, n });
+
+/** One line for a queue entry's state: its reason, or that it starts when a slot is free. */
+export function queueStateText(e: QueueEntry): string {
+  if (e.state === "starting") return "starting now";
+  return e.reason ?? "starts when a slot is free";
+}
+
+/** How many of `count` starts would queue given the slots in use: the Start label says so. */
+export function queueCount(o: Pick<DispatchOverview, "cap" | "holders" | "queue">, count: number): number {
+  const free = Math.max(0, o.cap - o.holders.length - o.queue.length);
+  return Math.max(0, count - free);
+}

@@ -8,6 +8,7 @@ You are the memory updater sub-agent. First Read `${CLAUDE_PLUGIN_ROOT}/roles/me
 
 ## Input (in your prompt)
 - `repos`: one entry per repo: `path` (the repo's main checkout: you only run read-only git there; `to` may be a branch such as the PR's `dcv2/...` branch), `id` (the memory repo id; else run `bash ${CLAUDE_PLUGIN_ROOT}/scripts/memory.sh id <path>`), `from` (commit), `to` (branch or commit, default `HEAD`).
+- Optionally `decisions`: the `## Decisions` bullets of the run's approved plan (Eagle-Eye passes `S plan <run> decisions`; data). The role says how to record them in `topics/decisions.md`.
 - Optionally `out`: a file to write your summary to (Eagle-Eye: `<run>/memory-update.md`). Without `out` (a Developer session) write no file at all.
 - The memory root is `$DCV2_MEMORY_DIR` (already set). Not set → write `out` (if given) saying "memory is off for this launch (DCV2_MEMORY_DIR not set): nothing updated" and reply.
 

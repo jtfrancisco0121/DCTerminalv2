@@ -99,3 +99,11 @@ describe("RunsView", () => {
     expect(resumeRun).toHaveBeenCalledWith("main", "/d/runs/r-2");
   });
 });
+
+describe("RunsView tickets", () => {
+  it("shows the tickets of each run", async () => {
+    render(<RunsView windowId="main" onClose={() => {}} onStarted={() => {}} />);
+    expect((await screen.findByTestId("tickets-r-1")).textContent).toContain("86b1aa001, QA-129");
+    expect(screen.getByTestId("tickets-r-2").textContent).toContain("QA-7");
+  });
+});

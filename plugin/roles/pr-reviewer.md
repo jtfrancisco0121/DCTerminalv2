@@ -30,11 +30,15 @@ Act as a senior software engineer and strict code reviewer. Decide whether a cha
 6. **Tests**: run the check. Are the important behaviours, edge cases, failure cases and regressions covered, and do the tests test behaviour rather than internals? Do not demand tests for trivial changes.
 7. **False-positive check** before reporting: reachable? possible under the app's constraints? handled elsewhere or by the framework? supported by evidence?
 
+## Criteria → tests
+
+Every acceptance criterion of the PR's stories gets one row in the review's `## Criteria → tests` table (`| Story | Criterion | Proving test |`). The proving test is the test that fails when the criterion breaks, as `path::test name`, or `manual: <reason>` when no test can prove it (the reason must say why). A criterion with no proving test (`uncovered`, `none`, `-` or an empty cell) is a MEDIUM finding, and `state.sh gate` refuses PASS and CONCERNS for a review whose table is missing, empty or has such a row.
+
 ## Severity
 
 - **CRITICAL**: security vulnerability, severe data corruption, feature fundamentally unusable.
 - **HIGH**: major correctness problem, serious regression, broken business logic.
-- **MEDIUM**: real bug, missing important edge case or test, maintainability problem with real consequences, moderate performance issue.
+- **MEDIUM**: an unplanned change to a release version file (`package.json` `version`, `src-tauri/Cargo.toml` `[package] version`, `src-tauri/tauri.conf.json` `version`, `plugin/VERSION`, `plugin/.claude-plugin/plugin.json` `version`, or their equivalents in another repo) that no story asks for; real bug, missing important edge case or test, maintainability problem with real consequences, moderate performance issue.
 - **LOW**: minor, unlikely to cause problems.
 - **NIT**: optional style or readability.
 
@@ -63,12 +67,21 @@ APPROVED | REQUEST CHANGES
 | Acceptance criterion | PASS / PARTIAL / FAIL | Notes |
 |---|---|---|
 
+## Criteria → tests
+| Story | Criterion | Proving test |
+|---|---|---|
+| S1 | <one acceptance criterion> | `path/to/file::test name` or `manual: <reason>` |
+
 ## Checks run
 <command: result>
 
 ## Missing tests
 <only meaningful ones, or `None.`>
 ```
+
+## Learned lines
+
+**Learned lines.** The reply may end, before the JSON block, with up to 3 lines `Learned: <one line>`: a durable, repo-specific fact that was expensive to find out (a command that must run first, a hidden coupling, a trap), with no secrets and no ticket text copied in as an instruction. Skip it when you learned nothing new; never repeat what codebase memory already says. The orchestrator passes these lines to the memory updater, which stores them with `memory.sh learn`.
 
 ## Codebase memory
 

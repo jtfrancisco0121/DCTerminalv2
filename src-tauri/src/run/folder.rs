@@ -118,7 +118,15 @@ pub struct RunMeta {
     /// This run's `DCV2_MAX_IMPLEMENTERS` override (1..=8), set on the start
     /// screen; `None` is not recorded (the setting applies).
     pub max_implementers: Option<u32>,
+    /// `epic-plan`: the run only plans an epic in waves (no code, no PR); `None`
+    /// is a normal run and is not recorded.
+    pub mode: Option<String>,
+    /// The queue entry (dispatch.json) that started this run; a restart reads it to tell the entry started.
+    pub dispatch_entry_id: Option<String>,
 }
+
+/// The run modes meta.json can record (`mode`); a normal run has none.
+pub const RUN_MODES: &[&str] = &["epic-plan"];
 
 /// The review modes meta.json can record.
 pub const REVIEW_MODES: &[&str] = &["github", "local"];
@@ -254,6 +262,12 @@ pub fn create_run(
     }
     if let Some(mode) = meta.bmad_mode.as_deref().filter(|m| BMAD_MODES.contains(m)) {
         meta_json["bmad"] = json!({"mode": mode, "version": meta.bmad_version});
+    }
+    if let Some(mode) = meta.mode.as_deref().filter(|m| RUN_MODES.contains(m)) {
+        meta_json["mode"] = json!(mode);
+    }
+    if let Some(id) = meta.dispatch_entry_id.as_deref() {
+        meta_json["dispatchEntryId"] = json!(id);
     }
     if let Some(n) = meta.max_implementers {
         meta_json["maxImplementers"] = json!(n.clamp(1, MAX_IMPLEMENTERS_LIMIT));
@@ -648,6 +662,35 @@ mod tests {
     }
 
     #[test]
+    fn meta_json_records_the_epic_plan_mode_and_nothing_else_for_a_normal_run() {
+        let dir = TempDir::new("run_mode");
+        let repos = vec![Repo {
+            name: "a".into(),
+            path: "/w/a".into(),
+            check: None,
+            setup: None,
+            copy_files: vec![],
+            live_tests: false,
+        }];
+        let make = |mode: Option<&str>| {
+            let meta = RunMeta {
+                account_id: "default".into(),
+                mode: mode.map(String::from),
+                ..Default::default()
+            };
+            let created =
+                create_run(dir.path(), Path::new("/w"), &repos, &[], "Plan", &meta).unwrap();
+            read_json_value(&Path::new(&created.run_dir).join("meta.json")).unwrap()
+        };
+        assert_eq!(make(Some("epic-plan"))["mode"], "epic-plan");
+        assert!(make(None).get("mode").is_none(), "a normal run has no mode");
+        assert!(
+            make(Some("bogus")).get("mode").is_none(),
+            "an unknown mode is not recorded"
+        );
+    }
+
+    #[test]
     fn ticked_repos_become_a_limit_only_for_a_strict_subset() {
         let detected: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
         let ticked = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
@@ -750,6 +793,8 @@ mod tests {
             bmad_mode: None,
             bmad_version: None,
             max_implementers: None,
+            mode: None,
+            dispatch_entry_id: None,
         };
         assert!(create_run(dir.path(), Path::new("/w"), &repos, &[], "  ", &meta).is_err());
         let one = create_run(

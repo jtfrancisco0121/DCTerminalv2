@@ -39,6 +39,15 @@ export function isShiftEnter(event: TerminalKeyEvent): boolean {
 
 export type Platform = "mac" | "windows" | "linux";
 
+/** Cmd+Shift+E (Ctrl+Shift+E elsewhere): toggles the prompt scratchpad. */
+export function isScratchpadShortcut(event: TerminalKeyEvent, platform: Platform): boolean {
+  const mod = platform === "mac" ? event.metaKey : event.ctrlKey;
+  return event.type === "keydown" && event.key.toLowerCase() === "e" && event.shiftKey && mod && !event.altKey && !(platform === "mac" && event.ctrlKey);
+}
+
+/** The palette's "Toggle prompt scratchpad" asks the active pane through this window event. */
+export const SCRATCHPAD_EVENT = "dcv2:toggle-scratchpad";
+
 export function detectPlatform(uaPlatform?: string): Platform {
   const value = (uaPlatform ?? "").toLowerCase();
   if (value.includes("mac")) return "mac";

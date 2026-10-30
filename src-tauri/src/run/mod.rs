@@ -11,17 +11,22 @@ pub mod actions;
 pub mod afk;
 pub mod check;
 pub mod cleanup;
+pub mod dispatch;
 pub mod duplicate;
+pub mod epics;
 pub mod folder;
 pub mod git;
 pub mod github;
 pub mod janitor;
 pub mod launch;
 pub mod memory;
+pub mod preview;
 pub mod record;
 pub mod repos;
 pub mod requests;
+pub mod slop;
 pub mod status;
+pub mod timeline;
 
 use crate::commands::{tab_summary, TabSummary};
 use crate::paths::validate_working_folder;
@@ -402,7 +407,7 @@ fn folder_name(path: &Path) -> String {
 
 /// ClickUp tickets kept on the start screen (P4): the pasted refs and the
 /// ticket ids Fetch listed that you did not remove.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ClickUpStart {
     pub refs: Vec<crate::clickup::intake::IntakeRef>,
@@ -445,7 +450,37 @@ pub fn save_tickets(
 /// strict subset becomes request.md's `repos:` line (repos.json keeps every
 /// repo). `max_implementers` (Eagle-Eye only): this run's
 /// `DCV2_MAX_IMPLEMENTERS` (clamped to 1..=8), recorded in meta.json so a
-/// resume uses it; the global setting is never written.
+/// resume uses it; the global setting is never written. `run_mode`
+/// (Eagle-Eye only): `epic-plan` records `mode` in meta.json (the run plans
+/// the tickets into waves and builds nothing; it needs tickets).
+/// Everything a start needs, by value: what the start screen chose, or what a queue entry stored.
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StartParams {
+    #[serde(default)]
+    pub window_id: Option<String>,
+    pub folder: String,
+    pub request: String,
+    pub role: String,
+    #[serde(default)]
+    pub clickup: Option<ClickUpStart>,
+    #[serde(default)]
+    pub review_mode: Option<String>,
+    #[serde(default)]
+    pub bmad_mode: Option<String>,
+    #[serde(default)]
+    pub force: Option<bool>,
+    #[serde(default)]
+    pub repos: Option<Vec<String>>,
+    #[serde(default)]
+    pub max_implementers: Option<u32>,
+    #[serde(default)]
+    pub run_mode: Option<String>,
+    /// The queue entry that started this run (recorded in meta.json, so a restart can tell it started).
+    #[serde(default)]
+    pub dispatch_entry_id: Option<String>,
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // one argument per start-screen choice; the page calls it by name
 pub async fn start_run(
@@ -460,125 +495,166 @@ pub async fn start_run(
     force: Option<bool>,
     repos: Option<Vec<String>>,
     max_implementers: Option<u32>,
+    run_mode: Option<String>,
 ) -> Result<StartedRun, StartError> {
-    blocking(move || {
-        let folder = start_folder(&folder)?;
-        let ctx = launch_context(&app, window_id.as_deref())?;
-        let plugin = plugin_dir(&app).ok_or(NO_PLUGIN)?;
-        let data = data_dir(&app);
-        let memory_dir = memory::memory_dir(&data);
-        let base = launch::LaunchInput {
-            role: role.clone(),
-            prompt: String::new(),
-            plugin_dir: plugin.clone(),
-            memory_dir: memory_dir.clone(),
-            run_dir: None,
-            max_implementers: ctx.run.max_implementers,
-            stop_hooks: ctx.run.stop_hooks,
-            settings_file: launch::launch_settings_file(&plugin),
-            memory_prompt: None,
-        };
-        if role == "eagle-eye" {
-            if !force.unwrap_or(false) {
-                let wanted: std::collections::BTreeSet<String> = clickup
-                    .as_ref()
-                    .map(|c| c.ticket_ids.iter().cloned().collect())
-                    .unwrap_or_default();
-                let earlier = duplicate::earlier_runs(&folder::list_runs(&data));
-                if let Some(same) =
-                    duplicate::find(&earlier, &folder::neutralise(&request), &folder, &wanted)
-                {
-                    return Err(StartError::Duplicate {
-                        duplicate: duplicate::DuplicateRun {
-                            run_id: same.run_id.clone(),
-                            run_dir: same.run_dir.clone(),
-                        },
-                    });
-                }
+    let params = StartParams {
+        window_id,
+        folder,
+        request,
+        role,
+        clickup,
+        review_mode,
+        bmad_mode,
+        force,
+        repos,
+        max_implementers,
+        run_mode,
+        dispatch_entry_id: None,
+    };
+    blocking(move || start_run_inner(&app, params)).await
+}
+
+/// The one start path: the command, a queued start and a wave start all go through it (a new run
+/// folder, a new tab with the launch command; nothing is ever written into an existing tab).
+pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRun, StartError> {
+    let StartParams {
+        window_id,
+        folder,
+        request,
+        role,
+        clickup,
+        review_mode,
+        bmad_mode,
+        force,
+        repos,
+        max_implementers,
+        run_mode,
+        dispatch_entry_id,
+    } = params;
+    let folder = start_folder(&folder)?;
+    let ctx = launch_context(app, window_id.as_deref())?;
+    let plugin = plugin_dir(app).ok_or(NO_PLUGIN)?;
+    let data = data_dir(app);
+    let memory_dir = memory::memory_dir(&data);
+    let base = launch::LaunchInput {
+        role: role.clone(),
+        prompt: String::new(),
+        plugin_dir: plugin.clone(),
+        memory_dir: memory_dir.clone(),
+        run_dir: None,
+        max_implementers: ctx.run.max_implementers,
+        stop_hooks: ctx.run.stop_hooks,
+        slop_check: ctx.run.slop_check,
+        settings_file: launch::launch_settings_file(&plugin),
+        memory_prompt: None,
+    };
+    if role == "eagle-eye" {
+        if !force.unwrap_or(false) {
+            let wanted: std::collections::BTreeSet<String> = clickup
+                .as_ref()
+                .map(|c| c.ticket_ids.iter().cloned().collect())
+                .unwrap_or_default();
+            let earlier = duplicate::earlier_runs(&folder::list_runs(&data));
+            if let Some(same) =
+                duplicate::find(&earlier, &folder::neutralise(&request), &folder, &wanted)
+            {
+                return Err(StartError::Duplicate {
+                    duplicate: duplicate::DuplicateRun {
+                        run_id: same.run_id.clone(),
+                        run_dir: same.run_dir.clone(),
+                    },
+                });
             }
-            let mut found = repos::detect(&folder);
-            found.repos = with_repo_setup(found.repos, &ctx.worktree_setup);
-            if found.repos.is_empty() {
-                return Err(format!(
-                    "{} is not a git repo or a folder of git repos.",
-                    folder.display()
-                )
-                .into());
-            }
-            let detected: Vec<String> = found.repos.iter().map(|r| r.name.clone()).collect();
-            let repos_limit = folder::repos_limit_for(&detected, repos.as_deref())?;
-            let max_implementers = max_implementers.map(|n| n.clamp(1, MAX_IMPLEMENTERS_LIMIT));
-            let meta = folder::RunMeta {
-                plugin_version: launch::plugin_version(&plugin),
-                claude_version: ctx.provider.detect().version,
-                account_id: ctx.account_id.clone(),
-                account_name: ctx.account_name.clone(),
-                config_dir: ctx.provider.config.path.clone(),
-                review_mode: review_mode.filter(|m| folder::REVIEW_MODES.contains(&m.as_str())),
-                bmad_mode: bmad_mode.filter(|m| folder::BMAD_MODES.contains(&m.as_str())),
-                bmad_version: launch::plugin_version(&plugin.join("bmad")),
-                max_implementers,
-            };
-            let snapshot = match clickup.as_ref().filter(|c| !c.ticket_ids.is_empty()) {
-                Some(c) => Some(crate::clickup::commands::start_snapshot(
-                    &ctx.account_id,
-                    &c.refs,
-                    &c.ticket_ids,
-                )?),
-                None => None,
-            };
-            let request = request_with_tickets(&request, snapshot.as_ref());
-            let created =
-                folder::create_run(&data, &folder, &found.repos, &repos_limit, &request, &meta)?;
-            let run_dir = PathBuf::from(&created.run_dir);
-            if let Some(snapshot) = &snapshot {
-                // The app's own copy first (outside the run folder), then
-                // Claude's; on failure the half-made run folder goes.
-                if let Err(err) = save_tickets(&data, &run_dir, &ctx.account_id, snapshot) {
-                    crate::clickup::trust::remove(&data, &run_dir);
-                    let _ = std::fs::remove_dir_all(&run_dir);
-                    return Err(err.into());
-                }
-            }
-            let prompt_file = memory::compose(
-                &plugin,
-                &memory_dir,
-                &folder,
-                &run_dir.join("memory-prompt.md"),
-            );
-            let spec = launch::launch_spec(&launch::LaunchInput {
-                prompt: format!("/dcv2:eagle-eye run={}", run_dir.display()),
-                run_dir: Some(run_dir.clone()),
-                max_implementers: max_implementers.unwrap_or(base.max_implementers),
-                memory_prompt: prompt_file,
-                ..base
-            });
-            let label = format!("Eagle-Eye · {}", folder_name(&folder));
-            let tab = add_launch_tab(&app, window_id.as_deref(), &folder, &label, spec)?;
-            return Ok(StartedRun {
-                tab,
-                run_dir: Some(created.run_dir),
-                focused: false,
-            });
         }
-        let label = launch::role_label(&role).ok_or_else(|| format!("unknown role: {role}"))?;
-        let out =
-            launch_prompts_dir(&data).join(format!("{}-memory-prompt.md", uuid::Uuid::new_v4()));
-        let prompt_file = memory::compose(&plugin, &memory_dir, &folder, &out);
+        let mut found = repos::detect(&folder);
+        found.repos = with_repo_setup(found.repos, &ctx.worktree_setup);
+        if found.repos.is_empty() {
+            return Err(format!(
+                "{} is not a git repo or a folder of git repos.",
+                folder.display()
+            )
+            .into());
+        }
+        let detected: Vec<String> = found.repos.iter().map(|r| r.name.clone()).collect();
+        let repos_limit = folder::repos_limit_for(&detected, repos.as_deref())?;
+        let max_implementers = max_implementers.map(|n| n.clamp(1, MAX_IMPLEMENTERS_LIMIT));
+        let meta = folder::RunMeta {
+            plugin_version: launch::plugin_version(&plugin),
+            claude_version: ctx.provider.detect().version,
+            account_id: ctx.account_id.clone(),
+            account_name: ctx.account_name.clone(),
+            config_dir: ctx.provider.config.path.clone(),
+            review_mode: review_mode.filter(|m| folder::REVIEW_MODES.contains(&m.as_str())),
+            bmad_mode: bmad_mode.filter(|m| folder::BMAD_MODES.contains(&m.as_str())),
+            bmad_version: launch::plugin_version(&plugin.join("bmad")),
+            max_implementers,
+            mode: run_mode.filter(|m| folder::RUN_MODES.contains(&m.as_str())),
+            dispatch_entry_id,
+        };
+        if meta.mode.is_some() && clickup.as_ref().is_none_or(|c| c.ticket_ids.is_empty()) {
+            return Err(
+                "Planning an epic in waves needs ClickUp tickets: add them first."
+                    .to_string()
+                    .into(),
+            );
+        }
+        let snapshot = match clickup.as_ref().filter(|c| !c.ticket_ids.is_empty()) {
+            Some(c) => Some(crate::clickup::commands::start_snapshot(
+                &ctx.account_id,
+                &c.refs,
+                &c.ticket_ids,
+            )?),
+            None => None,
+        };
+        let request = request_with_tickets(&request, snapshot.as_ref());
+        let created =
+            folder::create_run(&data, &folder, &found.repos, &repos_limit, &request, &meta)?;
+        let run_dir = PathBuf::from(&created.run_dir);
+        if let Some(snapshot) = &snapshot {
+            // The app's own copy first (outside the run folder), then
+            // Claude's; on failure the half-made run folder goes.
+            if let Err(err) = save_tickets(&data, &run_dir, &ctx.account_id, snapshot) {
+                crate::clickup::trust::remove(&data, &run_dir);
+                let _ = std::fs::remove_dir_all(&run_dir);
+                return Err(err.into());
+            }
+        }
+        let prompt_file = memory::compose(
+            &plugin,
+            &memory_dir,
+            &folder,
+            &run_dir.join("memory-prompt.md"),
+        );
         let spec = launch::launch_spec(&launch::LaunchInput {
-            prompt: launch::role_prompt(&role, &request),
+            prompt: format!("/dcv2:eagle-eye run={}", run_dir.display()),
+            run_dir: Some(run_dir.clone()),
+            max_implementers: max_implementers.unwrap_or(base.max_implementers),
             memory_prompt: prompt_file,
             ..base
         });
-        let label = format!("{label} · {}", folder_name(&folder));
-        let tab = add_launch_tab(&app, window_id.as_deref(), &folder, &label, spec)?;
-        Ok(StartedRun {
+        let label = format!("Eagle-Eye · {}", folder_name(&folder));
+        let tab = add_launch_tab(app, window_id.as_deref(), &folder, &label, spec)?;
+        return Ok(StartedRun {
             tab,
-            run_dir: None,
+            run_dir: Some(created.run_dir),
             focused: false,
-        })
+        });
+    }
+    let label = launch::role_label(&role).ok_or_else(|| format!("unknown role: {role}"))?;
+    let out = launch_prompts_dir(&data).join(format!("{}-memory-prompt.md", uuid::Uuid::new_v4()));
+    let prompt_file = memory::compose(&plugin, &memory_dir, &folder, &out);
+    let spec = launch::launch_spec(&launch::LaunchInput {
+        prompt: launch::role_prompt(&role, &request),
+        memory_prompt: prompt_file,
+        ..base
+    });
+    let label = format!("{label} · {}", folder_name(&folder));
+    let tab = add_launch_tab(app, window_id.as_deref(), &folder, &label, spec)?;
+    Ok(StartedRun {
+        tab,
+        run_dir: None,
+        focused: false,
     })
-    .await
 }
 
 /// `/dcv2:eagle-eye resume run=<dir>` in a new tab, with the same env.
@@ -622,6 +698,7 @@ pub async fn resume_run(
             max_implementers: folder::max_implementers_of(&run_dir)
                 .unwrap_or(ctx.run.max_implementers),
             stop_hooks: ctx.run.stop_hooks,
+            slop_check: ctx.run.slop_check,
             settings_file: launch::launch_settings_file(&plugin),
             memory_prompt: prompt_file,
         });
@@ -670,6 +747,28 @@ pub fn rerun_checks_once(dir: &Path) -> Result<(), String> {
         }
     }
     result
+}
+
+/// The slop verdict for one PR (what `plugin/scripts/stop-check.sh` reports): the
+/// lines the PR added that match `slop-patterns.tsv`. Read-only.
+#[tauri::command]
+pub async fn slop_check(
+    app: AppHandle,
+    run_dir: String,
+    pr: String,
+) -> Result<slop::SlopReport, String> {
+    blocking(move || {
+        let dir = checked_run_dir(&data_dir(&app), &run_dir)?;
+        let plugin = plugin_dir(&app).ok_or(NO_PLUGIN)?;
+        slop::check_pr(&dir, &pr, &plugin)
+    })
+    .await
+}
+
+/// A big paste made smaller (the paste bar's "Paste compacted"): error and warning lines are never cut.
+#[tauri::command]
+pub async fn compact_text(text: String) -> Result<crate::observe::trim::Compacted, String> {
+    blocking(move || Ok(crate::observe::trim::compact_text(&text))).await
 }
 
 /// R1: re-runs every PR's check of the run (one run at a time per folder).

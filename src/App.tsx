@@ -33,6 +33,7 @@ import { Dialog } from "./components/Dialog";
 import { InlineNotice } from "./components/InlineNotice";
 import { NewTabForm } from "./components/NewTabForm";
 import { RunPanel } from "./components/RunPanel";
+import { PreviewHost } from "./components/PreviewPane";
 import { RunsView } from "./components/RunsView";
 import { StartScreen } from "./components/StartScreen";
 import { resumeRun, runOverview, startRun, type RunOverview, type StartedRun } from "./run/api";
@@ -45,10 +46,10 @@ import { UsagePopover } from "./components/UsagePopover";
 import { SplitTerminals } from "./components/SplitTerminals";
 import { destroyTerminal, TerminalView } from "./components/TerminalView";
 import { newTabDefaults, type NewTabDraft } from "./newTab";
-import { detectPlatform } from "./terminal/keys";
+import { detectPlatform, SCRATCHPAD_EVENT } from "./terminal/keys";
 import { ACCOUNT_REMOVED, accountProblem } from "./terminal/openPlan";
 import { dropLivePty, ptyExitCode, ptyRunning, subscribeLivePty, subscribePtyExit } from "./terminal/live";
-import { focusParkedTerminal, refitTerminal, requestTerminalSearch, setCopyOnSelect, setOptionAsMeta, setTerminalTheme } from "./terminal/park";
+import { focusParkedTerminal, refitTerminal, requestTerminalSearch, setCompactPaste, setCopyOnSelect, setFileLinkEditor, setOptionAsMeta, setTerminalTheme } from "./terminal/park";
 import { applyTheme, watchSystemTheme } from "./theme";
 import { reportError, setErrorNotifier } from "./uiErrors";
 import { statusLimit, type WindowHistory } from "./usage/limits";
@@ -91,6 +92,8 @@ function currentWindowId(): string {
 function applySettings(view: SettingsView): void {
   setOptionAsMeta(view.terminal.optionAsMeta);
   setCopyOnSelect(view.terminal.copyOnSelect);
+  setCompactPaste(view.terminal.compactPaste ?? true);
+  setFileLinkEditor(view.terminal.fileLinkEditor ?? "finder");
   applyTheme(view.ui.theme);
   setTerminalTheme(view.ui.theme);
 }
@@ -594,6 +597,17 @@ function App() {
         },
       });
     }
+    if (active) {
+      items.push({
+        id: "scratchpad",
+        group: "Tabs",
+        label: "Toggle prompt scratchpad",
+        detail: "Cmd+Shift+E",
+        run: () => {
+          window.dispatchEvent(new Event(SCRATCHPAD_EVENT));
+        },
+      });
+    }
     return items;
   };
 
@@ -694,6 +708,7 @@ function App() {
         {active && !blocked && active.runDir && (
           <div className="run-layout">
             {terminalsOf(active, !dialog)}
+            <PreviewHost onLayoutChange={() => refitTerminal(active.id)} />
             <RunPanel
               key={active.runDir}
               runDir={active.runDir}

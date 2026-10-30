@@ -1,0 +1,8 @@
+lib.rs:2:dbg-macro
+lib.rs:3:todo-marker
+lib.rs:4:filler-comment
+lib.rs:6:dbg-macro
+notes.md:2:ai-disclaimer
+src/Upper.TS:2:console-log
+src/new.tsx:2:console-log
+src/old.ts:3:console-log

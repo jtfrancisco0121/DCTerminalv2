@@ -8,6 +8,7 @@ import {
   removeRunWorktrees,
   rerunChecks,
   runWorktrees,
+  slopCheck,
   type BmadView,
   type LogLine,
   type PrView,
@@ -15,6 +16,7 @@ import {
   type WorktreeCheck,
   type RemoveResult,
   type RunView,
+  type SlopReport,
   type WorktreeItem,
 } from "../run/api";
 import {
@@ -32,10 +34,12 @@ import {
   wantsAppChecks,
 } from "../run/words";
 import { ClickUpRunSection } from "../clickup/ClickUpRunSection";
+import { FleetTimeline } from "./FleetTimeline";
 import { checkLogPr, readCheckLog } from "../run/observe";
 import { RUN_STATE_EVENT, usePushRefresh } from "../run/events";
 import { AWAY_ROWS, useAwayNotice } from "../run/away";
 import { Dialog } from "./Dialog";
+import { openPreview } from "../preview/bus";
 import { RunPanelShell } from "./RunPanelShell";
 import { ApprovalCard } from "./ApprovalCard";
 import { ObserveSection } from "./ObserveSection";
@@ -62,6 +66,8 @@ type ViewProps = {
   worktrees?: Readonly<Record<string, WorktreeCheck>>;
   onPrAction?: (prId: string, action: PrWorktreeAction) => void;
   onCopyBranch?: (branch: string) => void;
+  /** The slop check of one PR (the Slop check action). Missing: the action is not offered. */
+  onSlopCheck?: (prId: string) => Promise<SlopReport>;
   /** "While you were away": the timeline lines since the panel was last seen, with its Dismiss. */
   away?: { lines: LogLine[]; dismiss: () => void } | null;
 };
@@ -110,6 +116,76 @@ function TimelineTime({ time }: { time: string }) {
   );
 }
 
+/** The Slop check action of one PR and its results, grouped by file; a click on a finding copies `file:line`. */
+export function SlopCheck({ prId, onSlopCheck }: { prId: string; onSlopCheck: (prId: string) => Promise<SlopReport> }) {
+  const [state, setState] = useState<{ busy: boolean; report: SlopReport | null; error: string | null }>({
+    busy: false,
+    report: null,
+    error: null,
+  });
+  const [copied, setCopied] = useState<string | null>(null);
+  const run = () => {
+    setState({ busy: true, report: null, error: null });
+    onSlopCheck(prId).then(
+      (report) => setState({ busy: false, report, error: null }),
+      (err: unknown) => setState({ busy: false, report: null, error: errorText(err) }),
+    );
+  };
+  const copy = (path: string, line: number) => {
+    const where = `${path}:${line}`;
+    navigator.clipboard.writeText(where).then(
+      () => setCopied(where),
+      () => setCopied(null),
+    );
+  };
+  const groups = new Map<string, SlopReport["findings"]>();
+  for (const f of state.report?.findings ?? []) groups.set(f.path, [...(groups.get(f.path) ?? []), f]);
+  return (
+    <div className="run-slop" data-testid={`slop-${prId}`}>
+      <button type="button" className="link-button" disabled={state.busy} onClick={run}>
+        {state.busy ? "Checking for slop…" : "Slop check"}
+      </button>
+      {state.error && <p className="error">{state.error}</p>}
+      {state.report?.state === "worktree-missing" && (
+        <p className="hint" data-testid={`slop-missing-${prId}`}>
+          The worktree is gone, so there is nothing to check{state.report.detail ? ` (${state.report.detail})` : ""}.
+        </p>
+      )}
+      {state.report?.state === "no-rules" && <p className="hint">No slop patterns are installed.</p>}
+      {state.report?.state === "ok" && state.report.total === 0 && (
+        <p className="hint" data-testid={`slop-none-${prId}`}>
+          No slop found in the lines this PR added.
+        </p>
+      )}
+      {state.report?.state === "ok" && state.report.total > 0 && (
+        <div data-testid={`slop-results-${prId}`}>
+          <p className="hint">
+            {state.report.total} finding{state.report.total === 1 ? "" : "s"}
+            {state.report.total > state.report.findings.length ? ` (first ${state.report.findings.length} shown)` : ""}. Click a line to copy
+            file:line.{state.report.detail ? ` ${state.report.detail}.` : ""}
+          </p>
+          {[...groups.entries()].map(([path, items]) => (
+            <div key={path} className="run-slop-file">
+              <strong>{path}</strong>
+              <ul>
+                {items.map((f) => (
+                  <li key={`${f.line}-${f.rule}`}>
+                    <button type="button" className="link-button" onClick={() => copy(f.path, f.line)}>
+                      line {f.line}
+                    </button>{" "}
+                    {f.message} <span className="hint">[{f.rule}]</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+          {copied && <p className="hint" role="status">Copied {copied}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PrRow({
   pr,
   onOpenFile,
@@ -117,7 +193,8 @@ function PrRow({
   worktrees,
   onPrAction,
   onCopyBranch,
-}: { pr: PrView } & Pick<ViewProps, "onOpenFile" | "onOpenUrl"> & PrActionProps) {
+  onSlopCheck,
+}: { pr: PrView } & Pick<ViewProps, "onOpenFile" | "onOpenUrl" | "onSlopCheck"> & PrActionProps) {
   const wt = worktrees?.[pr.id];
   const why = !wt ? "Checking the worktree…" : wt.verified ? undefined : (wt.reason ?? "The worktree is not verified.");
   const act = (action: PrWorktreeAction, label: string) => (
@@ -201,6 +278,7 @@ function PrRow({
         {pr.worktree && act("editor", "Open in editor")}
         {pr.worktree && act("shell", "Shell here")}
       </div>
+      {pr.worktree && onSlopCheck && <SlopCheck prId={pr.id} onSlopCheck={onSlopCheck} />}
       {url && (
         <button type="button" className="link-button" onClick={() => onOpenUrl(url)}>
           {badge === "draft" ? "Open draft PR" : "Open PR"}
@@ -280,7 +358,7 @@ function BmadSection({
 }
 
 /** The progress panel for one run, drawn from a read of its folder. */
-export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch, away }: ViewProps) {
+export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch, onSlopCheck, away }: ViewProps) {
   const timeline = view.timeline.slice(-30).reverse();
   return (
     <aside className="run-panel" aria-label="Run progress">
@@ -326,6 +404,7 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
               worktrees={worktrees}
               onPrAction={onPrAction}
               onCopyBranch={onCopyBranch}
+              onSlopCheck={onSlopCheck}
             />
           ))}
         </ul>
@@ -567,7 +646,13 @@ export function RunPanel({
     navigator.clipboard.writeText(branch).catch((err: unknown) => setProblem(errorText(err)));
   };
 
+  // Alt+click keeps the old text dialog; a plain click on a Markdown file opens the preview beside the terminal.
+  const altClick = useRef(false);
   const openFile = (path: string, title: string) => {
+    if (!altClick.current && /\.md$/i.test(path) && !checkLogPr(path)) {
+      openPreview({ path: `${runDir.replace(/\/$/, "")}/${path}`, title });
+      return;
+    }
     // A4: the app's check output is shown trimmed (ANSI, redraws, middle).
     const pr = checkLogPr(path);
     (pr ? readCheckLog(runDir, pr) : readRunFile(runDir, path)).then(
@@ -609,6 +694,7 @@ export function RunPanel({
         attention={Boolean(view.waitingFor)}
         onLayoutChange={onLayoutChange}
       >
+      <div className="run-panel-clicks" onClickCapture={(event) => { altClick.current = event.altKey; }}>
       <RunPanelView
         view={view}
         checking={checking}
@@ -620,10 +706,17 @@ export function RunPanel({
         worktrees={worktrees}
         onPrAction={prAction}
         onCopyBranch={copyBranch}
+        onSlopCheck={(prId) => slopCheck(runDir, prId)}
         away={away}
         session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} /> : undefined}
-        extra={<ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} mergeKey={mergeKey(view)} />}
+        extra={
+          <>
+            <FleetTimeline runDir={runDir} live={!runFinished(view)} />
+            <ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} mergeKey={mergeKey(view)} />
+          </>
+        }
       />
+      </div>
       </RunPanelShell>
       {problem && <p className="error run-problem">{problem}</p>}
       {file && <TextDialog title={file.title} text={file.text} onClose={() => setFile(null)} />}

@@ -60,6 +60,12 @@ pub enum Kind {
     AutopostFailed,
     WaitingReminder,
     MergedCleaned,
+    /// A batch: every run's plan is ready for approval (the subject is the batch id).
+    BatchPlanned,
+    /// A batch: every run is ready to ship.
+    BatchReady,
+    /// An epic: the next wave is ready to start (the subject is the epic run id).
+    WaveReady,
 }
 
 impl Kind {
@@ -68,7 +74,7 @@ impl Kind {
         Kind::ALL.into_iter().find(|kind| kind.key() == key)
     }
 
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 13] = [
         Kind::NeedsYou,
         Kind::ApprovalWait,
         Kind::Stall,
@@ -79,6 +85,9 @@ impl Kind {
         Kind::AutopostFailed,
         Kind::WaitingReminder,
         Kind::MergedCleaned,
+        Kind::BatchPlanned,
+        Kind::BatchReady,
+        Kind::WaveReady,
     ];
 
     /// Needs-you and approval-wait are the ones that count in the badge and
@@ -100,6 +109,9 @@ impl Kind {
             Kind::AutopostFailed => "autopost-failed",
             Kind::WaitingReminder => "waiting-reminder",
             Kind::MergedCleaned => "merged-cleaned",
+            Kind::BatchPlanned => "batch-planned",
+            Kind::BatchReady => "batch-ready",
+            Kind::WaveReady => "wave-ready",
         }
     }
 }
@@ -145,6 +157,11 @@ impl Event {
             Kind::AutopostFailed => format!("dcv2: ClickUp auto-post failed for {detail}{run}"),
             Kind::WaitingReminder => format!("dcv2: {tab} is still waiting for you"),
             Kind::MergedCleaned => format!("dcv2: {detail} merged and cleaned up{run}"),
+            Kind::BatchPlanned => {
+                format!("dcv2: every plan of the batch is ready for approval{run}")
+            }
+            Kind::BatchReady => format!("dcv2: every run of the batch is ready to ship{run}"),
+            Kind::WaveReady => format!("dcv2: the next wave is ready to start{run}"),
         }
     }
 }
@@ -1108,10 +1125,17 @@ pub fn spawn(app: &AppHandle, notifier: Box<dyn Notifier>) {
                         .map(|r| (r.run_id.clone(), r.clone()))
                         .collect(),
                 );
+                let live_runs: std::collections::HashSet<String> = observed
+                    .tabs
+                    .iter()
+                    .filter_map(|t| t.run_dir.clone())
+                    .collect();
+                crate::run::dispatch::on_tick(&app, &live_runs);
                 for push in push_diff.diff(&observed) {
                     emit_push(&app, push);
                 }
-                let events = detector.diff(observed, now_ms());
+                let mut events = detector.diff(observed, now_ms());
+                events.extend(crate::run::dispatch::milestone_events(&app));
                 if let Some(state) = app.try_state::<AttentionState>() {
                     state.set_snapshot(snapshot.clone());
                     // The landing lock is not held while sinks run.
@@ -1605,9 +1629,10 @@ mod tests {
             Kind::MergedCleaned,
         ];
         want.sort();
-        // Every kind is here but RunFailed, which has its own transition below.
+        // Every kind is here but RunFailed (its own transition below) and the three milestone kinds
+        // (`batch-planned`, `batch-ready`, `wave-ready`), which `dispatch::milestone_events` raises.
         assert_eq!(
-            want.len() + 1,
+            want.len() + 1 + 3,
             Kind::ALL.len(),
             "every kind is in this test"
         );

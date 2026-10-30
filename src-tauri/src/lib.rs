@@ -4,6 +4,7 @@ mod clickup;
 mod commands;
 mod crash_log;
 mod data_dir;
+mod drafts;
 mod import_dev;
 #[cfg(target_os = "macos")]
 mod macos_terminate;
@@ -199,6 +200,26 @@ pub fn run() {
             run::resume_run,
             run::read_run,
             run::rerun_checks,
+            run::slop_check,
+            run::compact_text,
+            run::dispatch::dispatch_overview,
+            run::dispatch::dispatch_enqueue,
+            run::dispatch::dispatch_runs,
+            run::dispatch::batch_overview,
+            run::dispatch::batch_remove_run,
+            run::epics::epics_overview,
+            run::epics::epic_start_wave,
+            run::dispatch::dispatch_move,
+            run::dispatch::dispatch_cancel,
+            run::dispatch::dispatch_start_now,
+            run::dispatch::dispatch_release,
+            run::timeline::run_timeline,
+            run::preview::preview_file,
+            run::preview::preview_stat,
+            run::preview::paths_exist,
+            run::preview::open_file_link,
+            drafts::drafts_load,
+            drafts::drafts_save,
             run::run_worktrees,
             run::remove_run_worktrees,
             run::read_run_file,

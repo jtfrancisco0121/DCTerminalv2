@@ -4,6 +4,11 @@
  * behind it keeps running).
  */
 
+import { invoke } from "@tauri-apps/api/core";
+import { PathCache, type PathHit } from "./fileLinkCache";
+import { findFilePaths } from "./fileLinks";
+import { openPreview } from "../preview/bus";
+import { pasteOrOffer, shouldOffer } from "./compactPaste";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -122,6 +127,35 @@ export function setOptionAsMeta(value: boolean): void {
   for (const entry of parked.values()) entry.term.options.macOptionIsMeta = value;
 }
 
+let fileLinkEditor = "finder";
+
+/** What Cmd+click on a file path opens it in (settings: `terminal.fileLinkEditor`). */
+export function setFileLinkEditor(value: string): void {
+  fileLinkEditor = value;
+}
+
+const pathCache = new PathCache();
+
+/** Cmd+click on a file path of the terminal output: the preview for a previewable file, else the editor (or Finder). */
+function openFileLink(id: string, hit: PathHit, line?: number, col?: number): void {
+  const name = hit.path?.split("/").pop() ?? "";
+  if (!hit.path) return;
+  if (hit.previewable) {
+    openPreview({ path: hit.path, title: name });
+    return;
+  }
+  invoke("open_file_link", { tabId: id, path: hit.path, line: line ?? null, col: col ?? null, editor: fileLinkEditor }).catch(
+    (err: unknown) => reportError("Could not open the file", err, { notify: true }),
+  );
+}
+
+let compactPasteOn = true;
+
+/** Offer to compact big pastes (settings: `terminal.compactPaste`). */
+export function setCompactPaste(value: boolean): void {
+  compactPasteOn = value;
+}
+
 let copyOnSelect = false;
 
 /** Copy a finished selection to the clipboard. Off by default. */
@@ -178,6 +212,45 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
     }, 200);
   });
   term.open(host);
+  // File paths in the output: only the hovered line is matched, and only paths that exist are linked.
+  term.registerLinkProvider({
+    provideLinks(lineNumber, callback) {
+      const text = term.buffer.active.getLine(lineNumber - 1)?.translateToString(true) ?? "";
+      const matches = findFilePaths(text);
+      if (matches.length === 0) {
+        callback(undefined);
+        return;
+      }
+      pathCache.resolve(id, matches.map((m) => m.path)).then(
+        (hits) => {
+          const links = matches
+            .map((m) => ({ m, hit: hits.get(m.path) }))
+            .filter(({ hit }) => hit?.path)
+            .map(({ m, hit }) => ({
+              text: text.slice(m.start, m.end),
+              range: { start: { x: m.start + 1, y: lineNumber }, end: { x: m.end, y: lineNumber } },
+              activate: (event: MouseEvent) => {
+                if (isLinkModifier(event, detectPlatform(navigator.platform))) openFileLink(id, hit!, m.line, m.col);
+              },
+            }));
+          callback(links.length ? links : undefined);
+        },
+        () => callback(undefined),
+      );
+    },
+  });
+  // A big paste goes to the paste bar first (nothing is altered unless the user picks Paste compacted).
+  term.textarea?.addEventListener(
+    "paste",
+    (event) => {
+      const text = (event as ClipboardEvent).clipboardData?.getData("text") ?? "";
+      if (!shouldOffer(text, compactPasteOn)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      pasteOrOffer(id, text, compactPasteOn, (t) => term.paste(t));
+    },
+    true,
+  );
   streams.set(id, connectStreams(id, term));
   parkHost().appendChild(host);
   const created = { host, term, fit, search };
@@ -310,6 +383,17 @@ export function pasteIntoTerminal(id: string, text: string): void {
   if (text) parked.get(id)?.term.paste(text);
 }
 
+/** Whether the program in the terminal turned bracketed paste on (a pasted newline is then safe). */
+export function isBracketedPasteOn(id: string): boolean {
+  return parked.get(id)?.term.modes.bracketedPasteMode ?? false;
+}
+
+/** A paste from the app (the scratchpad, the context menu): a big one is offered for compaction first. */
+export function pasteWithOffer(id: string, text: string): void {
+  const term = parked.get(id)?.term;
+  if (text && term) pasteOrOffer(id, text, compactPasteOn, (t) => term.paste(t));
+}
+
 export async function copyTerminalSelection(id: string): Promise<void> {
   const text = parked.get(id)?.term.getSelection() ?? "";
   if (!text) return;
@@ -319,5 +403,5 @@ export async function copyTerminalSelection(id: string): Promise<void> {
 export async function pasteTerminalText(id: string): Promise<void> {
   const text = await navigator.clipboard.readText();
   if (!text) return;
-  parked.get(id)?.term.paste(text);
+  pasteWithOffer(id, text);
 }

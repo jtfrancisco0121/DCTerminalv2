@@ -1045,6 +1045,33 @@ fn remember_window(app: &AppHandle, label: &str, account_id: &str) -> Result<(),
     state.ensure_window(label, account_id)
 }
 
+/// The dev server's origin; only a debug build loads the page from it.
+const DEV_ORIGIN: Option<&str> = if cfg!(debug_assertions) {
+    Some("http://127.0.0.1:1420")
+} else {
+    None
+};
+
+/// Whether the webview may navigate to `url`: the app origin (`tauri://localhost`, or the
+/// `tauri.localhost` forms on Windows and Linux) and, in a debug build, the dev server's.
+/// Every other URL (https, file, other tauri hosts, javascript:, data:) is refused.
+pub(crate) fn navigation_allowed(url: &str, dev_origin: Option<&str>) -> bool {
+    let origin_ok = |origin: &str| {
+        url == origin
+            || url
+                .strip_prefix(origin)
+                .is_some_and(|rest| rest.starts_with(['/', '?', '#']))
+    };
+    [
+        "tauri://localhost",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+    ]
+    .iter()
+    .any(|o| origin_ok(o))
+        || dev_origin.is_some_and(origin_ok)
+}
+
 fn build_window(app: &AppHandle, label: &str, title: &str) -> Result<(), String> {
     if app.get_webview_window(label).is_some() {
         return retitle(app, label);
@@ -1052,6 +1079,8 @@ fn build_window(app: &AppHandle, label: &str, title: &str) -> Result<(), String>
     tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("index.html".into()))
         .title(title)
         .inner_size(1400.0, 900.0)
+        // A link in rendered Markdown (or anything else) never replaces the app: only the app origin loads.
+        .on_navigation(|url| navigation_allowed(url.as_str(), DEV_ORIGIN))
         .build()
         .map_err(|err| err.to_string())?;
     Ok(())
@@ -1598,5 +1627,32 @@ mod tests {
         assert_eq!(NEW_WINDOW_ACCELERATOR, "CmdOrCtrl+Shift+N");
         assert!(NEW_WINDOW_ACCELERATOR.contains("Shift+N"));
         assert!(NEW_WINDOW_ACCELERATOR.starts_with("CmdOrCtrl+"));
+    }
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::navigation_allowed;
+
+    #[test]
+    fn only_the_app_origin_may_load() {
+        let dev = Some("http://127.0.0.1:1420");
+        assert!(navigation_allowed("tauri://localhost/index.html", None));
+        assert!(navigation_allowed("tauri://localhost", None));
+        assert!(navigation_allowed("http://tauri.localhost/", None));
+        assert!(navigation_allowed("http://127.0.0.1:1420/", dev));
+        assert!(!navigation_allowed("http://127.0.0.1:1420/", None));
+        for url in [
+            "https://example.com/",
+            "http://tauri.localhost.evil.com/",
+            "tauri://localhost.evil.com/",
+            "tauri://other/",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "http://127.0.0.1:14200/",
+        ] {
+            assert!(!navigation_allowed(url, dev), "{url}");
+        }
     }
 }

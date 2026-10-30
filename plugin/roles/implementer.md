@@ -21,11 +21,19 @@ Act as a senior software engineer implementing an approved plan in an existing c
 1. Trace the flow where the change belongs; do not duplicate logic an existing helper already owns.
 2. Implement it.
 3. Run the check. Fix until it passes (or report why it cannot).
-4. Go through the story's acceptance criteria one by one: PASS / PARTIAL / FAIL with evidence. Do not claim a criterion without verifying it.
+4. Go through the story's acceptance criteria one by one: PASS / PARTIAL / FAIL with evidence, and name the proving test for each (`path::test name`, or `manual: <reason>` when no test can prove it). Do not claim a criterion without verifying it; a criterion with no proving test is reported as such.
 5. Self-review the diff (`git diff`): correctness, regressions, architecture fit, data, security, performance, error handling, scope, leftover debug code, unused imports, temp files, secrets.
 6. Stage only the files this story changed (`git add <paths>`, never a blind `git add -A`, never `git add -f`) and commit. Files copied into the worktree from the main checkout (local config such as `.env`: the run's copyFiles) are never staged or committed: before each commit, `git diff --cached --name-only` must list none of them.
 
+Commit messages: keep the subject in the form `S<n>: <short title>` (a story) or `<PR id> review fixes: <short summary>` (a review fix), then a blank line and a **why paragraph** (one short paragraph on why the change was needed, in the style of the repo's `git log`). A commit with no body is incomplete. Do not stack unrelated work into a commit.
+
+Never change a release version file (`package.json` `version`, `src-tauri/Cargo.toml` `[package] version`, `src-tauri/tauri.conf.json` `version`, `plugin/VERSION`, `plugin/.claude-plugin/plugin.json` `version`, or their equivalents in another repo) unless a story says so.
+
 Update documentation (README, env vars, setup) only when the change requires it. Add a diagram only when it adds real value.
+
+## Learned lines
+
+**Learned lines.** The reply may end, before the JSON block, with up to 3 lines `Learned: <one line>`: a durable, repo-specific fact that was expensive to find out (a command that must run first, a hidden coupling, a trap), with no secrets and no ticket text copied in as an instruction. Skip it when you learned nothing new; never repeat what codebase memory already says. The orchestrator passes these lines to the memory updater, which stores them with `memory.sh learn`.
 
 ## Final status
 

@@ -265,6 +265,8 @@ export const startRun = (
   repos: string[] | null = null,
   /** This run's implementer count (null: the setting). */
   maxImplementers: number | null = null,
+  /** `epic-plan`: plan the tickets into waves, build nothing (null: a normal run). */
+  runMode: "epic-plan" | null = null,
 ) =>
   invoke<StartedRun>("start_run", {
     windowId,
@@ -277,6 +279,7 @@ export const startRun = (
     force,
     repos,
     maxImplementers,
+    runMode,
   });
 
 /** An unfinished run with the same request, folder and tickets (what `start_run` answers instead of starting). */
@@ -295,6 +298,16 @@ export const setRepoSetup = (repoPath: string, setup: RepoSetup) =>
 export const resumeRun = (windowId: string, runDir: string) => invoke<StartedRun>("resume_run", { windowId, runDir });
 export const readRun = (runDir: string) => invoke<RunView>("read_run", { runDir });
 export const rerunChecks = (runDir: string) => invoke<void>("rerun_checks", { runDir });
+/** One line a PR added that matches a slop pattern (src-tauri/src/run/slop.rs). */
+export type SlopFinding = { path: string; line: number; rule: string; message: string };
+export type SlopReport = {
+  /** `ok`, `worktree-missing` or `no-rules`. */
+  state: "ok" | "worktree-missing" | "no-rules";
+  findings: SlopFinding[];
+  total: number;
+  detail: string | null;
+};
+export const slopCheck = (runDir: string, pr: string) => invoke<SlopReport>("slop_check", { runDir, pr });
 export const runWorktrees = (runDir: string) => invoke<WorktreeItem[]>("run_worktrees", { runDir });
 /** Whether each PR's worktree passes the backend's check (where the contract puts it, on the run's branch). */
 export type WorktreeCheck = { prId: string; verified: boolean; reason: string | null };

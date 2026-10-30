@@ -1,3 +1,4 @@
+import { dispatchEnqueue, dispatchOverview, dispatchRuns, type DispatchOverview } from "../run/dispatch";
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -26,6 +27,7 @@ import { getSettings } from "../bridge";
 import { errorText } from "./InlineNotice";
 import { MemoryPanel } from "./MemoryPanel";
 import { ClickUpIntake } from "../clickup/ClickUpIntake";
+import { splitGroups, type SplitChoice } from "../clickup/groups";
 import type { ClickUpStart } from "../clickup/api";
 
 type Props = {
@@ -145,6 +147,8 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   // The same unfinished request is already running: ask before starting it again.
   const [duplicate, setDuplicate] = useState<{ run: DuplicateRun; role: string } | null>(null);
   const [tickets, setTickets] = useState<ClickUpStart | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [split, setSplit] = useState<SplitChoice>({ perTicket: false, letters: {} });
   const [tooMany, setTooMany] = useState<string | null>(null);
   // The repos ticked for this run (all, until you untick; reset with the folder), and the implementer count.
   const [unticked, setUnticked] = useState<ReadonlySet<string>>(new Set());
@@ -152,6 +156,8 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   const [implementers, setImplementers] = useState<string | null>(null);
   const [reviewOnGitHub, setReviewOnGitHub] = useState(() => rememberedReviewOnGitHub(windowId));
   const [bmadMode, setBmadMode] = useState<BmadMode>(() => rememberedBmadMode(initialFolder.trim()));
+  // "Plan an epic in waves": the tickets are split into waves; nothing is built.
+  const [epicPlan, setEpicPlan] = useState(false);
 
   // BMAD is remembered per start folder (the design says per repo), unlike the
   // review box, which is per window.
@@ -200,7 +206,39 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
     }
   };
 
-  const launch = async (role: string, force = false, requestOverride?: string) => {
+  // The cap is reached: ask whether to queue the run or start it now (never queued silently).
+  const [capAsk, setCapAsk] = useState<{ role: string; holders: DispatchOverview["holders"]; cap: number } | null>(null);
+
+  const queueIt = async (role: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const eagleTickets = tickets;
+      const said = request.trim() || (eagleTickets ? "Do the ClickUp tickets below." : request);
+      await dispatchEnqueue(
+        {
+          windowId,
+          folder: folder.trim(),
+          request: said,
+          role,
+          clickup: eagleTickets,
+          reviewMode: reviewOnGitHub ? "github" : "local",
+          bmadMode,
+          repos: tickedRepos,
+          maxImplementers: implementers !== null ? implementersValue : null,
+          runMode: epicPlan && eagleTickets ? "epic-plan" : null,
+        },
+        said.split("\n")[0]!.slice(0, 80),
+      );
+      setMessage("Queued: it starts when a slot is free (see Runs).");
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const launch = async (role: string, force = false, requestOverride?: string, bypassCap = false) => {
     if (!folder.trim()) {
       setError("Choose a folder.");
       return;
@@ -209,6 +247,45 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
     if (role === "eagle-eye" && !request.trim() && !eagleTickets) {
       setError("Say what should be done.");
       return;
+    }
+    const groups = tickets && role === "eagle-eye" ? splitGroups(tickets.ticketIds, split) : [];
+    if (groups.length > 1) {
+      // One run per ticket (or group): they become one batch of queue entries, started as slots allow.
+      setBusy(true);
+      setError(null);
+      try {
+        const said = requestOverride ?? (request.trim() || "Do the ClickUp tickets below.");
+        await dispatchRuns(
+          {
+            windowId,
+            folder: folder.trim(),
+            request: said,
+            role,
+            reviewMode: reviewOnGitHub ? "github" : "local",
+            bmadMode,
+            repos: tickedRepos,
+            maxImplementers: implementers !== null ? implementersValue : null,
+          },
+          groups.map((ids, at) => ({ clickup: { refs: tickets!.refs, ticketIds: ids }, label: `${said.split("\n")[0]!.slice(0, 60)} (${at + 1}/${groups.length}: ${ids.join(", ")})` })),
+        );
+        setMessage(`${groups.length} runs queued: each starts when a slot is free (see Runs).`);
+      } catch (err) {
+        setError(errorText(err));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    if (role === "eagle-eye" && !bypassCap) {
+      try {
+        const o = await dispatchOverview();
+        if (o.atCap) {
+          setCapAsk({ role, holders: o.holders, cap: o.cap });
+          return;
+        }
+      } catch {
+        // The dispatcher could not be read: start as before.
+      }
     }
     setBusy(true);
     setError(null);
@@ -229,6 +306,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           force,
           eagle ? tickedRepos : null,
           eagle && implementers !== null ? implementersValue : null,
+          eagle && epicPlan && eagleTickets ? "epic-plan" : null,
         ),
       );
     } catch (err) {
@@ -280,6 +358,8 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
     busy,
   });
   const runs = (overview?.runs ?? []).slice(0, EARLIER_RUNS);
+  const runCount = tickets ? splitGroups(tickets.ticketIds, split).length : 1;
+  const startLabel = runCount > 1 ? `Start Eagle-Eye (${runCount} runs)` : "Start Eagle-Eye";
 
   return (
     <div className="run-start">
@@ -363,7 +443,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           onChange={(event) => setRequest(event.target.value)}
         />
       </label>
-      <ClickUpIntake windowId={windowId} onChange={setTickets} onTooMany={setTooMany} disabled={busy} />
+      <ClickUpIntake windowId={windowId} onChange={setTickets} onTooMany={setTooMany} onSplit={setSplit} disabled={busy} />
       <label className="check-label">
         <input
           type="checkbox"
@@ -379,6 +459,20 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
         {reviewOnGitHub
           ? "After the first build each PR opens as a draft on GitHub, every review round is posted as a PR comment, and the drafts are marked ready at the end. Teammates can see them."
           : "Reviews stay in the run folder; PRs open only at the end."}
+      </p>
+      <label className="check-label">
+        <input
+          type="checkbox"
+          checked={epicPlan && Boolean(tickets)}
+          disabled={!tickets}
+          onChange={(event) => setEpicPlan(event.target.checked)}
+        />
+        Plan an epic in waves (no code, no PR)
+      </label>
+      <p className="hint">
+        {tickets
+          ? "The tickets are split into waves of 3 to 6, each with its own run later. Nothing is built or opened."
+          : "Add ClickUp tickets to plan them as an epic."}
       </p>
       <fieldset className="bmad-mode" aria-label="BMAD planning">
         <legend>BMAD planning (BMAD-METHOD skills)</legend>
@@ -429,7 +523,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           aria-describedby={startReason ? "start-reason" : undefined}
           onClick={() => void launch("eagle-eye")}
         >
-          Start Eagle-Eye
+          {startLabel}
         </button>
         <button type="button" className="link-button" onClick={onPlainTab}>
           Plain terminal tab instead
@@ -554,6 +648,56 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           </p>
         </Dialog>
       )}
+      {capAsk && (
+        <Dialog
+          title="The run limit is reached"
+          onClose={() => setCapAsk(null)}
+          footer={
+            <>
+              <button type="button" className="secondary-button" onClick={() => setCapAsk(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={busy}
+                onClick={() => {
+                  const role = capAsk.role;
+                  setCapAsk(null);
+                  void launch(role, false, undefined, true);
+                }}
+              >
+                Start now
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busy}
+                onClick={() => {
+                  const role = capAsk.role;
+                  setCapAsk(null);
+                  void queueIt(role);
+                }}
+              >
+                Queue it
+              </button>
+            </>
+          }
+        >
+          <p>
+            {capAsk.holders.length} of {capAsk.cap} runs are live:
+          </p>
+          <ul data-testid="cap-holders">
+            {capAsk.holders.map((h) => (
+              <li key={h.runDir}>
+                {h.runId} · {h.stage ?? "starting"} · {h.why}
+              </li>
+            ))}
+          </ul>
+          <p>Queue this one to start when a slot is free, or start it now past the limit.</p>
+        </Dialog>
+      )}
+      {message && <p className="hint" role="status">{message}</p>}
       {report && <TextDialog title={report.title} text={report.text} onClose={() => setReport(null)} />}
       {overview?.pluginVersion && <p className="hint run-version">dcv2 roles {overview.pluginVersion}</p>}
     </div>
