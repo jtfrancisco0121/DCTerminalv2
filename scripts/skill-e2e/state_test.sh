@@ -1076,6 +1076,9 @@ szsetup() {
   SZ="$d/runs/r-$tag"; SR="$WS/sz$tag"; mkdir -p "$SZ" "$SR"
   git -C "$SR" init -q -b main
   seq 1 20 > "$SR/old.txt"; mkdir -p "$SR/src"; echo keep > "$SR/src/keep.txt"
+  # a tiny app for the merge-check cases: lib.sh defines greet, every app*.sh calls it, check.sh runs them all
+  echo 'greet() { echo hello; }' > "$SR/lib.sh"; printf '. ./lib.sh\ngreet\n' > "$SR/app1.sh"
+  printf 'for f in app*.sh; do bash "$f" >/dev/null || exit 1; done\n' > "$SR/check.sh"
   git -C "$SR" add -A; git -C "$SR" -c user.name=t -c user.email=t@t commit -q -m init
   SZBASE="$(git -C "$SR" rev-parse HEAD)"
   printf 'folder: %s\n' "$WS" > "$SZ/request.md"
@@ -1199,6 +1202,123 @@ mkdir -p "$SZ/reviews"; printf '## Verdict\nAPPROVED\n' > "$SZ/reviews/PR1-round
 expect 0 "gate PASS for the same diff when the plan carried an Over limit reason" bash "$STATE" gate "$SZ" PR1 PASS "clean"
 is "  size.over true" "$SZ/status.json" prs.0.size.over true
 is "  size.reason is the approved text" "$SZ/status.json" prs.0.size.reason '"the parser and its table must ship together"'
+echo "# merge-check: the repo's check on a scratch merge of the reviewed same-repo PRs"
+# mcrepos <check|-> [setup]: the run's repos.json with the given check (- = none)
+mcrepos() {
+  python3 - "$SZ/repos.json" "$SR" "sz${SZ##*/r-}" "$1" "${2:-}" <<'PY'
+import json, sys
+f, repo, name, check, setup = sys.argv[1:6]
+e = {"name": name, "path": repo, "check": None if check == "-" else check}
+if setup:
+    e["setup"] = setup
+json.dump({"schema": 1, "repos": [e]}, open(f, "w"))
+PY
+}
+# mcmark [python]: both PRs reviewed with a passing check (test data written straight into the fixture)
+mcmark() {
+  python3 - "$SZ/status.json" "${1:-}" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1]))
+for p in st["prs"]:
+    p["state"] = "reviewed"; p["check"]["result"] = "pass"
+exec(sys.argv[2])
+json.dump(st, open(sys.argv[1], "w"))
+PY
+}
+# mcprep <tag> rename|ok|conflict: a run whose PR1 and PR2 each pass the check alone
+mcprep() {
+  szsetup "$1"; MCN="sz$1"
+  mcrepos "bash check.sh"
+  case "$2" in
+    rename) sed -i.bak 's/greet/salute/g' "$SZ1/lib.sh" "$SZ1/app1.sh"; rm -f "$SZ1"/*.bak
+            printf '. ./lib.sh\ngreet\n' > "$SZ2/app2.sh" ;;
+    ok)     echo 'extra() { :; }' >> "$SZ1/lib.sh"; printf '. ./lib.sh\ngreet\n' > "$SZ2/app2.sh" ;;
+    conflict) sed -i.bak 's/hello/one/' "$SZ1/lib.sh"; sed -i.bak 's/hello/two/' "$SZ2/lib.sh"; rm -f "$SZ1"/*.bak "$SZ2"/*.bak ;;
+  esac
+  szcommit "$SZ1" "PR1 change"; szcommit "$SZ2" "PR2 change"
+  mcmark
+  MCHEADS="$(git -C "$SR" rev-parse "dcv2/r-$1-pr1" "dcv2/r-$1-pr2")"
+}
+mcclean() { # <label>: no scratch worktree, no scratch folder, the PR branches untouched
+  [[ -z "$(git -C "$SR" worktree list | grep merge-check)" ]] && ok "  [$1] no scratch worktree is registered" || bad "  [$1] $(git -C "$SR" worktree list)"
+  [[ -z "$(ls -A "$SZ/merge-check" 2>/dev/null)" ]] && ok "  [$1] no scratch folder left" || bad "  [$1] $(ls -A "$SZ/merge-check")"
+  [[ "$(git -C "$SR" rev-parse "dcv2/r-${SZ##*/r-}-pr1" "dcv2/r-${SZ##*/r-}-pr2")" == "$MCHEADS" ]] && ok "  [$1] the PR branches' heads are unchanged" || bad "  [$1] a PR branch moved"
+}
+mcprep mca rename
+( cd "$SZ1" && bash check.sh ) && ( cd "$SZ2" && bash check.sh ) && ok "each PR's check passes alone" || bad "a PR's own check fails"
+expect 0 "merge-check: PR2 calls a function PR1 renamed" bash "$STATE" merge-check "$SZ"
+has "  fail although each PR passes alone" "merge-check szmca: fail (PR1+PR2)"
+is "  recorded in mergeChecks" "$SZ/status.json" mergeChecks.szmca.result '"fail"'
+is "  with the PRs" "$SZ/status.json" mergeChecks.szmca.prs '["PR1", "PR2"]'
+grep -q "exit code" "$SZ/logs/merge-check-szmca.log" && ok "  the check's output is in the log" || bad "  log: $(cat "$SZ/logs/merge-check-szmca.log" 2>&1)"
+mcclean rename
+expect 0 "put cannot change mergeChecks" bash "$STATE" put "$SZ/status.json" < <(szstatus building 'doc["prs"][0]["state"]="reviewed"; doc["mergeChecks"]={"szmca":{"prs":["PR1"],"result":"pass","error":None,"log":None,"at":"2026-10-30T00:00:00Z"}}')
+has "  says so" "mergeChecks is set only by"
+is "  the recorded result is kept" "$SZ/status.json" mergeChecks.szmca.result '"fail"'
+mcprep mcb ok
+expect 0 "merge-check: two compatible PRs" bash "$STATE" merge-check "$SZ"
+has "  pass" "merge-check szmcb: pass (PR1+PR2)"
+mcclean compatible
+mcprep mcc conflict
+expect 0 "merge-check: two PRs editing the same line" bash "$STATE" merge-check "$SZ"
+has "  conflict" "merge-check szmcc: conflict (PR1+PR2)"
+is "  recorded" "$SZ/status.json" mergeChecks.szmcc.result '"conflict"'
+mcclean conflict
+echo "# merge-check: the command is repos.json's check, never status.json's"
+mcprep mcd ok
+mcrepos "echo REPOS-JSON-CHECK; bash check.sh"
+mcmark "for p in st['prs']: p['check']['command'] = 'touch $d/forged-marker'"
+expect 0 "merge-check with a forged check.command in status.json" bash "$STATE" merge-check "$SZ"
+has "  pass" "merge-check szmcd: pass"
+[[ ! -e "$d/forged-marker" ]] && ok "  the forged command never ran" || bad "  the forged command ran"
+grep -q "REPOS-JSON-CHECK" "$SZ/logs/merge-check-szmcd.log" && ok "  repos.json's command is what ran" || bad "  log: $(cat "$SZ/logs/merge-check-szmcd.log")"
+mcrepos "-"
+expect 0 "merge-check: a repo with no check in repos.json" bash "$STATE" merge-check "$SZ"
+has "  none" "merge-check szmcd: none (PR1+PR2)"
+echo "# merge-check: setup log label, needs-attention PRs, one PR per repo"
+mcprep mce ok
+mkdir -p "$SZ/logs"; printf 'PR1 setup log\n' > "$SZ/logs/PR1-setup.txt"; cp "$SZ/logs/PR1-setup.txt" "$d/pr1-setup.keep"
+mcrepos "bash check.sh" "echo MC-SETUP-RAN"
+mcmark 'st["prs"][1]["state"] = "needs-attention"; st["prs"][1]["note"] = "a MEDIUM is open"'
+expect 0 "merge-check includes a needs-attention PR whose check passed" bash "$STATE" merge-check "$SZ"
+has "  both PRs" "merge-check szmce: pass (PR1+PR2)"
+cmp -s "$SZ/logs/PR1-setup.txt" "$d/pr1-setup.keep" && ok "  logs/PR1-setup.txt is unchanged" || bad "  PR1's setup log was overwritten"
+grep -q "MC-SETUP-RAN" "$SZ/logs/merge-check-szmce-setup.txt" && ok "  the setup ran under its own log" || bad "  setup log: $(cat "$SZ/logs/merge-check-szmce-setup.txt" 2>&1)"
+mcmark 'st["prs"][1]["state"] = "building"'
+expect 0 "merge-check with one reviewed PR in the repo" bash "$STATE" merge-check "$SZ"
+has "  nothing to check" "merge-check: none"
+mcmark 'st["prs"][1]["state"] = "needs-attention"; st["prs"][1]["note"] = "x"; st["prs"][1]["check"]["result"] = "fail"'
+expect 0 "merge-check ignores a needs-attention PR whose check failed" bash "$STATE" merge-check "$SZ"
+has "  nothing to check" "merge-check: none"
+echo "# merge-check: time bound, interruption, stale scratch"
+mcprep mcf ok
+mcrepos "sleep 4; touch $d/late-marker"
+expect 0 "merge-check with a check that outlives DCV2_MERGE_CHECK_TIMEOUT" env DCV2_MERGE_CHECK_TIMEOUT=2 bash "$STATE" merge-check "$SZ"
+has "  error, timed out" "merge-check szmcf: error (PR1+PR2) timed out after 2 s"
+is "  recorded" "$SZ/status.json" mergeChecks.szmcf.result '"error"'
+mcclean timeout
+mcrepos "sleep 3; touch $d/int-marker"
+( bash "$STATE" merge-check "$SZ" > "$d/mc-int.out" 2>&1; echo $? > "$d/mc-int.rc" ) &
+MCBG=$!
+for _ in $(seq 1 50); do [[ -s "$SZ/merge-check/.running.json" ]] && break; sleep 0.2; done
+MCPY="$(pgrep -f "merge-check $SZ" | grep -v "^$MCBG$" | head -50 | while read -r p; do [[ "$(ps -o comm= -p "$p")" == *ython* ]] && echo "$p"; done | head -1)"
+[[ -n "$MCPY" ]] && kill -TERM "$MCPY" 2>/dev/null || true
+wait "$MCBG" || true
+sleep 4
+[[ "$(cat "$d/mc-int.rc" 2>/dev/null)" != 0 ]] && ok "  an interrupted merge-check exits non-zero" || bad "  exit: $(cat "$d/mc-int.rc" 2>&1) $(cat "$d/mc-int.out")"
+is "  recorded as error: interrupted" "$SZ/status.json" mergeChecks.szmcf.error '"interrupted"'
+[[ ! -e "$d/late-marker" && ! -e "$d/int-marker" ]] && ok "  the killed checks never wrote their markers" || bad "  a marker appeared"
+mcclean interrupted
+mcrepos "bash check.sh"
+git -C "$SR" worktree add -q --detach "$SZ/merge-check/szmcf" "$SZBASE"
+expect 0 "merge-check removes a stale scratch worktree and then succeeds" bash "$STATE" merge-check "$SZ"
+has "  pass" "merge-check szmcf: pass (PR1+PR2)"
+mcclean stale-sweep
+git -C "$SR" worktree add -q --detach "$SZ/merge-check/szmcf" "$SZBASE"
+mcmark 'st["stage"] = "done"; st["shipApproval"] = {"by": "user", "at": "2026-10-30T00:00:00Z"}; st["ship"] = {"remote": None, "pushed": False, "note": "x"}'
+expect 0 "cleanup at done removes a stale scratch worktree" bash "$STATE" cleanup "$SZ"
+has "  says so" "merge-check scratch removed"
+mcclean cleanup
 export DCV2_RUN_DIR="$RUN"
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

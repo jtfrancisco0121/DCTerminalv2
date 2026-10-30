@@ -59,6 +59,11 @@
 #                                             fixture files excluded), record it as prs[].size and print
 #                                             "size=<lines> files=<f> excluded=<e> limit=<l> over=yes|no reason=set|none overlaps=<n>"
 #                                             (+ "overlap: <path> (PR<n>)" lines). The gate re-measures too
+#   state.sh merge-check <run>                before stop #2: for each repo with 2 or more reviewed PRs, run the repo's check
+#                                             (repos.json only, never status.json's) once on a scratch merge of their branches
+#                                             (<run>/merge-check/, removed after); records status.json "mergeChecks" and prints
+#                                             "merge-check <repo>: pass|fail|conflict|error|none (PR1+PR2) log=<path>", or
+#                                             "merge-check: none". Stops within DCV2_MERGE_CHECK_TIMEOUT s (default 540); never pushes
 #   state.sh report <run>                     write report.md from status.json, plan.md, log.md and the
 #                                             gates (R10); put does it itself at stage done / failed
 #   state.sh cleanup <run>                    stage done / failed only: remove the run's clean worktrees (no --force),
@@ -432,6 +437,12 @@ def validate_status(doc, run):
     if plan is not None and not isinstance(plan, dict):
         p.append("plan must be null or an object")
         plan = None
+    mc = doc.get("mergeChecks")
+    if mc is not None and not (isinstance(mc, dict) and all(
+            isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("prs"), list) and all(isinstance(i, str) for i in v["prs"])
+            and v.get("result") in MERGE_RESULTS and (v.get("error") is None or isinstance(v.get("error"), str))
+            and (v.get("log") is None or isinstance(v.get("log"), str)) and isinstance(v.get("at"), str) for k, v in mc.items())):
+        p.append(f"mergeChecks must be {{repo: {{prs: [PR ids], result: one of {list(MERGE_RESULTS)}, error, log, at}}}} (written only by state.sh merge-check)")
     ol, pf = (plan or {}).get("overLimit"), (plan or {}).get("prFiles")
     if ol is not None and not (isinstance(ol, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in ol.items())):
         p.append("plan.overLimit must be an object {PR id: reason} (written only by state.sh approve)")
@@ -552,6 +563,13 @@ def prepare_status(doc, old, trusted, run_dir=None):
             doc.pop("bmad", None)
     if isinstance(doc.get("plan"), dict):
         doc["plan"]["approved"] = bool(doc["plan"].get("approval"))
+    if not trusted:  # mergeChecks is written only by `state.sh merge-check`
+        if doc.get("mergeChecks") is not None and doc.get("mergeChecks") != old.get("mergeChecks"):
+            notes.append("note: mergeChecks is set only by `state.sh merge-check`; kept the recorded value")
+        if old.get("mergeChecks") is not None:
+            doc["mergeChecks"] = old["mergeChecks"]
+        else:
+            doc.pop("mergeChecks", None)
     doc.setdefault("shipApproval", None)
     doc.setdefault("paused", None)
     if isinstance(doc.get("paused"), dict) and not doc["paused"].get("at"):
@@ -1291,13 +1309,15 @@ def detect_setup(wt):
     return None
 
 
-def run_setup(run, wt, pr_id, cmd):
-    """Run the worktree's setup command (own process group, killed whole on timeout); never raises."""
+def run_setup(run, wt, pr_id, cmd, timeout=None, env=None, tracker=None):
+    """Run the worktree's setup command (own process group, killed whole on timeout); never raises.
+    `pr_id` is the log's label (<run>/logs/<label>-setup.txt). `timeout` (seconds, default DCV2_SETUP_TIMEOUT or 600), `env`
+    and `tracker` (start(proc) / end(), for merge-check's kill-on-interrupt record) are optional."""
     log = os.path.join(run, "logs", f"{pr_id}-setup.txt")
     if not cmd:
         return "none", None
     os.makedirs(os.path.dirname(log), exist_ok=True)
-    timeout = int(os.environ.get("DCV2_SETUP_TIMEOUT", "") or 600)
+    timeout = timeout if timeout is not None else int(os.environ.get("DCV2_SETUP_TIMEOUT", "") or 600)
     try:  # never through a link planted at the log's name
         fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o644)
     except OSError as e:
@@ -1308,10 +1328,12 @@ def run_setup(run, wt, pr_id, cmd):
         out.flush()
         try:
             p = subprocess.Popen(["bash", "-c", cmd], cwd=wt, stdout=out, stderr=subprocess.STDOUT,
-                                 stdin=subprocess.DEVNULL, start_new_session=True)
+                                 stdin=subprocess.DEVNULL, start_new_session=True, env=env)
         except OSError as e:
             out.write(f"could not start: {e}\n")
             return "failed", log
+        if tracker:
+            tracker.start(p)
         try:
             rc = p.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -1322,6 +1344,9 @@ def run_setup(run, wt, pr_id, cmd):
             p.wait()
             out.write(f"\nsetup timed out after {timeout} s\n")
             return "failed", log
+        finally:
+            if tracker:
+                tracker.end()
         out.write(f"\nexit code {rc}\n")
     return ("ok" if rc == 0 else "failed"), log
 
@@ -2517,6 +2542,8 @@ def cmd_cleanup(run):
     repos = {os.path.realpath(r) for r in g.get("repos") or [] if isinstance(r, str)}
     by_id = {p.get("id"): p for p in st.get("prs") or [] if isinstance(p, dict)}
     results = []
+    if mc_sweep(run, extra_repos=[p["repoPath"] for p in by_id.values() if isinstance(p.get("repoPath"), str) and p["repoPath"]]):
+        print("merge-check scratch removed")
     for pid, wt in sorted((g.get("worktrees") or {}).items()):
         if not isinstance(wt, str) or not re.fullmatch(r"PR\d+", pid):
             continue
@@ -2572,6 +2599,273 @@ def cmd_cleanup(run):
     append_log(run, st.get("stage") or "done", "cleanup: " + " | ".join(results))
 
 
+# ---- merge-check: the repo's check on a scratch merge of its reviewed same-repo PRs ----------------
+
+MERGE_RESULTS = ("pass", "fail", "conflict", "error", "none")
+MC = {"run": None, "tracker": None}
+
+
+class McInterrupted(Exception):
+    pass
+
+
+def ps_start(pid):
+    r = run_cmd(["ps", "-o", "lstart=", "-p", str(pid)], timeout=10)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+class McTracker:
+    """Records the running setup / check process group in <run>/merge-check/.running.json (pid, pgid, start time), so an
+    interrupted or killed state.sh does not leave it running: the signal handler and the next sweep kill that group only."""
+
+    def __init__(self, run):
+        self.path = os.path.join(run, "merge-check", ".running.json")
+        self.pgid = None
+
+    def start(self, proc):
+        self.pgid = proc.pid
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            atomic_write(self.path, json.dumps({"pid": proc.pid, "pgid": proc.pid, "start": ps_start(proc.pid)}) + "\n")
+        except OSError:
+            pass
+
+    def end(self):
+        self.pgid = None
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
+
+
+def mc_handler(signum, frame):
+    t = MC.get("tracker")
+    if t and t.pgid:
+        try:
+            os.killpg(t.pgid, signal.SIGKILL)
+        except OSError:
+            pass
+    raise McInterrupted(signum)
+
+
+def mc_remove_scratch(repo, scratch):
+    """Layer (a): remove the scratch worktree whatever happened (git first, then the folder if still there)."""
+    if repo and os.path.isdir(repo):
+        git("-C", repo, "worktree", "remove", "--force", "--", scratch)
+        git("-C", repo, "worktree", "prune")
+    if os.path.islink(scratch):
+        os.unlink(scratch)
+    elif os.path.lexists(scratch):
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def mc_sweep(run, extra_repos=()):
+    """Layer (c): remove what a killed merge-check left under <run>/merge-check (a running group only when the pid is alive and
+    its start time matches; scratch worktrees git still lists; leftover folders). Inside the run folder only, never through a link.
+    Returns True when something was removed."""
+    root = os.path.join(run, "merge-check")
+    removed = False
+    if os.path.islink(root):  # never follow a link out of the run folder
+        os.unlink(root)
+        return True
+    if not os.path.isdir(root):
+        return False
+    rp = os.path.realpath(root)
+    rec = load_json(os.path.join(root, ".running.json"))
+    if isinstance(rec, dict) and type(rec.get("pid")) is int and type(rec.get("pgid")) is int:
+        try:
+            os.kill(rec["pid"], 0)
+            alive = True
+        except OSError:
+            alive = False
+        if alive and rec.get("start") and ps_start(rec["pid"]) == rec["start"]:
+            try:
+                os.killpg(rec["pgid"], signal.SIGKILL)
+            except OSError:
+                pass
+    try:
+        os.unlink(os.path.join(root, ".running.json"))
+    except OSError:
+        pass
+    repos = {os.path.realpath(r) for r in guard_rec(run).get("repos") or [] if isinstance(r, str)}
+    repos |= {os.path.realpath(r) for r in extra_repos}
+    for repo in sorted(repos):
+        if not os.path.isdir(repo):
+            continue
+        for line in git("-C", repo, "worktree", "list", "--porcelain").stdout.splitlines():
+            if line.startswith("worktree "):
+                wt = line[len("worktree "):]
+                if os.path.realpath(wt).startswith(rp + os.sep):
+                    git("-C", repo, "worktree", "remove", "--force", "--", wt)
+                    removed = True
+        git("-C", repo, "worktree", "prune")
+    for name in sorted(os.listdir(root)):
+        path = os.path.join(root, name)
+        if os.path.islink(path):
+            os.unlink(path)
+            removed = True
+        elif os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+            removed = True
+    return removed
+
+
+def mc_env():
+    return {k: v for k, v in os.environ.items() if not k.startswith("DCV2_")}
+
+
+def mc_timeout():
+    v = (os.environ.get("DCV2_MERGE_CHECK_TIMEOUT") or "").strip()
+    try:
+        t = float(v)
+        return t if t > 0 else 540.0
+    except ValueError:
+        return 540.0
+
+
+def mc_one(run, repo, name, prs, entry, deadline, total):
+    """Check one repo's PRs on a scratch merge. Returns the mergeChecks record."""
+    ids = [p["id"] for p in prs]
+    rec = {"prs": ids, "result": "none", "error": None, "log": None, "at": now()}
+    safe = re.sub(r"[^\w.-]", "_", name) or "repo"
+    log = os.path.join(run, "logs", f"merge-check-{safe}.log")
+    check = entry.get("check") if isinstance(entry.get("check"), str) and entry.get("check").strip() else None
+    if not check:  # the command comes from repos.json only (never status.json's check.command)
+        return rec
+    if deadline - time.time() <= 0:
+        rec.update(result="error", error="not run, time budget used")
+        return rec
+    scratch = os.path.join(run, "merge-check", safe)
+    tracker = MC["tracker"]
+    try:
+        os.makedirs(os.path.join(run, "logs"), exist_ok=True)
+        os.makedirs(os.path.join(run, "merge-check"), exist_ok=True)
+        for p in prs:
+            if git("-C", repo, "show-ref", "--verify", "--quiet", f"refs/heads/{p.get('branch')}").returncode != 0:
+                rec.update(result="error", error=f"{p['id']}: branch {p.get('branch')} is missing")
+                return rec
+        base = prs[0].get("baseCommit") or ""
+        r = git("-c", "core.hooksPath=/dev/null", "-C", repo, "worktree", "add", "--detach", scratch, base)
+        if r.returncode != 0:
+            rec.update(result="error", error="git worktree add failed: " + first_line(r.stderr)[:200])
+            return rec
+        copy_files(repo, scratch, entry.get("copyFiles"))
+        meta = load_json(os.path.join(run, "meta.json"))
+        setup = entry.get("setup")
+        cmd = setup.strip() if isinstance(setup, str) else (detect_setup(scratch) if isinstance(meta, dict) and "reviewMode" in meta else None)
+        result, slog = run_setup(run, scratch, f"merge-check-{safe}", cmd or None, timeout=max(1, min(600, int(deadline - time.time()))),
+                                 env=mc_env(), tracker=tracker)
+        if result == "failed":
+            expired = time.time() >= deadline
+            rec.update(result="error", error=f"timed out after {int(total)} s" if expired else f"setup failed (see {slog})", log=slog)
+            return rec
+        merged = []
+        for p in prs:
+            m = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=dcv2", "-c", "user.email=dcv2@localhost", "-C", scratch,
+                                "merge", "--no-ff", "--no-edit", p["branch"]], capture_output=True, text=True)
+            if m.returncode != 0:
+                git("-C", scratch, "merge", "--abort")
+                conflict = "CONFLICT" in (m.stdout or "") or "conflict" in (m.stderr or "").lower()
+                with open(log, "w") as f:
+                    f.write(f"merging {p['id']} ({p['branch']}) into the merge of {', '.join(merged) or 'the base'}:\n{m.stdout}{m.stderr}")
+                what = (f"{p['id']} does not merge cleanly with {', '.join(merged)}" if merged else f"{p['id']} does not merge") if conflict \
+                    else f"git merge of {p['id']} failed: {first_line(m.stderr)[:200]}"
+                rec.update(result="conflict" if conflict else "error", error=what, log=log)
+                return rec
+            merged.append(p["id"])
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            rec.update(result="error", error=f"timed out after {int(total)} s")
+            return rec
+        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o644)
+        rec["log"] = log
+        with os.fdopen(fd, "w") as out:
+            out.write(f"$ {check}\n(in {scratch}, the merge of {', '.join(ids)})\n")
+            out.flush()
+            try:
+                proc = subprocess.Popen(["bash", "-c", check], cwd=scratch, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                        start_new_session=True, env=mc_env())
+            except OSError as e:
+                out.write(f"could not start: {e}\n")
+                rec.update(result="error", error=f"could not start the check: {e.strerror}")
+                return rec
+            tracker.start(proc)
+            try:
+                rc = proc.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                proc.wait()
+                out.write(f"\ntimed out after {int(total)} s\n")
+                rec.update(result="error", error=f"timed out after {int(total)} s")
+                return rec
+            finally:
+                tracker.end()
+            out.write(f"\nexit code {rc}\n")
+        rec.update(result="pass" if rc == 0 else "fail")
+        return rec
+    finally:
+        mc_remove_scratch(repo, scratch)
+
+
+def mc_save(run, records):
+    st = load_status(run)
+    cur = st.get("mergeChecks") if isinstance(st.get("mergeChecks"), dict) else {}
+    st["mergeChecks"] = {**cur, **records}
+    for m in write_status(run, st, trusted=True):
+        print(m)
+
+
+def cmd_merge_check(run):
+    run = this_run(run, "NOT CHECKED")
+    st = load_status(run)
+    groups = {}
+    for p in st.get("prs") or []:
+        if not isinstance(p, dict) or not p.get("repoPath"):
+            continue
+        chk = p.get("check") if isinstance(p.get("check"), dict) else {}
+        if p.get("state") == "reviewed" or (p.get("state") == "needs-attention" and chk.get("result") in ("pass", "none")):
+            groups.setdefault(os.path.realpath(p["repoPath"]), []).append(p)
+    groups = {r: ps for r, ps in groups.items() if len(ps) >= 2}
+    mc_sweep(run, extra_repos=[os.path.realpath(p["repoPath"]) for p in st.get("prs") or [] if isinstance(p, dict) and p.get("repoPath")])
+    if not groups:
+        print("merge-check: none")
+        return
+    total = mc_timeout()
+    deadline = time.time() + total
+    MC["run"], MC["tracker"] = run, McTracker(run)
+    old = {sig: signal.signal(sig, mc_handler) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+    records, current, lines = {}, None, []
+    try:
+        for repo, prs in groups.items():
+            entry = repo_entry(run, repo)
+            name = entry.get("name") or prs[0].get("repo") or os.path.basename(repo)
+            current = (name, [p["id"] for p in prs])
+            records[name] = mc_one(run, repo, name, prs, entry, deadline, total)
+            current = None
+            r = records[name]
+            lines.append(f"merge-check {name}: {r['result']} ({'+'.join(r['prs'])})" + (f" {r['error']}" if r.get("error") else "")
+                         + (f" log={r['log']}" if r.get("log") else ""))
+    except McInterrupted:
+        if current:
+            records[current[0]] = {"prs": current[1], "result": "error", "error": "interrupted", "log": None, "at": now()}
+        for sig, h in old.items():
+            signal.signal(sig, h)
+        mc_sweep(run)
+        if records:
+            mc_save(run, records)
+        print("merge-check: interrupted", file=sys.stderr)
+        sys.exit(130)
+    finally:
+        for sig, h in old.items():
+            signal.signal(sig, h)
+    mc_save(run, records)
+    for line in lines:
+        print(line)
+
+
 def cmd_request(run, kind):
     run = this_run(run, "NOT REQUESTED")
     if kind not in REQUEST_KINDS:
@@ -2624,7 +2918,7 @@ def main(argv):
     cmd, args = (argv[0] if argv else ""), argv[1:]
     need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0,
             "gate": 4, "report": 1, "mode": 1, "draft-pr": 2, "push": 2, "post-review": 3, "comment": 4, "ready": 2, "bmad-size": 2, "bmad-init": 1, "bmad-check": 1,
-            "cleanup": 1, "size": 2, "request": 2, "request-wait": 2}
+            "cleanup": 1, "size": 2, "merge-check": 1, "request": 2, "request-wait": 2}
     if cmd not in need or len(args) < need[cmd]:
         die("usage: see the header of state.sh", 2)
     if cmd == "preflight": cmd_preflight(args[0], "resume" in args[1:])
@@ -2652,6 +2946,7 @@ def main(argv):
     elif cmd == "bmad-check": cmd_bmad_check(args[0])
     elif cmd == "cleanup": cmd_cleanup(args[0])
     elif cmd == "size": cmd_size(args[0], args[1])
+    elif cmd == "merge-check": cmd_merge_check(args[0])
     elif cmd == "request": cmd_request(args[0], args[1])
     elif cmd == "request-wait": cmd_request_wait(args[0], args[1], args[2:])
 
