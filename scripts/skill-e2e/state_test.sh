@@ -1175,6 +1175,7 @@ szsetup() {
   # a tiny app for the merge-check cases: lib.sh defines greet, every app*.sh calls it, check.sh runs them all
   echo 'greet() { echo hello; }' > "$SR/lib.sh"; printf '. ./lib.sh\ngreet\n' > "$SR/app1.sh"
   printf 'for f in app*.sh; do bash "$f" >/dev/null || exit 1; done\n' > "$SR/check.sh"
+  [[ -z "${SZINIT:-}" ]] || "$SZINIT" "$SR"
   git -C "$SR" add -A; git -C "$SR" -c user.name=t -c user.email=t@t commit -q -m init
   if [[ -n "${SZREMOTE:-}" ]]; then   # a local bare origin, so a branch can be pushed
     git init -q --bare -b main "$d/origin-$tag.git"; git -C "$SR" remote add origin "$d/origin-$tag.git"; git -C "$SR" push -q origin main
@@ -1292,6 +1293,73 @@ expect 0 "approve ship" bash "$STATE" approve "$SZ" ship user
 expect 0 "ship-pr on the old run: no size refusal" bash "$STATE" ship-pr "$SZ" PR1
 has "  local-only (the repo has no remote)" "PR1 local-only"
 is "  the old size is still there" "$SZ/status.json" prs.0.size.lines 450
+echo "# PR body sections: Why, What it adds, Review, Verification, Tickets (local mode)"
+bdinit() { # the base commit of the toy repo: an npm and a cargo manifest, a go.sum
+  printf '{"name":"toy","dependencies":{"left-pad":"1.0.0","kept":"2.0.0"}}\n' > "$1/package.json"
+  printf '[package]\nname = "toy"\n\n[dependencies]\nserde = "1.0.100"\nregex = "1"\n' > "$1/Cargo.toml"
+  echo "old sum" > "$1/go.sum"; mkdir -p "$1/docs"; echo doc > "$1/docs/a.md"
+}
+SZREMOTE=1 SZINIT=bdinit szsetup pb
+printf '# Plan\n## Stories\n### S1: First\n- Tickets: t-one\n- Files: src/, docs/, package.json, Cargo.toml, go.sum\n### S2: Second\n- Files: other/\n## Pull requests\n### PR1: First\n- Repo: szpb\n- Stories: S1\n- Depends on: none\n- Why: Users cannot export invoices.\n- Check: true\n### PR2: Second\n- Repo: szpb\n- Stories: S2\n- Depends on: none\n- Check: true\n' > "$SZ/plan.md"
+python3 - "$SZ/tickets.json" <<'PY'
+import json, sys
+json.dump({"schema": 1, "tasks": [{"id": "t-one", "custom_id": "KON-1", "name": "Export invoices @bob org/repo#12", "url": "https://x/t-one",
+           "description": "TICKET BODY MUST NOT APPEAR", "comments": [{"text": "COMMENT MUST NOT APPEAR"}]}]}, open(sys.argv[1], "w"))
+PY
+mkdir -p "$SZ1/src" "$SZ1/docs"; echo 1 > "$SZ1/src/x.ts"; echo 2 > "$SZ1/src/y.ts"; echo doc2 > "$SZ1/docs/b.md"
+printf '{"name":"toy","dependencies":{"kept":"2.1.0","new-dep":"^3.0.0"}}\n' > "$SZ1/package.json"
+printf '[package]\nname = "toy"\n\n[dependencies]\nserde = "1.0.200"\nregex = "1"\n' > "$SZ1/Cargo.toml"
+echo "new sum" > "$SZ1/go.sum"
+szcommit "$SZ1" "S1: first"
+mkdir -p "$SZ2/other"; echo z > "$SZ2/other/z.txt"; szcommit "$SZ2" "S2: second"
+mkdir -p "$SZ/reviews"
+printf 'Eagle-Eye review \xe2\x80\x94 round 1: REQUEST CHANGES \xe2\x80\x94 3 MEDIUM+, 0 LOW\n\n## Verdict\nREQUEST CHANGES\n\n## Findings\n1. MEDIUM \xe2\x80\x94 `src/x.ts:1` \xe2\x80\x94 export() drops the last row \xe2\x80\x94 Fix: loop to the end\n2. HIGH \xe2\x80\x94 `src/y.ts:1` \xe2\x80\x94 token=ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 is logged \xe2\x80\x94 Fix: remove it\n3. LOW \xe2\x80\x94 `src/y.ts:2` \xe2\x80\x94 naming only \xe2\x80\x94 Fix: none\n' > "$SZ/reviews/PR1-round1.md"
+printf '## Verdict\nAPPROVED\n\n## Findings\nNo significant issues.\n' > "$SZ/reviews/PR1-round2.md"
+printf '## Verdict\nAPPROVED\n' > "$SZ/reviews/PR2-round1.md"
+expect 0 "put round 2 of PR1 (pb)" bash "$STATE" put "$SZ/status.json" < <(szstatus building 'doc["prs"][0]["review"]["round"] = 2')
+expect 0 "gate PASS PR1 (pb)" bash "$STATE" gate "$SZ" PR1 PASS "clean"
+expect 0 "gate PASS PR2 (pb)" bash "$STATE" gate "$SZ" PR2 PASS "clean"
+HEAD1="$(git -C "$SZ1" rev-parse HEAD)"
+printf '{"schema":1,"checks":{"PR1":{"result":"pass","head":"%s"}}}\n' "$HEAD1" > "$SZ/app-checks.json"
+BDX='doc["waitingFor"] = "ship-approval"; doc["plan"]["approved"] = True
+for p in doc["prs"]: p["state"] = "reviewed"
+doc["prs"][0]["review"]["round"] = 2'
+expect 0 "put ship-approval (pb)" bash "$STATE" put "$SZ/status.json" < <(szstatus ship-approval "$BDX")
+expect 0 "approve ship (pb)" bash "$STATE" approve "$SZ" ship user
+rm -f "$d/gh-has-pr"
+expect 0 "ship-pr PR1 (pb)" bash "$STATE" ship-pr "$SZ" PR1
+B="$SZ/pr-bodies/PR1.md"
+python3 - "$B" <<'PY' && ok "  sections in AD-9 order, Plan line last" || bad "  body order: $(cat "$B")"
+import sys
+t = open(sys.argv[1]).read()
+order = ["## Why", "## What it adds", "## Review", "## Verification", "## Tickets", "Plan: Eagle-Eye run r-pb"]
+pos = [t.index(x) for x in order]
+assert pos == sorted(pos), pos
+PY
+grep -qF "Users cannot export invoices." "$B" && ok "  Why from the plan" || bad "  no Why: $(cat "$B")"
+grep -qF -- "- S1: First" "$B" && ok "  What it adds lists the story" || bad "  no story"
+grep -qF -- "- 2 review rounds, final verdict APPROVED, gate PASS" "$B" && ok "  Review: rounds, verdict, gate" || bad "  review: $(cat "$B")"
+grep -qF -- "- round 1 blocked: src/x.ts:1 — export() drops the last row; fixed in round 2" "$B" && ok "  Review: a resolved MEDIUM finding" || bad "  review: $(cat "$B")"
+grep -qF "naming only" "$B" && bad "  a LOW finding is listed" || ok "  LOW findings are not listed"
+grep -q "ghp_AbCd" "$B" "$SZ/log.md" && bad "  the secret-like finding reached the body or the log" || ok "  the secret-like finding is dropped, the body still ships"
+grep -q "dropped a line from Review" "$SZ/log.md" && ok "  the drop is logged without its text" || bad "  log: $(tail -3 "$SZ/log.md")"
+grep -qF "Check \`true\`: pass (worktree HEAD ${HEAD1:0:12})" "$B" && ok "  Verification: check, result, HEAD" || bad "  verify: $(cat "$B")"
+grep -qF "App check: pass at ${HEAD1:0:12}" "$B" && ok "  Verification: app check with its head" || bad "  verify: $(cat "$B")"
+grep -qF -- "- KON-1: Export invoices @" "$B" && grep -qF "(https://x/t-one)" "$B" && ok "  Tickets: id, neutralised title, url" || bad "  tickets: $(cat "$B")"
+grep -q "MUST NOT APPEAR" "$B" && bad "  a ticket body reached the PR body" || ok "  no ticket body or comment"
+grep -qE "\bNone\b|\bnull\b" "$B" && bad "  None/null in the body: $(cat "$B")" || ok "  no None/null in the body"
+is "  PR1 opened" "$SZ/status.json" prs.0.state '"opened"'
+echo "# a PR with no data for a section leaves the section out"
+expect 0 "ship-pr PR2 (pb): no Why, no app check, no tickets" bash "$STATE" ship-pr "$SZ" PR2
+B="$SZ/pr-bodies/PR2.md"
+grep -qE "^## (Why|Tickets)$" "$B" && bad "  empty sections present: $(cat "$B")" || ok "  no Why and no Tickets section"
+grep -qF "App check" "$B" && bad "  App check line without app-checks.json data" || ok "  no App check line"
+grep -qE "\bNone\b|\bnull\b" "$B" && bad "  None/null in the body: $(cat "$B")" || ok "  no None/null in the body"
+expect 0 "pr-body PR1 draft: what is known after round 1" bash "$STATE" pr-body "$SZ" PR1 draft
+has "  Why" "## Why"; has "  What it adds" "## What it adds"; has "  Verification" "## Verification"
+hasnt "  no Review yet" "## Review"; hasnt "  no Tickets yet" "## Tickets"; has "  says review in progress" "review in progress"
+export DCV2_RUN_DIR="$RUN"
+
 echo "# two worktree calls at once both end up recorded (guard lock)"
 szsetup sd
 for i in 3 4 5 6; do bash "$STATE" worktree "$SZ" "$SR" PR$i "$SZBASE" >/dev/null 2>&1 & done

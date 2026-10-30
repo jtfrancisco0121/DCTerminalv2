@@ -58,6 +58,8 @@
 #                                             post the fixed "Round n fixes: <commits>" comment (once per round)
 #   state.sh ready <run> <pr id>              after the ship approval: final PR body + `gh pr ready`
 #                                             (opens a ready PR when no draft exists); updates status.json
+#   state.sh pr-body <run> <pr id> [draft]    print the PR body ship-pr / ready would write (draft: the draft PR's body); read-only,
+#                                             sections: Why, What it adds, Scope, Review, Verification, Tickets (a section with no data is left out)
 #   state.sh writeback <run> [--force]        write writeback.json from tickets.json, plan.md and
 #                                             status.json (refuses to overwrite it without --force)
 #   state.sh gate <run> <pr id> PASS|CONCERNS|FAIL|WAIVED "<reason>" [--review <file>]
@@ -1876,18 +1878,178 @@ def stack_epic_lines(st, pr):
     return lines
 
 
-def pr_body(run, st, pr):
-    titles = dict(re.findall(r"^###\s+(S\d+)\s*[:\-\u2014]+\s*(.+?)\s*$", read(os.path.join(run, "plan.md")), re.M))
+def canon_wt(run, st, pr):
+    """The PR's canonical worktree (where `state.sh worktree` makes it, on its branch), else None."""
+    try:
+        if not os.path.isabs(str(pr.get("repoPath") or "")):
+            return None
+        branch, wt = canon(os.path.realpath(pr["repoPath"]), st.get("runId"), pr.get("id"))
+        if not os.path.isdir(wt) or os.path.realpath(str(pr.get("worktree") or "")) != wt:
+            return None
+        if git("-C", wt, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() != branch:
+            return None
+        return wt
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+FINDING_RE = re.compile(r"^\s*(?:\d+[.)]|[-*])\s*\**(CRITICAL|HIGH|MEDIUM)\**\s*[—–-]+\s*(.+)$")
+
+
+def review_findings(run, pid, rnd):
+    """The MEDIUM+ findings of reviews/<pid>-round<rnd>.md as short one-line summaries."""
+    text = read(os.path.join(run, "reviews", f"{pid}-round{rnd}.md")) or ""
+    m = re.search(r"(?ms)^##\s*Findings\s*$(.*?)(?=^##\s|\Z)", text)
+    out = []
+    for line in (m.group(1) if m else "").splitlines():
+        f = FINDING_RE.match(line)
+        if f:
+            s = re.split(r"\s[—–-]+\s*Fix:", f.group(2))[0]
+            s = " ".join(s.replace("`", "").split())
+            out.append(s if len(s) <= 120 else s[:119].rstrip() + "…")
+    return out
+
+
+def review_lines(run, pr):
+    """Review section: rounds, final verdict and gate, and each MEDIUM+ finding a later round did not raise again."""
+    rev = pr.get("review") or {}
+    rnd = rev.get("round")
+    if not isinstance(rnd, int) or rnd < 1:
+        return []
+    gate = read_gate(run, pr.get("id"))
+    head = f"- {rnd} review round{'s' if rnd != 1 else ''}"
+    if rev.get("verdict"):
+        head += f", final verdict {rev['verdict']}"
+    if gate:
+        head += f", gate {gate['gate']}"
+    lines = [head]
+    for n in range(1, rnd):
+        later = " ".join((read(os.path.join(run, "reviews", f"{pr.get('id')}-round{n + 1}.md")) or "").split())
+        for s in review_findings(run, pr.get("id"), n):
+            if s[:60] in later:
+                continue  # raised again in the next round: that round did not resolve it
+            lines.append(f"- round {n} blocked: {s}; fixed in round {n + 1}")
+    return lines
+
+
+def ticket_lines(run, plan, pr):
+    """Tickets section: id, neutralised title (at most 120 characters) and url of the PR's stories' tickets; never bodies."""
+    tj = load_json(os.path.join(run, "tickets.json"))
+    tasks = tj.get("tasks") if isinstance(tj, dict) else tj
+    if not isinstance(tasks, list):
+        return []
+    by = {}
+    for t in tasks:
+        if isinstance(t, dict):
+            for k in ("id", "custom_id"):
+                if isinstance(t.get(k), str) and t[k]:
+                    by.setdefault(t[k].lower(), t)
+    refs, story_refs = [], plan_story_tickets(plan)
+    for s in (pr.get("stories") or {}).get("ids") or []:
+        for r in story_refs.get(s, []):
+            if r.lower() in by and by[r.lower()] not in refs:
+                refs.append(by[r.lower()])
+    out = []
+    for t in refs:
+        title = " ".join(str(t.get("name") or t.get("title") or "").split())
+        title = title if len(title) <= 120 else title[:119].rstrip() + "…"
+        url = t.get("url") if isinstance(t.get("url"), str) and t["url"].startswith("http") else None
+        out.append(f"- {t.get('custom_id') or t.get('id')}: {title}".rstrip(": ") + (f" ({url})" if url else ""))
+    return out
+
+
+def verify_lines(run, st, pr):
+    """Verification section: the check and the worktree HEAD, the app's own re-run of it, and the dependency PRs."""
+    chk = pr.get("check") or {}
     prs = {p.get("id"): p for p in st.get("prs") or []}
-    chk, rev = pr.get("check") or {}, pr.get("review") or {}
-    lines = ["## Stories", ""] + [f"- {s}: {titles.get(s, '')}".rstrip(": ") for s in (pr.get("stories") or {}).get("ids") or []]
-    lines += stack_epic_lines(st, pr)
-    lines += ["", f"Check: `{chk.get('command')}`: {chk.get('result')}", f"Review: {rev.get('verdict')} (round {rev.get('round')})"]
+    wt = canon_wt(run, st, pr)
+    head = git("-C", wt, "rev-parse", "--short=12", "HEAD").stdout.strip() if wt else ""
+    out = []
+    if chk.get("command") and chk.get("result"):
+        out.append(f"- Check `{chk['command']}`: {chk['result']}" + (f" (worktree HEAD {head})" if head else ""))
+    ac = load_json(os.path.join(run, "app-checks.json"))
+    row = (ac.get("checks") or {}).get(pr.get("id")) if isinstance(ac, dict) and isinstance(ac.get("checks"), dict) else None
+    if isinstance(row, dict) and row.get("result"):
+        out.append(f"- App check: {row['result']}" + (f" at {str(row['head'])[:12]}" if row.get("head") else ""))
     for dep in pr.get("dependsOn") or []:
         d = prs.get(dep) or {}
-        lines.append(f"Depends on: {d.get('prUrl') or dep + ' (branch ' + str(d.get('branch')) + ')'}")
-    lines += ["", f"Plan: Eagle-Eye run {st.get('runId')}", ""]
+        out.append(f"- Depends on: {d.get('prUrl') or dep + ' (branch ' + str(d.get('branch')) + ')'}")
+    return out
+
+
+def screen_lines(run, st, pr, sections):
+    """sections: [(title, [lines])]. Every line is neutralised and secret-scanned and a line that looks like a secret is dropped
+    (logged without its text). One scan covers everything and a bisect runs only on a hit, so a clean body costs one scan.
+    A scanner that cannot run keeps the lines: the whole-body scan before anything is sent then refuses. Returns {title: lines}."""
+    flat = [(i, neutral(l)) for i, (_, ls) in enumerate(sections) for l in ls if l.strip()]
+    dropped = []
+
+    def go(items):
+        if not items:
+            return []
+        clean, _ = scan_secrets("\n".join(l for _, l in items))
+        if clean is not False:
+            return items
+        if len(items) == 1:
+            dropped.append(items[0][0])
+            return []
+        mid = len(items) // 2
+        return go(items[:mid]) + go(items[mid:])
+
+    kept = go(flat)
+    for i in sorted(set(dropped)):
+        try:
+            append_log(run, st.get("stage") or "shipping", f"{pr.get('id')} PR body: dropped a line from {sections[i][0]} (looked like a secret)")
+        except OSError:
+            pass
+    return {t: [l for i, l in kept if i == n] for n, (t, _) in enumerate(sections)}
+
+
+def build_body(run, st, pr, mode):
+    """mode 'draft' = what is known after build round 1, 'final' = every section. AD-9 order: Why, What it adds, Scope, Review,
+    Verification, Tickets, then the stack / epic lines and the Plan line. A section with no data is left out."""
+    plan = read(os.path.join(run, "plan.md")) or ""
+    why = (plan_blocks(plan)[1].get(pr.get("id")) or {}).get("why")
+    final = mode == "final"
+    shown = screen_lines(run, st, pr, [
+        ("Why", [why] if why else []),
+        ("Review", review_lines(run, pr) if final else []), ("Verification", verify_lines(run, st, pr)),
+        ("Tickets", ticket_lines(run, plan, pr) if final else [])])
+    lines = []
+
+    def section(title, body):
+        if body:
+            lines.extend([f"## {title}", ""] + body + [""])
+
+    section("Why", shown["Why"])
+    section("What it adds", story_lines(run, pr))
+    section("Review", shown["Review"])
+    rounds = sorted(pr.get("comments") or [], key=lambda c: c.get("round", 0)) if final else []
+    section("Eagle-Eye review rounds", [f"- Round {c['round']}: {c['url']}" + (f" (fixes: {c['fixesUrl']})" if c.get("fixesUrl") else "") for c in rounds])
+    section("Verification", shown["Verification"])
+    section("Tickets", shown["Tickets"])
+    stack = stack_epic_lines(st, pr)
+    lines += stack[1:] if stack and stack[0] == "" else stack
+    if lines and lines[-1] != "":
+        lines.append("")
+    if final:
+        lines += [f"Plan: Eagle-Eye run {st.get('runId')}", ""]
+    else:
+        lines += [f"\U0001F916 Eagle-Eye run {st.get('runId')} — review in progress. Each review round is posted as a comment; "
+                  "this PR is marked ready for review only after the run's ship approval.", ""]
     return "\n".join(lines)
+
+
+def pr_body(run, st, pr):
+    return build_body(run, st, pr, "final")
+
+
+def cmd_pr_body(run, pid, draft):
+    st = load_status(run)
+    pr = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == pid), None)
+    if pr is None:
+        die(f"no {pid} in status.json")
+    print(build_body(run, st, pr, "draft" if draft else "final"), end="")
 
 
 def cmd_ship_pr(run, pid):
@@ -2236,19 +2398,11 @@ def story_lines(run, pr):
 
 
 def draft_body(run, st, pr):
-    lines = ["## Stories", ""] + story_lines(run, pr)
-    lines += stack_epic_lines(st, pr)
-    lines += ["", f"\U0001F916 Eagle-Eye run {st.get('runId')} — review in progress. Each review round is posted as a comment; "
-              "this PR is marked ready for review only after the run's ship approval.", ""]
-    return "\n".join(lines)
+    return build_body(run, st, pr, "draft")
 
 
 def final_body(run, st, pr):
-    lines = pr_body(run, st, pr).rstrip("\n").splitlines()
-    rounds = sorted(pr.get("comments") or [], key=lambda c: c.get("round", 0))
-    if rounds:
-        lines += ["", "## Eagle-Eye review rounds", ""] + [f"- Round {c['round']}: {c['url']}" + (f" (fixes: {c['fixesUrl']})" if c.get("fixesUrl") else "") for c in rounds]
-    return "\n".join(lines) + "\n"
+    return build_body(run, st, pr, "final")
 
 
 def title_and_body(run, st, pr, body, what):
@@ -3500,7 +3654,7 @@ def cmd_request_wait(run, rid, rest):
 
 def main(argv):
     cmd, args = (argv[0] if argv else ""), argv[1:]
-    need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0,
+    need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "pr-body": 2, "writeback": 1, "testmode": 0,
             "gate": 4, "report": 1, "mode": 1, "draft-pr": 2, "push": 2, "post-review": 3, "comment": 4, "ready": 2, "bmad-size": 2, "bmad-init": 1, "bmad-check": 1,
             "cleanup": 1, "restack": 2, "merge-check": 1, "request": 2, "request-wait": 2}
     if cmd not in need or len(args) < need[cmd]:
@@ -3514,6 +3668,7 @@ def main(argv):
     elif cmd == "worktree": cmd_worktree(args[0], args[1], args[2], args[3])
     elif cmd == "ship-check": cmd_ship_check(args[0])
     elif cmd == "ship-pr": cmd_ship_pr(args[0], args[1])
+    elif cmd == "pr-body": cmd_pr_body(args[0], args[1], "draft" in args[2:])
     elif cmd == "writeback": cmd_writeback(args[0], "--force" in args[1:])
     elif cmd == "gate":
         rv = args[args.index("--review") + 1] if "--review" in args[4:-1] else None

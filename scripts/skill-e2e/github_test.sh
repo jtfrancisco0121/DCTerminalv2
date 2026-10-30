@@ -201,6 +201,9 @@ grep -q "review in progress" "$RUN/pr-bodies/PR2.md" && ok "  body says review i
 grep -q "S2: Prefix results" "$RUN/pr-bodies/PR2.md" && ok "  body lists the stories" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
 grep -q '^Size:' "$RUN/pr-bodies/PR2.md" && bad "  body has a Size line" || ok "  body has no Size line"
 grep -q "draft PR opened" "$RUN/log.md" && ok "  logged" || bad "  not logged"
+grep -q '^## What it adds' "$RUN/pr-bodies/PR2.md" && ok "  draft body has the What it adds section" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
+grep -qE '^## (Review|Tickets)$' "$RUN/pr-bodies/PR2.md" && bad "  draft body already has Review or Tickets" || ok "  draft body has only what is known after round 1"
+grep -qE '\b(None|null)\b' "$RUN/pr-bodies/PR2.md" && bad "  None/null in the draft body" || ok "  no None/null in the draft body"
 expect 0 "draft-pr again" S draft-pr "$RUN" PR2; has "  exists" "draft=exists"
 python3 - "$RUN/status.json" <<'PY'
 import json, sys
@@ -299,12 +302,16 @@ has "  says so" "ship approval"
 expect 1 "ship-pr refused in github mode" S ship-pr "$RUN" PR2
 st shipping reviewed reviewed 'doc["shipApproval"] = {"by": "user", "at": "2026-10-24T01:00:00Z"}'
 expect 1 "ship-pr refused in github mode (shipping)" S ship-pr "$RUN" PR2; has "  says use ready" "state.sh ready"
+printf '2. HIGH \xe2\x80\x94 a.js:1 \xe2\x80\x94 token=ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 is printed \xe2\x80\x94 Fix: remove it\n' >> "$RUN/reviews/PR2-round1.md"
+st shipping reviewed reviewed 'doc["shipApproval"] = {"by": "user", "at": "2026-10-24T01:00:00Z"}; doc["prs"][1]["review"]["round"] = 2'
 expect 0 "ready PR2" S ready "$RUN" PR2
 has "  opened" "PR2 opened: https://github.com/shim/repo/pull/1"
 is "  state opened" "$RUN/status.json" prs.1.state '"opened"'
 is "  draft false" "$RUN/status.json" prs.1.draft false
 python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))[0]; sys.exit(0 if not p["isDraft"] and "Eagle-Eye review rounds" in p["body"] and "#issuecomment-1001" in p["body"] else 1)' "$GH_SHIM_DIR/prs.json" \
   && ok "  marked ready with the final body (review round links)" || bad "  shim: $(cat "$GH_SHIM_DIR/prs.json")"
+python3 -c 'import json,sys; b=json.load(open(sys.argv[1]))[0]["body"]; sys.exit(0 if all(x in b for x in ("## What it adds", "## Verification", "Plan: Eagle-Eye run", "round 1 blocked: format.js:2")) and "ghp_AbCd" not in b else 1)' "$GH_SHIM_DIR/prs.json" \
+  && ok "  the final body has its sections and the resolved finding, and the secret-like finding was dropped" || bad "  shim: $(cat "$GH_SHIM_DIR/prs.json")"
 python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))[0]; sys.exit(0 if "Size:" not in p["body"] else 1)' "$GH_SHIM_DIR/prs.json" \
   && ok "  the final body has no Size line" || bad "  shim: $(cat "$GH_SHIM_DIR/prs.json")"
 expect 0 "ready PR2 again" S ready "$RUN" PR2; has "  already" "PR2 already opened"

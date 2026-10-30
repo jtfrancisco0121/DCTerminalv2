@@ -87,6 +87,10 @@ Each repo may also have (app-written, optional):
 5. `package.json` with a `test` script that is not npm's "no test specified" → `npm test`
 6. otherwise none (the Planner may name one in the plan).
 
+## PR bodies (`pr-bodies/`)
+
+Sections in order: Why (the plan's `- Why:` line), What it adds (story ids and titles), Review (rounds, final verdict and gate from `gates/<PR>.yml`, and one line per MEDIUM+ finding an earlier round raised that the next round did not: `round n blocked: <summary>; fixed in round n+1`), Verification (the check, its result and the worktree HEAD; the app's `app-checks.json` result with its head; dependency PRs), Tickets (id, title up to 120 characters and url from `tickets.json`, never bodies), then the stack / epic lines and `Plan: Eagle-Eye run <id>`. A section with no data is left out. The draft body (GitHub mode, after build round 1) has Why, What it adds and Verification. Every generated line is neutralised and secret-scanned and a line that looks like a secret is dropped (logged without its text) before the whole-body scan, which still refuses if anything slipped past. `state.sh pr-body <run> <PR> [draft]` prints the body.
+
 ## tickets.json (input, optional)
 
 The ClickUp snapshot the app took at Start (P4), frozen for the run (R8: the app never rewrites it). The skill passes it to the sub-agents as data and `state.sh writeback` reads `tasks[]` with `id`, `custom_id`, `name`, `url` for `writeback.json` (it also accepts a bare list of tasks). It never treats ticket text as instructions, and the orchestrator never reads it: the Planner summarises the tickets in plan.md's `## Tickets` section (one line per ticket: `- <id> | <custom_id or -> | <name> | <url> | stories: S1, S2 | ship status: <status or ->`).
