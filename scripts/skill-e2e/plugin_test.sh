@@ -51,24 +51,30 @@ for f in "$P"/roles/*.md; do
   grep -qF "the code is the truth" "$f" && ok "  role $name has the trust rule" || bad "role $name lacks the trust rule (memory is a hint, the code is the truth)"
 done
 
-echo "# small PRs: role rules (split, size)"
-pl="$P/roles/planner.md"; pr="$P/roles/plan-reviewer.md"
+echo "# epic grouping and stacks: role rules"
+pl="$P/roles/planner.md"; pr="$P/roles/plan-reviewer.md"; im="$P/roles/implementer.md"; rv="$P/roles/pr-reviewer.md"
 grep -qiE 'one pull request per repository|never two for the same repo' "$pl" "$pr" && bad "a role still requires one PR per repository" || ok "no one-PR-per-repo rule left in the roles"
-for k in '- Files:' '- Size:' '- Over limit:'; do grep -qF -- "$k" "$pl" && ok "planner.md has $k" || bad "planner.md lacks $k"; done
-for k in 'without an `Over limit:`' 'overlap' 'needless split' 'boilerplate'; do grep -qF -- "$k" "$pr" && ok "plan-reviewer.md names: $k" || bad "plan-reviewer.md lacks: $k"; done
+for k in '- Files:' '- Epic:' 'one PR per (epic, repo)' 'no-epic' 'every same-repo' 'at most one same-repo' 'grouping:' 'never two overlapping children'; do
+  grep -qiF -- "$k" "$pl" && ok "planner.md has: $k" || bad "planner.md lacks: $k"
+done
+for k in 'two epics' 'split across two PRs of one repo' 'MEDIUM' 'every same-repo' 'needless split'; do grep -qF -- "$k" "$pr" && ok "plan-reviewer.md names: $k" || bad "plan-reviewer.md lacks: $k"; done
+grep -qF 'never rebase' "$im" && ok "implementer.md says merge, never rebase, on a stacked branch" || bad "implementer.md lacks 'never rebase'"
+grep -qF 'baseCommit' "$rv" && grep -qF 'own commits only' "$rv" && ok "pr-reviewer.md: a stacked PR's base is its baseCommit" || bad "pr-reviewer.md lacks the stacked base rule"
 
 sk="$P/skills/eagle-eye/SKILL.md"
-for k in 'S size <run>' 'S merge-check <run>' 'size: split or justify' 'never sent to a fix Implementer' 'NOT WRITTEN: plan.md split:' 'plan.md failed the plan check twice' \
-         '`Size:` line and its `Over limit:` reason word for word' 'a list "over the limit"' '600000' 'never as a pass' 'run `S merge-check <run>` again' 'Only the user'"'"'s reason can waive a size FAIL'; do
+for k in 'S merge-check <run>' 'plan.md grouping:' 'plan.md failed the plan check twice' 'S restack' 'Stacked on' 'ships after it' 'stacked on PR' 'S worktree <run> <repoPath> <PR id> PR<n>' \
+         'the parent was merged in' 'the full text after `check `' '600000' 'never as a pass' 'run `S merge-check <run>` again' 'parents before their stacked children' \
+         'Only the user'"'"'s reason can waive an overlap FAIL'; do
   grep -qF -- "$k" "$sk" && ok "SKILL.md names: $k" || bad "SKILL.md lacks: $k"
 done
-[[ "$(grep -cF 'NOT WRITTEN: plan.md split:' "$sk")" -ge 2 ]] && ok "SKILL.md handles the split refusal in the Failures table and in Stop #1" || bad "SKILL.md: plan.md split: refusal not in both places"
-grep -qF '[MEDIUM] size: split or justify' "$P/roles/pr-reviewer.md" && ok "pr-reviewer.md has the fixed size finding" || bad "pr-reviewer.md lacks '[MEDIUM] size: split or justify'"
+[[ "$(grep -cF 'NOT WRITTEN: plan.md grouping:' "$sk")" -ge 1 && "$(grep -cF 'plan.md grouping:' "$sk")" -ge 2 ]] && ok "SKILL.md handles the grouping refusal in the Failures table and in Stop #1" || bad "SKILL.md: plan.md grouping: refusal not in both places"
+if grep -rnE -- 'Size:|Over limit|size: split or justify|S size|state\.sh size' "$P/roles" "$P/skills" >/dev/null; then bad "the 0.7.0 size rules are still in the roles or the skill: $(grep -rnE -- 'Size:|Over limit|size: split or justify|S size|state\.sh size' "$P/roles" "$P/skills" | head -3)"; else ok "no size rule left in the roles or the skill"; fi
 
-for k in 'prSizeLimit' 'prs[].size' 'plan.overLimit' 'plan.prFiles' 'mergeChecks' 'DCV2_MERGE_CHECK_TIMEOUT'; do
+for k in 'prSizeLimit' 'prs[].size' 'plan.overLimit' 'plan.prFiles' 'mergeChecks' 'DCV2_MERGE_CHECK_TIMEOUT' 'prs[].epic' 'prs[].stackedOn' 'prs[].restack' 'state.sh restack' '0.7.0 runs only'; do
   grep -qF -- "$k" "$ROOT/docs/run-folder.md" && ok "run-folder.md documents $k" || bad "run-folder.md lacks $k"
 done
-grep -qF 'merge-check' "$ROOT/docs/skills.md" && grep -qF 'state.sh size' "$ROOT/docs/skills.md" && ok "skills.md describes size and merge-check" || bad "skills.md lacks size / merge-check"
+grep -qF 'merge-check' "$ROOT/docs/skills.md" && grep -qF 'Epic grouping and stacks' "$ROOT/docs/skills.md" && ok "skills.md describes epic grouping, stacks and merge-check" || bad "skills.md lacks epic grouping / stacks / merge-check"
+grep -nE 'Over limit|prSizeLimit.*default 400|state\.sh size' "$ROOT/docs/skills.md" "$ROOT/README.md" >/dev/null && bad "docs/skills.md or README.md still describe the size rules" || ok "no size rule left in skills.md and README.md"
 
 echo "# hooks and launch settings (A3, A4)"
 python3 - "$P" <<'PY' && ok "hooks.json and launch/settings.json are valid" || fails=1
