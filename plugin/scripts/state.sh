@@ -646,6 +646,105 @@ def bmad_plan_trace(run):
     return problems
 
 
+MAX_PRS = 5
+MAX_STORIES = 2
+DEFAULT_LINE_LIMIT = 400
+
+
+def pr_line_limit(run, name=None, path=None):
+    """The PR line limit of a repo (repos.json prSizeLimit, 1..100000), matched by name or real path; else 400."""
+    rj = load_json(os.path.join(run, "repos.json"))
+    for r in (rj.get("repos") if isinstance(rj, dict) else None) or []:
+        if not isinstance(r, dict):
+            continue
+        hit = (name is not None and r.get("name") == name) or \
+              (path is not None and isinstance(r.get("path"), str) and os.path.realpath(r["path"]) == path)
+        v = r.get("prSizeLimit")
+        if hit and type(v) is int and 1 <= v <= 100000:
+            return v
+    return DEFAULT_LINE_LIMIT
+
+
+def clean_plan_path(x):
+    x = x.strip().strip("`").strip()
+    while x.startswith("./"):
+        x = x[2:]
+    return x
+
+
+def paths_overlap(a, b):
+    """The longer path when a and b are equal or one is a folder (trailing /) holding the other, else None."""
+    if a == b:
+        return a
+    if a.endswith("/") and b.startswith(a):
+        return b
+    if b.endswith("/") and a.startswith(b):
+        return a
+    return None
+
+
+def plan_blocks(plan):
+    """({S id: {files}}, {PR id: {repo, stories, deps, lines, nstories, over}}) read from plan.md's ### S<n> / ### PR<n> blocks."""
+    stories, prs = {}, {}
+    for m in re.finditer(r"(?ms)^###\s+(S\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan):
+        fl = re.search(r"(?m)^\s*-\s*Files:\s*(.*?)\s*$", m.group(2))
+        files = [clean_plan_path(x) for x in fl.group(1).split(",")] if fl else []
+        stories[m.group(1)] = [x for x in files if x]
+    for m in re.finditer(r"(?ms)^###\s+(PR\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan):
+        b = m.group(2)
+        g = lambda k: re.search(rf"(?m)^\s*-\s*{k}:\s*(.*?)\s*$", b)
+        repo, sl, dl, zl, ol = g("Repo"), g("Stories"), g("Depends on"), g("Size"), g("Over limit")
+        size = re.match(r"~?\s*(\d[\d,\s]*?)\s*lines?\s*,\s*(\d+)\s*stor(?:y|ies)\b", zl.group(1)) if zl else None
+        prs[m.group(1)] = {
+            "repo": repo.group(1).strip("` ") if repo and repo.group(1).strip("` ") else None,
+            "stories": re.findall(r"S\d+", sl.group(1)) if sl else [],
+            "deps": re.findall(r"PR\d+", dl.group(1)) if dl else [],
+            "lines": int(re.sub(r"\D", "", size.group(1))) if size else None,
+            "over": ol.group(1).strip() if ol and ol.group(1).strip() else None,
+        }
+    return stories, prs
+
+
+def plan_split_problems(run):
+    """Problems with the shape of plan.md's split into stories and PRs (empty list = fine). The single place for it."""
+    plan = read(os.path.join(run, "plan.md"))
+    if not plan:
+        return []
+    stories, prs = plan_blocks(plan)
+    problems = []
+    if len(prs) > MAX_PRS:
+        problems.append(f"{len(prs)} PRs, at most {MAX_PRS} per run: ask the user to split the request into several runs")
+    for sid, files in stories.items():
+        if not files:
+            problems.append(f"{sid} has no Files: line")
+    pfiles = {}
+    for pid, p in prs.items():
+        pfiles[pid] = sorted({f for s in p["stories"] for f in stories.get(s, [])})
+        if p["lines"] is None:
+            problems.append(f"{pid} has no parseable Size: line (use `- Size: ~<n> lines, <k> stories`)")
+        limit = pr_line_limit(run, name=p["repo"])
+        n = len(p["stories"])
+        if (n > MAX_STORIES or (p["lines"] is not None and p["lines"] > limit)) and not p["over"]:
+            problems.append(f"{pid} is over the PR limit ({n} stories, max {MAX_STORIES}; ~{p['lines'] if p['lines'] is not None else '?'} lines, limit {limit}) "
+                            f"with no Over limit: line")
+    ids = list(prs)
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            ra, rb = prs[a]["repo"], prs[b]["repo"]
+            if not ra or ra != rb:
+                continue
+            for fa in pfiles[a]:
+                for fb in pfiles[b]:
+                    hit = paths_overlap(fa, fb)
+                    if hit:
+                        problems.append(f"{a} and {b} ({ra}) both change {hit}")
+    for pid, p in prs.items():
+        for d in p["deps"]:
+            if d in prs and p["repo"] and prs[d]["repo"] == p["repo"]:
+                problems.append(f"{pid} depends on {d} of the same repo ({p['repo']}): same-repo PRs must be independent")
+    return problems
+
+
 def gates(doc, run, old=None, plan_trace=True):
     """Refusals and reminders that depend on the run, not on the document's shape."""
     tm = testmode()
@@ -673,6 +772,11 @@ def gates(doc, run, old=None, plan_trace=True):
                 if pr:
                     more = f"; and {len(pr) - 10} more" if len(pr) > 10 else ""
                     return "NOT WRITTEN: BMAD mode: plan.md does not trace to the BMAD documents: " + "; ".join(pr[:10]) + more, out
+    if stage == "plan-approval" and plan_trace:
+        sp = plan_split_problems(run)
+        if sp:
+            more = f"; and {len(sp) - 10} more" if len(sp) > 10 else ""
+            return "NOT WRITTEN: plan.md split: " + "; ".join(sp[:10]) + more, out
     if tm["halt"] and not resumed(run):
         pid = tm["halt"]
         prs = {p.get("id"): p for p in doc.get("prs") or [] if isinstance(p, dict)}

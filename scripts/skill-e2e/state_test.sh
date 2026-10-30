@@ -48,15 +48,19 @@ cat > "$RUN/plan.md" <<'EOF'
 ## Stories
 ### S1: Fix multiply
 - Tickets: t1
+- Files: multiply.sh
 ### S2: Prefix results
 - Tickets: T-2
+- Files: prefix.sh
 ## Pull requests
 ### PR1: Fix multiply
 - Repo: r
 - Stories: S1
+- Size: ~20 lines, 1 story
 ### PR2: Prefix
 - Repo: rr
 - Stories: S2
+- Size: ~20 lines, 1 story
 ## Manual steps
 None.
 ## Tickets
@@ -501,7 +505,7 @@ has "  says so" "report.md not written"
 echo "# BMAD mode: size, init, check, and the plan-approval refusal (run folder path has a space)"
 B="$d/App Support/runs/r-b"; mkdir -p "$B"
 printf 'folder: %s\n' "$WS" > "$B/request.md"
-printf '# Plan\n## Stories\n### S1: x\n- Covers: CAP-1, AD-1\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n' > "$B/plan.md"
+printf '# Plan\n## Stories\n### S1: x\n- Files: a.sh\n- Covers: CAP-1, AD-1\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n- Size: ~5 lines, 1 story\n' > "$B/plan.md"
 printf '{"schema":1,"repos":[{"name":"toy \\"quoted\\" repo","path":"%s","check":null}]}\n' "$R" > "$B/repos.json"
 # bstatus <stage>: a minimal status.json document for the BMAD run (no PRs yet)
 bstatus() {
@@ -724,8 +728,8 @@ W="$B/bmad/output/r-b"
 setplan() {
   { printf '# Plan\n## Stories\n'
     local x
-    for x in "$@"; do printf '### %s: t\n' "${x%%|*}"; if [[ -n "${x#*|}" ]]; then printf -- '- Covers: %s\n' "${x#*|}"; fi; done
-    printf '## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n'
+    for x in "$@"; do printf '### %s: t\n- Files: a.sh\n' "${x%%|*}"; if [[ -n "${x#*|}" ]]; then printf -- '- Covers: %s\n' "${x#*|}"; fi; done
+    printf '## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n- Size: ~5 lines, 1 story\n'
     if [[ -n "${EXTRA:-}" ]]; then printf '\n## Out of scope\n%s\n' "$EXTRA"; fi
   } > "$B/plan.md"
 }
@@ -770,7 +774,7 @@ setplan "S1|CAP-1, CAP-2" "S2|FR-7"
 bothrefused "unknown FR-7" "unknown FR-7"
 setplan "S1|CAP-1, CAP-2"
 # non-BMAD runs: no Covers: needed
-printf '# Plan\n## Stories\n### S1: x\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n' > "$B/plan.md"
+printf '# Plan\n## Stories\n### S1: x\n- Files: a.sh\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n- Size: ~5 lines, 1 story\n' > "$B/plan.md"
 rm -f "$B/status.json"; bmeta off
 expect 0 "mode off: put plan-approval without Covers:" bput < <(bstatus plan-approval)
 expect 0 "mode off: approve without Covers:" bash "$STATE" approve "$B" plan user
@@ -983,5 +987,77 @@ echo "# report: what the run could not do"
 bash "$STATE" log "$CRUN" <<<'not done: re-run the checks (the app did not answer: is DCTerminalv2 running?)' >/dev/null
 expect 0 "report" bash "$STATE" report "$CRUN"
 grep -q '^## Not done by the run' "$CRUN/report.md" && grep -qF -- '- re-run the checks (the app did not answer' "$CRUN/report.md" && ok "  listed in report.md" || bad "  report: $(cat "$CRUN/report.md")"
+
+echo "# plan.md split check at plan-approval (small PRs)"
+SP="$d/runs/r-sp"; mkdir -p "$SP"; printf 'folder: %s\n' "$WS" > "$SP/request.md"
+printf '{"schema":1,"repos":[{"name":"r","path":"%s","check":null},{"name":"big","path":"%s","check":null,"prSizeLimit":600}]}\n' "$R" "$RR" > "$SP/repos.json"
+export DCV2_RUN_DIR="$SP"
+spstatus() { python3 - "$SP" "$1" <<'PY'
+import json, os, sys
+run, stage = sys.argv[1:3]
+print(json.dumps({"schema": 1, "runId": os.path.basename(run), "stage": stage, "waitingFor": "plan-approval" if stage == "plan-approval" else None,
+                  "folder": "/x", "plan": {"path": "plan.md", "reviewRound": 1, "verdict": "APPROVED", "openFindings": 0, "approved": False},
+                  "prs": [], "ship": None, "writeback": None, "error": None}))
+PY
+}
+spput() { bash "$STATE" put "$SP/status.json"; }
+st() { printf '### %s: t\n- Files: %s\n' "$1" "$2"; }
+prb() { printf '### %s: t\n- Repo: %s\n- Stories: %s\n- Depends on: %s\n- Size: %s\n' "$1" "$2" "$3" "$4" "$5"; [[ -z "${6:-}" ]] || printf -- '- Over limit: %s\n' "$6"; return 0; }
+# splan: stdin is the stories, then "## Pull requests", then the PR blocks
+splan() { { printf '# Plan\n## Stories\n'; cat; } > "$SP/plan.md"; }
+spboth() { # <label> <must-mention>
+  expect 1 "$1: put refused" spput < <(spstatus plan-approval)
+  has "  split message" "NOT WRITTEN: plan.md split:"; has "  names it" "$2"
+  expect 1 "$1: approve refused" bash "$STATE" approve "$SP" plan user
+  has "  names it (approve)" "$2"
+}
+splan < <(st S1 src/a.ts; st S2 src/b.ts; echo "## Pull requests"; prb PR1 r S1 none "~100 lines, 1 story"; prb PR2 r S2 none "~100 lines, 1 story")
+expect 0 "disjoint same-repo PRs: put" spput < <(spstatus plan-approval)
+expect 0 "disjoint same-repo PRs: approve" bash "$STATE" approve "$SP" plan user
+splan < <(st S1 src/a.ts; st S2 ./src/a.ts; echo "## Pull requests"; prb PR1 r S1 none "~100 lines, 1 story"; prb PR2 r S2 none "~100 lines, 1 story")
+spboth "same file" "PR1 and PR2 (r) both change src/a.ts"
+splan < <(st S1 'src/'; st S2 '`src/a.ts`'; echo "## Pull requests"; prb PR1 r S1 none "~100 lines, 1 story"; prb PR2 r S2 none "~100 lines, 1 story")
+spboth "folder vs file" "both change src/a.ts"
+splan < <(st S1 src/a.ts; st S2 src/b.ts; echo "## Pull requests"; prb PR1 r S1 none "~100 lines, 1 story"; prb PR2 rr S2 none "~100 lines, 1 story"; prb PR3 rr S2 PR2 "~1 lines, 1 story")
+spboth "same-repo Depends on" "PR3 depends on PR2 of the same repo"
+splan < <(st S1 src/a.ts; st S2 src/a.ts; echo "## Pull requests"; prb PR1 r S1 none "~100 lines, 1 story"; prb PR2 rr S2 PR1 "~100 lines, 1 story")
+expect 0 "same files in different repos, cross-repo Depends on: put" spput < <(spstatus plan-approval)
+splan < <(st S1 a; echo "## Pull requests"; for i in 1 2 3 4 5 6; do prb PR$i r$i S1 none "~10 lines, 1 story"; done)
+spboth "6 PRs" "at most 5 per run"; has "  asks to split the request" "split the request into several runs"
+splan < <(printf '### S1: t\n- Tickets: x\n'; echo "## Pull requests"; prb PR1 r S1 none "~10 lines, 1 story")
+spboth "story without Files" "S1 has no Files: line"
+splan < <(st S1 a; echo "## Pull requests"; printf '### PR1: t\n- Repo: r\n- Stories: S1\n')
+spboth "PR without Size" "PR1 has no parseable Size: line"
+splan < <(st S1 a; st S2 b; st S3 c; echo "## Pull requests"; prb PR1 r "S1, S2, S3" none "~100 lines, 3 stories")
+spboth "3-story PR without Over limit" "PR1 is over the PR limit (3 stories"
+splan < <(st S1 a; echo "## Pull requests"; prb PR1 r S1 none "~500 lines, 1 story")
+spboth "500 lines without Over limit (default 400)" "limit 400"
+splan < <(st S1 a; echo "## Pull requests"; prb PR1 r S1 none "~500 lines, 1 story" "the parser and its table must ship together")
+expect 0 "500 lines with an Over limit line: put" spput < <(spstatus plan-approval)
+splan < <(st S1 a; echo "## Pull requests"; prb PR1 big S1 none "~500 lines, 1 story")
+expect 0 "prSizeLimit 600 accepts ~500 lines: put" spput < <(spstatus plan-approval)
+splan < <(st S1 a; echo "## Pull requests"; prb PR1 big S1 none "~700 lines, 1 story")
+spboth "700 lines over prSizeLimit 600" "limit 600"
+splan < <(st S1 a; st S2 b; echo "## Pull requests"; prb PR1 r S1 none "1,900 lines, 8 stories" "big on purpose"; prb PR2 big S2 none "350 lines, 1 story")
+expect 0 "'1,900 lines, 8 stories' and '350 lines, 1 story' parse" spput < <(spstatus plan-approval)
+splan < <(st S1 a; echo "## Pull requests"; printf '### PR1: t\n- Stories: S1\n- Size: ~300 lines, 1 story\n')
+expect 0 "a PR with no Repo: line uses the default limit: put" spput < <(spstatus plan-approval)
+splan < <(for i in 1 2 3 4 5 6 7 8 9 10 11 12; do printf '### S%s: t\n' "$i"; done; echo "## Pull requests"; printf '### PR1: t\n- Repo: r\n- Stories: S1\n- Size: ~1 lines, 1 story\n')
+expect 1 "12 problems: put refused" spput < <(spstatus plan-approval)
+has "  caps the list" "; and 2 more"
+c="$(grep -o ' has no Files: line' <<<"$out" | wc -l | tr -d ' ')"; [[ "$c" -le 10 ]] && ok "  at most 10 listed ($c)" || bad "  $c listed"
+echo "# bmad-check at plan-approval still records its result with a split problem"
+splan < <(st S1 a; st S2 a; echo "## Pull requests"; prb PR1 r S1 none "~10 lines, 1 story"; prb PR2 r S2 none "~10 lines, 1 story")
+printf '{"schema":1,"bmad":{"mode":"on","version":"x"}}\n' > "$SP/meta.json"
+if bash "$STATE" bmad-init "$SP" >/dev/null 2>&1; then
+  mkdir -p "$SP/bmad/output/r-sp/spec-toy" "$SP/bmad/output/r-sp/architecture-toy"
+  printf -- '---\nid: SPEC-toy\n---\n\n# Toy spec\n\n## Capabilities\n\n- **CAP-1** users can add\n' > "$SP/bmad/output/r-sp/spec-toy/spec-toy.md"
+  printf -- '---\nname: toy\nstatus: draft\n---\n\n# Spine\n\n## Invariants & Rules\n\n### AD-1 - Layers\n\n- **Binds:** all\n- **Prevents:** drift\n- **Rule:** UI never calls the DB\n' > "$SP/bmad/output/r-sp/architecture-toy/architecture-toy.md"
+  expect 0 "bmad-check at plan-approval with a split problem" bash "$STATE" bmad-check "$SP"
+  has "  records pass" "bmad-check=pass"
+else
+  ok "  (bmad-init needs node: skipped)"
+fi
+export DCV2_RUN_DIR="$RUN"
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

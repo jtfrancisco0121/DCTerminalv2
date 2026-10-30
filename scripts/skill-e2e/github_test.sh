@@ -56,12 +56,16 @@ cat > "$RUN/plan.md" <<'EOF'
 # Plan
 ## Stories
 ### S1: Fix multiply
+- Files: multiply.sh
 ### S2: Prefix results
+- Files: prefix.sh
 ## Pull requests
 ### PR1: Fix multiply
 - Stories: S1
+- Size: ~20 lines, 1 story
 ### PR2: Prefix
 - Stories: S2
+- Size: ~20 lines, 1 story
 EOF
 python3 - "$RUN/repos.json" "$R" "$RR" <<'PY'
 import json, sys
@@ -333,7 +337,7 @@ echo "# writeback: a PR left as a draft does not count as opened"
 cat > "$RUN/tickets.json" <<'EOF'
 {"tasks": [{"id": "t2", "custom_id": "T-2", "name": "prefix", "url": "https://x/t2"}]}
 EOF
-printf '\n### S2: Prefix results\n- Tickets: t2\n## Tickets\n- t2 | T-2 | prefix | https://x/t2 | stories: S2 | ship status: done\n' >> "$RUN/plan.md"
+printf '\n### S2: Prefix results\n- Tickets: t2\n- Files: prefix.sh\n## Tickets\n- t2 | T-2 | prefix | https://x/t2 | stories: S2 | ship status: done\n' >> "$RUN/plan.md"
 python3 - "$RUN/status.json" <<'PY'
 import json, sys
 s = json.load(open(sys.argv[1])); s["prs"][1]["state"] = "local-only"; s["prs"][1]["note"] = "left out by the user: stays a draft"; json.dump(s, open(sys.argv[1], "w"))
