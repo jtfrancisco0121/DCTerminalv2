@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import pushRs from "../../src-tauri/src/observe/push.rs?raw";
-import { ATTENTION_KINDS, ciChip, localTime, minutesText, PUSH_KINDS, relativeDate, runMatches } from "./words";
+import { ATTENTION_KINDS, ciChip, localTime, minutesText, PUSH_KINDS, relativeDate, runMatches, sizeBadgeText, sizeTitle } from "./words";
 
 describe("runs list words", () => {
   const run = { title: "Add multiply()", folder: "/w/App", runId: "r-20261027-0900-abcd", ticketIds: ["86b1aa001", "QA-129"] };
@@ -83,5 +83,22 @@ describe("ciChip", () => {
     expect(ciChip({ ...pr, ci: null })).toBeNull();
     expect(ciChip({ prUrl: null, ci: "pass" })).toBeNull();
     vi.unstubAllEnvs();
+  });
+});
+
+describe("PR size words", () => {
+  const size = { lines: 312, files: 6, excluded: 1, limit: 400, over: false, reason: null };
+
+  it("words the badge: lines, and over the limit in text", () => {
+    expect(sizeBadgeText(size)).toBe("312 lines");
+    expect(sizeBadgeText({ ...size, lines: 512, over: true })).toBe("512 lines · over 400");
+    // The verdict is state.sh's: more lines than the limit with over=false is shown as it is.
+    expect(sizeBadgeText({ ...size, lines: 900 })).toBe("900 lines");
+  });
+
+  it("words the tooltip: files, excluded, limit, and the reason or no reason when over", () => {
+    expect(sizeTitle(size)).toBe("6 files, 1 excluded, limit 400");
+    expect(sizeTitle({ ...size, over: true, reason: "ships together" })).toBe("6 files, 1 excluded, limit 400; reason: ships together");
+    expect(sizeTitle({ ...size, over: true })).toBe("6 files, 1 excluded, limit 400; no reason");
   });
 });

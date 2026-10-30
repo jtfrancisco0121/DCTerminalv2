@@ -51,6 +51,25 @@ for f in "$P"/roles/*.md; do
   grep -qF "the code is the truth" "$f" && ok "  role $name has the trust rule" || bad "role $name lacks the trust rule (memory is a hint, the code is the truth)"
 done
 
+echo "# small PRs: role rules (split, size)"
+pl="$P/roles/planner.md"; pr="$P/roles/plan-reviewer.md"
+grep -qiE 'one pull request per repository|never two for the same repo' "$pl" "$pr" && bad "a role still requires one PR per repository" || ok "no one-PR-per-repo rule left in the roles"
+for k in '- Files:' '- Size:' '- Over limit:'; do grep -qF -- "$k" "$pl" && ok "planner.md has $k" || bad "planner.md lacks $k"; done
+for k in 'without an `Over limit:`' 'overlap' 'needless split' 'boilerplate'; do grep -qF -- "$k" "$pr" && ok "plan-reviewer.md names: $k" || bad "plan-reviewer.md lacks: $k"; done
+
+sk="$P/skills/eagle-eye/SKILL.md"
+for k in 'S size <run>' 'S merge-check <run>' 'size: split or justify' 'never sent to a fix Implementer' 'NOT WRITTEN: plan.md split:' 'plan.md failed the plan check twice' \
+         '`Size:` line and its `Over limit:` reason word for word' 'a list "over the limit"' '600000' 'never as a pass' 'run `S merge-check <run>` again' 'Only the user'"'"'s reason can waive a size FAIL'; do
+  grep -qF -- "$k" "$sk" && ok "SKILL.md names: $k" || bad "SKILL.md lacks: $k"
+done
+[[ "$(grep -cF 'NOT WRITTEN: plan.md split:' "$sk")" -ge 2 ]] && ok "SKILL.md handles the split refusal in the Failures table and in Stop #1" || bad "SKILL.md: plan.md split: refusal not in both places"
+grep -qF '[MEDIUM] size: split or justify' "$P/roles/pr-reviewer.md" && ok "pr-reviewer.md has the fixed size finding" || bad "pr-reviewer.md lacks '[MEDIUM] size: split or justify'"
+
+for k in 'prSizeLimit' 'prs[].size' 'plan.overLimit' 'plan.prFiles' 'mergeChecks' 'DCV2_MERGE_CHECK_TIMEOUT'; do
+  grep -qF -- "$k" "$ROOT/docs/run-folder.md" && ok "run-folder.md documents $k" || bad "run-folder.md lacks $k"
+done
+grep -qF 'merge-check' "$ROOT/docs/skills.md" && grep -qF 'state.sh size' "$ROOT/docs/skills.md" && ok "skills.md describes size and merge-check" || bad "skills.md lacks size / merge-check"
+
 echo "# hooks and launch settings (A3, A4)"
 python3 - "$P" <<'PY' && ok "hooks.json and launch/settings.json are valid" || fails=1
 import json, os, re, sys

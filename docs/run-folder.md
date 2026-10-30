@@ -18,6 +18,7 @@ The contract between the `dcv2:eagle-eye` skill and the app. The app creates the
   pr-bodies/        skill   PR<n>.md (the GitHub PR body state.sh ship-pr / draft-pr / ready opened or set)
   pr-comments/      skill   PR<n>-round<n>.md, PR<n>-round<n>-fixes.md (github mode: exactly what was posted)
   logs/PR<n>-setup.txt skill the worktree setup step's output (state.sh worktree)
+  merge-check/      skill   scratch worktrees of state.sh merge-check (removed after each repo, by the next merge-check and by cleanup); logs/merge-check-<repo>.log
   gates/            skill   PR<n>.yml (A1: the PR Reviewer step's gate, written by state.sh gate)
   report.md         skill   the run report (R10), written by state.sh at done / failed
   memory-update.md  skill   what the end-of-run memory update changed (or why nothing)
@@ -75,6 +76,7 @@ Each repo may also have (app-written, optional):
 | `copyFiles` | string[] (default `[]`). Paths relative to the repo, copied from the main checkout into a newly made worktree (before `setup`): only regular files that exist, are **git-ignored** there and not tracked, with no symlink anywhere on the path (absolute paths, `..` and `.git` refused). Each refusal is printed (`copied=<n> refused: <path>: <why>; …`); a missing file is skipped silently. The copied list is recorded in `.guard.json` `copied`, and the guard blocks the Implementer's `git add` / `git commit` naming one of them (best effort; the role also checks `git diff --cached`). The janitor removes them with the worktree. |
 
 | `liveTests` | `true` or missing (0.5.0; the per-repo app setting "Allow live Claude tests in checks", default off; written only when on). The Planner may then put `scripts/skill-e2e/golden.sh` / `bmad_spike.sh` (which launch `claude`) in the PR's check instead of Manual steps, and the guard lets the Implementer and PR Reviewer run exactly those scripts from their worktree. Without it the guard blocks them. |
+| `prSizeLimit` | integer 1..100000 or missing (0.7.0; the per-repo app setting "PR line limit" in Worktree setup, default 400; written only when set). The most changed lines a PR of this repo may have before `plan.md` needs an `Over limit:` reason; `state.sh` reads it for the plan check (matched by the entry's `name`) and for `state.sh size` / the gate (matched by real path). |
 
 `check: null` means "none known". The Implementer Stop hook (A3) runs only these commands (never status.json's), so without repos.json it does nothing. When the file is missing the skill detects: the start folder itself if it is a git repo (`git -C <folder> rev-parse --show-toplevel` equals the folder), else each child folder that is a git repo, named after its folder. Check per repo, first match wins (ported from DCTerminal `workspace_repos.rs` + `gates.rs`):
 
@@ -174,6 +176,8 @@ request.md names the tickets only, after the user's words: `Tickets from ClickUp
 | `paused` | object or null | `{"reason": "<one line>", "at": "<UTC>"}` when the user declined at a stop or stopped the run (e.g. "plan not approved", "ship declined"); cleared by an approval. The run can be resumed. |
 | `folder` | string | the start folder |
 | `plan` | object or null | `null` until the Planner has written `plan.md`. `reviewRound` (int, 0 before the first review), `verdict` (the last Plan Reviewer verdict: `APPROVED`, `APPROVED WITH CHANGES`, `REQUIRES REVISION`, or null), `openFindings` (int, MEDIUM+ still open), `approved` (bool, mirrors `approval`), `approval` (`{"by": "user" \| "test", "at": "<UTC>"}` or null: written only by `state.sh approve`), `risk` (optional; `null` or missing before the first Risk Reviewer round and in runs from before it): the last Risk Reviewer round, `{"round": <int >= 1>, "verdict": "NO BLOCKING RISKS" | "RISKS FOUND", "openFindings": <MEDIUM+ risks>, "path": "reviews/risk-round<n>.md" | null}`, validated by `state.sh put` (NO BLOCKING RISKS needs `openFindings` 0). A MEDIUM+ risk sends the plan back like a MEDIUM+ finding; LOW risks never do. |
+| `plan.overLimit` / `plan.prFiles` | objects (optional) | 0.7.0, written only by `state.sh approve <run> plan` (a `put` keeps them). `overLimit`: `{"PR1": "<the approved Over limit text>"}` (`{}` when no PR has one); `prFiles`: `{"PR1": ["path", ...]}`, each PR's Files as approved (a path ending in `/` is a folder). Their presence marks a plan approved under the size rules: `state.sh gate` enforces the size limit and Files overlaps only then (a run approved before 0.7.0 has no `overLimit` and keeps today's gate, printing `size: not enforced`). |
+| `mergeChecks` | object (optional) | 0.7.0, written only by `state.sh merge-check` (a `put` keeps it): `{"<repo name>": {"prs": ["PR1", "PR2"], "result": "pass"\|"fail"\|"conflict"\|"error"\|"none", "error": <one line or null>, "log": <path or null>, "at": "<UTC>"}}`: the repo's own check (from `repos.json` only, never status.json's `check.command`) run once on a scratch merge of the repo's reviewed same-repo PRs. Bounded by `DCV2_MERGE_CHECK_TIMEOUT` seconds for the whole command (default 540, under the orchestrator's 10-minute Bash limit); a timeout or interruption is `error`. The scratch worktrees live under `<run>/merge-check/` and are removed after each repo, by the next `merge-check` and by `cleanup`. |
 | `prs` | array | empty until the plan is approved; then one entry per PR of the plan, in plan order |
 | `prs[].id` | string | `PR1`, `PR2`, ... as in `plan.md` |
 | `prs[].title` | string | from `plan.md` (the GitHub PR title) |
@@ -189,6 +193,7 @@ request.md names the tickets only, after the user's words: `Tickets from ClickUp
 | `prs[].prUrl` | string or null | set by `state.sh ship-pr` / `ready` once the GitHub PR exists, and in github mode by `state.sh draft-pr` once the draft exists |
 | `prs[].draft` | bool (optional) | github mode: `true` while the PR is a draft (set by `draft-pr`), `false` after `ready`. Missing = not known / local mode |
 | `prs[].comments` | array (optional) | github mode: one entry per posted review round, `{"round": n, "url": "<comment url>", "head": "<sha reviewed>", "fixesUrl": "<url>"?}` (`head` and `fixesUrl` are extra; `fixesUrl` is the round's "Round n fixes" comment). Written only by `post-review` / `comment`; `put` keeps the recorded value |
+| `prs[].size` | object (optional) | 0.7.0. The PR's measured diff against `baseCommit`, written only by `state.sh size` and `state.sh gate` (PASS/CONCERNS, when the plan enforces size); `put` keeps the recorded value. Keys: `lines` (added + deleted, lockfiles, minified/generated files, snapshots, `dist/`, `build/`, `fixtures/` and `testdata/` not counted), `added`, `deleted`, `files`, `excluded` (ints), `limit` (the repo's `prSizeLimit` or 400), `over` (bool: `lines` > `limit`), `reason` (the PR's approved `Over limit:` text, or null), `overlaps` (`[{"path", "pr"}]`: changed paths another same-repo PR owns per its approved Files), `head`, `at`. The app shows it and never recomputes `over`. |
 | `prs[].state` | string | see below |
 | `prs[].note` | string or null | one human line when something needs attention (blocked story, unresolved findings, push refused); required with `needs-attention` |
 | `prs[].startedAt` | string or null | UTC time the PR first left `pending` (set by `state.sh put`) |
@@ -279,6 +284,16 @@ Who writes what: the Planner writes only inside `<run>/bmad/`, through the runti
 - applied and `plan.md` does not trace to the BMAD documents: `NOT WRITTEN: BMAD mode: plan.md does not trace to the BMAD documents: <problems>` (the first 10, then "and N more"). The problems are: a story (`### S<n>`) with no `- Covers:` line; a `Covers:` line that names no ID and is not one of the two "none" forms; an ID the documents do not contain; a spec `CAP-n` that no story covers and that is not listed out of scope. A `Covers:` line is accepted when it names IDs found in the run's BMAD documents (prefixes `CAP-n`, `AD-n`, `FR-n`, `NFR-n`, `UJ-n`, `SM-n`, `SM-Cn`, exactly as written there), or is exactly `none: <reason>` or `none - <reason>` (a story beyond the spec; `none` in any case, the reason not empty). A spec CAP with no story is accepted when `plan.md` has a `## Out of scope` section with a line `- CAP-n: <reason>` (a line with no reason does not count). `state.sh bmad-check` does not apply this rule, so it can record its result at `plan-approval` whatever `plan.md` holds.
 
 Small and Medium runs in `auto` skip BMAD entirely and approve as before.
+
+### Plan lines: Files, Size, Over limit (0.7.0)
+
+`plan.md` carries the PR split in lines `state.sh` reads at plan approval (`put` and `approve` refuse otherwise with `NOT WRITTEN: plan.md split: <problems>`, at most 10 listed):
+
+- Each story: `- Files: a, b/c.ts, folder/` (comma list; backticks and a leading `./` are dropped; a trailing `/` covers the folder). Missing = refused.
+- Each PR: `- Size: ~<n> lines, <k> stories` (the `~`, thousands separators and `story`/`stories` are tolerated) and, when it has more than 2 stories or more lines than its repo's limit (`prSizeLimit`, default 400), `- Over limit: <one-line reason>`. The user sees every reason at stop #1; approving the plan approves them.
+- At most 5 PRs per run. PRs of one repo are allowed only with disjoint Files (equal paths, or one a folder holding the other, overlap) and no `Depends on` between them.
+
+After approval, `state.sh size <run> <PR id>` measures the real diff and records `prs[].size`; `state.sh gate` re-measures for PASS/CONCERNS and refuses a PR over its limit with no approved reason, a PR with `overlaps`, and a PR that cannot be measured (a plan approved before 0.7.0 is not checked for size). Over-limit PRs end at stop #2 with their reason, or with gate FAIL and `needs-attention`; only the user's reason can waive that FAIL (`WAIVED`). Each PR body has one `Size:` line and, for same-repo siblings, a `Ships with PR<n> (same repo)` line.
 
 ### Readers and schema changes
 

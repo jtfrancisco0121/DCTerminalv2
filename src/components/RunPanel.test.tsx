@@ -83,6 +83,64 @@ describe("PR card actions", () => {
   });
 });
 
+describe("PR size and PRs of one repo", () => {
+  it("shows a size badge per PR with a recorded size, an over-limit marker in words, and none without a size", () => {
+    renderPanel();
+    expect(screen.getByTestId("size-PR1").textContent).toBe("312 lines");
+    expect(screen.getByTestId("size-PR1").getAttribute("title")).toBe("6 files, 1 excluded, limit 400");
+    const over = screen.getByTestId("size-PR2");
+    expect(over.textContent).toBe("512 lines · over 400");
+    expect(over.className).toContain("size-badge-over");
+    expect(over.getAttribute("title")).toBe(
+      "9 files, 0 excluded, limit 400; reason: the parser and its table must ship together",
+    );
+    expect(over.getAttribute("aria-label")).toContain("512 lines · over 400");
+    expect(screen.queryByTestId("size-PR3")).toBeNull();
+  });
+
+  it("says no reason when an over-limit PR has none, and never compares lines with the limit itself", () => {
+    const prs = view.prs.map((pr) =>
+      pr.id === "PR3"
+        ? { ...pr, size: { lines: 900, files: 3, excluded: 0, limit: 400, over: false, reason: null } }
+        : pr.id === "PR5"
+          ? { ...pr, size: { lines: 100, files: 3, excluded: 0, limit: 400, over: true, reason: null } }
+          : pr,
+    );
+    renderPanel({ prs });
+    expect(screen.getByTestId("size-PR3").textContent).toBe("900 lines");
+    expect(screen.getByTestId("size-PR5").textContent).toBe("100 lines · over 400");
+    expect(screen.getByTestId("size-PR5").getAttribute("title")).toContain("; no reason");
+  });
+
+  it("gives two PRs of one repo their own cards, branches and actions", () => {
+    const prs = view.prs.map((pr) => (pr.id === "PR4" ? { ...pr, branch: "dcv2/r-20261022-1304-pr4", worktree: "/abs/ws/mathlib-worktrees/pr4" } : pr));
+    const onCopyBranch = vi.fn();
+    const onPrAction = vi.fn();
+    render(
+      <RunPanelView
+        view={{ ...view, prs }}
+        checking={false}
+        worktrees={{
+          PR1: { prId: "PR1", verified: true, reason: null },
+          PR4: { prId: "PR4", verified: true, reason: null },
+        }}
+        onRerunChecks={vi.fn()}
+        onOpenFile={vi.fn()}
+        onOpenUrl={vi.fn()}
+        onCleanUp={vi.fn()}
+        onPrAction={onPrAction}
+        onCopyBranch={onCopyBranch}
+      />,
+    );
+    expect(view.prs.find((p) => p.id === "PR1")!.repo).toBe(view.prs.find((p) => p.id === "PR4")!.repo);
+    fireEvent.click(within(screen.getByTestId("actions-PR1")).getByText("Copy branch"));
+    fireEvent.click(within(screen.getByTestId("actions-PR4")).getByText("Copy branch"));
+    fireEvent.click(within(screen.getByTestId("actions-PR4")).getByText("Reveal"));
+    expect(onCopyBranch.mock.calls).toEqual([["dcv2/r-20261022-1304-pr1"], ["dcv2/r-20261022-1304-pr4"]]);
+    expect(onPrAction.mock.calls).toEqual([["PR4", "reveal"]]);
+  });
+});
+
 describe("RunPanelView", () => {
   it("shows a draft/ready badge and a link per review-round comment", () => {
     const handlers = renderPanel();
@@ -235,7 +293,7 @@ describe("RunPanelView", () => {
     );
     const row = within(screen.getByTestId("approval-PR2"));
     expect(row.getByText(/✗ fail/)).toBeTruthy();
-    expect(row.getAllByRole("cell")).toHaveLength(5);
+    expect(row.getAllByRole("cell")).toHaveLength(6);
     expect(screen.queryByRole("button", { name: /approve|yes|go ahead/i })).toBeNull();
   });
 

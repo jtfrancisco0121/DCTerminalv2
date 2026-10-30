@@ -48,15 +48,19 @@ cat > "$RUN/plan.md" <<'EOF'
 ## Stories
 ### S1: Fix multiply
 - Tickets: t1
+- Files: multiply.sh
 ### S2: Prefix results
 - Tickets: T-2
+- Files: prefix.sh
 ## Pull requests
 ### PR1: Fix multiply
 - Repo: r
 - Stories: S1
+- Size: ~20 lines, 1 story
 ### PR2: Prefix
 - Repo: rr
 - Stories: S2
+- Size: ~20 lines, 1 story
 ## Manual steps
 None.
 ## Tickets
@@ -133,6 +137,12 @@ expect 0 "approve plan user" bash "$STATE" approve "$RUN" plan user
 is "  plan.approval.by user" "$RUN/status.json" plan.approval.by '"user"'
 has "  logged" "plan approved by the user"
 grep -q "plan approved by the user" "$RUN/log.md" && ok "  log.md has the approval" || bad "  log.md has no approval line"
+# The gate tests below run on a fixture with no worktree. Under the size rules `approve` froze plan.overLimit and the gate would
+# enforce size (and refuse: it cannot measure). Drop the key here, so this fixture is the legacy run: a plan approved before 0.7.0.
+python3 - "$RUN/status.json" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1])); del st["plan"]["overLimit"]; json.dump(st, open(sys.argv[1], "w"))
+PY
 expect 1 "put cannot forge a ship approval" put < <(status shipping reviewed reviewed 'doc["shipApproval"]={"by":"user","at":"2026-10-22T00:00:00Z"}')
 expect 1 "invalid JSON refused" put <<<'{"schema": 1,'
 is "  old file kept" "$RUN/status.json" stage '"plan-approval"'
@@ -177,6 +187,7 @@ expect 0 "WAIVED over FAIL (the user's reason)" bash "$STATE" gate "$RUN" PR1 WA
 grep -q '^waived: "FAIL"$' "$RUN/gates/PR1.yml" && ok "  records what was waived" || bad "  gate file: $(cat "$RUN/gates/PR1.yml")"
 printf '## Verdict\n**APPROVED**\n' > "$RUN/reviews/PR1-round1.md"
 expect 0 "gate PASS over an APPROVED review" bash "$STATE" gate "$RUN" PR1 PASS "no findings; check passes"
+has "  a plan approved before 0.7.0 is not size-checked" "size: not enforced (plan approved before 0.7.0)"
 expect 1 "WAIVED over PASS refused" bash "$STATE" gate "$RUN" PR1 WAIVED "x"
 printf '## Verdict\nAPPROVED\n' > "$RUN/reviews/PR2-round1.md"
 expect 0 "gate CONCERNS for PR2" bash "$STATE" gate "$RUN" PR2 CONCERNS "1 LOW: naming"
@@ -393,6 +404,7 @@ is "  PR2 url" "$RUN/status.json" prs.1.prUrl '"https://github.com/o/rr/pull/8"'
 git -C "$d/origin.git" show-ref --verify -q refs/heads/dcv2/r-t-pr2 && ok "  branch pushed" || bad "  branch not on origin"
 grep -q -- "--body-file $RUN/pr-bodies/PR2.md" "$d/gh.log" && ok "  body from pr-bodies/PR2.md" || bad "  gh args: $(cat "$d/gh.log")"
 grep -q "Plan: Eagle-Eye run r-t" "$RUN/pr-bodies/PR2.md" && ok "  body names the run" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
+grep -qx "Size: not measured" "$RUN/pr-bodies/PR2.md" && ok "  body has one size line" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
 expect 1 "put cannot move an opened PR back" put < <(status shipping local-only reviewed)
 expect 0 "ship-pr again is a no-op" bash "$STATE" ship-pr "$RUN" PR2
 has "  already opened" "PR2 already opened"
@@ -501,7 +513,7 @@ has "  says so" "report.md not written"
 echo "# BMAD mode: size, init, check, and the plan-approval refusal (run folder path has a space)"
 B="$d/App Support/runs/r-b"; mkdir -p "$B"
 printf 'folder: %s\n' "$WS" > "$B/request.md"
-printf '# Plan\n## Stories\n### S1: x\n- Covers: CAP-1, AD-1\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n' > "$B/plan.md"
+printf '# Plan\n## Stories\n### S1: x\n- Files: a.sh\n- Covers: CAP-1, AD-1\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n- Size: ~5 lines, 1 story\n' > "$B/plan.md"
 printf '{"schema":1,"repos":[{"name":"toy \\"quoted\\" repo","path":"%s","check":null}]}\n' "$R" > "$B/repos.json"
 # bstatus <stage>: a minimal status.json document for the BMAD run (no PRs yet)
 bstatus() {
@@ -724,8 +736,8 @@ W="$B/bmad/output/r-b"
 setplan() {
   { printf '# Plan\n## Stories\n'
     local x
-    for x in "$@"; do printf '### %s: t\n' "${x%%|*}"; if [[ -n "${x#*|}" ]]; then printf -- '- Covers: %s\n' "${x#*|}"; fi; done
-    printf '## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n'
+    for x in "$@"; do printf '### %s: t\n- Files: a.sh\n' "${x%%|*}"; if [[ -n "${x#*|}" ]]; then printf -- '- Covers: %s\n' "${x#*|}"; fi; done
+    printf '## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n- Size: ~5 lines, 1 story\n'
     if [[ -n "${EXTRA:-}" ]]; then printf '\n## Out of scope\n%s\n' "$EXTRA"; fi
   } > "$B/plan.md"
 }
@@ -770,7 +782,7 @@ setplan "S1|CAP-1, CAP-2" "S2|FR-7"
 bothrefused "unknown FR-7" "unknown FR-7"
 setplan "S1|CAP-1, CAP-2"
 # non-BMAD runs: no Covers: needed
-printf '# Plan\n## Stories\n### S1: x\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n' > "$B/plan.md"
+printf '# Plan\n## Stories\n### S1: x\n- Files: a.sh\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n- Size: ~5 lines, 1 story\n' > "$B/plan.md"
 rm -f "$B/status.json"; bmeta off
 expect 0 "mode off: put plan-approval without Covers:" bput < <(bstatus plan-approval)
 expect 0 "mode off: approve without Covers:" bash "$STATE" approve "$B" plan user
@@ -983,5 +995,330 @@ echo "# report: what the run could not do"
 bash "$STATE" log "$CRUN" <<<'not done: re-run the checks (the app did not answer: is DCTerminalv2 running?)' >/dev/null
 expect 0 "report" bash "$STATE" report "$CRUN"
 grep -q '^## Not done by the run' "$CRUN/report.md" && grep -qF -- '- re-run the checks (the app did not answer' "$CRUN/report.md" && ok "  listed in report.md" || bad "  report: $(cat "$CRUN/report.md")"
+
+echo "# plan.md split check at plan-approval (small PRs)"
+SP="$d/runs/r-sp"; mkdir -p "$SP"; printf 'folder: %s\n' "$WS" > "$SP/request.md"
+printf '{"schema":1,"repos":[{"name":"r","path":"%s","check":null},{"name":"big","path":"%s","check":null,"prSizeLimit":600}]}\n' "$R" "$RR" > "$SP/repos.json"
+export DCV2_RUN_DIR="$SP"
+spstatus() { python3 - "$SP" "$1" <<'PY'
+import json, os, sys
+run, stage = sys.argv[1:3]
+print(json.dumps({"schema": 1, "runId": os.path.basename(run), "stage": stage, "waitingFor": "plan-approval" if stage == "plan-approval" else None,
+                  "folder": "/x", "plan": {"path": "plan.md", "reviewRound": 1, "verdict": "APPROVED", "openFindings": 0, "approved": False},
+                  "prs": [], "ship": None, "writeback": None, "error": None}))
+PY
+}
+spput() { bash "$STATE" put "$SP/status.json"; }
+st() { printf '### %s: t\n- Files: %s\n' "$1" "$2"; }
+prb() { printf '### %s: t\n- Repo: %s\n- Stories: %s\n- Depends on: %s\n- Size: %s\n' "$1" "$2" "$3" "$4" "$5"; [[ -z "${6:-}" ]] || printf -- '- Over limit: %s\n' "$6"; return 0; }
+# splan: stdin is the stories, then "## Pull requests", then the PR blocks
+splan() { { printf '# Plan\n## Stories\n'; cat; } > "$SP/plan.md"; }
+spboth() { # <label> <must-mention>
+  expect 1 "$1: put refused" spput < <(spstatus plan-approval)
+  has "  split message" "NOT WRITTEN: plan.md split:"; has "  names it" "$2"
+  expect 1 "$1: approve refused" bash "$STATE" approve "$SP" plan user
+  has "  names it (approve)" "$2"
+}
+splan < <(st S1 src/a.ts; st S2 src/b.ts; echo "## Pull requests"; prb PR1 r S1 none "~100 lines, 1 story"; prb PR2 r S2 none "~100 lines, 1 story")
+expect 0 "disjoint same-repo PRs: put" spput < <(spstatus plan-approval)
+expect 0 "disjoint same-repo PRs: approve" bash "$STATE" approve "$SP" plan user
+splan < <(st S1 src/a.ts; st S2 ./src/a.ts; echo "## Pull requests"; prb PR1 r S1 none "~100 lines, 1 story"; prb PR2 r S2 none "~100 lines, 1 story")
+spboth "same file" "PR1 and PR2 (r) both change src/a.ts"
+splan < <(st S1 'src/'; st S2 '`src/a.ts`'; echo "## Pull requests"; prb PR1 r S1 none "~100 lines, 1 story"; prb PR2 r S2 none "~100 lines, 1 story")
+spboth "folder vs file" "both change src/a.ts"
+splan < <(st S1 src/a.ts; st S2 src/b.ts; echo "## Pull requests"; prb PR1 r S1 none "~100 lines, 1 story"; prb PR2 rr S2 none "~100 lines, 1 story"; prb PR3 rr S2 PR2 "~1 lines, 1 story")
+spboth "same-repo Depends on" "PR3 depends on PR2 of the same repo"
+splan < <(st S1 src/a.ts; st S2 src/a.ts; echo "## Pull requests"; prb PR1 r S1 none "~100 lines, 1 story"; prb PR2 rr S2 PR1 "~100 lines, 1 story")
+expect 0 "same files in different repos, cross-repo Depends on: put" spput < <(spstatus plan-approval)
+splan < <(st S1 a; echo "## Pull requests"; for i in 1 2 3 4 5 6; do prb PR$i r$i S1 none "~10 lines, 1 story"; done)
+spboth "6 PRs" "at most 5 per run"; has "  asks to split the request" "split the request into several runs"
+splan < <(printf '### S1: t\n- Tickets: x\n'; echo "## Pull requests"; prb PR1 r S1 none "~10 lines, 1 story")
+spboth "story without Files" "S1 has no Files: line"
+splan < <(st S1 a; echo "## Pull requests"; printf '### PR1: t\n- Repo: r\n- Stories: S1\n')
+spboth "PR without Size" "PR1 has no parseable Size: line"
+splan < <(st S1 a; st S2 b; st S3 c; echo "## Pull requests"; prb PR1 r "S1, S2, S3" none "~100 lines, 3 stories")
+spboth "3-story PR without Over limit" "PR1 is over the PR limit (3 stories"
+splan < <(st S1 a; echo "## Pull requests"; prb PR1 r S1 none "~500 lines, 1 story")
+spboth "500 lines without Over limit (default 400)" "limit 400"
+splan < <(st S1 a; echo "## Pull requests"; prb PR1 r S1 none "~500 lines, 1 story" "the parser and its table must ship together")
+expect 0 "500 lines with an Over limit line: put" spput < <(spstatus plan-approval)
+splan < <(st S1 a; echo "## Pull requests"; prb PR1 big S1 none "~500 lines, 1 story")
+expect 0 "prSizeLimit 600 accepts ~500 lines: put" spput < <(spstatus plan-approval)
+splan < <(st S1 a; echo "## Pull requests"; prb PR1 big S1 none "~700 lines, 1 story")
+spboth "700 lines over prSizeLimit 600" "limit 600"
+splan < <(st S1 a; st S2 b; echo "## Pull requests"; prb PR1 r S1 none "1,900 lines, 8 stories" "big on purpose"; prb PR2 big S2 none "350 lines, 1 story")
+expect 0 "'1,900 lines, 8 stories' and '350 lines, 1 story' parse" spput < <(spstatus plan-approval)
+splan < <(st S1 a; echo "## Pull requests"; printf '### PR1: t\n- Stories: S1\n- Size: ~300 lines, 1 story\n')
+expect 0 "a PR with no Repo: line uses the default limit: put" spput < <(spstatus plan-approval)
+splan < <(for i in 1 2 3 4 5 6 7 8 9 10 11 12; do printf '### S%s: t\n' "$i"; done; echo "## Pull requests"; printf '### PR1: t\n- Repo: r\n- Stories: S1\n- Size: ~1 lines, 1 story\n')
+expect 1 "12 problems: put refused" spput < <(spstatus plan-approval)
+has "  caps the list" "; and 2 more"
+c="$(grep -o ' has no Files: line' <<<"$out" | wc -l | tr -d ' ')"; [[ "$c" -le 10 ]] && ok "  at most 10 listed ($c)" || bad "  $c listed"
+echo "# bmad-check at plan-approval still records its result with a split problem"
+splan < <(st S1 a; st S2 a; echo "## Pull requests"; prb PR1 r S1 none "~10 lines, 1 story"; prb PR2 r S2 none "~10 lines, 1 story")
+printf '{"schema":1,"bmad":{"mode":"on","version":"x"}}\n' > "$SP/meta.json"
+if bash "$STATE" bmad-init "$SP" >/dev/null 2>&1; then
+  mkdir -p "$SP/bmad/output/r-sp/spec-toy" "$SP/bmad/output/r-sp/architecture-toy"
+  printf -- '---\nid: SPEC-toy\n---\n\n# Toy spec\n\n## Capabilities\n\n- **CAP-1** users can add\n' > "$SP/bmad/output/r-sp/spec-toy/spec-toy.md"
+  printf -- '---\nname: toy\nstatus: draft\n---\n\n# Spine\n\n## Invariants & Rules\n\n### AD-1 - Layers\n\n- **Binds:** all\n- **Prevents:** drift\n- **Rule:** UI never calls the DB\n' > "$SP/bmad/output/r-sp/architecture-toy/architecture-toy.md"
+  expect 0 "bmad-check at plan-approval with a split problem" bash "$STATE" bmad-check "$SP"
+  has "  records pass" "bmad-check=pass"
+else
+  ok "  (bmad-init needs node: skipped)"
+fi
+export DCV2_RUN_DIR="$RUN"
+
+echo "# size (prs[].size), plan.overLimit / plan.prFiles, guard lock"
+# szsetup <tag> [over limit text for PR1]: a run <tag> with its own repo "sz<tag>" and two same-repo PRs (PR1 owns src/a.ts etc., PR2 owns other/),
+# the plan approved, the PRs in status building and both worktrees made. Sets SZ (run), SR (repo), SZ1 / SZ2 (worktrees), SZBASE.
+szsetup() {
+  local tag="$1" over="${2:-}"
+  SZ="$d/runs/r-$tag"; SR="$WS/sz$tag"; mkdir -p "$SZ" "$SR"
+  git -C "$SR" init -q -b main
+  seq 1 20 > "$SR/old.txt"; mkdir -p "$SR/src"; echo keep > "$SR/src/keep.txt"
+  # a tiny app for the merge-check cases: lib.sh defines greet, every app*.sh calls it, check.sh runs them all
+  echo 'greet() { echo hello; }' > "$SR/lib.sh"; printf '. ./lib.sh\ngreet\n' > "$SR/app1.sh"
+  printf 'for f in app*.sh; do bash "$f" >/dev/null || exit 1; done\n' > "$SR/check.sh"
+  git -C "$SR" add -A; git -C "$SR" -c user.name=t -c user.email=t@t commit -q -m init
+  SZBASE="$(git -C "$SR" rev-parse HEAD)"
+  printf 'folder: %s\n' "$WS" > "$SZ/request.md"
+  printf '{"schema":1,"repos":[{"name":"sz%s","path":"%s","check":"true"}]}\n' "$tag" "$SR" > "$SZ/repos.json"
+  { printf '# Plan\n## Stories\n### S1: First\n- Files: src/a.ts, old.txt, new.txt, img.bin, package-lock.json, fixtures/\n### S2: Second\n- Files: other/\n'
+    printf '## Pull requests\n### PR1: First\n- Repo: sz%s\n- Stories: S1\n- Depends on: none\n- Size: ~20 lines, 1 story\n' "$tag"
+    [[ -z "$over" ]] || printf -- '- Over limit: %s\n' "$over"
+    printf '### PR2: Second\n- Repo: sz%s\n- Stories: S2\n- Depends on: none\n- Size: ~20 lines, 1 story\n' "$tag"; } > "$SZ/plan.md"
+  export DCV2_RUN_DIR="$SZ"
+  szstatus plan-approval | bash "$STATE" put "$SZ/status.json" >/dev/null
+  bash "$STATE" approve "$SZ" plan user >/dev/null
+  SZ1="$WS/sz$tag-worktrees/dcv2-r-$tag-pr1"; SZ2="$WS/sz$tag-worktrees/dcv2-r-$tag-pr2"
+  szstatus building | bash "$STATE" put "$SZ/status.json" >/dev/null
+  bash "$STATE" worktree "$SZ" "$SR" PR1 "$SZBASE" >/dev/null
+  bash "$STATE" worktree "$SZ" "$SR" PR2 "$SZBASE" >/dev/null
+}
+# szstatus <stage> [python]: a status document for the current $SZ / $SR run
+szstatus() {
+  python3 - "$SZ" "$SR" "$SZBASE" "$@" <<'PY'
+import json, os, sys
+run, repo, base, stage = sys.argv[1:5]
+extra = sys.argv[5] if len(sys.argv) > 5 else ""
+rid = os.path.basename(run); tag = rid[2:]
+def pr(i):
+    lc = f"pr{i}"
+    return {"id": f"PR{i}", "title": f"PR {i}", "repo": "sz" + tag, "repoPath": repo, "branch": f"dcv2/{rid}-{lc}", "base": "main", "baseCommit": base,
+            "worktree": os.path.join(os.path.dirname(repo), "sz" + tag + "-worktrees", f"dcv2-{rid}-{lc}"), "dependsOn": [],
+            "stories": {"done": 1, "total": 1, "ids": [f"S{i}"]}, "commits": 0, "check": {"command": "true", "result": "pass", "summary": None},
+            "review": {"round": 1, "verdict": "APPROVED", "openFindings": 0, "path": None}, "prUrl": None, "state": "building", "note": None}
+doc = {"schema": 1, "runId": rid, "stage": stage, "waitingFor": "plan-approval" if stage == "plan-approval" else None, "folder": os.path.dirname(repo),
+       "plan": {"path": "plan.md", "reviewRound": 1, "verdict": "APPROVED", "openFindings": 0, "approved": False},
+       "prs": [pr(1), pr(2)] if stage not in ("planning", "plan-approval") else [], "ship": None, "writeback": None, "error": None}
+exec(extra)
+print(json.dumps(doc))
+PY
+}
+szcommit() { git -C "$1" add -A && git -C "$1" -c user.name=t -c user.email=t@t commit -q -m "$2"; }
+szsetup sa
+is "plan.overLimit is {} when no PR has a reason" "$SZ/status.json" plan.overLimit '{}'
+is "plan.prFiles frozen at approve (PR2)" "$SZ/status.json" plan.prFiles.PR2 '["other/"]'
+expect 1 "size of a PR that is not in status.json is refused" bash "$STATE" size "$SZ" PR9
+expect 0 "size of an unchanged PR" bash "$STATE" size "$SZ" PR1
+has "  zero lines" "size=0 files=0 excluded=0 limit=400 over=no reason=none overlaps=0"
+seq 1 10 > "$SZ1/src/a.ts"
+seq 1 5000 > "$SZ1/package-lock.json"
+mkdir -p "$SZ1/fixtures"; seq 1 50 > "$SZ1/fixtures/f.txt"
+szcommit "$SZ1" "lockfile, fixture and 10 lines"
+expect 0 "size: a lockfile and a fixture are not counted" bash "$STATE" size "$SZ" PR1
+has "  10 lines, 1 file, 2 excluded" "size=10 files=1 excluded=2 limit=400 over=no reason=none overlaps=0"
+is "  prs[0].size.lines 10" "$SZ/status.json" prs.0.size.lines 10
+is "  prs[0].size.excluded 2" "$SZ/status.json" prs.0.size.excluded 2
+is "  prs[0].size.over false" "$SZ/status.json" prs.0.size.over false
+is "  prs[0].size.reason null" "$SZ/status.json" prs.0.size.reason null
+python3 - "$SZ/status.json" <<'PY' && ok "  every AD-4 key is there" || bad "  size keys"
+import json, sys
+z = json.load(open(sys.argv[1]))["prs"][0]["size"]
+assert sorted(z) == sorted(["lines", "added", "deleted", "files", "excluded", "limit", "over", "reason", "overlaps", "head", "at"]), sorted(z)
+PY
+git -C "$SZ1" mv old.txt new.txt; echo extra1 >> "$SZ1/new.txt"; echo extra2 >> "$SZ1/new.txt"
+printf '\000\001\002\003' > "$SZ1/img.bin"
+szcommit "$SZ1" "rename with 2 added lines, and a binary file"
+expect 0 "size: a rename counts its changed lines only, a binary file counts 0 lines and 1 file" bash "$STATE" size "$SZ" PR1
+has "  12 lines in 3 files" "size=12 files=3 excluded=2 limit=400 over=no reason=none overlaps=0"
+is "  added 12, deleted 0" "$SZ/status.json" prs.0.size.added 12
+echo "# put never changes prs[].size, plan.overLimit, plan.prFiles"
+expect 0 "put without size keeps the recorded size" bash "$STATE" put "$SZ/status.json" < <(szstatus building)
+is "  size kept" "$SZ/status.json" prs.0.size.lines 12
+expect 0 "put with a forged size on PR1 and a new one on PR2" bash "$STATE" put "$SZ/status.json" < <(szstatus building 'z={"lines":1,"added":1,"deleted":0,"files":1,"excluded":0,"limit":9,"over":False,"reason":None,"overlaps":[],"head":"x","at":"2026-10-30T00:00:00Z"}; doc["prs"][0]["size"]=z; doc["prs"][1]["size"]=z')
+has "  says it kept the recorded value" "size is set only by"
+is "  PR1 size kept" "$SZ/status.json" prs.0.size.lines 12
+is "  PR2 got no size" "$SZ/status.json" prs.1.size null
+expect 0 "put with forged plan.overLimit / plan.prFiles" bash "$STATE" put "$SZ/status.json" < <(szstatus building 'doc["plan"]["overLimit"]={"PR1":"forged"}; doc["plan"]["prFiles"]={"PR2":["src/a.ts"]}')
+has "  says so" "is set only by"
+is "  overLimit kept" "$SZ/status.json" plan.overLimit '{}'
+is "  prFiles kept" "$SZ/status.json" plan.prFiles.PR2 '["other/"]'
+expect 0 "a malformed size from a put is dropped, not stored" bash "$STATE" put "$SZ/status.json" < <(szstatus building 'doc["prs"][0]["size"]={"lines":"many"}')
+is "  the recorded size is still there" "$SZ/status.json" prs.0.size.lines 12
+is "  schema stays 1" "$SZ/status.json" schema 1
+sed -i.bak 's#other/#src/a.ts#' "$SZ/plan.md"; rm -f "$SZ/plan.md.bak"
+expect 0 "size after a plan.md edit still uses the frozen Files" bash "$STATE" size "$SZ" PR1
+is "  prFiles unchanged by the edit" "$SZ/status.json" plan.prFiles.PR2 '["other/"]'
+echo "# size: overlaps and the canonical worktree"
+echo changed > "$SZ2/src/a.ts"; echo new > "$SZ2/src/z.ts"
+szcommit "$SZ2" "PR2 touches PR1's src/a.ts"
+expect 0 "size: a path another same-repo PR owns is an overlap" bash "$STATE" size "$SZ" PR2
+has "  overlaps=1" "overlaps=1"; has "  names the path and PR" "overlap: src/a.ts (PR1)"
+is "  recorded" "$SZ/status.json" prs.1.size.overlaps.0.path '"src/a.ts"'
+rm -rf "$SZ2"; git -C "$SR" worktree prune
+expect 1 "size refused when the worktree is gone" bash "$STATE" size "$SZ" PR2
+has "  says why" "NOT MEASURED"
+is "  the old record is kept" "$SZ/status.json" prs.1.size.overlaps.0.path '"src/a.ts"'
+echo "# two worktree calls at once both end up recorded (guard lock)"
+for i in 3 4 5 6; do bash "$STATE" worktree "$SZ" "$SR" PR$i "$SZBASE" >/dev/null 2>&1 & done
+wait
+n="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["worktrees"]))' "$SZ/.guard.json")"
+[[ "$n" == 6 ]] && ok "  .guard.json records all 6 worktrees" || bad "  .guard.json records $n of 6 worktrees"
+export DCV2_RUN_DIR="$RUN"
+
+echo "# gate: size and overlaps are enforced for a plan approved under the size rules"
+szsetup sb
+seq 1 450 > "$SZ1/src/a.ts"; szcommit "$SZ1" "450 lines"
+mkdir -p "$SZ/reviews"; printf '## Verdict\nAPPROVED\n' > "$SZ/reviews/PR1-round1.md"; printf '## Verdict\nAPPROVED\n' > "$SZ/reviews/PR2-round1.md"
+expect 1 "gate PASS refused: over the limit with no reason" bash "$STATE" gate "$SZ" PR1 PASS "clean"
+has "  names size and limit" "PR1 is 450 lines, over its limit 400, with no over-limit reason"
+expect 1 "gate CONCERNS refused too" bash "$STATE" gate "$SZ" PR1 CONCERNS "1 LOW"
+is "  the gate re-measured and recorded the size" "$SZ/status.json" prs.0.size.over true
+[[ ! -f "$SZ/gates/PR1.yml" ]] && ok "  no gate file written" || bad "  gate file exists"
+expect 0 "gate FAIL is not size-checked" bash "$STATE" gate "$SZ" PR1 FAIL "over the size limit without a reason"
+expect 0 "WAIVED over FAIL is accepted (the user's reason)" bash "$STATE" gate "$SZ" PR1 WAIVED "user: keep it as one PR"
+grep -q '^waived: "FAIL"$' "$SZ/gates/PR1.yml" && ok "  waiver recorded in the gate file" || bad "  gate: $(cat "$SZ/gates/PR1.yml")"
+echo changed > "$SZ2/src/a.ts"; szcommit "$SZ2" "PR2 changes a path PR1 owns"
+expect 1 "gate PASS refused with overlaps" bash "$STATE" gate "$SZ" PR2 PASS "clean"
+has "  names the path and the owner" "src/a.ts (PR1)"
+rm -rf "$SZ2"; git -C "$SR" worktree prune
+expect 1 "gate PASS refused when the worktree is missing" bash "$STATE" gate "$SZ" PR2 PASS "clean"
+has "  says it cannot be measured" "cannot be"
+szsetup sc "the parser and its table must ship together"
+is "  the Over limit reason is frozen at approve" "$SZ/status.json" plan.overLimit.PR1 '"the parser and its table must ship together"'
+seq 1 450 > "$SZ1/src/a.ts"; szcommit "$SZ1" "450 lines"
+mkdir -p "$SZ/reviews"; printf '## Verdict\nAPPROVED\n' > "$SZ/reviews/PR1-round1.md"
+expect 0 "gate PASS for the same diff when the plan carried an Over limit reason" bash "$STATE" gate "$SZ" PR1 PASS "clean"
+is "  size.over true" "$SZ/status.json" prs.0.size.over true
+is "  size.reason is the approved text" "$SZ/status.json" prs.0.size.reason '"the parser and its table must ship together"'
+echo "# merge-check: the repo's check on a scratch merge of the reviewed same-repo PRs"
+# mcrepos <check|-> [setup]: the run's repos.json with the given check (- = none)
+mcrepos() {
+  python3 - "$SZ/repos.json" "$SR" "sz${SZ##*/r-}" "$1" "${2:-}" <<'PY'
+import json, sys
+f, repo, name, check, setup = sys.argv[1:6]
+e = {"name": name, "path": repo, "check": None if check == "-" else check}
+if setup:
+    e["setup"] = setup
+json.dump({"schema": 1, "repos": [e]}, open(f, "w"))
+PY
+}
+# mcmark [python]: both PRs reviewed with a passing check (test data written straight into the fixture)
+mcmark() {
+  python3 - "$SZ/status.json" "${1:-}" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1]))
+for p in st["prs"]:
+    p["state"] = "reviewed"; p["check"]["result"] = "pass"
+exec(sys.argv[2])
+json.dump(st, open(sys.argv[1], "w"))
+PY
+}
+# mcprep <tag> rename|ok|conflict: a run whose PR1 and PR2 each pass the check alone
+mcprep() {
+  szsetup "$1"; MCN="sz$1"
+  mcrepos "bash check.sh"
+  case "$2" in
+    rename) sed -i.bak 's/greet/salute/g' "$SZ1/lib.sh" "$SZ1/app1.sh"; rm -f "$SZ1"/*.bak
+            printf '. ./lib.sh\ngreet\n' > "$SZ2/app2.sh" ;;
+    ok)     echo 'extra() { :; }' >> "$SZ1/lib.sh"; printf '. ./lib.sh\ngreet\n' > "$SZ2/app2.sh" ;;
+    conflict) sed -i.bak 's/hello/one/' "$SZ1/lib.sh"; sed -i.bak 's/hello/two/' "$SZ2/lib.sh"; rm -f "$SZ1"/*.bak "$SZ2"/*.bak ;;
+  esac
+  szcommit "$SZ1" "PR1 change"; szcommit "$SZ2" "PR2 change"
+  mcmark
+  MCHEADS="$(git -C "$SR" rev-parse "dcv2/r-$1-pr1" "dcv2/r-$1-pr2")"
+}
+mcclean() { # <label>: no scratch worktree, no scratch folder, the PR branches untouched
+  [[ -z "$(git -C "$SR" worktree list | grep merge-check)" ]] && ok "  [$1] no scratch worktree is registered" || bad "  [$1] $(git -C "$SR" worktree list)"
+  [[ -z "$(ls -A "$SZ/merge-check" 2>/dev/null)" ]] && ok "  [$1] no scratch folder left" || bad "  [$1] $(ls -A "$SZ/merge-check")"
+  [[ "$(git -C "$SR" rev-parse "dcv2/r-${SZ##*/r-}-pr1" "dcv2/r-${SZ##*/r-}-pr2")" == "$MCHEADS" ]] && ok "  [$1] the PR branches' heads are unchanged" || bad "  [$1] a PR branch moved"
+}
+mcprep mca rename
+( cd "$SZ1" && bash check.sh ) && ( cd "$SZ2" && bash check.sh ) && ok "each PR's check passes alone" || bad "a PR's own check fails"
+expect 0 "merge-check: PR2 calls a function PR1 renamed" bash "$STATE" merge-check "$SZ"
+has "  fail although each PR passes alone" "merge-check szmca: fail (PR1+PR2)"
+is "  recorded in mergeChecks" "$SZ/status.json" mergeChecks.szmca.result '"fail"'
+is "  with the PRs" "$SZ/status.json" mergeChecks.szmca.prs '["PR1", "PR2"]'
+grep -q "exit code" "$SZ/logs/merge-check-szmca.log" && ok "  the check's output is in the log" || bad "  log: $(cat "$SZ/logs/merge-check-szmca.log" 2>&1)"
+mcclean rename
+expect 0 "put cannot change mergeChecks" bash "$STATE" put "$SZ/status.json" < <(szstatus building 'doc["prs"][0]["state"]="reviewed"; doc["mergeChecks"]={"szmca":{"prs":["PR1"],"result":"pass","error":None,"log":None,"at":"2026-10-30T00:00:00Z"}}')
+has "  says so" "mergeChecks is set only by"
+is "  the recorded result is kept" "$SZ/status.json" mergeChecks.szmca.result '"fail"'
+mcprep mcb ok
+expect 0 "merge-check: two compatible PRs" bash "$STATE" merge-check "$SZ"
+has "  pass" "merge-check szmcb: pass (PR1+PR2)"
+mcclean compatible
+mcprep mcc conflict
+expect 0 "merge-check: two PRs editing the same line" bash "$STATE" merge-check "$SZ"
+has "  conflict" "merge-check szmcc: conflict (PR1+PR2)"
+is "  recorded" "$SZ/status.json" mergeChecks.szmcc.result '"conflict"'
+mcclean conflict
+echo "# merge-check: the command is repos.json's check, never status.json's"
+mcprep mcd ok
+mcrepos "echo REPOS-JSON-CHECK; bash check.sh"
+mcmark "for p in st['prs']: p['check']['command'] = 'touch $d/forged-marker'"
+expect 0 "merge-check with a forged check.command in status.json" bash "$STATE" merge-check "$SZ"
+has "  pass" "merge-check szmcd: pass"
+[[ ! -e "$d/forged-marker" ]] && ok "  the forged command never ran" || bad "  the forged command ran"
+grep -q "REPOS-JSON-CHECK" "$SZ/logs/merge-check-szmcd.log" && ok "  repos.json's command is what ran" || bad "  log: $(cat "$SZ/logs/merge-check-szmcd.log")"
+mcrepos "-"
+expect 0 "merge-check: a repo with no check in repos.json" bash "$STATE" merge-check "$SZ"
+has "  none" "merge-check szmcd: none (PR1+PR2)"
+echo "# merge-check: setup log label, needs-attention PRs, one PR per repo"
+mcprep mce ok
+mkdir -p "$SZ/logs"; printf 'PR1 setup log\n' > "$SZ/logs/PR1-setup.txt"; cp "$SZ/logs/PR1-setup.txt" "$d/pr1-setup.keep"
+mcrepos "bash check.sh" "echo MC-SETUP-RAN"
+mcmark 'st["prs"][1]["state"] = "needs-attention"; st["prs"][1]["note"] = "a MEDIUM is open"'
+expect 0 "merge-check includes a needs-attention PR whose check passed" bash "$STATE" merge-check "$SZ"
+has "  both PRs" "merge-check szmce: pass (PR1+PR2)"
+cmp -s "$SZ/logs/PR1-setup.txt" "$d/pr1-setup.keep" && ok "  logs/PR1-setup.txt is unchanged" || bad "  PR1's setup log was overwritten"
+grep -q "MC-SETUP-RAN" "$SZ/logs/merge-check-szmce-setup.txt" && ok "  the setup ran under its own log" || bad "  setup log: $(cat "$SZ/logs/merge-check-szmce-setup.txt" 2>&1)"
+mcmark 'st["prs"][1]["state"] = "building"'
+expect 0 "merge-check with one reviewed PR in the repo" bash "$STATE" merge-check "$SZ"
+has "  nothing to check" "merge-check: none"
+mcmark 'st["prs"][1]["state"] = "needs-attention"; st["prs"][1]["note"] = "x"; st["prs"][1]["check"]["result"] = "fail"'
+expect 0 "merge-check ignores a needs-attention PR whose check failed" bash "$STATE" merge-check "$SZ"
+has "  nothing to check" "merge-check: none"
+echo "# merge-check: time bound, interruption, stale scratch"
+mcprep mcf ok
+mcrepos "sleep 4; touch $d/late-marker"
+expect 0 "merge-check with a check that outlives DCV2_MERGE_CHECK_TIMEOUT" env DCV2_MERGE_CHECK_TIMEOUT=2 bash "$STATE" merge-check "$SZ"
+has "  error, timed out" "merge-check szmcf: error (PR1+PR2) timed out after 2 s"
+is "  recorded" "$SZ/status.json" mergeChecks.szmcf.result '"error"'
+mcclean timeout
+mcrepos "sleep 3; touch $d/int-marker"
+( bash "$STATE" merge-check "$SZ" > "$d/mc-int.out" 2>&1; echo $? > "$d/mc-int.rc" ) &
+MCBG=$!
+for _ in $(seq 1 50); do [[ -s "$SZ/merge-check/.running.json" ]] && break; sleep 0.2; done
+MCPY="$(pgrep -f "merge-check $SZ" | grep -v "^$MCBG$" | head -50 | while read -r p; do [[ "$(ps -o comm= -p "$p")" == *ython* ]] && echo "$p"; done | head -1)"
+[[ -n "$MCPY" ]] && kill -TERM "$MCPY" 2>/dev/null || true
+wait "$MCBG" || true
+sleep 4
+[[ "$(cat "$d/mc-int.rc" 2>/dev/null)" != 0 ]] && ok "  an interrupted merge-check exits non-zero" || bad "  exit: $(cat "$d/mc-int.rc" 2>&1) $(cat "$d/mc-int.out")"
+is "  recorded as error: interrupted" "$SZ/status.json" mergeChecks.szmcf.error '"interrupted"'
+[[ ! -e "$d/late-marker" && ! -e "$d/int-marker" ]] && ok "  the killed checks never wrote their markers" || bad "  a marker appeared"
+mcclean interrupted
+mcrepos "bash check.sh"
+git -C "$SR" worktree add -q --detach "$SZ/merge-check/szmcf" "$SZBASE"
+expect 0 "merge-check removes a stale scratch worktree and then succeeds" bash "$STATE" merge-check "$SZ"
+has "  pass" "merge-check szmcf: pass (PR1+PR2)"
+mcclean stale-sweep
+git -C "$SR" worktree add -q --detach "$SZ/merge-check/szmcf" "$SZBASE"
+mcmark 'st["stage"] = "done"; st["shipApproval"] = {"by": "user", "at": "2026-10-30T00:00:00Z"}; st["ship"] = {"remote": None, "pushed": False, "note": "x"}'
+expect 0 "cleanup at done removes a stale scratch worktree" bash "$STATE" cleanup "$SZ"
+has "  says so" "merge-check scratch removed"
+mcclean cleanup
+export DCV2_RUN_DIR="$RUN"
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

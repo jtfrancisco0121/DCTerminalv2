@@ -797,6 +797,24 @@ mod tests {
     }
 
     #[test]
+    fn two_prs_of_one_repo_are_cleaned_one_at_a_time() {
+        // PR1 and PR2 share a repo: the merged one goes, the open one is untouched.
+        let s = setup("done", &[1, 2], &[]);
+        run(
+            &s.repo,
+            &["merge", "-q", "--no-edit", &format!("dcv2/{RUN}-pr1")],
+        );
+        let mut fake = Fake::default();
+        fake.prs.insert(url(1), info("MERGED", 1, &s.tips[&1]));
+        fake.prs.insert(url(2), info("OPEN", 2, &s.tips[&2]));
+        let recs = cleanup_run(&s.run_dir, &fake);
+        assert_eq!(recs.len(), 1, "{recs:?}");
+        assert_eq!(by(&recs, "PR1").outcome, "cleaned");
+        assert!(!s.wt(1).exists() && !s.branch(1) && !s.on_remote(1));
+        assert!(s.wt(2).exists() && s.branch(2) && s.on_remote(2));
+    }
+
+    #[test]
     fn a_merged_pr_is_cleaned_and_others_are_left_alone() {
         // PR1 merged (and its merge pulled into main), PR2 open, PR3 closed,
         // PR4 merged but the remote tip moved, PR5 merged with a dirty
