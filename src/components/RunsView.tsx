@@ -8,6 +8,7 @@ import { errorText } from "./InlineNotice";
 import { TextDialog } from "./RunPanel";
 import { QueueSection } from "./QueueSection";
 import { BatchOverview } from "./BatchOverview";
+import { EpicsSection } from "./EpicsSection";
 
 type Props = {
   windowId: string;
@@ -60,6 +61,7 @@ export function RunsView({ windowId, onClose, onStarted }: Props) {
     <Dialog title="Runs" onClose={onClose} className="runs-dialog">
       <QueueSection />
       <BatchOverview />
+      <EpicsSection />
       <div className="runs-filters">
         <input
           className="text-input"

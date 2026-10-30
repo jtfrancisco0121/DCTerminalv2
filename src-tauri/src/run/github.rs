@@ -262,6 +262,8 @@ pub fn sweep(
 ) -> usize {
     let now = chrono::Utc::now();
     let mut calls = 0;
+    // The dependency runs of an open epic are asked about whatever their age: a wave waits on their merges.
+    let pinned = super::epics::dependency_runs(data);
     for run in super::folder::list_runs(data) {
         if calls >= MAX_CALLS_PER_PASS {
             break;
@@ -271,7 +273,7 @@ pub fn sweep(
             .as_deref()
             .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
             .is_some_and(|t| now.signed_duration_since(t) <= chrono::Duration::days(MAX_AGE_DAYS));
-        if run.adopted || !recent {
+        if run.adopted || (!recent && !pinned.contains(&run.run_dir)) {
             continue;
         }
         let dir = PathBuf::from(&run.run_dir);
@@ -606,5 +608,70 @@ mod tests {
         // The next pass reads the two never-read PRs first.
         sweep(&data, &fake, &mut asked, ASK_EVERY);
         assert_eq!(read_github(&run_dir).prs.len(), 12);
+    }
+
+    #[test]
+    fn a_dependency_run_of_an_open_epic_older_than_thirty_days_is_still_asked_about() {
+        let (_d, data, run) = setup("done", 1);
+        let old = (chrono::Utc::now() - chrono::Duration::days(MAX_AGE_DAYS + 5))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+        let mut status: Value =
+            serde_json::from_str(&std::fs::read_to_string(run.join("status.json")).unwrap())
+                .unwrap();
+        status["updatedAt"] = json!(old);
+        std::fs::write(run.join("status.json"), status.to_string()).unwrap();
+        let fake = Fake {
+            prs: HashMap::from([(url(1), gh("MERGED", 1, None))]),
+            ..Default::default()
+        };
+        assert_eq!(
+            sweep(&data, &fake, &mut HashMap::new(), Duration::ZERO),
+            0,
+            "too old, no epic: not asked"
+        );
+        // An epic-plan run (done) that started wave 1 as this run, with a wave 2 still to do, pins it.
+        let epic = data.join("runs").join("r-epic");
+        std::fs::create_dir_all(&epic).unwrap();
+        std::fs::write(
+            epic.join("meta.json"),
+            json!({"mode": "epic-plan"}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            epic.join("status.json"),
+            json!({"stage": "done", "updatedAt": now_text(), "prs": []}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            epic.join("waves.json"),
+            json!({"waves": [
+                {"n": 1, "title": "a", "tickets": ["t1"], "dependsOn": []},
+                {"n": 2, "title": "b", "tickets": ["t2"], "dependsOn": [1]}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            epic.join("tickets.json"),
+            json!({"tasks": [{"id": "t1"}, {"id": "t2"}]}).to_string(),
+        )
+        .unwrap();
+        let mut state = super::super::dispatch::Dispatch::default();
+        state.epics.push(super::super::dispatch::Epic {
+            run_dir: epic.display().to_string(),
+            wave_runs: vec![super::super::dispatch::WaveRun {
+                n: 1,
+                entry_id: "q".into(),
+                run_dir: Some(run.display().to_string()),
+            }],
+            ..Default::default()
+        });
+        super::super::dispatch::save(&data, &state).unwrap();
+        assert_eq!(
+            sweep(&data, &fake, &mut HashMap::new(), Duration::ZERO),
+            1,
+            "pinned by the open epic"
+        );
     }
 }

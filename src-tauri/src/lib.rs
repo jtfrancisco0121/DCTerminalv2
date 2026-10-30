@@ -207,6 +207,8 @@ pub fn run() {
             run::dispatch::dispatch_runs,
             run::dispatch::batch_overview,
             run::dispatch::batch_remove_run,
+            run::epics::epics_overview,
+            run::epics::epic_start_wave,
             run::dispatch::dispatch_move,
             run::dispatch::dispatch_cancel,
             run::dispatch::dispatch_start_now,

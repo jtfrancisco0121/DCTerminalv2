@@ -54,6 +54,11 @@ export type Batch = { id: string; createdAt: string; rows: BatchRow[]; waitingFo
 export const batchOverview = () => invoke<Batch[]>("batch_overview");
 export const batchRemoveRun = (batchId: string, entryId: string) => invoke<void>("batch_remove_run", { batchId, entryId });
 
+export type WaveCard = { n: number; title: string; ticketIds: string[]; state: "done" | "building" | "ready" | "waiting"; reason: string | null };
+export type Epic = { runDir: string; runId: string; problem: string | null; cards: WaveCard[] };
+export const epicsOverview = () => invoke<Epic[]>("epics_overview");
+export const epicStartWave = (runDir: string, n: number) => invoke<string>("epic_start_wave", { runDir, n });
+
 /** One line for a queue entry's state: its reason, or that it starts when a slot is free. */
 export function queueStateText(e: QueueEntry): string {
   if (e.state === "starting") return "starting now";

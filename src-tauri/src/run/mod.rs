@@ -13,6 +13,7 @@ pub mod check;
 pub mod cleanup;
 pub mod dispatch;
 pub mod duplicate;
+pub mod epics;
 pub mod folder;
 pub mod git;
 pub mod github;

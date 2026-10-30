@@ -38,6 +38,26 @@ pub struct Entry {
     /// Starts through the cap check regardless (a user's "Start now").
     #[serde(default)]
     pub bypass_cap: bool,
+    /// The epic wave this entry starts, when it is one.
+    #[serde(default)]
+    pub wave: Option<WaveRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveRef {
+    pub epic_run: String,
+    pub n: u32,
+}
+
+/// One started (or queued) wave of an epic: its entry and, once started, its run folder.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveRun {
+    pub n: u32,
+    pub entry_id: String,
+    #[serde(default)]
+    pub run_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -75,6 +95,8 @@ pub struct Epic {
     /// Waves already queued or started.
     #[serde(default)]
     pub started: Vec<u32>,
+    #[serde(default)]
+    pub wave_runs: Vec<WaveRun>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -284,6 +306,7 @@ pub fn enqueue(
         started_at: None,
         batch_id,
         bypass_cap: false,
+        wave: None,
     });
     id
 }
@@ -406,6 +429,7 @@ pub fn on_tick(app: &AppHandle, tab_run_dirs: &HashSet<String>) {
         let started = started_entry_ids(&data);
         let _ = with(&data, |d| recover(d, &started));
     }
+    super::epics::auto_start(app);
     let state = load(&data);
     if state.queue.is_empty() {
         return;
@@ -548,7 +572,26 @@ pub fn finish(state: &mut Dispatch, id: &str, outcome: Result<Option<String>, St
                 .iter()
                 .find(|e| e.id == id)
                 .and_then(|e| e.batch_id.clone());
+            let wave = state
+                .queue
+                .iter()
+                .find(|e| e.id == id)
+                .and_then(|e| e.wave.clone());
             state.queue.retain(|e| e.id != id);
+            if let Some(w) = wave {
+                if let Some(run) = state
+                    .epics
+                    .iter_mut()
+                    .find(|e| e.run_dir == w.epic_run)
+                    .and_then(|e| {
+                        e.wave_runs
+                            .iter_mut()
+                            .find(|r| r.n == w.n && r.entry_id == id)
+                    })
+                {
+                    run.run_dir = run_dir.clone();
+                }
+            }
             if let Some(run) = batch
                 .and_then(|b| state.batches.iter_mut().find(|x| x.id == b))
                 .and_then(|b| b.runs.iter_mut().find(|r| r.entry_id == id))
@@ -608,8 +651,9 @@ fn stage_of(run_dir: &str) -> Option<String> {
 pub fn milestone_events(app: &AppHandle) -> Vec<crate::observe::attention::Event> {
     use crate::observe::attention::{Event, Kind};
     let data = data_dir(app);
+    let mut waves = super::epics::wave_ready_events(app);
     if !path_in(&data).exists() {
-        return vec![];
+        return waves;
     }
     let fired = with(&data, |d| {
         let mut fired = Vec::new();
@@ -633,23 +677,22 @@ pub fn milestone_events(app: &AppHandle) -> Vec<crate::observe::attention::Event
         fired
     })
     .unwrap_or_default();
-    fired
-        .into_iter()
-        .map(|(id, name)| Event {
-            kind: if name == "batch-ready" {
-                Kind::BatchReady
-            } else {
-                Kind::BatchPlanned
-            },
-            subject: id.clone(),
-            tab_id: None,
-            window_label: None,
-            tab_label: None,
-            run_id: Some(id),
-            run_dir: None,
-            detail: None,
-        })
-        .collect()
+    let batch_events = fired.into_iter().map(|(id, name)| Event {
+        kind: if name == "batch-ready" {
+            Kind::BatchReady
+        } else {
+            Kind::BatchPlanned
+        },
+        subject: id.clone(),
+        tab_id: None,
+        window_label: None,
+        tab_label: None,
+        run_id: Some(id),
+        run_dir: None,
+        detail: None,
+    });
+    waves.extend(batch_events);
+    waves
 }
 
 #[derive(Debug, Serialize)]
