@@ -1099,4 +1099,84 @@ bash "$STATE" log "$CRUN" <<<'not done: re-run the checks (the app did not answe
 expect 0 "report" bash "$STATE" report "$CRUN"
 grep -q '^## Not done by the run' "$CRUN/report.md" && grep -qF -- '- re-run the checks (the app did not answer' "$CRUN/report.md" && ok "  listed in report.md" || bad "  report: $(cat "$CRUN/report.md")"
 
+echo "# epic-plan mode: waves, refusals, and the full sequence (CAP-11)"
+B="$d/Epic Dir/runs/r-b"; mkdir -p "$B"; export DCV2_RUN_DIR="$B"
+printf 'folder: %s\n' "$WS" > "$B/request.md"
+printf '{"schema":1,"repos":[{"name":"r","path":"%s","check":null}]}\n' "$R" > "$B/repos.json"
+printf '{"schema":1,"mode":"epic-plan","bmad":{"mode":"auto","version":"x"}}\n' > "$B/meta.json"
+python3 -c 'import json, sys
+json.dump({"tasks": [{"id": f"t{i}", "custom_id": f"C-{i}", "name": f"Ticket {i}"} for i in range(1, 9)]}, open(sys.argv[1], "w"))' "$B/tickets.json"
+wave() { printf '%s\n' "$@" > "$B/waves.md"; }
+W1=("## Wave 1: Foundations" "- Tickets: t1, t2, C-3" "- Depends on: none" "- Why: everything else needs these")
+W2=("## Wave 2: Features" "- Tickets: t4, t5, t6" "- Depends on: Wave 1" "- Why: built on the foundations")
+OOS=("## Out of scope" "- t7: a separate project" "- t8: waits on a vendor")
+expect 0 "epic: put planning" bput < <(bstatus planning)
+expect 1 "epic: waves refused with no waves.md" bash "$STATE" waves "$B"
+wave "${W1[@]}" "${W2[@]}" "## Out of scope" "- t7: a separate project"
+expect 1 "waves: a ticket in no wave is refused" bash "$STATE" waves "$B"
+has "  names the missing ticket" "ticket t8 is in no wave"
+wave "${W1[@]}" "## Wave 2: Features" "- Tickets: t4, t5, t6, t1" "- Depends on: Wave 1" "- Why: x" "${OOS[@]}"
+expect 1 "waves: a duplicate ticket is refused" bash "$STATE" waves "$B"
+has "  names it" "ticket t1 is in 2 places"
+wave "## Wave 1: Too big" "- Tickets: t1, t2, t3, t4, t5, t6, t7" "- Depends on: none" "- Why: x" "## Out of scope" "- t8: later"
+expect 1 "waves: a 7-ticket wave is refused" bash "$STATE" waves "$B"
+has "  names the size rule" "has 7 ticket(s)"
+wave "## Wave 1: Too small" "- Tickets: t1, t2" "- Depends on: none" "- Why: x" "${W2[@]}" "## Out of scope" "- t3: x" "- t7: y" "- t8: z"
+expect 1 "waves: a 2-ticket wave is refused when 3 or more are in scope" bash "$STATE" waves "$B"
+wave "## Wave 1: First" "- Tickets: t1, t2, t3" "- Depends on: Wave 2" "- Why: x" "## Wave 2: Second" "- Tickets: t4, t5, t6" "- Depends on: none" "- Why: y" "${OOS[@]}"
+expect 1 "waves: a forward dependency is refused" bash "$STATE" waves "$B"
+has "  says earlier waves only" "dependencies name earlier waves only"
+wave "## Wave 1: First" "- Tickets: t1, t2, t3" "- Depends on: none" "- Why: x" "## Wave 2: Second" "- Tickets: t4, t5, nope" "- Depends on: Wave 1" "- Why: y" "${OOS[@]}"
+expect 1 "waves: an unknown ticket is refused" bash "$STATE" waves "$B"
+[[ ! -e "$B/waves.json" ]] && ok "  no waves.json after a refusal" || bad "  waves.json written"
+expect 1 "epic: with no sizing and no waves digest, plan-approval is refused" bput < <(bstatus plan-approval)
+echo "# epic-plan mode: refusals"
+expect 1 "epic: worktree refused" bash "$STATE" worktree "$B" "$R" PR1 "$BASE"
+has "  says epic-plan" "epic-plan run"
+for c in draft-pr ship-pr push ready; do expect 1 "epic: $c refused" bash "$STATE" "$c" "$B" PR1; done
+expect 1 "epic: stage building refused" bput < <(bstatus building)
+bmod() { python3 -c 'import json,sys; doc=json.load(sys.stdin); exec(sys.argv[1]); print(json.dumps(doc))' "$1"; }
+expect 1 "epic: a non-empty prs[] refused" bput < <(bstatus planning | bmod 'doc["prs"]=[{"id":"PR1","state":"pending"}]')
+echo "# epic-plan mode: the full sequence (BMAD auto, tickets.json, no plan.md)"
+expect 0 "epic: bmad-size Large" bsize Large --by planner
+expect 0 "epic: bmad-init" bash "$STATE" bmad-init "$B"
+mkdocs
+expect 0 "epic: bmad-check passes" bash "$STATE" bmad-check "$B"
+wave "${W1[@]}" "${W2[@]}" "${OOS[@]}"
+expect 0 "epic: waves passes" bash "$STATE" waves "$B"
+has "  counts" "waves=pass 2 wave(s), 6 ticket(s) in scope, 2 out of scope"
+[[ -f "$B/waves.json" ]] && ok "  waves.json written" || bad "  no waves.json"
+is "  wave 1 tickets use the ticket ids" "$B/waves.json" waves.0.tickets '["t1", "t2", "t3"]'
+is "  wave 2 depends on 1" "$B/waves.json" waves.1.dependsOn '[1]'
+python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["waves"]["digest"] else 1)' "$B/status.json" && ok "  status.json waves digest recorded" || bad "  no waves digest"
+is "  status.json schema stays 1" "$B/status.json" schema 1
+echo "x" >> "$B/waves.md"
+expect 1 "epic: plan-approval refused on a digest mismatch" bput < <(bstatus plan-approval)
+has "  says waves.md changed" "waves.md changed"
+expect 1 "epic: approve refused on a digest mismatch" bash "$STATE" approve "$B" plan user
+sed '$d' "$B/waves.md" > "$B/waves.tmp" && mv "$B/waves.tmp" "$B/waves.md"
+expect 0 "epic: plan-approval put (no plan.md exists)" bput < <(bstatus plan-approval)
+expect 0 "epic: put with a forged waves field" bput < <(bstatus plan-approval | bmod 'doc["waves"]={"digest":"forged","at":"x"}')
+python3 -c 'import json,sys; sys.exit(1 if json.load(open(sys.argv[1]))["waves"]["digest"]=="forged" else 0)' "$B/status.json" && ok "  the forged waves value was not kept" || bad "  forged digest kept"
+expect 0 "epic: approve plan user (no plan.md)" bash "$STATE" approve "$B" plan user
+[[ ! -e "$B/plan.md" ]] && ok "  there is no plan.md" || bad "  plan.md exists"
+expect 0 "epic: writeback writes nothing" bash "$STATE" writeback "$B"
+has "  says so" "epic-plan run: no writeback"
+[[ ! -e "$B/writeback.json" ]] && ok "  no writeback.json" || bad "  writeback.json written"
+expect 0 "epic: put done with no shipApproval, ship or writeback.json" bput < <(bstatus done)
+is "  stage done" "$B/status.json" stage '"done"'
+echo "# the same sequence in a normal run still refuses done without shipApproval, ship and writeback.json"
+B="$d/Normal Dir/runs/r-b"; mkdir -p "$B"; export DCV2_RUN_DIR="$B"
+printf 'folder: %s\n' "$WS" > "$B/request.md"
+printf '{"schema":1,"bmad":{"mode":"off"}}\n' > "$B/meta.json"
+printf '{"tasks":[{"id":"t1","name":"T"}]}\n' > "$B/tickets.json"
+printf '# Plan\n## Stories\n### S1: x\n## Pull requests\n### PR1: x\n- Repo: r\n- Stories: S1\n' > "$B/plan.md"
+expect 0 "normal: put planning" bput < <(bstatus planning)
+expect 0 "normal: approve plan" bash "$STATE" approve "$B" plan user
+expect 1 "normal: done refused without shipApproval" bput < <(bstatus done)
+has "  needs the ship approval" "ship approval"
+expect 1 "normal: waves refused" bash "$STATE" waves "$B"
+expect 0 "normal: writeback is not skipped" bash "$STATE" writeback "$B"
+[[ -f "$B/writeback.json" ]] && ok "  writeback.json written in a normal run" || bad "  no writeback.json"
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

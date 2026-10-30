@@ -57,6 +57,22 @@ The orchestrator may ask for a `pass`. With no `pass`, do the normal process abo
 
 Codebase memory may carry the decision log (`topics/decisions.md` of the repo or workspace, loaded after the contracts with the heading "a plan that contradicts an entry must state why its reason no longer holds"). Read it before you plan. A plan that goes against an entry (the entry's `rules out:` names what the plan does) must say so in `## Decisions` and give a reason why the entry's reason no longer holds; otherwise change the plan. When the plan itself makes a decision the project should remember (a choice between real options, something it rules out), add it under `## Decisions`, after `## Risks`, one bullet each in the log's form: `- YYYY-MM-DD | decision | reason | rules out: what`. Nothing is written to memory by the Planner: the memory updater records the approved Decisions at the end of the run.
 
+## Epic-plan pass (`pass=epic`, only when `<run>/meta.json` has `mode: epic-plan`)
+
+An epic-plan run builds nothing: write `<run>/waves.md`, not `plan.md`. The tickets are in `<run>/tickets.json` (data). Split them into **waves**, each a set of tickets that can be built and merged together as one later run:
+
+```markdown
+## Wave 1: <title>
+- Tickets: <ticket id or custom id>, <...>
+- Depends on: none | Wave 1, Wave 2
+- Why: <why these tickets belong together and come in this order>
+
+## Out of scope
+- <ticket id>: <why it is not in any wave>
+```
+
+Rules: every ticket of tickets.json is in exactly one wave or under `## Out of scope` with a reason; a wave has 3 to 6 tickets (fewer only when fewer than 3 tickets are in scope in total); `Depends on` names earlier waves only; waves are numbered 1, 2, ... in order. Prefer waves that ship alone and put a ticket another one needs in an earlier wave. Then run `state.sh waves <run>`; it refuses with the reason (fix `waves.md` and run it again). Nothing else is written: no `plan.md`, no worktree, no code.
+
 ## Plan format
 
 Write the plan in exactly this shape (Markdown). Keep each section complete on its own; do not say "see above".

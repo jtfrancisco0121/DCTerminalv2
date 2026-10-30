@@ -77,6 +77,10 @@ status.json (schema 1):
 3. `tickets=yes`? Remember only that; never read `tickets.json` yourself.
 4. Write status.json (`stage: planning`, `plan: null`, `prs: []`) and log `run started: <n> repos (<names>)`.
 
+## Epic-plan runs (`S preflight` prints `mode=epic-plan`; a run with no `mode=` line is a normal run)
+
+An epic-plan run plans the tickets into waves and builds nothing. `S` refuses worktrees, PRs and the building and shipping stages for it. The order: planning (with BMAD sizing and documents when `bmad=auto|on`, exactly as in Step 1 a and b) → a fresh `dcv2:planner` with `pass=epic` writes `<run>/waves.md` → `S waves <run>` (a refusal names the reason: one Planner revision with it as `findings=`, then `failed`) → the review loop of Step 1 item 3 on `waves.md` (Plan Reviewer and Risk Reviewer: too big, hidden dependency, cannot ship alone) → `S put` stage `plan-approval` (refused unless the waves digest is current: run `S waves <run>` again after any change to `waves.md`) → stop #1 with the waves (number, title, ticket count, depends on) in the summary → the user's yes: `S approve <run> plan user` → Step 5 item 1 (the memory step: the memory updater gets `decisions` from the Planner's `## Decisions` when there are any, and no repos with commits) → `S put` stage `done`. No worktree step, no building, no ship step, no `S writeback` (it prints that nothing is written), no `S ship-pr`. The app offers the waves as wave runs after the epic run is done; each wave run has its own plan approval.
+
 ## Step 1: plan
 
 **BMAD (only when `bmad=auto` or `bmad=on`; with `bmad=off` or no `bmad=` line skip to item 1: the run is exactly today's flow).** The run is **applied** when `bmad=on`, or when status.json `bmad.applied` is `true`.

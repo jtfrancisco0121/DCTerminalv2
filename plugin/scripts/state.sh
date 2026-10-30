@@ -15,6 +15,9 @@
 #                                             record the user's yes at stop #1 / #2 (test: only when
 #                                             DCV2_TEST_MODE has auto-approve); ship also sets stage shipping
 #   state.sh plan <run> prs|tickets|stories   print only that part of plan.md
+#   state.sh waves <run>                      epic-plan run: check waves.md (every ticket in exactly one wave or out of scope,
+#                                             3 to 6 tickets per wave, dependencies on earlier waves only); on pass write
+#                                             waves.json and record status.json waves {digest, at}
 #   state.sh scope <run> <pr id>              print the PR's Scope: areas touched with file counts and dependency
 #                                             changes (added / removed / bumped; lock files and unknown manifests: changed)
 #   state.sh base <repo path>                 print "base=<b> baseCommit=<sha> remote=<name|none>"
@@ -233,6 +236,39 @@ def review_mode(run):
     return "github" if isinstance(m, dict) and m.get("reviewMode") == "github" else "local"
 
 
+def epic_mode(run):
+    """meta.json mode == "epic-plan" (written by the app at Start): the run plans an epic in waves and builds nothing.
+    Missing or any other value = a normal run."""
+    m = load_json(os.path.join(run, "meta.json"))
+    return isinstance(m, dict) and m.get("mode") == "epic-plan"
+
+
+def epic_refuse(run, what):
+    if epic_mode(run):
+        die(f"{what}: this is an epic-plan run (meta.json mode epic-plan): it only plans waves; no worktree, branch or PR is made. "
+            "Each wave is started as its own run after the plan is approved.")
+
+
+def waves_digest(run):
+    import hashlib
+    t = read(os.path.join(run, "waves.md"))
+    return hashlib.sha256(t.encode()).hexdigest() if t else None
+
+
+def waves_current(run, doc):
+    """None when status.json's recorded waves digest matches waves.md (and waves.json exists), else the reason."""
+    rec = doc.get("waves") if isinstance(doc, dict) else None
+    cur = waves_digest(run)
+    if not cur:
+        return "waves.md is missing: write it and run `state.sh waves <run>`"
+    if not isinstance(rec, dict) or rec.get("digest") != cur or not os.path.isfile(os.path.join(run, "waves.json")):
+        return "waves.md changed (or `state.sh waves <run>` has not passed on it): run it again and make it pass"
+    wj = load_json(os.path.join(run, "waves.json"))
+    if not isinstance(wj, dict) or wj.get("digest") != cur:
+        return "waves.json does not match waves.md: run `state.sh waves <run>` again"
+    return None
+
+
 BMAD_MODES = ("auto", "on", "off")
 BMAD_SIZES = ("Small", "Medium", "Large")
 BMAD_DOCS = ("prd", "ux")
@@ -428,12 +464,20 @@ def validate_status(doc, run):
     check_approval(doc.get("shipApproval"), "shipApproval", p)
     if doc.get("bmad") is not None and not isinstance(doc.get("bmad"), dict):
         p.append("bmad must be an object (written only by state.sh bmad-size / bmad-init / bmad-check)")
+    w = doc.get("waves")
+    if w is not None and not (isinstance(w, dict) and isinstance(w.get("digest"), str) and w["digest"]):
+        p.append("waves must be an object {digest, at} (written only by state.sh waves)")
+    if epic_mode(run):
+        if stage in ("building", "ship-approval", "shipping"):
+            p.append(f"stage {stage} is not allowed in an epic-plan run (it only plans waves: planning, plan-approval, done)")
+        if doc.get("prs"):
+            p.append("prs must stay empty in an epic-plan run (no PR is made)")
     paused = doc.get("paused")
     if paused is not None and not (isinstance(paused, dict) and isinstance(paused.get("reason"), str) and paused["reason"]):
         p.append("paused must be null or {reason: <one line>, at: <UTC>}")
     if stage in POST_APPROVAL and not (plan or {}).get("approval"):
         p.append(f"stage {stage} needs the plan approved first: after the user's yes run `state.sh approve <run> plan user`")
-    if stage in ("shipping", "done") and not doc.get("shipApproval"):
+    if stage in ("shipping", "done") and not doc.get("shipApproval") and not (stage == "done" and epic_mode(run)):
         p.append(f"stage {stage} needs the ship approval first: after the user's yes run `state.sh approve <run> ship user`")
     if stage == "failed" and not doc.get("error"):
         p.append("stage failed needs error set (one line)")
@@ -526,6 +570,12 @@ def prepare_status(doc, old, trusted, run_dir=None):
             doc["bmad"] = old["bmad"]
         else:
             doc.pop("bmad", None)
+        if doc.get("waves") is not None and doc.get("waves") != old.get("waves"):
+            notes.append("note: status.json waves is set only by `state.sh waves`; kept the recorded value")
+        if old.get("waves") is not None:
+            doc["waves"] = old["waves"]
+        else:
+            doc.pop("waves", None)
     if isinstance(doc.get("plan"), dict):
         doc["plan"]["approved"] = bool(doc["plan"].get("approval"))
     doc.setdefault("shipApproval", None)
@@ -670,11 +720,15 @@ def gates(doc, run, old=None, plan_trace=True):
                 return f"NOT WRITTEN: BMAD mode: state.sh bmad-check {run} must pass first", out
             if chk.get("digest") != bmad_digest(run, bmad_find(run)):
                 return f"NOT WRITTEN: BMAD mode: documents changed since the last bmad-check; run state.sh bmad-check {run} again and make it pass", out
-            if plan_trace:
+            if plan_trace and not epic_mode(run):  # waves group tickets: no stories or Covers lines to trace
                 pr = bmad_plan_trace(run)
                 if pr:
                     more = f"; and {len(pr) - 10} more" if len(pr) > 10 else ""
                     return "NOT WRITTEN: BMAD mode: plan.md does not trace to the BMAD documents: " + "; ".join(pr[:10]) + more, out
+    if epic_mode(run) and stage == "plan-approval":
+        why = waves_current(run, doc)
+        if why:
+            return f"NOT WRITTEN: epic-plan run: {why}", out
     if tm["halt"] and not resumed(run):
         pid = tm["halt"]
         prs = {p.get("id"): p for p in doc.get("prs") or [] if isinstance(p, dict)}
@@ -683,7 +737,11 @@ def gates(doc, run, old=None, plan_trace=True):
             if others or stage != "building":
                 return f"NOT WRITTEN: test-mode halt-after={pid}: {pid} is reviewed, so the run must stop now with stage 'building' and every other PR 'pending'. Write that, log 'halted after {pid} (test-mode)', reply 'HALTED after {pid}' and stop.", out
             out.append(f"HALT (test-mode): {pid} is reviewed. Log 'halted after {pid} (test-mode)', reply 'HALTED after {pid}' and stop now. Launch nothing else.")
-    if stage == "done":
+    if stage == "done" and epic_mode(run):
+        why = waves_current(run, doc)
+        if why:
+            return f"NOT WRITTEN: epic-plan run: stage done needs the approved waves: {why}", out
+    elif stage == "done":
         if os.path.isfile(os.path.join(run, "tickets.json")) and not os.path.isfile(os.path.join(run, "writeback.json")):
             return "NOT WRITTEN: tickets.json exists but writeback.json does not. Run `state.sh writeback <run>` first, then write stage done.", out
         if not doc.get("ship"):
@@ -798,6 +856,8 @@ def cmd_preflight(run, resume=False):
     print(f"memory={os.path.realpath(mem) if mem else 'none'}")
     print(f"reviewMode={review_mode(run)}")
     print(f"bmad={bmad_mode(run)}")
+    if epic_mode(run):
+        print("mode=epic-plan")
     print(f"node={node_major()[1] or 'missing'}")
     if resume:
         st = load_json(os.path.join(run, "status.json"))
@@ -816,7 +876,12 @@ def cmd_approve(run, what, by):
     st = load_status(run)
     t = now()
     if what == "plan":
-        if st.get("stage") not in ("planning", "plan-approval") or not isinstance(st.get("plan"), dict) \
+        if epic_mode(run):
+            why = waves_current(run, st)
+            if st.get("stage") not in ("planning", "plan-approval") or not isinstance(st.get("plan"), dict) or why:
+                die(f"NOT APPROVED: an epic-plan run is approved only at stop #1 with waves.md and waves.json written "
+                    f"(stage {st.get('stage')}{'; ' + why if why else ''})")
+        elif st.get("stage") not in ("planning", "plan-approval") or not isinstance(st.get("plan"), dict) \
                 or not os.path.isfile(os.path.join(run, "plan.md")):
             die(f"NOT APPROVED: the plan can be approved only at stop #1 with plan.md written (stage {st.get('stage')})")
         st["plan"]["approval"] = {"by": by, "at": t}
@@ -1015,6 +1080,114 @@ def cmd_plan(run, what, arg=None):
     print((f"## {heading}" + m.group(1)).rstrip() if m else f"(plan.md has no ## {heading} section)")
 
 
+WAVE_HEAD = re.compile(r"^##\s+Wave\s+(\d+)\s*:\s*(\S.*?)\s*$", re.M)
+
+
+def cmd_waves(run):
+    run = os.path.abspath(run)
+    if not epic_mode(run):
+        die("NOT WRITTEN: waves are for an epic-plan run (meta.json mode epic-plan)")
+    text = read(os.path.join(run, "waves.md"))
+    if not text:
+        die(f"NOT WRITTEN: no waves.md in {run}")
+    snap = load_json(os.path.join(run, "tickets.json"))
+    tasks = snap.get("tasks", snap) if isinstance(snap, dict) else snap
+    if not isinstance(tasks, list) or not tasks:
+        die("NOT WRITTEN: an epic-plan run needs tickets.json with at least one ticket")
+    keys, ids = {}, []
+    for t in tasks:
+        if not isinstance(t, dict) or not t.get("id"):
+            continue
+        tid = str(t["id"])
+        ids.append(tid)
+        keys[tid.lower()] = tid
+        if t.get("custom_id"):
+            keys[str(t["custom_id"]).lower()] = tid
+    problems, waves, out_of_scope = [], [], []
+    heads = list(WAVE_HEAD.finditer(text))
+    om = re.search(r"(?ms)^##\s+Out of scope\s*$(.*?)(?=^##\s|\Z)", text)
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        if om and om.start() > m.start():
+            end = min(end, om.start())
+        body = text[m.end():end]
+        n = int(m.group(1))
+        if n != i + 1:
+            problems.append(f"Wave {n} is out of order (waves are numbered 1, 2, 3 ... in order)")
+        tl = re.search(r"(?m)^\s*-\s*Tickets:\s*(.+?)\s*$", body)
+        dl = re.search(r"(?m)^\s*-\s*Depends on:\s*(.+?)\s*$", body)
+        wl = re.search(r"(?m)^\s*-\s*Why:\s*(\S.*?)\s*$", body)
+        refs = [x.strip() for x in re.split(r"[,\s]+", tl.group(1)) if x.strip()] if tl else []
+        if not refs:
+            problems.append(f"Wave {n} has no `- Tickets:` line")
+        if not dl:
+            problems.append(f"Wave {n} has no `- Depends on:` line (`none` or `Wave <n>`)")
+        if not wl:
+            problems.append(f"Wave {n} has no `- Why:` line")
+        tickets = []
+        for r in refs:
+            tid = keys.get(r.lower())
+            if not tid:
+                problems.append(f"Wave {n} names {r}, which is not in tickets.json")
+            else:
+                tickets.append(tid)
+        deps, nprob = [], len(problems)
+        if dl and dl.group(1).strip().lower() not in ("none", "-", "n/a"):
+            for d in re.findall(r"(?i)\bwave\s+(\d+)\b|^\s*(\d+)\s*$", dl.group(1)):
+                k = int(d[0] or d[1])
+                if k >= n:
+                    problems.append(f"Wave {n} depends on Wave {k}: dependencies name earlier waves only")
+                elif k < 1:
+                    problems.append(f"Wave {n} depends on a wave that does not exist")
+                else:
+                    deps.append(k)
+            if not deps and len(problems) == nprob:
+                problems.append(f"Wave {n}: cannot read `Depends on: {dl.group(1).strip()[:60]}` (use `none` or `Wave <n>`)")
+        waves.append({"n": n, "title": m.group(2), "tickets": tickets, "dependsOn": sorted(set(deps)), "why": wl.group(1) if wl else ""})
+    if not waves:
+        problems.append("no `## Wave <n>: <title>` sections")
+    if om:
+        for line in om.group(1).splitlines():
+            lm = re.match(r"^\s*[-*]\s*(\S+?)\s*:\s*(\S.*)$", line)
+            if lm:
+                tid = keys.get(lm.group(1).lower())
+                if not tid:
+                    problems.append(f"Out of scope names {lm.group(1)}, which is not in tickets.json")
+                else:
+                    out_of_scope.append({"ticket": tid, "reason": lm.group(2)})
+            elif re.match(r"^\s*[-*]\s*\S", line):
+                problems.append(f"Out of scope line {line.strip()[:50]!r} needs `- <ticket>: <reason>`")
+    count = {}
+    for w in waves:
+        for t in w["tickets"]:
+            count[t] = count.get(t, 0) + 1
+    for o in out_of_scope:
+        count[o["ticket"]] = count.get(o["ticket"], 0) + 1
+    for t in ids:
+        if count.get(t, 0) == 0:
+            problems.append(f"ticket {t} is in no wave and not out of scope")
+        elif count[t] > 1:
+            problems.append(f"ticket {t} is in {count[t]} places (exactly one wave, or out of scope)")
+    in_scope = sum(len(w["tickets"]) for w in waves)
+    for w in waves:
+        size = len(w["tickets"])
+        if size > 6 or (size < 3 and in_scope >= 3):
+            problems.append(f"Wave {w['n']} has {size} ticket(s): a wave has 3 to 6 (fewer only when fewer than 3 tickets are in scope)")
+    if problems:
+        more = f"; and {len(problems) - 12} more" if len(problems) > 12 else ""
+        die("NOT WRITTEN: waves.md: " + "; ".join(problems[:12]) + more)
+    digest = waves_digest(run)
+    atomic_write(os.path.join(run, "waves.json"), json.dumps(
+        {"schema": 1, "runId": os.path.basename(run), "createdAt": now(), "digest": digest, "waves": waves, "outOfScope": out_of_scope},
+        indent=2) + "\n")
+    st = load_status(run)
+    st["waves"] = {"digest": digest, "at": now()}
+    for m in write_status(run, st, trusted=True, plan_trace=False):
+        print(m)
+    append_log(run, st.get("stage") or "planning", f"waves checked: {len(waves)} wave(s), {in_scope} ticket(s), {len(out_of_scope)} out of scope")
+    print(f"waves=pass {len(waves)} wave(s), {in_scope} ticket(s) in scope, {len(out_of_scope)} out of scope")
+
+
 def cmd_base(repo):
     repo = os.path.realpath(repo)
     if git("-C", repo, "rev-parse", "--git-dir").returncode != 0:
@@ -1199,6 +1372,7 @@ def run_owns_repo(run, repo):
 
 
 def cmd_worktree(run, repo, pr_id, base):
+    epic_refuse(run, "NOT DONE")
     run = os.path.realpath(run)
     run_id = os.path.basename(run)
     repo = os.path.realpath(repo)
@@ -1280,6 +1454,7 @@ def cmd_ship_check(run):
 
 
 def cmd_ship_pr(run, pid):
+    epic_refuse(run, "NOT SHIPPED")
     st = load_status(run)
     if review_mode(run) == "github":
         die("NOT SHIPPED: this run reviews on GitHub (meta.json reviewMode github): ship with `state.sh ready <run> <pr id>`")
@@ -1731,6 +1906,7 @@ def title_and_body(run, st, pr, body, what):
 
 
 def cmd_draft_pr(run, pid):
+    epic_refuse(run, "NOT DRAFTED")
     st, pr, rem = github_pr(run, pid, ("building", "ship-approval"))
     if pr.get("prUrl"):
         print(f"draft=exists url={pr['prUrl']}")
@@ -1784,6 +1960,7 @@ def cmd_draft_pr(run, pid):
 
 
 def cmd_push(run, pid):
+    epic_refuse(run, "NOT PUSHED")
     st, pr, rem = github_pr(run, pid)
     if not pr.get("prUrl"):
         print("push=skipped: no draft PR (the review loop stays local)")
@@ -1913,6 +2090,7 @@ def cmd_comment(run, pid, kind, rnd):
 
 
 def cmd_ready(run, pid):
+    epic_refuse(run, "NOT READY")
     st = load_status(run)
     if st.get("stage") != "shipping" or not st.get("shipApproval"):
         die(f"NOT READY: needs stage shipping and the ship approval (stage {st.get('stage')}, "
@@ -2002,6 +2180,9 @@ def ticket_ship_statuses(plan):
 
 
 def cmd_writeback(run, force):
+    if epic_mode(run):
+        print("epic-plan run: no writeback (the wave runs write back their tickets)")
+        return
     if not os.path.isfile(os.path.join(run, "tickets.json")):
         print("no tickets.json: no writeback needed")
         return
@@ -2602,13 +2783,14 @@ def main(argv):
     cmd, args = (argv[0] if argv else ""), argv[1:]
     need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0,
             "gate": 4, "report": 1, "mode": 1, "draft-pr": 2, "push": 2, "post-review": 3, "comment": 4, "ready": 2, "bmad-size": 2, "bmad-init": 1, "bmad-check": 1,
-            "cleanup": 1, "scope": 2, "request": 2, "request-wait": 2}
+            "cleanup": 1, "waves": 1, "scope": 2, "request": 2, "request-wait": 2}
     if cmd not in need or len(args) < need[cmd]:
         die("usage: see the header of state.sh", 2)
     if cmd == "preflight": cmd_preflight(args[0], "resume" in args[1:])
     elif cmd == "testmode": cmd_testmode()
     elif cmd == "put": cmd_put(args[0])
     elif cmd == "approve": cmd_approve(args[0], args[1], args[2])
+    elif cmd == "waves": cmd_waves(args[0])
     elif cmd == "scope": cmd_scope(args[0], args[1])
     elif cmd == "plan": cmd_plan(args[0], args[1], args[2] if len(args) > 2 else None)
     elif cmd == "base": cmd_base(args[0])

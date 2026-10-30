@@ -265,6 +265,8 @@ export const startRun = (
   repos: string[] | null = null,
   /** This run's implementer count (null: the setting). */
   maxImplementers: number | null = null,
+  /** `epic-plan`: plan the tickets into waves, build nothing (null: a normal run). */
+  runMode: "epic-plan" | null = null,
 ) =>
   invoke<StartedRun>("start_run", {
     windowId,
@@ -277,6 +279,7 @@ export const startRun = (
     force,
     repos,
     maxImplementers,
+    runMode,
   });
 
 /** An unfinished run with the same request, folder and tickets (what `start_run` answers instead of starting). */

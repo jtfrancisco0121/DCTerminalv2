@@ -446,7 +446,9 @@ pub fn save_tickets(
 /// strict subset becomes request.md's `repos:` line (repos.json keeps every
 /// repo). `max_implementers` (Eagle-Eye only): this run's
 /// `DCV2_MAX_IMPLEMENTERS` (clamped to 1..=8), recorded in meta.json so a
-/// resume uses it; the global setting is never written.
+/// resume uses it; the global setting is never written. `run_mode`
+/// (Eagle-Eye only): `epic-plan` records `mode` in meta.json (the run plans
+/// the tickets into waves and builds nothing; it needs tickets).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // one argument per start-screen choice; the page calls it by name
 pub async fn start_run(
@@ -461,6 +463,7 @@ pub async fn start_run(
     force: Option<bool>,
     repos: Option<Vec<String>>,
     max_implementers: Option<u32>,
+    run_mode: Option<String>,
 ) -> Result<StartedRun, StartError> {
     blocking(move || {
         let folder = start_folder(&folder)?;
@@ -520,7 +523,15 @@ pub async fn start_run(
                 bmad_mode: bmad_mode.filter(|m| folder::BMAD_MODES.contains(&m.as_str())),
                 bmad_version: launch::plugin_version(&plugin.join("bmad")),
                 max_implementers,
+                mode: run_mode.filter(|m| folder::RUN_MODES.contains(&m.as_str())),
             };
+            if meta.mode.is_some() && clickup.as_ref().is_none_or(|c| c.ticket_ids.is_empty()) {
+                return Err(
+                    "Planning an epic in waves needs ClickUp tickets: add them first."
+                        .to_string()
+                        .into(),
+                );
+            }
             let snapshot = match clickup.as_ref().filter(|c| !c.ticket_ids.is_empty()) {
                 Some(c) => Some(crate::clickup::commands::start_snapshot(
                     &ctx.account_id,

@@ -152,6 +152,8 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   const [implementers, setImplementers] = useState<string | null>(null);
   const [reviewOnGitHub, setReviewOnGitHub] = useState(() => rememberedReviewOnGitHub(windowId));
   const [bmadMode, setBmadMode] = useState<BmadMode>(() => rememberedBmadMode(initialFolder.trim()));
+  // "Plan an epic in waves": the tickets are split into waves; nothing is built.
+  const [epicPlan, setEpicPlan] = useState(false);
 
   // BMAD is remembered per start folder (the design says per repo), unlike the
   // review box, which is per window.
@@ -229,6 +231,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           force,
           eagle ? tickedRepos : null,
           eagle && implementers !== null ? implementersValue : null,
+          eagle && epicPlan && eagleTickets ? "epic-plan" : null,
         ),
       );
     } catch (err) {
@@ -379,6 +382,20 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
         {reviewOnGitHub
           ? "After the first build each PR opens as a draft on GitHub, every review round is posted as a PR comment, and the drafts are marked ready at the end. Teammates can see them."
           : "Reviews stay in the run folder; PRs open only at the end."}
+      </p>
+      <label className="check-label">
+        <input
+          type="checkbox"
+          checked={epicPlan && Boolean(tickets)}
+          disabled={!tickets}
+          onChange={(event) => setEpicPlan(event.target.checked)}
+        />
+        Plan an epic in waves (no code, no PR)
+      </label>
+      <p className="hint">
+        {tickets
+          ? "The tickets are split into waves of 3 to 6, each with its own run later. Nothing is built or opened."
+          : "Add ClickUp tickets to plan them as an epic."}
       </p>
       <fieldset className="bmad-mode" aria-label="BMAD planning">
         <legend>BMAD planning (BMAD-METHOD skills)</legend>
