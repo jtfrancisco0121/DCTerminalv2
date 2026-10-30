@@ -2037,3 +2037,31 @@ body,
   border-bottom: 1px solid var(--border, #3338);
   font-size: 12px;
 }
+
+.scratchpad {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border, #3338);
+}
+
+.scratchpad-text {
+  width: 100%;
+  min-height: 90px;
+  resize: vertical;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.scratchpad-hints {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.scratchpad-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}

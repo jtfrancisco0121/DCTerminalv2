@@ -45,7 +45,7 @@ import { UsagePopover } from "./components/UsagePopover";
 import { SplitTerminals } from "./components/SplitTerminals";
 import { destroyTerminal, TerminalView } from "./components/TerminalView";
 import { newTabDefaults, type NewTabDraft } from "./newTab";
-import { detectPlatform } from "./terminal/keys";
+import { detectPlatform, SCRATCHPAD_EVENT } from "./terminal/keys";
 import { ACCOUNT_REMOVED, accountProblem } from "./terminal/openPlan";
 import { dropLivePty, ptyExitCode, ptyRunning, subscribeLivePty, subscribePtyExit } from "./terminal/live";
 import { focusParkedTerminal, refitTerminal, requestTerminalSearch, setCompactPaste, setCopyOnSelect, setOptionAsMeta, setTerminalTheme } from "./terminal/park";
@@ -592,6 +592,17 @@ function App() {
         run: () => {
           setSettingsSection(section);
           setDialog("settings");
+        },
+      });
+    }
+    if (active) {
+      items.push({
+        id: "scratchpad",
+        group: "Tabs",
+        label: "Toggle prompt scratchpad",
+        detail: "Cmd+Shift+E",
+        run: () => {
+          window.dispatchEvent(new Event(SCRATCHPAD_EVENT));
         },
       });
     }

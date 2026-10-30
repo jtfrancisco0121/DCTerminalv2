@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ptyResize, terminalResumeId, type TabSummary } from "../bridge";
-import { detectPlatform, isAppShortcut, isShiftEnter, SHIFT_ENTER_SEQUENCE, shiftEnterSendsNewline } from "../terminal/keys";
+import { detectPlatform, isAppShortcut, isScratchpadShortcut, isShiftEnter, SCRATCHPAD_EVENT, SHIFT_ENTER_SEQUENCE, shiftEnterSendsNewline } from "../terminal/keys";
 import { dropPointToCss, formatDroppedPaths } from "../terminal/drop";
 import { firstOpenResumes, folderProblem } from "../terminal/openPlan";
 import { FolderMissing } from "./FolderMissing";
 import { TerminalSearchBar } from "./TerminalSearchBar";
 import { PasteBar } from "./PasteBar";
+import { Scratchpad } from "./Scratchpad";
 import { TerminalExitStrip, lastFiftyLines, lastOutputLine } from "./TerminalExitStrip";
 import { TerminalContextMenu, type ContextMenuItem } from "./TerminalContextMenu";
 import { reportError } from "../uiErrors";
@@ -18,11 +19,13 @@ import {
   copyTerminalSelection,
   ensureParkedTerminal,
   focusParkedTerminal,
+  isBracketedPasteOn,
   isParkedHost,
   measuredTerminalSize,
   noteTerminalSize,
   pasteIntoTerminal,
   pasteTerminalText,
+  pasteWithOffer,
   releaseParkedTerminal,
   setTerminalRefitter,
   setTerminalSearchOpener,
@@ -76,6 +79,7 @@ function focusBelongsElsewhere(): boolean {
 export function TerminalView({ tab, fontSize, autoFocus = true, onFolderChanged }: TerminalViewProps) {
   const ptyId = tab.id;
   const claude = tab.kind === "claude";
+  const [padOpen, setPadOpen] = useState(false);
   const slotRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<HTMLDivElement>(null);
   const [exitCode, setExitCode] = useState<number | null>(livePty(ptyId)?.exitCode ?? null);
@@ -92,6 +96,25 @@ export function TerminalView({ tab, fontSize, autoFocus = true, onFolderChanged 
 
   // Once a Claude terminal exits (or fails to open): is there a session to
   // resume, and what did it print last.
+  // Cmd/Ctrl+Shift+E and the palette entry toggle the scratchpad of the pane that has focus (else the active one).
+  useEffect(() => {
+    const mine = () => viewRef.current?.contains(document.activeElement) === true || (autoFocus && !document.querySelector(".terminal-view:focus-within"));
+    const onKey = (event: KeyboardEvent) => {
+      if (!isScratchpadShortcut(event, detectPlatform(navigator.platform)) || !mine()) return;
+      event.preventDefault();
+      setPadOpen((open) => !open);
+    };
+    const onToggle = () => {
+      if (mine()) setPadOpen((open) => !open);
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener(SCRATCHPAD_EVENT, onToggle);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener(SCRATCHPAD_EVENT, onToggle);
+    };
+  }, [autoFocus]);
+
   useEffect(() => {
     if (!claude || (exitCode == null && !failed)) return;
     let current = true;
@@ -233,7 +256,8 @@ export function TerminalView({ tab, fontSize, autoFocus = true, onFolderChanged 
         return false;
       }
       // The app's own shortcuts bubble to the window, unsent to the program.
-      return !isAppShortcut(event, platform);
+      // Cmd/Ctrl+Shift+E opens the scratchpad: the window listener handles it, not the program.
+      return !isAppShortcut(event, platform) && !isScratchpadShortcut(event, platform);
     });
 
     const fitNow = () => {
@@ -384,6 +408,17 @@ export function TerminalView({ tab, fontSize, autoFocus = true, onFolderChanged 
           onClose={() => {
             setSearchOpen(false);
             ensureParkedTerminal(ptyId, fontSize).term.focus();
+            focusParkedTerminal(ptyId);
+          }}
+        />
+      )}
+      {padOpen && (
+        <Scratchpad
+          paneId={ptyId}
+          bracketedPaste={() => isBracketedPasteOn(ptyId)}
+          onSend={(text) => pasteWithOffer(ptyId, text)}
+          onClose={() => {
+            setPadOpen(false);
             focusParkedTerminal(ptyId);
           }}
         />

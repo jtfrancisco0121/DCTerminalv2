@@ -330,6 +330,11 @@ export function pasteIntoTerminal(id: string, text: string): void {
   if (text) parked.get(id)?.term.paste(text);
 }
 
+/** Whether the program in the terminal turned bracketed paste on (a pasted newline is then safe). */
+export function isBracketedPasteOn(id: string): boolean {
+  return parked.get(id)?.term.modes.bracketedPasteMode ?? false;
+}
+
 /** A paste from the app (the scratchpad, the context menu): a big one is offered for compaction first. */
 export function pasteWithOffer(id: string, text: string): void {
   const term = parked.get(id)?.term;

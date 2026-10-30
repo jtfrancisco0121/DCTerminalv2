@@ -4,6 +4,7 @@ mod clickup;
 mod commands;
 mod crash_log;
 mod data_dir;
+mod drafts;
 mod import_dev;
 #[cfg(target_os = "macos")]
 mod macos_terminate;
@@ -201,6 +202,8 @@ pub fn run() {
             run::rerun_checks,
             run::slop_check,
             run::compact_text,
+            drafts::drafts_load,
+            drafts::drafts_save,
             run::run_worktrees,
             run::remove_run_worktrees,
             run::read_run_file,
