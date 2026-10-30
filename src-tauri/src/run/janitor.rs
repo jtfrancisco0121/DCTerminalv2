@@ -527,6 +527,40 @@ mod tests {
         assert!(repo.join("README.md").exists());
     }
 
+    #[test]
+    fn two_prs_of_one_repo_are_verified_and_removed_each_as_its_own() {
+        let dir = TempDir::new("janitor_two");
+        let repo = dir.join("ws/mathlib");
+        repo_at(&repo);
+        let wts = dir.join("ws/mathlib-worktrees");
+        let (one, two) = (
+            wts.join(format!("dcv2-{RUN}-pr1")),
+            wts.join(format!("dcv2-{RUN}-pr2")),
+        );
+        add(&repo, &format!("dcv2/{RUN}-pr1"), &one);
+        add(&repo, &format!("dcv2/{RUN}-pr2"), &two);
+        std::fs::write(two.join("wip.txt"), "unsaved").unwrap();
+        let run_dir = dir.join("runs").join(RUN);
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("status.json"),
+            json!({"schema": 1, "stage": "done", "prs": [
+                {"id": "PR1", "repoPath": repo, "worktree": one},
+                {"id": "PR2", "repoPath": repo, "worktree": two}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let items = list_worktrees(&run_dir);
+        let by = |id: &str| items.iter().find(|i| i.pr_id == id).unwrap().clone();
+        assert!(by("PR1").removable, "{:?}", by("PR1"));
+        assert!(!by("PR2").removable && by("PR2").changed_files == 1);
+        let results = remove_clean(&run_dir, &["PR1".to_string(), "PR2".to_string()]);
+        assert!(results.iter().find(|r| r.pr_id == "PR1").unwrap().removed);
+        assert!(!results.iter().find(|r| r.pr_id == "PR2").unwrap().removed);
+        assert!(!one.exists() && two.join("wip.txt").exists());
+    }
+
     /// The run's own worktree of `repo` (made where the contract puts it) is accepted.
     fn own_worktree_ok(repo: &Path) {
         let wt = expected_worktree(repo, RUN, "PR1").unwrap();

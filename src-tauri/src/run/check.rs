@@ -267,6 +267,54 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn two_prs_of_one_repo_are_each_checked_in_their_own_worktree() {
+        let dir = TempDir::new("app_check_two");
+        let repo = dir.join("ws/mathlib");
+        repo_at(&repo);
+        let wts = dir.join("ws/mathlib-worktrees");
+        let wt = |n: u32| wts.join(format!("dcv2-{RUN}-pr{n}"));
+        for n in [1, 2] {
+            run(
+                &repo,
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    "-b",
+                    &format!("dcv2/{RUN}-pr{n}"),
+                    wt(n).to_str().unwrap(),
+                ],
+            );
+        }
+        std::fs::write(wt(1).join("marker.txt"), "only PR1 has it").unwrap();
+        let run_dir = dir.join("runs").join(RUN);
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("repos.json"),
+            json!({"schema": 1, "repos": [{"name": "mathlib", "path": repo, "check": "test -f marker.txt"}]})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            run_dir.join("status.json"),
+            json!({"schema": 1, "stage": "ship-approval", "prs": [
+                {"id": "PR1", "repo": "mathlib", "repoPath": repo, "worktree": wt(1), "check": {"cwd": wt(1)}},
+                {"id": "PR2", "repo": "mathlib", "repoPath": repo, "worktree": wt(2), "check": {"cwd": wt(2)}}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        rerun_checks(&run_dir, Duration::from_secs(30)).unwrap();
+        let checks = read_app_checks(&run_dir);
+        assert_eq!(checks["PR1"].result, "pass", "{:?}", checks["PR1"]);
+        assert_eq!(checks["PR2"].result, "fail", "{:?}", checks["PR2"]);
+        let head = |n: u32| crate::run::git::git(&wt(n), &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(checks["PR1"].head.as_deref(), Some(head(1).as_str()));
+        assert_eq!(checks["PR2"].head.as_deref(), Some(head(2).as_str()));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn the_app_runs_repos_json_checks_in_verified_worktrees_only() {
         let dir = TempDir::new("app_check");
         let repo = dir.join("ws/mathlib");

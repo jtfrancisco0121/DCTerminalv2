@@ -1930,6 +1930,23 @@ body,
   color: var(--success);
 }
 
+/* PR size: the badge on a PR card and the over-limit line at the ship approval. */
+.size-badge {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  padding: 0 6px;
+}
+
+.size-badge-over,
+.size-over {
+  color: var(--danger);
+}
+
+.size-over {
+  font-size: var(--text-sm);
+}
+
 /* BMAD planning: the start-screen control and the run panel section. */
 .bmad-mode {
   display: flex;

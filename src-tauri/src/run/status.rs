@@ -130,6 +130,43 @@ pub struct PrView {
     pub ci_error: Option<String>,
     /// The PR's state on GitHub: `OPEN`, `MERGED` or `CLOSED`; None until read.
     pub pr_state: Option<String>,
+    /// `prs[].size` (measured and written only by `state.sh size` / `gate`);
+    /// None when missing or any part has the wrong type.
+    pub size: Option<SizeView>,
+}
+
+/// A PR's measured size (docs/run-folder.md `prs[].size`): the app shows it
+/// and never compares `lines` with `limit` itself.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SizeView {
+    pub lines: i64,
+    pub files: i64,
+    pub excluded: i64,
+    pub limit: i64,
+    /// `state.sh` found `lines` above `limit`.
+    pub over: bool,
+    /// The approved Over limit reason, if any.
+    pub reason: Option<String>,
+}
+
+/// None unless every part is of the type `state.sh size` writes.
+fn parse_size(pr: &Value) -> Option<SizeView> {
+    let z = pr.get("size")?.as_object()?;
+    let n = |key: &str| z.get(key)?.as_i64().filter(|v| *v >= 0);
+    let reason = match z.get("reason") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) => Some(text.clone()),
+        Some(_) => return None,
+    };
+    Some(SizeView {
+        lines: n("lines")?,
+        files: n("files")?,
+        excluded: n("excluded")?,
+        limit: n("limit")?,
+        over: z.get("over")?.as_bool()?,
+        reason,
+    })
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -365,6 +402,7 @@ fn parse_pr(pr: &Value, index: usize) -> PrView {
             open_findings: i(review, "openFindings"),
         },
         pr_url: s(pr, "prUrl"),
+        size: parse_size(pr),
         draft: pr.get("draft").and_then(Value::as_bool),
         comments: pr
             .get("comments")
@@ -1004,6 +1042,49 @@ mod tests {
 mod draft_pr_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_prs_recorded_size_is_read_and_a_wrong_type_gives_none() {
+        let size = |z: serde_json::Value| {
+            let view =
+                parse_status(&json!({"schema": 1, "prs": [{"id": "PR1", "size": z}]})).unwrap();
+            view.prs[0].size.clone()
+        };
+        let good = json!({"lines": 512, "added": 500, "deleted": 12, "files": 9, "excluded": 1,
+                          "limit": 400, "over": true, "reason": "ship together", "overlaps": [], "head": "x", "at": "t"});
+        assert_eq!(
+            size(good.clone()),
+            Some(SizeView {
+                lines: 512,
+                files: 9,
+                excluded: 1,
+                limit: 400,
+                over: true,
+                reason: Some("ship together".into()),
+            })
+        );
+        let mut no_reason = good.clone();
+        no_reason["reason"] = json!(null);
+        assert_eq!(size(no_reason).unwrap().reason, None);
+        for (key, bad) in [
+            ("lines", json!("512")),
+            ("lines", json!(-1)),
+            ("files", json!(null)),
+            ("limit", json!(4.5)),
+            ("over", json!("yes")),
+            ("reason", json!(5)),
+        ] {
+            let mut z = good.clone();
+            z[key] = bad;
+            assert_eq!(size(z), None, "{key}");
+        }
+        let mut missing = good.clone();
+        missing.as_object_mut().unwrap().remove("excluded");
+        assert_eq!(size(missing), None);
+        assert_eq!(size(json!("big")), None);
+        let none = parse_status(&json!({"schema": 1, "prs": [{"id": "PR1"}]})).unwrap();
+        assert_eq!(none.prs[0].size, None);
+    }
 
     #[test]
     fn draft_prs_and_their_review_comments_are_read_tolerantly() {

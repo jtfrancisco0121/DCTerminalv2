@@ -51,7 +51,8 @@
       },
       "prUrl": null,
       "state": "reviewed",
-      "note": null
+      "note": null,
+      "size": { "lines": 312, "added": 280, "deleted": 32, "files": 6, "excluded": 1, "limit": 400, "over": false, "reason": null, "overlaps": [], "head": "abc123", "at": "2026-10-22T13:30:00Z" }
     },
     {
       "id": "PR2",
@@ -71,7 +72,8 @@
         "verdict": "APPROVED",
         "openFindings": 0
       },
-      "state": "reviewed"
+      "state": "reviewed",
+      "size": { "lines": 512, "added": 500, "deleted": 12, "files": 9, "excluded": 0, "limit": 400, "over": true, "reason": "the parser and its table must ship together", "overlaps": [], "head": "def456", "at": "2026-10-22T13:40:00Z" }
     },
     {
       "id": "PR3",

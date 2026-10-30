@@ -146,6 +146,18 @@ export type PrView = {
   ciError?: string | null;
   /** The PR's state on GitHub: `OPEN`, `MERGED`, `CLOSED`; null until read. */
   prState?: string | null;
+  /** The PR's measured size (status.json `prs[].size`, written by state.sh); null when not measured. */
+  size?: PrSize | null;
+};
+
+/** What the app shows of `prs[].size`; `over` is state.sh's verdict, never recomputed here. */
+export type PrSize = {
+  lines: number;
+  files: number;
+  excluded: number;
+  limit: number;
+  over: boolean;
+  reason: string | null;
 };
 
 /** BMAD planning of a run (auto or on); absent for older runs and runs with it off. */

@@ -1,5 +1,13 @@
 import type { RunView } from "../run/api";
-import { appCheckText, approvalTitle, isKnownApproval, prStateText } from "../run/words";
+import { appCheckText, approvalTitle, isKnownApproval, prStateText, sizeTitle } from "../run/words";
+
+const REASON_CAP = 200;
+
+/** `over <limit>: <reason>` (cut to 200 characters; the title has all of it) or `over <limit>: no reason`. */
+function overText(size: { limit: number; reason: string | null }): { shown: string; full: string } {
+  const full = `over ${size.limit}: ${size.reason ?? "no reason"}`;
+  return { shown: full.length > REASON_CAP ? `${full.slice(0, REASON_CAP)}…` : full, full };
+}
 
 type Props = {
   view: RunView;
@@ -37,6 +45,7 @@ export function ApprovalCard({ view, waitingFor, onReadPlan, onGoToPrompt }: Pro
                 <tr>
                   <th>PR</th>
                   <th>State</th>
+                  <th>Size</th>
                   <th>Gate</th>
                   <th>Check (app)</th>
                   <th>Open findings</th>
@@ -47,6 +56,14 @@ export function ApprovalCard({ view, waitingFor, onReadPlan, onGoToPrompt }: Pro
                   <tr key={pr.id} data-testid={`approval-${pr.id}`}>
                     <td>{pr.id}</td>
                     <td>{prStateText(pr.state)}</td>
+                    <td data-testid={`approval-size-${pr.id}`} title={pr.size ? sizeTitle(pr.size) : undefined}>
+                      {pr.size ? pr.size.lines : "–"}
+                      {pr.size?.over && (
+                        <div className="size-over" data-testid={`approval-over-${pr.id}`} title={overText(pr.size).full}>
+                          {overText(pr.size).shown}
+                        </div>
+                      )}
+                    </td>
                     <td>{pr.gateStatus && pr.gateStatus.kind !== "none" ? pr.gateStatus.text : "–"}</td>
                     <td>{appCheckText(pr)}</td>
                     <td>{pr.review.openFindings ?? 0}</td>

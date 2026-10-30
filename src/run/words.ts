@@ -1,6 +1,6 @@
 /** Plain words for the run panel: stages, PR states, check results. */
 
-import type { PrView, RunView } from "./api";
+import type { PrSize, PrView, RunView } from "./api";
 
 const STAGES: Record<string, string> = {
   planning: "Planning",
@@ -60,6 +60,18 @@ export function draftBadge(pr: { draft?: boolean | null; prUrl: string | null; s
   if (pr.draft === true || pr.state === "drafted") return "draft";
   if (pr.draft === false && pr.prUrl) return "ready";
   return null;
+}
+
+/** The size badge on a PR card: `312 lines`, or `512 lines · over 400` (text, not only colour). */
+export function sizeBadgeText(size: PrSize): string {
+  return size.over ? `${size.lines} lines · over ${size.limit}` : `${size.lines} lines`;
+}
+
+/** The size badge's tooltip: files, excluded files, the limit, and for an over-limit PR its reason (or "no reason"). */
+export function sizeTitle(size: PrSize): string {
+  const base = `${size.files} files, ${size.excluded} excluded, limit ${size.limit}`;
+  if (!size.over) return base;
+  return size.reason ? `${base}; reason: ${size.reason}` : `${base}; no reason`;
 }
 
 export function checkMark(result: string | null | undefined): string {
