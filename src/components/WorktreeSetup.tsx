@@ -10,17 +10,6 @@ export function parseCopyFiles(text: string): string[] {
     .filter(Boolean);
 }
 
-const LIMIT_ERROR = "Use a whole number from 1 to 100000.";
-
-/** The PR line limit field: empty is no limit set (null), else a whole number 1..100000, or undefined when invalid. */
-export function parseLimit(text: string): number | null | undefined {
-  const t = text.trim();
-  if (!t) return null;
-  if (!/^\d+$/.test(t)) return undefined;
-  const n = Number(t);
-  return n >= 1 && n <= 100000 ? n : undefined;
-}
-
 /**
  * Start screen › Worktree setup: per repo of the start folder, the setup
  * command run in a new run worktree (empty: detected from the lockfile)
@@ -49,22 +38,15 @@ function RepoRow({ repo, onSaved }: { repo: Repo; onSaved?: () => void }) {
   const [setup, setSetup] = useState(repo.setup ?? "");
   const [files, setFiles] = useState((repo.copyFiles ?? []).join("\n"));
   const [liveTests, setLiveTests] = useState(repo.liveTests ?? false);
-  const [limit, setLimit] = useState(repo.prSizeLimit == null ? "" : String(repo.prSizeLimit));
   const [note, setNote] = useState<{ tone: "hint" | "error"; text: string } | null>(null);
   const save = async () => {
     setNote(null);
-    const prSizeLimit = parseLimit(limit);
-    if (prSizeLimit === undefined) {
-      setNote({ tone: "error", text: LIMIT_ERROR });
-      return;
-    }
-    const next: RepoSetup = { setup: setup.trim() || null, copyFiles: parseCopyFiles(files), liveTests, prSizeLimit };
+    const next: RepoSetup = { setup: setup.trim() || null, copyFiles: parseCopyFiles(files), liveTests };
     try {
       const saved = await setRepoSetup(repo.path, next);
       setSetup(saved.setup ?? "");
       setFiles(saved.copyFiles.join("\n"));
       setLiveTests(saved.liveTests ?? false);
-      setLimit(saved.prSizeLimit == null ? "" : String(saved.prSizeLimit));
       setNote({ tone: "hint", text: "Saved." });
       onSaved?.();
     } catch (err) {
@@ -93,17 +75,6 @@ function RepoRow({ repo, onSaved }: { repo: Repo; onSaved?: () => void }) {
           value={files}
           placeholder=".env.local"
           onChange={(event) => setFiles(event.target.value)}
-        />
-      </label>
-      <label className="field-label">
-        PR line limit (empty: 400)
-        <input
-          className="text-input"
-          aria-label={`PR line limit of ${repo.name}`}
-          inputMode="numeric"
-          value={limit}
-          placeholder="400"
-          onChange={(event) => setLimit(event.target.value)}
         />
       </label>
       <label className="check-label">

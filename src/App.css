@@ -1930,21 +1930,23 @@ body,
   color: var(--success);
 }
 
-/* PR size: the badge on a PR card and the over-limit line at the ship approval. */
-.size-badge {
+/* Epic groups, the stack chip and the epic cell at the ship approval. */
+.epic-group-heading {
+  margin: var(--space-3) 0 var(--space-1);
+  font-size: var(--text-sm);
+}
+
+.stack-chip {
   border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 11px;
   padding: 0 6px;
 }
 
-.size-badge-over,
-.size-over {
-  color: var(--danger);
-}
-
-.size-over {
-  font-size: var(--text-sm);
+.active-epics {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--space-3);
 }
 
 /* BMAD planning: the start-screen control and the run panel section. */

@@ -22,13 +22,15 @@ import {
   checkSignature,
   ciChip,
   draftBadge,
+  epicCounts,
+  epicGroups,
+  epicLabel,
   localTime,
   prStateText,
   reviewText,
   runFinished,
   safeUrl,
-  sizeBadgeText,
-  sizeTitle,
+  stackOrder,
   stageText,
   storiesText,
   wantsAppChecks,
@@ -112,6 +114,30 @@ function TimelineTime({ time }: { time: string }) {
   );
 }
 
+/** "stacked on PR1" with "(merged)" or "(not in this run)"; the parent id jumps to its card. */
+function StackChip({ parent, note }: { parent: string; note: string | null }) {
+  const goTo = (event: { currentTarget: HTMLElement }) => {
+    const panel = event.currentTarget.closest(".run-panel");
+    const card = Array.from(panel?.querySelectorAll<HTMLElement>("[data-testid^='pr-']") ?? []).find(
+      (el) => el.dataset.testid === `pr-${parent}`,
+    );
+    card?.focus();
+  };
+  return (
+    <span className="stack-chip" data-testid={`stack-${parent}`}>
+      stacked on{" "}
+      {note === "not in this run" ? (
+        parent
+      ) : (
+        <button type="button" className="link-button" aria-label={`Go to ${parent}, the PR this one is stacked on`} onClick={goTo}>
+          {parent}
+        </button>
+      )}
+      {note && ` (${note})`}
+    </span>
+  );
+}
+
 function PrRow({
   pr,
   onOpenFile,
@@ -119,7 +145,8 @@ function PrRow({
   worktrees,
   onPrAction,
   onCopyBranch,
-}: { pr: PrView } & Pick<ViewProps, "onOpenFile" | "onOpenUrl"> & PrActionProps) {
+  parentNote,
+}: { pr: PrView; parentNote?: string | null } & Pick<ViewProps, "onOpenFile" | "onOpenUrl"> & PrActionProps) {
   const wt = worktrees?.[pr.id];
   const why = !wt ? "Checking the worktree…" : wt.verified ? undefined : (wt.reason ?? "The worktree is not verified.");
   const act = (action: PrWorktreeAction, label: string) => (
@@ -139,27 +166,17 @@ function PrRow({
   const gate = pr.gateStatus;
   const badge = draftBadge(pr);
   const ci = ciChip(pr);
-  const size = pr.size ?? null;
   const comments = (pr.comments ?? []).filter((c) => safeUrl(c.url));
   return (
-    <li className="run-pr" data-testid={`pr-${pr.id}`}>
+    <li className="run-pr" data-testid={`pr-${pr.id}`} tabIndex={-1}>
       <div className="run-pr-head">
         <strong>{pr.id}</strong>
         {pr.repo && <span className="run-pr-repo">{pr.repo}</span>}
         <span className={`run-pr-state run-pr-state-${pr.state ?? "unknown"}`}>{prStateText(pr.state)}</span>
+        {pr.stackedOn && <StackChip parent={pr.stackedOn} note={parentNote ?? null} />}
         {badge && (
           <span className={`run-pr-badge run-pr-badge-${badge}`} data-testid={`badge-${pr.id}`}>
             {badge}
-          </span>
-        )}
-        {size && (
-          <span
-            className={`size-badge${size.over ? " size-badge-over" : ""}`}
-            data-testid={`size-${pr.id}`}
-            title={sizeTitle(size)}
-            aria-label={`${sizeBadgeText(size)}: ${sizeTitle(size)}`}
-          >
-            {sizeBadgeText(size)}
           </span>
         )}
       </div>
@@ -292,6 +309,62 @@ function BmadSection({
   );
 }
 
+/** The cleanup records with a stacked PR after its parent (then by PR number). */
+function cleanupInStackOrder(view: RunView) {
+  const records = view.cleanup ?? [];
+  const parentOf = new Map(view.prs.map((pr) => [pr.id, pr.stackedOn ?? null]));
+  const order = stackOrder(records.map((rec) => ({ id: rec.prId, stackedOn: parentOf.get(rec.prId) ?? null })));
+  return order.map((id) => records.find((rec) => rec.prId === id)!);
+}
+
+/** The PR cards: grouped under an epic heading when the plan has 2+ epics, else one flat list. */
+function PrList({
+  view,
+  onOpenFile,
+  onOpenUrl,
+  worktrees,
+  onPrAction,
+  onCopyBranch,
+}: Pick<ViewProps, "view" | "onOpenFile" | "onOpenUrl"> & PrActionProps) {
+  const merged = new Set((view.cleanup ?? []).map((rec) => rec.prId));
+  const note = (pr: PrView): string | null => {
+    if (!pr.stackedOn) return null;
+    const parent = view.prs.find((p) => p.id === pr.stackedOn);
+    if (!parent) return "not in this run";
+    return parent.prState === "MERGED" || merged.has(parent.id) ? "merged" : null;
+  };
+  const rows = (prs: PrView[]) => (
+    <ul className="run-prs">
+      {prs.map((pr) => (
+        <PrRow
+          key={pr.id}
+          pr={pr}
+          parentNote={note(pr)}
+          onOpenFile={onOpenFile}
+          onOpenUrl={onOpenUrl}
+          worktrees={worktrees}
+          onPrAction={onPrAction}
+          onCopyBranch={onCopyBranch}
+        />
+      ))}
+    </ul>
+  );
+  const groups = epicGroups(view.prs);
+  if (groups.length === 0) return rows(view.prs);
+  return (
+    <>
+      {groups.map((group) => (
+        <section key={group.key} aria-label={epicLabel(group)} data-testid={`epic-${group.key}`}>
+          <h4 className="epic-group-heading">
+            {epicLabel(group)} <span className="hint">{epicCounts(group.prs.length, group.done)}</span>
+          </h4>
+          {rows(group.prs)}
+        </section>
+      ))}
+    </>
+  );
+}
+
 /** The progress panel for one run, drawn from a read of its folder. */
 export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch, away }: ViewProps) {
   const timeline = view.timeline.slice(-30).reverse();
@@ -328,27 +401,13 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
       {view.bmad && view.bmad.mode !== "off" && (
         <BmadSection bmad={view.bmad} stage={view.stage} onOpenFile={onOpenFile} />
       )}
-      {view.prs.length > 0 && (
-        <ul className="run-prs">
-          {view.prs.map((pr) => (
-            <PrRow
-              key={pr.id}
-              pr={pr}
-              onOpenFile={onOpenFile}
-              onOpenUrl={onOpenUrl}
-              worktrees={worktrees}
-              onPrAction={onPrAction}
-              onCopyBranch={onCopyBranch}
-            />
-          ))}
-        </ul>
-      )}
+      {view.prs.length > 0 && <PrList view={view} onOpenFile={onOpenFile} onOpenUrl={onOpenUrl} worktrees={worktrees} onPrAction={onPrAction} onCopyBranch={onCopyBranch} />}
       {view.shipNote && <p className="hint">{view.shipNote}</p>}
       {(view.cleanup ?? []).length > 0 && (
         <section className="run-cleanup" aria-label="Cleanup" data-testid="cleanup">
           <h3>Cleaned up (merged PRs)</h3>
           <ul className="hint">
-            {(view.cleanup ?? []).map((rec) => (
+            {cleanupInStackOrder(view).map((rec) => (
               <li key={rec.prId} data-testid={`cleanup-${rec.prId}`}>
                 <strong>{rec.prId}</strong>{" "}
                 {[rec.note, rec.worktree, rec.branch, rec.remote].filter((part) => part).join("; ")}

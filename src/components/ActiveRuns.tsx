@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { activeRuns, focusTab, type ActiveRun } from "../bridge";
-import { stageText } from "../run/words";
+import { epicLabel, epicName, epicTooltip, stageText } from "../run/words";
 import { reportError } from "../uiErrors";
 import { RUN_STATE_EVENT, TAB_STATE_EVENT, usePushRefresh } from "../run/events";
 
@@ -52,6 +52,15 @@ export function ActiveRuns({ onClose, onAllRuns }: Props) {
               )}
               {run.stalled && <span className="active-flag active-flag-stall"> no progress</span>}
             </div>
+            {(run.epics ?? []).length >= 2 && (
+              <ul className="active-epics hint" data-testid={`active-epics-${run.tabId}`}>
+                {run.epics!.map((epic, at) => (
+                  <li key={`${epic.id ?? "none"}-${at}`} title={epicTooltip(epic)}>
+                    {epic.id ? epicName(epic) : epicLabel(epic)} · {epic.done}/{epic.total} PRs
+                  </li>
+                ))}
+              </ul>
+            )}
             <button
               type="button"
               className="link-button"

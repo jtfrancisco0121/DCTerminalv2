@@ -83,33 +83,19 @@ describe("PR card actions", () => {
   });
 });
 
-describe("PR size and PRs of one repo", () => {
-  it("shows a size badge per PR with a recorded size, an over-limit marker in words, and none without a size", () => {
+describe("PRs of one repo", () => {
+  it("shows no size badge", () => {
     renderPanel();
-    expect(screen.getByTestId("size-PR1").textContent).toBe("312 lines");
-    expect(screen.getByTestId("size-PR1").getAttribute("title")).toBe("6 files, 1 excluded, limit 400");
-    const over = screen.getByTestId("size-PR2");
-    expect(over.textContent).toBe("512 lines · over 400");
-    expect(over.className).toContain("size-badge-over");
-    expect(over.getAttribute("title")).toBe(
-      "9 files, 0 excluded, limit 400; reason: the parser and its table must ship together",
-    );
-    expect(over.getAttribute("aria-label")).toContain("512 lines · over 400");
-    expect(screen.queryByTestId("size-PR3")).toBeNull();
+    expect(screen.queryByTestId("size-PR1")).toBeNull();
+    expect(screen.queryByTestId("size-PR2")).toBeNull();
   });
 
-  it("says no reason when an over-limit PR has none, and never compares lines with the limit itself", () => {
-    const prs = view.prs.map((pr) =>
-      pr.id === "PR3"
-        ? { ...pr, size: { lines: 900, files: 3, excluded: 0, limit: 400, over: false, reason: null } }
-        : pr.id === "PR5"
-          ? { ...pr, size: { lines: 100, files: 3, excluded: 0, limit: 400, over: true, reason: null } }
-          : pr,
-    );
-    renderPanel({ prs });
-    expect(screen.getByTestId("size-PR3").textContent).toBe("900 lines");
-    expect(screen.getByTestId("size-PR5").textContent).toBe("100 lines · over 400");
-    expect(screen.getByTestId("size-PR5").getAttribute("title")).toContain("; no reason");
+  it("shows no size badge for a 0.7.0 PR that still carries a size object", () => {
+    const legacy = { lines: 900, files: 12, stories: 3, over: true, reason: null, overlaps: [] };
+    renderPanel({ prs: view.prs.map((pr) => ({ ...pr, size: legacy }) as RunView["prs"][number]) });
+    expect(screen.getByTestId("pr-PR1")).toBeTruthy();
+    expect(screen.queryByTestId("size-PR1")).toBeNull();
+    expect(screen.queryByText(/900/)).toBeNull();
   });
 
   it("gives two PRs of one repo their own cards, branches and actions", () => {
@@ -547,5 +533,55 @@ describe("JanitorDialog", () => {
     expect(onRemove).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText("Remove"));
     expect(onRemove).toHaveBeenCalledWith(["PR1"]);
+  });
+});
+
+describe("epic groups and stacks", () => {
+  const epicOf = (id: string, title: string | null) => ({ id, title });
+  const withEpics = (): RunView["prs"] =>
+    view.prs.map((pr, at) => ({ ...pr, epic: at < 2 ? epicOf("e1", "Billing") : at < 4 ? epicOf("e2", null) : null }));
+
+  it("groups PRs under one heading per epic with counts, No epic last", () => {
+    renderPanel({ prs: withEpics() });
+    const headings = screen.getAllByRole("heading", { level: 4 }).map((h) => h.textContent);
+    // reviewed, reviewed | needs-attention, opened | reviewed: the backend's done states
+    expect(headings).toEqual(["Epic Billing 2 PRs · 2 done", "Epic e2 2 PRs · 1 done", "No epic 1 PR · 1 done"]);
+    expect(within(screen.getByRole("region", { name: "Epic Billing" })).getByTestId("pr-PR2")).toBeTruthy();
+  });
+
+  it("counts pushed, drafted and local-only PRs as done, and not pending or building ones", () => {
+    const states = ["pushed", "drafted", "local-only", "pending", "building"];
+    renderPanel({ prs: withEpics().map((pr, at) => ({ ...pr, state: states[at] })) });
+    const headings = screen.getAllByRole("heading", { level: 4 }).map((h) => h.textContent);
+    expect(headings).toEqual(["Epic Billing 2 PRs · 2 done", "Epic e2 2 PRs · 1 done", "No epic 1 PR · 0 done"]);
+  });
+
+  it("is a flat list for one group or an old run", () => {
+    renderPanel();
+    expect(screen.queryAllByRole("heading", { level: 4 })).toHaveLength(0);
+    cleanup();
+    renderPanel({ prs: view.prs.map((pr) => ({ ...pr, epic: epicOf("e1", "Billing") })) });
+    expect(screen.queryAllByRole("heading", { level: 4 })).toHaveLength(0);
+  });
+
+  it("shows the stack chip, (merged) and (not in this run), and focuses the parent on click", () => {
+    const prs = view.prs.map((pr) =>
+      pr.id === "PR2" ? { ...pr, stackedOn: "PR1" } : pr.id === "PR3" ? { ...pr, stackedOn: "PR1", prState: "x" } : pr.id === "PR4" ? { ...pr, stackedOn: "PR9" } : pr,
+    );
+    renderPanel({ prs, cleanup: [{ prId: "PR1", prUrl: "", outcome: "cleaned", worktree: "", branch: "", remote: "", at: "" }] });
+    const chip = within(screen.getByTestId("pr-PR2")).getByText(/stacked on/);
+    expect(chip.textContent).toBe("stacked on PR1 (merged)");
+    expect(within(screen.getByTestId("pr-PR4")).getByText(/stacked on/).textContent).toBe("stacked on PR9 (not in this run)");
+    expect(within(screen.getByTestId("pr-PR4")).queryByRole("button", { name: /Go to PR9/ })).toBeNull();
+    fireEvent.click(within(screen.getByTestId("pr-PR2")).getByRole("button", { name: "Go to PR1, the PR this one is stacked on" }));
+    expect(document.activeElement).toBe(screen.getByTestId("pr-PR1"));
+  });
+
+  it("lists Cleaned up with a child after its parent even when the child has a lower id", () => {
+    const rec = (prId: string) => ({ prId, prUrl: "", outcome: "cleaned", worktree: "", branch: "", remote: "", at: "" });
+    const prs = view.prs.map((pr) => (pr.id === "PR1" ? { ...pr, stackedOn: "PR3" } : pr));
+    renderPanel({ prs, cleanup: [rec("PR1"), rec("PR2"), rec("PR3")] });
+    const ids = within(screen.getByTestId("cleanup")).getAllByRole("listitem").map((li) => li.querySelector("strong")!.textContent);
+    expect(ids).toEqual(["PR2", "PR3", "PR1"]);
   });
 });

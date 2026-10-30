@@ -14,34 +14,40 @@ function card(prs = view.prs) {
 afterEach(cleanup);
 
 describe("ApprovalCard at the ship approval", () => {
-  it("has a Size column: the lines, or a dash without a recorded size", () => {
+  it("has no Size column", () => {
     card();
-    expect(screen.getByRole("columnheader", { name: "Size" })).toBeTruthy();
-    expect(screen.getByTestId("approval-size-PR1").textContent).toBe("312");
-    expect(screen.getByTestId("approval-size-PR3").textContent).toBe("–");
-    expect(screen.queryByTestId("approval-over-PR1")).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "Size" })).toBeNull();
+    expect(screen.queryByTestId("approval-size-PR1")).toBeNull();
+    expect(screen.queryByTestId("approval-over-PR2")).toBeNull();
+    expect(within(screen.getByTestId("approval-PR1")).getByText("PR1")).toBeTruthy();
   });
+});
 
-  it("shows an over-limit PR's limit and approved reason in its row", () => {
-    card();
-    const row = within(screen.getByTestId("approval-PR2"));
-    const over = row.getByTestId("approval-over-PR2");
-    expect(over.textContent).toBe("over 400: the parser and its table must ship together");
-    expect(screen.getByTestId("approval-size-PR2").textContent).toContain("512");
-  });
-
-  it("says no reason, and cuts a long reason to 200 characters with all of it in the title", () => {
-    const long = "x".repeat(300);
+describe("ApprovalCard Epic column", () => {
+  it("has an Epic column and orders rows by epic group, then plan order", () => {
+    const epics = [["PR1", "e1"], ["PR2", "e2"], ["PR3", "e1"]];
     const prs = view.prs.map((pr) => {
-      if (pr.id === "PR1") return { ...pr, size: { lines: 500, files: 2, excluded: 0, limit: 400, over: true, reason: null } };
-      if (pr.id === "PR2") return { ...pr, size: { lines: 500, files: 2, excluded: 0, limit: 400, over: true, reason: long } };
-      return pr;
+      const hit = epics.find(([id]) => id === pr.id);
+      return hit ? { ...pr, epic: { id: hit[1], title: hit[1] === "e1" ? "Billing" : null } } : pr;
     });
     card(prs);
-    expect(screen.getByTestId("approval-over-PR1").textContent).toBe("over 400: no reason");
-    const cut = screen.getByTestId("approval-over-PR2");
-    expect(cut.textContent!.length).toBe(201);
-    expect(cut.textContent!.endsWith("…")).toBe(true);
-    expect(cut.getAttribute("title")).toBe(`over 400: ${long}`);
+    expect(screen.getByRole("columnheader", { name: "Epic" })).toBeTruthy();
+    expect(screen.getByTestId("approval-epic-PR1").textContent).toBe("Billing");
+    expect(screen.getByTestId("approval-epic-PR2").textContent).toBe("e2");
+    expect(screen.getByTestId("approval-epic-PR4").textContent).toBe("–");
+    expect(screen.getByTestId("approval-epic-PR1").getAttribute("title")).toBe("Billing (e1)");
+    expect(screen.getByTestId("approval-epic-PR2").getAttribute("title")).toBe("e2");
+    expect(screen.getByTestId("approval-epic-PR4").getAttribute("title")).toBeNull();
+    const order = screen.getAllByTestId(/^approval-PR\d+$/).map((row) => row.getAttribute("data-testid"));
+    expect(order.slice(0, 3)).toEqual(["approval-PR1", "approval-PR3", "approval-PR2"]);
+    expect(order[order.length - 1]).toBe("approval-PR5");
+  });
+
+  it("keeps plan order and a dash for an old run", () => {
+    card();
+    expect(screen.getByTestId("approval-epic-PR1").textContent).toBe("–");
+    expect(screen.getAllByTestId(/^approval-PR\d+$/).map((r) => r.getAttribute("data-testid"))).toEqual(
+      view.prs.map((pr) => `approval-${pr.id}`),
+    );
   });
 });
