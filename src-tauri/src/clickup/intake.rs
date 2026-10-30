@@ -174,9 +174,9 @@ pub struct SnapshotSource {
     pub refs: Vec<IntakeRef>,
 }
 
-/// An epic whose link was expanded into its subtasks. `name` is empty when
-/// the app did not read the epic itself (the start never makes a new call
-/// for it).
+/// The epic (parent task) of a kept ticket. `name` is empty because the
+/// start never makes a new call for it; the plugin then takes the title from
+/// the plan's `- Epic:` line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotEpic {
     pub id: String,
@@ -511,7 +511,7 @@ pub fn snapshot(
             }
         }
     }
-    let epics = epics_of(refs, &tasks);
+    let epics = epics_of(&tasks);
     Ok(TicketsSnapshot {
         schema: TICKETS_SCHEMA,
         fetched_at: now.to_string(),
@@ -531,22 +531,24 @@ pub fn snapshot(
     })
 }
 
-/// The pasted task links that are the parent of a kept ticket: epic links
-/// that Fetch expanded into subtasks. Read from what the snapshot already
-/// holds (no ClickUp call), so only the id and url are known.
-fn epics_of(refs: &[IntakeRef], tasks: &[SnapshotTask]) -> Vec<SnapshotEpic> {
+/// The parents of the kept tickets, in ticket order: an epic link Fetch
+/// expanded (pasted by id or by custom id) or the parent of a subtask pasted
+/// by itself. Read from what the snapshot already holds (no ClickUp call), so
+/// only the id and url are known.
+fn epics_of(tasks: &[SnapshotTask]) -> Vec<SnapshotEpic> {
     let mut out: Vec<SnapshotEpic> = Vec::new();
-    for r in refs {
-        if r.kind != "task" || r.custom || out.iter().any(|e| e.id == r.id) {
+    for t in tasks {
+        let Some(id) = t.parent_id.as_deref().filter(|id| valid_id(id)) else {
+            continue;
+        };
+        if out.iter().any(|e| e.id == id) {
             continue;
         }
-        if tasks.iter().any(|t| t.parent_id.as_deref() == Some(&r.id)) {
-            out.push(SnapshotEpic {
-                id: r.id.clone(),
-                name: String::new(),
-                url: format!("https://app.clickup.com/t/{}", r.id),
-            });
-        }
+        out.push(SnapshotEpic {
+            id: id.to_string(),
+            name: String::new(),
+            url: format!("https://app.clickup.com/t/{id}"),
+        });
     }
     out
 }
@@ -1065,15 +1067,24 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_expanded_epic_link_records_its_epics_entry_and_subtask_links_alone_record_none() {
+    fn every_kept_tickets_parent_is_an_epics_entry_once_in_ticket_order() {
         let mut sub = sample("86s1", "Sub");
         sub.parent_id = Some("7xk2epic01".into());
-        let epics = epics_of(&[task_ref("7xk2epic01", 1)], &[sub.clone()]);
-        assert_eq!(epics.len(), 1);
-        assert_eq!(epics[0].id, "7xk2epic01");
+        let mut sub2 = sample("86s2", "Sub two");
+        sub2.parent_id = Some("7xk2epic01".into());
+        let mut other = sample("86s3", "Other");
+        other.parent_id = Some("9epic02".into());
+        let mut bad = sample("86s4", "Bad parent");
+        bad.parent_id = Some("../x".into());
+        let alone = sample("86s5", "No parent");
+        // An expanded epic link (by id or custom id) and subtasks pasted by
+        // themselves give the same entries: from the tickets' parent_id.
+        let epics = epics_of(&[sub, alone, other, sub2, bad]);
+        let ids: Vec<&str> = epics.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["7xk2epic01", "9epic02"]);
         assert!(epics[0].url.ends_with("/7xk2epic01"));
-        // The subtask pasted by itself: its parent was never a pasted link.
-        assert!(epics_of(&[task_ref("86s1", 1)], &[sub]).is_empty());
+        assert!(epics.iter().all(|e| e.name.is_empty()));
+        assert!(epics_of(&[sample("86s6", "Alone")]).is_empty());
         // No epics: the key is not written, so the snapshot is unchanged.
         let json = serde_json::to_string(&TicketsSnapshot {
             schema: 1,

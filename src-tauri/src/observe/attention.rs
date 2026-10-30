@@ -189,8 +189,8 @@ fn pr_state_is_done(state: Option<&str>) -> bool {
 
 /// The run's epic groups from status.json `prs[].epic` (`{id, title}`), in
 /// plan order with "No epic" last. A missing or wrong-typed `epic` counts as
-/// no epic; a run with fewer than 2 groups gets none. Done = `opened`,
-/// the same states as `prs_done` (see `pr_state_is_done`).
+/// no epic; a run with fewer than 2 groups gets none. Done = the same states
+/// as `prs_done` (see `pr_state_is_done`).
 pub fn epic_groups(value: Option<&serde_json::Value>) -> Vec<EpicCount> {
     let Some(prs) = value.and_then(|v| v.get("prs")).and_then(|p| p.as_array()) else {
         return Vec::new();
@@ -1855,6 +1855,37 @@ mod tests {
                 (None, None, 1, 1)
             ]
         );
+    }
+
+    #[test]
+    fn epic_done_counts_add_up_to_the_runs_done_count() {
+        let states = [
+            "reviewed",
+            "drafted",
+            "opened",
+            "pushed",
+            "local-only",
+            "pending",
+            "building",
+            "needs-attention",
+        ];
+        let prs: Vec<_> = states
+            .iter()
+            .enumerate()
+            .map(|(at, state)| {
+                let epic = if at % 2 == 0 {
+                    serde_json::json!({"id": "e1"})
+                } else {
+                    serde_json::json!({"id": "e2"})
+                };
+                serde_json::json!({"id": format!("PR{}", at + 1), "state": state, "epic": epic})
+            })
+            .collect();
+        let v = serde_json::json!({ "prs": prs });
+        let done: u32 = epic_groups(Some(&v)).iter().map(|g| g.done).sum();
+        let run_done = states.iter().filter(|s| pr_state_is_done(Some(s))).count() as u32;
+        assert_eq!(run_done, 5);
+        assert_eq!(done, run_done);
     }
 
     #[test]
