@@ -1240,6 +1240,12 @@ rm -rf "$SZ2"; git -C "$SR" worktree prune
 rm -f "$SZ/gates/PR2.yml"
 expect 1 "gate PASS refused when the worktree is missing (the diff cannot be computed)" bash "$STATE" gate "$SZ" PR2 PASS "clean"
 has "  says it cannot be checked" "cannot be"
+echo "# gate for the parent of an overlapping stack while the child is pending with no worktree (stack from plan.md)"
+szsetup sx stack
+mkdir -p "$SZ/reviews"; printf '## Verdict\nAPPROVED\n' > "$SZ/reviews/PR1-round1.md"
+echo parent > "$SZ1/src/a.ts"; szcommit "$SZ1" "PR1 changes src/a.ts, which PR2 also owns"
+[[ ! -e "$SZ2" ]] && ok "  PR2 has no worktree" || bad "  PR2 worktree exists"
+expect 0 "gate PASS for PR1: its stacked child (plan Depends on) shares src/a.ts" bash "$STATE" gate "$SZ" PR1 PASS "clean"
 echo "# an old 0.7.0 run: prs[].size and plan.overLimit are accepted, the run resumes through gate and ship-pr"
 szsetup sc
 python3 - "$SZ/status.json" <<'PY'

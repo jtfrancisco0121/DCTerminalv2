@@ -1903,10 +1903,12 @@ def cmd_ship_pr(run, pid):
     # commits, a push to the URL recorded when the worktree was made (no hooks, no remote name), `gh -R <owner/name>`.
     pr, rem = canonical_pr(run, st, pid, "NOT SHIPPED")
     rem_now[0] = rem
-    need_parent_pr(st, pr, "NOT SHIPPED")
+    parent_note = need_parent_pr(st, pr, "NOT SHIPPED")
     wt, branch, base = pr["worktree"], pr["branch"], pr.get("base")
     if not rem:
         return save("local-only", "no git remote: nothing pushed, no PR opened")
+    if parent_note:
+        return save("needs-attention", parent_note)
     url = rem["url"]
     why = url_problem(url)
     if why:
@@ -2245,8 +2247,11 @@ def need_parent_pr(st, pr, what):
     if not so:
         return
     parent = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == so), None)
+    if parent and not parent.get("prUrl") and parent.get("state") in ("local-only", "pushed", "needs-attention"):
+        return f"{so} ended {parent.get('state')} with no PR: no PR opened for this stacked PR; open {so}'s PR first, then ship it again"
     if not parent or not parent.get("prUrl"):
         die(f"{what}: {pr.get('id')} is stacked on {so}, which has no PR yet: open {so} first (it ships before {pr.get('id')})")
+    return None
 
 
 def push_parent(run, st, pr, rem, what):
@@ -2358,7 +2363,9 @@ def cmd_draft_pr(run, pid):
     if pr.get("prUrl"):
         print(f"draft=exists url={pr['prUrl']}")
         return
-    need_parent_pr(st, pr, "NOT DRAFTED")
+    pn = need_parent_pr(st, pr, "NOT DRAFTED")
+    if pn:
+        die(f"NOT DRAFTED: {pn}")
     # Normally called right after the Implementer's first round (state building); a late call still
     # opens the draft (commits + a passing check are what count) and keeps a later state as it is.
     if pr.get("state") not in ("pending", "building", "drafted", "reviewing", "fixing", "reviewed"):
@@ -2557,7 +2564,7 @@ def cmd_ready(run, pid):
     if pr.get("state") not in ("reviewed", "pushed"):
         die(f"NOT READY: {pid} is {pr.get('state')}; only reviewed PRs are marked ready")
     st, pr, rem = github_pr(run, pid, ("shipping",))
-    need_parent_pr(st, pr, "NOT READY")
+    parent_note = need_parent_pr(st, pr, "NOT READY")
 
     def save(state, note=None, url=None):
         pr["state"], pr["note"] = state, note
@@ -2571,6 +2578,8 @@ def cmd_ready(run, pid):
     wt, branch, base = pr["worktree"], pr["branch"], pr.get("base")
     if not rem:
         return save("local-only", "no git remote: nothing pushed, no PR opened")
+    if parent_note:
+        return save("needs-attention", parent_note)
     if not rem.get("repo"):
         return save("needs-attention", f"cannot tell which GitHub repo {rem.get('url')} is")
     push_parent(run, st, pr, rem, "NOT READY")
@@ -2741,9 +2750,15 @@ def diff_paths(run, st, pid):
     return sorted({x for x in r.stdout.decode("utf-8", "surrogateescape").split("\0") if x})
 
 
-def stack_family(st, pid):
-    """The ids of pid's stack ancestors and descendants (prs[].stackedOn)."""
+def stack_family(run, st, pid):
+    """The ids of pid's stack ancestors and descendants: prs[].stackedOn, and the plan's same-repo Depends on (a child has
+    no stackedOn until its worktree is made, which is after its parent's gate)."""
     parent = {p.get("id"): p.get("stackedOn") for p in st.get("prs") or [] if isinstance(p, dict)}
+    _, plan_prs = plan_blocks(read(os.path.join(run, "plan.md")) or "")
+    for q in plan_prs:
+        deps = same_repo_deps(plan_prs, q)
+        if len(deps) == 1 and not parent.get(q):
+            parent[q] = deps[0]
 
     def chain(x):
         out, y = [], parent.get(x)
@@ -2761,7 +2776,7 @@ def gate_overlaps(run, st, pid):
     changed = diff_paths(run, st, pid)
     me = next(p for p in st["prs"] if p.get("id") == pid)
     repo = os.path.realpath(str(me.get("repoPath") or "/"))
-    owned, skip = pr_owned_files(run, st), stack_family(st, pid)
+    owned, skip = pr_owned_files(run, st), stack_family(run, st, pid)
     out = []
     for oid, other in sorted((p.get("id"), p) for p in st.get("prs") or [] if isinstance(p, dict)):
         if oid == pid or oid in skip or os.path.realpath(str(other.get("repoPath") or "/")) != repo:

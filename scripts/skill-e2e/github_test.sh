@@ -602,6 +602,14 @@ hasnt "  not needs attention" "needs attention"
 skst shipping reviewed reviewed "$SHIP"
 expect 1 "ship-pr PR2 before PR1 has a PR" S ship-pr "$RUN" PR2
 has "  says why" "stacked on PR1, which has no PR yet"
+skst shipping pushed reviewed "$SHIP"
+expect 0 "ship-pr PR2 when PR1 ended pushed with no PR: needs-attention, not a refusal" S ship-pr "$RUN" PR2
+has "  note names the parent" "PR1 ended pushed with no PR"
+is "  PR2 needs-attention" "$RUN/status.json" prs.1.state '"needs-attention"'
+skst shipping local-only reviewed "$SHIP"
+expect 0 "ship-pr PR2 when PR1 ended local-only" S ship-pr "$RUN" PR2
+is "  PR2 needs-attention" "$RUN/status.json" prs.1.state '"needs-attention"'
+skst shipping reviewed reviewed "$SHIP"
 expect 0 "ship-pr PR1" S ship-pr "$RUN" PR1; has "  opened" "PR1 opened: https://github.com/shim/repo/pull/"
 N1="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["prs"][0]["prUrl"].rsplit("/", 1)[1])' "$RUN/status.json")"
 expect 0 "ship-pr PR2 (after PR1)" S ship-pr "$RUN" PR2; has "  opened" "PR2 opened: https://github.com/shim/repo/pull/"
