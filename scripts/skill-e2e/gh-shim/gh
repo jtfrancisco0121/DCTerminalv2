@@ -4,9 +4,11 @@
 State lives in $GH_SHIM_DIR (required): prs.json, comments/<pr>-<n>.md, calls.log (one line per call).
 Every call may name the repo with -R (it must be $GH_SHIM_REPO, default shim/repo). PRs in prs.json may
 carry "headRepo" (a fork) to test cross-repo checks. Knows: repo view --json nameWithOwner; pr list --head <b> --json ...; pr create [--draft] --head <b> --title <t> --body-file <f>;
-pr comment <url> --body-file <f>; pr edit <url> --body-file <f>; pr ready <url>; pr view <b|url> [--json ...] (head, head repo, comments,
-state, headRefOid / mergeCommit when prs.json gives them: a test marks a PR merged by editing prs.json).
-GH_SHIM_FAIL=<verb>[,<verb>] makes those verbs (e.g. comment, ready, create, list) fail.
+pr comment <url> --body-file <f>; pr edit <url> [--body-file <f>] [--base <b>] [--add-label <l>]; pr ready <url>; pr list --base <b> --state open --json ...;
+pr view <b|url> [--json ...] (head, head repo, comments, baseRefName,
+state, headRefOid / mergeCommit when prs.json gives them: a test marks a PR merged by editing prs.json);
+label list [--search <s>] --json name; label create <name> (labels.json).
+GH_SHIM_FAIL=<verb>[,<verb>] makes those verbs (e.g. comment, ready, create, list) fail; <sub>:<verb> (e.g. label:create) only that pair.
 Anything else exits 1 ("not supported by the shim").
 """
 import json, os, sys
@@ -46,16 +48,35 @@ def by_url(u):
 
 
 sub, verb = (args + ["", ""])[:2]
-if verb in (os.environ.get("GH_SHIM_FAIL") or "").split(","):
+if verb in (os.environ.get("GH_SHIM_FAIL") or "").split(",") or f"{sub}:{verb}" in (os.environ.get("GH_SHIM_FAIL") or "").split(","):
     sys.exit(f"gh shim: {verb} failed (GH_SHIM_FAIL)")
 if sub == "repo" and verb == "view" and "nameWithOwner" in " ".join(args):
     print(SLUG)
     sys.exit(0)
+if sub == "label":
+    lpath = os.path.join(d, "labels.json")
+    try:
+        labels = json.load(open(lpath))
+    except (OSError, ValueError):
+        labels = []
+    if verb == "list":
+        q = opt("--search") or ""
+        print(json.dumps([{"name": n} for n in labels if q in n]))
+    elif verb == "create" and len(args) > 2:
+        if args[2] not in labels:
+            labels.append(args[2])
+        json.dump(labels, open(lpath, "w"))
+    else:
+        sys.exit("gh shim: not supported by the shim")
+    sys.exit(0)
 if sub != "pr":
     sys.exit("gh shim: not supported by the shim")
 if verb == "list":
-    head = opt("--head")
-    print(json.dumps([{"url": p["url"], "isDraft": p["isDraft"], "state": p["state"]} for p in prs if p["head"] == head]))
+    head, b = opt("--head"), opt("--base")
+    if b is not None:  # the open PRs whose base is that branch
+        print(json.dumps([{"url": p["url"], "baseRefName": p.get("base")} for p in prs if p.get("base") == b and p["state"] == (opt("--state") or "open").upper()]))
+    else:
+        print(json.dumps([{"url": p["url"], "isDraft": p["isDraft"], "state": p["state"]} for p in prs if p["head"] == head]))
 elif verb == "create":
     head = opt("--head")
     if any(p["head"] == head and p["state"] == "OPEN" for p in prs):
@@ -80,7 +101,12 @@ elif verb in ("comment", "edit", "ready"):
         save()
         print(f"{p['url']}#issuecomment-{1000 + n}")
     elif verb == "edit":
-        p["body"] = open(opt("--body-file")).read()
+        if opt("--body-file"):
+            p["body"] = open(opt("--body-file")).read()
+        if opt("--base"):
+            p["base"] = opt("--base")
+        if opt("--add-label"):
+            p.setdefault("labels", []).append(opt("--add-label"))
         save()
         print(p["url"])
     else:
@@ -98,7 +124,7 @@ elif verb == "view":
         print(json.dumps({"url": p["url"], "headRefName": p["head"], "headRepository": {"name": name},
                           "headRepositoryOwner": {"login": owner}, "isCrossRepository": p.get("headRepo", SLUG) != SLUG,
                           "comments": p.get("comments", []), "state": p["state"],
-                          "headRefOid": p.get("headRefOid"), "mergeCommit": p.get("mergeCommit")}))
+                          "headRefOid": p.get("headRefOid"), "mergeCommit": p.get("mergeCommit"), "baseRefName": p.get("base")}))
     else:
         print(p["url"])
 else:

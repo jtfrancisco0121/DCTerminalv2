@@ -1147,7 +1147,7 @@ echo "# plan.prFiles, the gate overlap check, old 0.7.0 runs, guard lock"
 # szsetup <tag>: a run <tag> with its own repo "sz<tag>" and two same-repo PRs (PR1 owns src/a.ts etc., PR2 owns other/),
 # the plan approved, the PRs in status building and both worktrees made. Sets SZ (run), SR (repo), SZ1 / SZ2 (worktrees), SZBASE.
 szsetup() {
-  local tag="$1"
+  local tag="$1" stack="${2:-}"   # stack: PR2 Depends on PR1 (same repo) and overlaps its Files; only PR1's worktree is made
   SZ="$d/runs/r-$tag"; SR="$WS/sz$tag"; mkdir -p "$SZ" "$SR"
   git -C "$SR" init -q -b main
   seq 1 20 > "$SR/old.txt"; mkdir -p "$SR/src"; echo keep > "$SR/src/keep.txt"
@@ -1155,16 +1155,24 @@ szsetup() {
   echo 'greet() { echo hello; }' > "$SR/lib.sh"; printf '. ./lib.sh\ngreet\n' > "$SR/app1.sh"
   printf 'for f in app*.sh; do bash "$f" >/dev/null || exit 1; done\n' > "$SR/check.sh"
   git -C "$SR" add -A; git -C "$SR" -c user.name=t -c user.email=t@t commit -q -m init
+  if [[ -n "${SZREMOTE:-}" ]]; then   # a local bare origin, so a branch can be pushed
+    git init -q --bare -b main "$d/origin-$tag.git"; git -C "$SR" remote add origin "$d/origin-$tag.git"; git -C "$SR" push -q origin main
+  fi
   SZBASE="$(git -C "$SR" rev-parse HEAD)"
   printf 'folder: %s\n' "$WS" > "$SZ/request.md"
   printf '{"schema":1,"repos":[{"name":"sz%s","path":"%s","check":"true"}]}\n' "$tag" "$SR" > "$SZ/repos.json"
-  { printf '# Plan\n## Stories\n### S1: First\n- Files: src/a.ts, old.txt, new.txt, img.bin, package-lock.json, fixtures/\n### S2: Second\n- Files: other/\n'
+  { printf '# Plan\n## Stories\n### S1: First\n- Files: src/a.ts, old.txt, new.txt, img.bin, package-lock.json, fixtures/\n### S2: Second\n- Files: %s\n' "$([[ -n "$stack" ]] && echo 'src/a.ts, other/' || echo 'other/')"
     printf '## Pull requests\n### PR1: First\n- Repo: sz%s\n- Stories: S1\n- Depends on: none\n' "$tag"
-    printf '### PR2: Second\n- Repo: sz%s\n- Stories: S2\n- Depends on: none\n' "$tag"; } > "$SZ/plan.md"
+    printf '### PR2: Second\n- Repo: sz%s\n- Stories: S2\n- Depends on: %s\n' "$tag" "$([[ -n "$stack" ]] && echo PR1 || echo none)"; } > "$SZ/plan.md"
   export DCV2_RUN_DIR="$SZ"
   szstatus plan-approval | bash "$STATE" put "$SZ/status.json" >/dev/null
   bash "$STATE" approve "$SZ" plan user >/dev/null
   SZ1="$WS/sz$tag-worktrees/dcv2-r-$tag-pr1"; SZ2="$WS/sz$tag-worktrees/dcv2-r-$tag-pr2"
+  if [[ -n "$stack" ]]; then
+    szstatus building 'doc["prs"][0]["state"] = "pending"; doc["prs"][1].update(dependsOn=["PR1"], worktree=None, state="pending")' | bash "$STATE" put "$SZ/status.json" >/dev/null
+    bash "$STATE" worktree "$SZ" "$SR" PR1 "$SZBASE" >/dev/null
+    return 0
+  fi
   szstatus building | bash "$STATE" put "$SZ/status.json" >/dev/null
   bash "$STATE" worktree "$SZ" "$SR" PR1 "$SZBASE" >/dev/null
   bash "$STATE" worktree "$SZ" "$SR" PR2 "$SZBASE" >/dev/null
@@ -1381,6 +1389,187 @@ mcmark 'st["stage"] = "done"; st["shipApproval"] = {"by": "user", "at": "2026-10
 expect 0 "cleanup at done removes a stale scratch worktree" bash "$STATE" cleanup "$SZ"
 has "  says so" "merge-check scratch removed"
 mcclean cleanup
+export DCV2_RUN_DIR="$RUN"
+
+echo "# stacked same-repo PRs: the worktree is made from the parent, put rules, restack"
+# stmark <python>: change status.json directly (test data, as mcmark does)
+stmark() {
+  python3 - "$SZ/status.json" "$1" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1]))
+exec(sys.argv[2])
+json.dump(st, open(sys.argv[1], "w"))
+PY
+}
+# ststatus <stage> [python]: the stacked pair as recorded: PR1 reviewed, PR2 pending on PR1 (stackedOn, base and baseCommit as .guard.json has them)
+ststatus() {
+  szstatus "$1" 'g = json.load(open(run + "/.guard.json"))
+doc["prs"][0]["state"] = "reviewed"
+doc["prs"][1].update(dependsOn=["PR1"], stackedOn="PR1", base="dcv2/" + rid + "-pr1", baseCommit=g["bases"]["PR2"], state="pending",
+                     check={"command": "true", "result": None, "summary": None})
+'"${2:-}"
+}
+# stprep <tag>: PR1 reviewed with one commit; PR2 made from its head, with one commit, and recorded
+stprep() {
+  szsetup "$1" stack
+  echo p1 > "$SZ1/p1.txt"; szcommit "$SZ1" "PR1 work"
+  stmark 'st["prs"][0]["state"] = "reviewed"'
+  bash "$STATE" worktree "$SZ" "$SR" PR2 PR1 >/dev/null
+  echo p2 > "$SZ2/p2.txt"; szcommit "$SZ2" "PR2 work"
+  bash "$STATE" put "$SZ/status.json" < <(ststatus building) >/dev/null
+}
+gj() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(d.get(sys.argv[2], {}).get(sys.argv[3])))' "$SZ/.guard.json" "$1" "$2"; }
+szsetup sta stack
+expect 1 "worktree of a PR with a same-repo Depends on and a commit base is refused" bash "$STATE" worktree "$SZ" "$SR" PR2 "$SZBASE"
+has "  says to pass the parent" "PR2 is stacked on PR1: pass PR1 as the base once it is reviewed"
+expect 1 "worktree PR2 PR1 while PR1 is not reviewed" bash "$STATE" worktree "$SZ" "$SR" PR2 PR1
+has "  says why" "PR1, which is pending"
+[[ ! -d "$SZ2" ]] && ok "  no worktree made" || bad "  worktree exists"
+expect 1 "worktree PR1 PR2: not PR1's parent" bash "$STATE" worktree "$SZ" "$SR" PR1 PR2
+echo p1 > "$SZ1/p1.txt"; szcommit "$SZ1" "PR1 work"; P1H="$(git -C "$SZ1" rev-parse HEAD)"
+stmark 'st["prs"][0]["state"] = "reviewed"'
+expect 0 "worktree PR2 PR1 once PR1 is reviewed" bash "$STATE" worktree "$SZ" "$SR" PR2 PR1
+has "  prints base, baseCommit and stackedOn" "base=dcv2/r-sta-pr1 baseCommit=$P1H stackedOn=PR1"
+[[ "$(git -C "$SZ2" rev-parse HEAD)" == "$P1H" && "$(git -C "$SZ2" rev-parse --abbrev-ref HEAD)" == dcv2/r-sta-pr2 ]] && ok "  PR2 is on dcv2/r-sta-pr2 at PR1's head, in the canonical folder" || bad "  PR2 worktree wrong"
+[[ "$(gj stacks PR2)" == '"PR1"' && "$(gj bases PR2)" == "\"$P1H\"" ]] && ok "  .guard.json has stacks and bases" || bad "  guard: $(cat "$SZ/.guard.json")"
+expect 1 "put of PR2 (a worktree, a same-repo dependsOn) without stackedOn" bash "$STATE" put "$SZ/status.json" < <(szstatus building 'doc["prs"][0]["state"] = "reviewed"; doc["prs"][1].update(dependsOn=["PR1"], state="pending")')
+has "  says so" "stackedOn must be PR1"
+expect 1 "put with another stackedOn" bash "$STATE" put "$SZ/status.json" < <(ststatus building 'doc["prs"][1]["stackedOn"] = "PR3"')
+has "  says so" "stackedOn must be PR1"
+expect 1 "put with a baseCommit that disagrees with .guard.json" bash "$STATE" put "$SZ/status.json" < <(ststatus building "doc['prs'][1]['baseCommit'] = '$SZBASE'")
+has "  says so" "disagrees with .guard.json bases"
+expect 1 "put with a base that is not the parent's branch" bash "$STATE" put "$SZ/status.json" < <(ststatus building 'doc["prs"][1]["base"] = "main"')
+has "  says so" "base must be the parent's branch"
+expect 0 "put with the recorded stackedOn, base and baseCommit" bash "$STATE" put "$SZ/status.json" < <(ststatus building)
+is "  stackedOn kept" "$SZ/status.json" prs.1.stackedOn '"PR1"'
+expect 0 "worktree again with PR2's recorded baseCommit (resume)" bash "$STATE" worktree "$SZ" "$SR" PR2 "$P1H"
+has "  keeps stackedOn and base" "base=dcv2/r-sta-pr1 baseCommit=$P1H stackedOn=PR1"
+[[ "$(gj stacks PR2)" == '"PR1"' && "$(gj bases PR2)" == "\"$P1H\"" ]] && ok "  stacks and bases are as they were" || bad "  guard: $(cat "$SZ/.guard.json")"
+expect 0 "worktree PR2 PR1 again (resume by parent id)" bash "$STATE" worktree "$SZ" "$SR" PR2 PR1
+echo "# a stacked child may change its parent's file at the gate; its own diff starts at the parent's head"
+echo child > "$SZ2/src/a.ts"; echo own > "$SZ2/src/own.txt"; szcommit "$SZ2" "PR2 work (touches the parent's src/a.ts)"
+mkdir -p "$SZ/reviews"; printf '## Verdict\nAPPROVED\n' > "$SZ/reviews/PR2-round3.md"
+stmark 'p = st["prs"][1]; p["state"] = "reviewed"; p["check"]["result"] = "pass"; p["review"]["round"] = 3; st["mergeChecks"] = {"szsta": {"prs": ["PR1", "PR2"], "result": "pass", "error": None, "log": None, "at": "2026-10-30T00:00:00Z"}}'
+expect 0 "gate PASS for PR2 round 3 (stacked: its parent's file is fine)" bash "$STATE" gate "$SZ" PR2 PASS "clean"
+grep -qx 'restack: 0' "$SZ/gates/PR2.yml" && ok "  the gate records restack: 0" || bad "  gate: $(cat "$SZ/gates/PR2.yml")"
+echo "# restack: a clean one moves baseCommit and bases together and voids the review"
+echo p1b > "$SZ1/p1b.txt"; szcommit "$SZ1" "PR1 fix"; P1H2="$(git -C "$SZ1" rev-parse HEAD)"
+REMOTE_BEFORE="$(git -C "$SR" for-each-ref refs/remotes | wc -l | tr -d ' ')"
+expect 1 "restack of a PR that is not stacked" bash "$STATE" restack "$SZ" PR1
+stmark 'st["prs"][0]["state"] = "building"'
+expect 1 "restack while the parent is not reviewed" bash "$STATE" restack "$SZ" PR2
+has "  says so" "PR1 is building"
+stmark 'st["prs"][0]["state"] = "reviewed"'
+echo dirty > "$SZ2/dirty.txt"
+expect 1 "restack with an uncommitted file" bash "$STATE" restack "$SZ" PR2
+has "  says so" "uncommitted changes"
+rm -f "$SZ2/dirty.txt"
+PRE2="$(git -C "$SZ2" rev-parse HEAD)"
+expect 0 "restack PR2" bash "$STATE" restack "$SZ" PR2
+has "  prints the result" "restack=ok PR2 parent=PR1 baseCommit=$P1H2 merge=new restack=1 state=pending"
+git -C "$SZ2" merge-base --is-ancestor "$P1H2" HEAD && ok "  PR1's new head is merged into PR2" || bad "  not merged"
+[[ "$(git -C "$SZ2" rev-list --parents -n1 HEAD | wc -w | tr -d ' ')" == 3 ]] && ok "  a merge commit (no rebase)" || bad "  not a merge commit"
+git -C "$SZ2" merge-base --is-ancestor "$PRE2" HEAD && ok "  PR2's own commits were kept as they were (no rewrite)" || bad "  history rewritten"
+is "  baseCommit is PR1's new head" "$SZ/status.json" prs.1.baseCommit "\"$P1H2\""
+[[ "$(gj bases PR2)" == "\"$P1H2\"" ]] && ok "  .guard.json bases.PR2 moved with it" || bad "  guard: $(cat "$SZ/.guard.json")"
+is "  PR2 is pending" "$SZ/status.json" prs.1.state '"pending"'
+is "  with no check result" "$SZ/status.json" prs.1.check.result null
+is "  the repo's mergeChecks entry is gone" "$SZ/status.json" mergeChecks.szsta null
+is "  review.round is 0" "$SZ/status.json" prs.1.review.round 0
+is "  restack is 1" "$SZ/status.json" prs.1.restack 1
+[[ -f "$SZ/gates/PR2-restack0.yml" && -f "$SZ/reviews/PR2-restack0-round3.md" ]] && ok "  the old gate and review are kept as -restack0 copies" || bad "  $(ls "$SZ/gates" "$SZ/reviews")"
+[[ "$(git -C "$SR" for-each-ref refs/remotes | wc -l | tr -d ' ')" == "$REMOTE_BEFORE" ]] && ok "  nothing was pushed" || bad "  remote refs changed"
+expect 0 "a following put with those values passes" bash "$STATE" put "$SZ/status.json" < <(ststatus building 'g = json.load(open(run + "/.guard.json")); doc["prs"][1]["baseCommit"] = g["bases"]["PR2"]')
+is "  restack kept at 1" "$SZ/status.json" prs.1.restack 1
+expect 0 "put cannot change restack" bash "$STATE" put "$SZ/status.json" < <(ststatus building 'doc["prs"][1]["restack"] = 7')
+has "  says so" "restack is set only by"
+is "  restack still 1" "$SZ/status.json" prs.1.restack 1
+expect 0 "put cannot drop restack" bash "$STATE" put "$SZ/status.json" < <(ststatus building 'doc["prs"][1].pop("restack", None)')
+is "  restack still 1 (dropped)" "$SZ/status.json" prs.1.restack 1
+echo "# the old gate no longer lets the PR become reviewed; a new review round and gate do"
+expect 1 "put PR2 reviewed at round 3 with the old gate (restack 0)" bash "$STATE" put "$SZ/status.json" < <(ststatus building 'doc["prs"][1].update(state="reviewed", check={"command": "true", "result": "pass", "summary": None}, review={"round": 3, "verdict": "APPROVED", "openFindings": 0, "path": None})')
+has "  says the gate is from before the restack" "from before restack 1"
+printf '## Verdict\nAPPROVED\n' > "$SZ/reviews/PR2-round1.md"
+expect 0 "put PR2 reviewing, round 1 (rounds start over)" bash "$STATE" put "$SZ/status.json" < <(ststatus building 'doc["prs"][1].update(state="reviewing", check={"command": "true", "result": "pass", "summary": None}, review={"round": 1, "verdict": None, "openFindings": 0, "path": None})')
+expect 1 "reviewed at round 1 with the old gate (round 3, restack 0)" bash "$STATE" put "$SZ/status.json" < <(ststatus building 'doc["prs"][1].update(state="reviewed", check={"command": "true", "result": "pass", "summary": None}, review={"round": 3, "verdict": "APPROVED", "openFindings": 0, "path": None})')
+cp "$SZ/gates/PR2.yml" "$d/old-gate.yml"; sed -i.bak 's/^round: 3/round: 1/' "$SZ/gates/PR2.yml"; rm -f "$SZ/gates/PR2.yml.bak"
+expect 1 "reviewed at round 1 with the old gate edited to round 1 (still restack 0)" bash "$STATE" put "$SZ/status.json" < <(ststatus building 'doc["prs"][1].update(state="reviewed", check={"command": "true", "result": "pass", "summary": None}, review={"round": 1, "verdict": "APPROVED", "openFindings": 0, "path": None})')
+has "  says so" "from before restack 1"
+cp "$d/old-gate.yml" "$SZ/gates/PR2.yml"
+expect 0 "gate PASS after the new review round 1" bash "$STATE" gate "$SZ" PR2 PASS "clean again"
+grep -qx 'restack: 1' "$SZ/gates/PR2.yml" && ok "  the new gate records restack: 1" || bad "  gate: $(cat "$SZ/gates/PR2.yml")"
+expect 0 "put PR2 reviewed at round 1 with the new gate" bash "$STATE" put "$SZ/status.json" < <(ststatus building 'doc["prs"][1].update(state="reviewed", check={"command": "true", "result": "pass", "summary": None}, review={"round": 1, "verdict": "APPROVED", "openFindings": 0, "path": None})')
+expect 0 "put PR2 fixing at round 3: the 3 rounds can be used again" bash "$STATE" put "$SZ/status.json" < <(ststatus building 'doc["prs"][1].update(state="fixing", check={"command": "true", "result": "pass", "summary": None}, review={"round": 3, "verdict": None, "openFindings": 1, "path": None})')
+
+echo "# restack with the Implementer cap reached, a refused dry run, a failed status write, Already up to date, a conflict"
+stprep stc; echo more > "$SZ1/p1b.txt"; szcommit "$SZ1" "PR1 fix"; P1H2="$(git -C "$SZ1" rev-parse HEAD)"
+stmark 'import copy; p = copy.deepcopy(st["prs"][0]); p.update(id="PR3", branch=p["branch"].replace("-pr1", "-pr3"), worktree=p["worktree"].replace("-pr1", "-pr3"), state="building", dependsOn=[]); st["prs"].append(p)'
+expect 0 "restack with the cap reached (DCV2_MAX_IMPLEMENTERS=1, PR3 building)" env DCV2_MAX_IMPLEMENTERS=1 bash "$STATE" restack "$SZ" PR2
+is "  PR2 is pending (never building)" "$SZ/status.json" prs.1.state '"pending"'
+is "  baseCommit moved" "$SZ/status.json" prs.1.baseCommit "\"$P1H2\""
+stprep std; echo more > "$SZ1/p1b.txt"; szcommit "$SZ1" "PR1 fix"
+PRE2="$(git -C "$SZ2" rev-parse HEAD)"; B2="$(gj bases PR2)"
+stmark 'st["prs"][1]["stories"]["ids"] = []'
+expect 1 "restack whose dry run is refused by validation" bash "$STATE" restack "$SZ" PR2
+has "  says so" "stories.ids"
+[[ "$(git -C "$SZ2" rev-parse HEAD)" == "$PRE2" && "$(gj bases PR2)" == "$B2" ]] && ok "  HEAD and bases unchanged, no merge commit" || bad "  something moved"
+is "  baseCommit unchanged" "$SZ/status.json" prs.1.baseCommit "$B2"
+if [[ "$(id -u)" != 0 ]]; then
+  stprep ste; echo more > "$SZ1/p1b.txt"; szcommit "$SZ1" "PR1 fix"
+  PRE2="$(git -C "$SZ2" rev-parse HEAD)"; B2="$(gj bases PR2)"; OLDST="$(cat "$SZ/status.json")"
+  chmod a-w "$SZ"
+  expect 1 "restack whose status write fails (the run folder is read-only)" bash "$STATE" restack "$SZ" PR2
+  chmod u+w "$SZ"
+  has "  says nothing moved" "HEAD, baseCommit and bases are unchanged"
+  [[ "$(git -C "$SZ2" rev-parse HEAD)" == "$PRE2" && "$(gj bases PR2)" == "$B2" ]] && ok "  HEAD and bases unchanged, the merge commit was undone" || bad "  HEAD $(git -C "$SZ2" rev-parse HEAD) want $PRE2"
+  [[ "$(git -C "$SZ2" status --porcelain | wc -l | tr -d ' ')" == 0 && -z "$(git -C "$SZ2" rev-parse -q --verify MERGE_HEAD)" ]] && ok "  the worktree is clean, no merge in progress" || bad "  worktree not clean"
+  [[ "$(cat "$SZ/status.json")" == "$OLDST" ]] && ok "  status.json is as it was" || bad "  status.json changed"
+  echo "# Already up to date counts as clean; a failed write then resets nothing (the earlier merge commit is kept)"
+  git -C "$SZ2" -c user.name=t -c user.email=t@t merge -q --no-edit "$(git -C "$SZ1" rev-parse HEAD)"
+  MERGED2="$(git -C "$SZ2" rev-parse HEAD)"
+  chmod a-w "$SZ"
+  expect 1 "restack (already merged by hand) whose status write fails" bash "$STATE" restack "$SZ" PR2
+  chmod u+w "$SZ"
+  [[ "$(git -C "$SZ2" rev-parse HEAD)" == "$MERGED2" ]] && ok "  the manual merge commit is kept (nothing reset)" || bad "  HEAD moved"
+  expect 0 "restack again: Already up to date is clean" bash "$STATE" restack "$SZ" PR2
+  has "  no new merge" "merge=none"
+  is "  baseCommit moved" "$SZ/status.json" prs.1.baseCommit "\"$(git -C "$SZ1" rev-parse HEAD)\""
+else
+  ok "  (running as root: the read-only folder cases are skipped)"
+fi
+echo "# restack conflict: nothing moves, no merge in progress, needs-attention; a manual merge then restack moves both"
+stprep stg
+stmark 'st["prs"][1]["state"] = "reviewed"; st["prs"][1]["check"]["result"] = "pass"'
+echo two > "$SZ2/lib.sh"; szcommit "$SZ2" "PR2 changes lib.sh"
+echo one > "$SZ1/lib.sh"; szcommit "$SZ1" "PR1 changes lib.sh"; P1H3="$(git -C "$SZ1" rev-parse HEAD)"
+PRE2="$(git -C "$SZ2" rev-parse HEAD)"; B2="$(gj bases PR2)"
+expect 3 "restack with a conflict" bash "$STATE" restack "$SZ" PR2
+has "  names the file" "conflicts in lib.sh"
+[[ -z "$(git -C "$SZ2" rev-parse -q --verify MERGE_HEAD)" && "$(git -C "$SZ2" rev-parse HEAD)" == "$PRE2" ]] && ok "  no merge in progress, HEAD unchanged" || bad "  merge left behind"
+[[ "$(gj bases PR2)" == "$B2" ]] && ok "  bases unchanged" || bad "  bases moved"
+is "  baseCommit unchanged" "$SZ/status.json" prs.1.baseCommit "$B2"
+is "  PR2 is needs-attention" "$SZ/status.json" prs.1.state '"needs-attention"'
+git -C "$SZ2" -c user.name=t -c user.email=t@t merge -q -X theirs --no-edit "$P1H3"
+expect 0 "restack after the manual merge: Already up to date is clean" bash "$STATE" restack "$SZ" PR2
+has "  no new merge" "merge=none"
+[[ "$(gj bases PR2)" == "\"$P1H3\"" ]] && ok "  bases moved with baseCommit" || bad "  guard: $(cat "$SZ/.guard.json")"
+is "  PR2 is pending again" "$SZ/status.json" prs.1.state '"pending"'
+echo "# the parent's branch is gone: the worktree is made from the pushed branch"
+SZREMOTE=1 szsetup stb stack
+echo p1 > "$SZ1/p1.txt"; szcommit "$SZ1" "PR1 work"; P1H="$(git -C "$SZ1" rev-parse HEAD)"
+git -C "$SZ1" push -q origin HEAD:refs/heads/dcv2/r-stb-pr1
+stmark 'st["prs"][0]["state"] = "reviewed"'
+git -C "$SR" worktree remove --force "$SZ1"; git -C "$SR" branch -D dcv2/r-stb-pr1 >/dev/null
+expect 0 "worktree PR2 PR1 after PR1's local branch and worktree are gone" env DCV2_TEST_LOCAL_REMOTES=1 bash "$STATE" worktree "$SZ" "$SR" PR2 PR1
+has "  from the pushed head" "baseCommit=$P1H stackedOn=PR1"
+[[ "$(git -C "$SZ2" rev-parse HEAD)" == "$P1H" ]] && ok "  PR2 starts at PR1's pushed head" || bad "  wrong head"
+echo "# merge-check on a stacked pair: the scratch base is the stack root's baseCommit"
+stprep sth
+mcrepos "bash check.sh"
+stmark 'for p in st["prs"]: p["state"] = "reviewed"; p["check"]["result"] = "pass"'
+expect 0 "merge-check of PR1 and its stacked PR2" bash "$STATE" merge-check "$SZ"
+has "  pass, parents first" "merge-check szsth: pass (PR1+PR2)"
+grep -q "the merge of PR1, PR2" "$SZ/logs/merge-check-szsth.log" && ok "  merged PR1 then PR2" || bad "  log: $(cat "$SZ/logs/merge-check-szsth.log")"
 export DCV2_RUN_DIR="$RUN"
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

@@ -542,6 +542,214 @@ expect 0 "cleanup at done after both PRs merged" S cleanup "$RUN"
 has "  PR1 worktree removed" "PR1: worktree removed"; has "  PR2 worktree removed" "PR2: worktree removed"
 [[ ! -d "$TW1" && ! -d "$TW2" ]] && ok "  both worktree folders are gone" || bad "  worktrees left"
 [[ -z "$(git -C "$TW" branch --list 'dcv2/r-two-*')" ]] && ok "  both branches deleted (git branch -d)" || bad "  branches: $(git -C "$TW" branch --list)"
+
+echo "# stacked PRs: ship-check, opened against the parent's branch, retargeted before the parent's branch is deleted"
+TWB2="$(git -C "$TW" rev-parse HEAD)"
+# skst <stage> <pr1 state> <pr2 state> [python]: PR2 Depends on PR1 in the same repo; stackedOn, base and baseCommit as .guard.json has them
+skst() {
+  python3 - "$RUN" "$TW" "$TWB2" "$@" <<'PY'
+import json, os, sys
+run, tw, base, stage, s1, s2 = sys.argv[1:7]
+extra = sys.argv[7] if len(sys.argv) > 7 else ""
+rid = os.path.basename(run)
+old = {}
+try:
+    old = {p["id"]: p for p in json.load(open(os.path.join(run, "status.json")))["prs"]}
+except Exception:
+    pass
+try:
+    g = json.load(open(os.path.join(run, ".guard.json")))
+except Exception:
+    g = {}
+def pr(i, state):
+    lc = f"pr{i}"
+    p = {"id": f"PR{i}", "title": f"PR {i} title", "repo": "tw", "repoPath": tw, "branch": f"dcv2/{rid}-{lc}", "base": "main", "baseCommit": base,
+         "worktree": os.path.join(os.path.dirname(tw), "tw-worktrees", f"dcv2-{rid}-{lc}"), "dependsOn": [] if i == 1 else ["PR1"],
+         "stories": {"done": 1, "total": 1, "ids": [f"S{i}"]}, "commits": 0 if stage == "building" else 1, "check": {"command": "true", "result": "pass", "summary": None},
+         "review": {"round": 1, "verdict": "APPROVED", "openFindings": 0, "path": None}, "prUrl": None, "state": state, "note": None}
+    if i == 2 and (g.get("stacks") or {}).get("PR2"):
+        p.update(stackedOn="PR1", base=f"dcv2/{rid}-pr1", baseCommit=g["bases"]["PR2"])
+    for k in ("prUrl", "draft", "comments", "restack"):
+        if k in old.get(p["id"], {}):
+            p[k] = old[p["id"]][k]
+    return p
+doc = {"schema": 1, "runId": rid, "stage": stage, "waitingFor": None, "folder": os.path.dirname(tw),
+       "plan": {"path": "plan.md", "reviewRound": 1, "verdict": "APPROVED", "openFindings": 0, "approved": True, "approval": {"by": "user", "at": "2026-10-24T00:00:00Z"}},
+       "prs": [pr(1, s1), pr(2, s2)], "shipApproval": None, "ship": None, "writeback": None, "error": None}
+exec(extra)
+json.dump(doc, open(os.path.join(run, "status.json"), "w"))
+PY
+}
+SHIP='doc["shipApproval"] = {"by": "user", "at": "2026-10-24T01:00:00Z"}'
+RUN="$d/runs/r-stk"; mkdir -p "$RUN"; cp "$RUN3/request.md" "$RUN/"; echo '{"schema": 1}' > "$RUN/meta.json"
+printf '# Plan\n## Stories\n### S1: Parent part\n- Files: a.txt\n### S2: Child part\n- Files: a.txt, b.txt\n## Pull requests\n### PR1: Parent\n- Repo: tw\n- Stories: S1\n- Depends on: none\n### PR2: Child\n- Repo: tw\n- Stories: S2\n- Depends on: PR1\n' > "$RUN/plan.md"
+printf '{"schema":1,"repos":[{"name":"tw","path":"%s","check":"true"}]}\n' "$TW" > "$RUN/repos.json"
+export DCV2_RUN_DIR="$RUN"
+skst building pending pending
+S worktree "$RUN" "$TW" PR1 "$TWB2" >/dev/null
+TWS1="$WS/tw-worktrees/dcv2-r-stk-pr1"; TWS2="$WS/tw-worktrees/dcv2-r-stk-pr2"
+echo parent > "$TWS1/a.txt"; git -C "$TWS1" add -A; git -C "$TWS1" commit -q -m "S1: parent part"
+skst building reviewed pending
+expect 1 "worktree of PR2 (Depends on PR1, same repo) with a commit base" S worktree "$RUN" "$TW" PR2 "$TWB2"
+has "  says to pass the parent" "pass PR1 as the base"
+expect 0 "worktree PR2 PR1" S worktree "$RUN" "$TW" PR2 PR1; has "  stackedOn" "stackedOn=PR1"
+echo child >> "$TWS2/a.txt"; echo child > "$TWS2/b.txt"; git -C "$TWS2" add -A; git -C "$TWS2" commit -q -m "S2: child part"
+skst ship-approval reviewed reviewed
+expect 0 "ship-check in local mode" S ship-check "$RUN"
+has "  PR1: its base is on the remote" "PR1 tw: remote $d/origin-tw.git, base main is on the remote"
+has "  PR2: stacked, ships after PR1" "PR2 tw: stacked on PR1 (ships after it); remote $d/origin-tw.git, base main is on the remote"
+hasnt "  not needs attention" "needs attention"
+skst shipping reviewed reviewed "$SHIP"
+expect 1 "ship-pr PR2 before PR1 has a PR" S ship-pr "$RUN" PR2
+has "  says why" "stacked on PR1, which has no PR yet"
+expect 0 "ship-pr PR1" S ship-pr "$RUN" PR1; has "  opened" "PR1 opened: https://github.com/shim/repo/pull/"
+N1="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["prs"][0]["prUrl"].rsplit("/", 1)[1])' "$RUN/status.json")"
+expect 0 "ship-pr PR2 (after PR1)" S ship-pr "$RUN" PR2; has "  opened" "PR2 opened: https://github.com/shim/repo/pull/"
+grep -q -- "pr create --base dcv2/r-stk-pr1 --head dcv2/r-stk-pr2" "$GH_SHIM_DIR/calls.log" && ok "  PR2 opened against PR1's branch" || bad "  calls: $(tail -5 "$GH_SHIM_DIR/calls.log")"
+grep -qxF "Stacked on #$N1. Merge #$N1 first." "$RUN/pr-bodies/PR2.md" && ok "  PR2's body: Stacked on #$N1. Merge #$N1 first." || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
+grep -q 'Stacked on' "$RUN/pr-bodies/PR1.md" && bad "  PR1's body says stacked" || ok "  PR1's body has no stack line"
+! grep -qE -- 'push.*(--force|-f )' "$GH_SHIM_DIR/calls.log" && ok "  no force push" || bad "  force push in the calls"
+echo "# epic siblings (local mode): the Epic section, the epic label, the sibling body update; failures are notes"
+TX="$WS/tx"; mkdir -p "$TX"
+git -C "$TX" init -q -b main; git -C "$TX" config user.name t; git -C "$TX" config user.email t@t
+echo base > "$TX/base.txt"; git -C "$TX" add -A; git -C "$TX" commit -q -m init
+git init -q --bare -b main "$d/origin-tx.git"; git -C "$TX" remote add origin "$d/origin-tx.git"; git -C "$TX" push -q origin main
+TXB="$(git -C "$TX" rev-parse HEAD)"
+epst() {
+  python3 - "$RUN" "$TW" "$TWB2" "$TX" "$TXB" "$@" <<'PY'
+import json, os, sys
+run, tw, twb, tx, txb, stage, s1, s2 = sys.argv[1:9]
+extra = sys.argv[9] if len(sys.argv) > 9 else ""
+rid = os.path.basename(run)
+old = {}
+try:
+    old = {p["id"]: p for p in json.load(open(os.path.join(run, "status.json")))["prs"]}
+except Exception:
+    pass
+def pr(i, repo, path, b, state):
+    lc = f"pr{i}"
+    p = {"id": f"PR{i}", "title": f"PR {i} title", "repo": repo, "repoPath": path, "branch": f"dcv2/{rid}-{lc}", "base": "main", "baseCommit": b,
+         "worktree": os.path.join(os.path.dirname(path), repo + "-worktrees", f"dcv2-{rid}-{lc}"), "dependsOn": [],
+         "stories": {"done": 1, "total": 1, "ids": [f"S{i}"]}, "commits": 0 if stage == "building" else 1, "check": {"command": "true", "result": "pass", "summary": None},
+         "review": {"round": 1, "verdict": "APPROVED", "openFindings": 0, "path": None}, "prUrl": None, "state": state, "note": None}
+    for k in ("prUrl", "draft", "comments", "epic"):
+        if k in old.get(p["id"], {}):
+            p[k] = old[p["id"]][k]
+    return p
+doc = {"schema": 1, "runId": rid, "stage": stage, "waitingFor": None, "folder": os.path.dirname(tw),
+       "plan": {"path": "plan.md", "reviewRound": 1, "verdict": "APPROVED", "openFindings": 0, "approved": True, "approval": {"by": "user", "at": "2026-10-24T00:00:00Z"}},
+       "prs": [pr(1, "tw", tw, twb, s1), pr(2, "tx", tx, txb, s2)], "shipApproval": None, "ship": None, "writeback": None, "error": None}
+exec(extra)
+json.dump(doc, open(os.path.join(run, "status.json"), "w"))
+PY
+}
+# epsetup <tag> <epic id>: PR1 in tw, PR2 in tx, both in epic <epic id>; worktrees made, one commit each, stage shipping
+epsetup() {
+  RUN="$d/runs/r-$1"; EPIC="$2"; mkdir -p "$RUN"; cp "$RUN3/request.md" "$RUN/"; echo '{"schema": 1}' > "$RUN/meta.json"
+  printf '# Plan\n## Stories\n### S1: Tw part\n- Files: a.txt\n### S2: Tx part\n- Files: b.txt\n## Pull requests\n### PR1: Tw\n- Repo: tw\n- Stories: S1\n- Depends on: none\n- Epic: %s Epic title\n### PR2: Tx\n- Repo: tx\n- Stories: S2\n- Depends on: none\n- Epic: %s Epic title\n' "$EPIC" "$EPIC" > "$RUN/plan.md"
+  printf '{"schema":1,"repos":[{"name":"tw","path":"%s","check":"true"},{"name":"tx","path":"%s","check":"true"}]}\n' "$TW" "$TX" > "$RUN/repos.json"
+  printf '{"schema":1,"tasks":[],"epics":[{"id":"%s","name":"Epic title","url":"https://x"}]}\n' "$EPIC" > "$RUN/tickets.json"
+  export DCV2_RUN_DIR="$RUN"
+  epst building pending pending
+  S worktree "$RUN" "$TW" PR1 "$TWB2" >/dev/null; S worktree "$RUN" "$TX" PR2 "$TXB" >/dev/null
+  EW1="$WS/tw-worktrees/dcv2-r-$1-pr1"; EW2="$WS/tx-worktrees/dcv2-r-$1-pr2"
+  echo one > "$EW1/e1-$1.txt"; git -C "$EW1" add -A; git -C "$EW1" commit -q -m "S1"
+  echo two > "$EW2/e2-$1.txt"; git -C "$EW2" add -A; git -C "$EW2" commit -q -m "S2"
+  epst shipping reviewed reviewed "$SHIP"
+}
+prfield() { python3 -c 'import json,sys; p=[x for x in json.load(open(sys.argv[1])) if x["head"]==sys.argv[2]][0]; print(p.get(sys.argv[3]) if sys.argv[3] != "labels" else ",".join(p.get("labels", [])))' "$GH_SHIM_DIR/prs.json" "$1" "$2"; }
+epsetup epa E1
+expect 0 "ship-pr PR1 of a 2-PR epic" S ship-pr "$RUN" PR1; has "  opened" "PR1 opened:"
+grep -qx '## Epic' "$RUN/pr-bodies/PR1.md" && grep -qF 'Epic E1: Epic title (2 PRs)' "$RUN/pr-bodies/PR1.md" && grep -qF -- '- tx: PR2 (not opened yet)' "$RUN/pr-bodies/PR1.md" && ok "  PR1's body: the Epic section lists PR2, not opened yet" || bad "  body: $(cat "$RUN/pr-bodies/PR1.md")"
+[[ "$(prfield dcv2/r-epa-pr1 labels)" == "epic-E1" ]] && ok "  PR1 has the epic-E1 label" || bad "  labels: $(prfield dcv2/r-epa-pr1 labels)"
+grep -q 'epic-E1' "$GH_SHIM_DIR/labels.json" && ok "  the missing label was created" || bad "  labels.json: $(cat "$GH_SHIM_DIR/labels.json" 2>&1)"
+expect 0 "ship-pr PR2" S ship-pr "$RUN" PR2; has "  opened" "PR2 opened:"
+U1="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["prs"][0]["prUrl"])' "$RUN/status.json")"
+U2="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["prs"][1]["prUrl"])' "$RUN/status.json")"
+grep -qF -- "- tw: $U1" "$RUN/pr-bodies/PR2.md" && ok "  PR2's body links PR1" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
+prfield dcv2/r-epa-pr1 body | grep -qF -- "- tx: $U2" && ok "  PR1's open body was updated with PR2's link" || bad "  PR1 body: $(prfield dcv2/r-epa-pr1 body)"
+[[ "$(prfield dcv2/r-epa-pr2 labels)" == "epic-E1" && "$(grep -c 'label create epic-E1' "$GH_SHIM_DIR/calls.log")" == 1 ]] && ok "  PR2 has the label; the label was created once" || bad "  labels: $(prfield dcv2/r-epa-pr2 labels)"
+echo "# epic: a label failure and a secret in a sibling body are notes, not state changes"
+epsetup epb E2
+GH_SHIM_FAIL=label:create bash "$STATE" ship-pr "$RUN" PR1 >/dev/null
+printf '# Plan\n## Stories\n### S1: password = "hunter2hunter2"\n- Files: a.txt\n### S2: Tx part\n- Files: b.txt\n## Pull requests\n### PR1: Tw\n- Repo: tw\n- Stories: S1\n- Depends on: none\n- Epic: E2 Epic title\n### PR2: Tx\n- Repo: tx\n- Stories: S2\n- Depends on: none\n- Epic: E2 Epic title\n' > "$RUN/plan.md"
+expect 0 "ship-pr PR2 while the label cannot be created and PR1's new body would hold a secret" env GH_SHIM_FAIL=label:create bash "$STATE" ship-pr "$RUN" PR2
+has "  opened" "PR2 opened:"
+has "  a note about the label" "note: "
+is "  PR2 is opened (state unchanged by the failures)" "$RUN/status.json" prs.1.state '"opened"'
+is "  PR1 is still opened" "$RUN/status.json" prs.0.state '"opened"'
+has "  PR1's body was not updated (secret)" "PR1's body not updated with the epic links"
+prfield dcv2/r-epb-pr1 body | grep -q hunter2 && bad "  the secret reached PR1's body" || ok "  no secret was sent"
+[[ -z "$(prfield dcv2/r-epb-pr2 labels)" ]] && ok "  PR2 has no label" || bad "  labels: $(prfield dcv2/r-epb-pr2 labels)"
+export DCV2_RUN_DIR="$RUN3"
+
+echo "# GitHub mode: a stacked PR is drafted against its parent; a review comment after a restack is posted again"
+RUN="$d/runs/r-sg"; mkdir -p "$RUN"; cp "$RUN3/request.md" "$RUN/"; echo '{"schema": 1, "reviewMode": "github"}' > "$RUN/meta.json"
+TWB2="$(git -C "$TW" rev-parse HEAD)"
+printf '# Plan\n## Stories\n### S1: Parent part\n- Files: a.txt\n### S2: Child part\n- Files: a.txt, b.txt\n## Pull requests\n### PR1: Parent\n- Repo: tw\n- Stories: S1\n- Depends on: none\n### PR2: Child\n- Repo: tw\n- Stories: S2\n- Depends on: PR1\n' > "$RUN/plan.md"
+printf '{"schema":1,"repos":[{"name":"tw","path":"%s","check":"true"}]}\n' "$TW" > "$RUN/repos.json"
+export DCV2_RUN_DIR="$RUN"
+skst building pending pending
+S worktree "$RUN" "$TW" PR1 "$TWB2" >/dev/null
+TWS1="$WS/tw-worktrees/dcv2-r-sg-pr1"; TWS2="$WS/tw-worktrees/dcv2-r-sg-pr2"
+echo parent > "$TWS1/a.txt"; git -C "$TWS1" add -A; git -C "$TWS1" commit -q -m "S1"
+skst building reviewed pending
+S worktree "$RUN" "$TW" PR2 PR1 >/dev/null
+echo child > "$TWS2/b.txt"; git -C "$TWS2" add -A; git -C "$TWS2" commit -q -m "S2"
+skst building reviewed reviewing
+expect 1 "draft-pr PR2 before PR1 has a PR" S draft-pr "$RUN" PR2
+has "  says why" "stacked on PR1, which has no PR yet"
+expect 0 "draft-pr PR1" S draft-pr "$RUN" PR1; has "  opened" "draft=opened"
+expect 0 "draft-pr PR2" S draft-pr "$RUN" PR2; has "  opened" "draft=opened"
+grep -q -- "pr create --draft --base dcv2/r-sg-pr1 --head dcv2/r-sg-pr2" "$GH_SHIM_DIR/calls.log" && ok "  PR2's draft is against PR1's branch" || bad "  calls: $(tail -4 "$GH_SHIM_DIR/calls.log")"
+grep -q 'Stacked on #' "$RUN/pr-bodies/PR2.md" && ok "  the draft body says Stacked on" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
+mkdir -p "$RUN/reviews"; printf 'Eagle-Eye review \xe2\x80\x94 round 1: APPROVED \xe2\x80\x94 first\n' > "$RUN/reviews/PR2-round1.md"
+expect 0 "post-review PR2 round 1" S post-review "$RUN" PR2 1; has "  posted" "posted=ok"
+echo more > "$TWS1/more.txt"; git -C "$TWS1" add -A; git -C "$TWS1" commit -q -m "PR1 fix"
+skst building reviewed reviewing
+expect 0 "restack PR2" S restack "$RUN" PR2; has "  restack 1" "restack=1"
+printf 'Eagle-Eye review \xe2\x80\x94 round 1: APPROVED \xe2\x80\x94 after the restack\n' > "$RUN/reviews/PR2-round1.md"
+expect 0 "post-review PR2 round 1 after the restack posts a new comment" S post-review "$RUN" PR2 1
+has "  posted, not skipped" "posted=ok"
+C2="$(ls "$GH_SHIM_DIR/comments" | grep -E "^$(python3 -c 'import json,sys; print([x for x in json.load(open(sys.argv[1])) if x["head"]=="dcv2/r-sg-pr2"][0]["url"].rsplit("/", 1)[1])' "$GH_SHIM_DIR/prs.json")-" | sort | tail -1)"
+grep -qF 'review round 1 (after restack 1)._' "$GH_SHIM_DIR/comments/$C2" && ok "  the new comment has the restack footer" || bad "  comments: $(ls "$GH_SHIM_DIR/comments")"
+is "  the comment is recorded with restack 1" "$RUN/status.json" prs.1.comments.1.restack 1
+expect 0 "post-review PR2 round 1 again: already posted" S post-review "$RUN" PR2 1; has "  already" "posted=already"
+echo "# GitHub mode: ready opens the stack in order; cleanup retargets the child before the parent's branch is deleted"
+skst shipping reviewed reviewed "$SHIP"
+expect 0 "ready PR1" S ready "$RUN" PR1; has "  opened" "PR1 opened:"
+expect 0 "ready PR2 (stacked)" S ready "$RUN" PR2; has "  opened" "PR2 opened:"
+grep -q 'Stacked on #' "$RUN/pr-bodies/PR2.md" && ok "  PR2's final body says Stacked on" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
+echo "# the parent PR is closed without merge: nothing is retargeted, its branch is kept, the stacked PR gets a note"
+skst done opened opened 'doc["ship"] = {"remote": "origin", "pushed": True, "note": "x"}'
+setpr() { python3 - "$GH_SHIM_DIR/prs.json" "$1" "$2" <<'PY'
+import json, sys
+prs = json.load(open(sys.argv[1]))
+for p in prs:
+    if p["head"] == sys.argv[2]:
+        exec(sys.argv[3])
+json.dump(prs, open(sys.argv[1], "w"))
+PY
+}
+setpr dcv2/r-sg-pr1 'p["state"] = "CLOSED"'
+expect 0 "cleanup with PR1 closed without merge" S cleanup "$RUN"
+has "  closed, not merged" "remote branch kept (not merged (closed))"
+has "  PR2 gets a note" "PR2: note: stacked on PR1, which was closed without merge"
+git -C "$d/origin-tw.git" show-ref --verify -q refs/heads/dcv2/r-sg-pr1 && ok "  PR1's remote branch is still there" || bad "  PR1's remote branch is gone"
+python3 -c 'import json,sys; p=[x for x in json.load(open(sys.argv[1])) if x["head"]=="dcv2/r-sg-pr2"][0]; sys.exit(0 if p["base"]=="dcv2/r-sg-pr1" else 1)' "$GH_SHIM_DIR/prs.json" && ok "  PR2's base is unchanged" || bad "  PR2 retargeted"
+echo "# the parent PR is merged: the retarget fails, so its branch is kept; then it works, and the branch goes after it"
+TIP1="$(git -C "$d/origin-tw.git" rev-parse refs/heads/dcv2/r-sg-pr1)"
+setpr dcv2/r-sg-pr1 "p['state'] = 'MERGED'; p['headRefOid'] = '$TIP1'; p['mergeCommit'] = {'oid': '$TIP1'}"
+expect 0 "cleanup while gh pr edit --base fails" env GH_SHIM_FAIL=edit bash "$STATE" cleanup "$RUN"
+has "  the branch is kept and the reason is given" "remote branch kept (not deleted:"
+git -C "$d/origin-tw.git" show-ref --verify -q refs/heads/dcv2/r-sg-pr1 && ok "  PR1's remote branch is kept while PR2 still targets it" || bad "  deleted"
+expect 0 "cleanup again" S cleanup "$RUN"
+has "  PR1's remote branch deleted" "remote branch deleted"
+python3 -c 'import json,sys; p=[x for x in json.load(open(sys.argv[1])) if x["head"]=="dcv2/r-sg-pr2"][0]; sys.exit(0 if p["base"]=="main" else 1)' "$GH_SHIM_DIR/prs.json" && ok "  PR2 was retargeted to the repo base (verified through gh pr view)" || bad "  PR2's base: $(cat "$GH_SHIM_DIR/prs.json")"
+git -C "$d/origin-tw.git" show-ref --verify -q refs/heads/dcv2/r-sg-pr1 && bad "  PR1's remote branch still there" || ok "  PR1's remote branch is gone"
+[[ "$(grep -c 'pr list --base dcv2/r-sg-pr1' "$GH_SHIM_DIR/calls.log")" -ge 1 && "$(grep -c 'pr view .*--json baseRefName' "$GH_SHIM_DIR/calls.log")" -ge 1 ]] && ok "  gh pr list --base and gh pr view baseRefName were used" || bad "  calls: $(tail -8 "$GH_SHIM_DIR/calls.log")"
+expect 0 "a second cleanup" S cleanup "$RUN"; has "  is a no-op for PR1's remote branch" "remote branch already deleted"
+
 export DCV2_RUN_DIR="$RUN3"
 
 echo "# memory.sh scan"
