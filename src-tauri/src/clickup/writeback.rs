@@ -931,6 +931,7 @@ mod tests {
             limits: crate::clickup::intake::LIMITS,
             note: String::new(),
             tasks: vec![task, sample("86b1aa002", "Logs")],
+            epics: vec![],
         };
         crate::clickup::intake::write_snapshot(&run, &snap).unwrap();
         std::fs::write(

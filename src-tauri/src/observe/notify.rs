@@ -285,6 +285,7 @@ mod tests {
             stalled: false,
             prs_done: 0,
             prs_total: 0,
+            epics: Vec::new(),
         }
     }
 

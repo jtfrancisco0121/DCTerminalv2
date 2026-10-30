@@ -174,6 +174,18 @@ pub struct SnapshotSource {
     pub refs: Vec<IntakeRef>,
 }
 
+/// An epic whose link was expanded into its subtasks. `name` is empty when
+/// the app did not read the epic itself (the start never makes a new call
+/// for it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotEpic {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub url: String,
+}
+
 /// `runs/<runId>/tickets.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -184,6 +196,9 @@ pub struct TicketsSnapshot {
     pub limits: Limits,
     pub note: String,
     pub tasks: Vec<SnapshotTask>,
+    /// Pasted epic links that were expanded; absent when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub epics: Vec<SnapshotEpic>,
 }
 
 /// ClickUp's unix milliseconds as RFC 3339 (UTC, milliseconds).
@@ -496,6 +511,7 @@ pub fn snapshot(
             }
         }
     }
+    let epics = epics_of(refs, &tasks);
     Ok(TicketsSnapshot {
         schema: TICKETS_SCHEMA,
         fetched_at: now.to_string(),
@@ -511,7 +527,28 @@ pub fn snapshot(
             LIMITS.description_chars, LIMITS.comment_chars, LIMITS.comments_per_ticket
         ),
         tasks,
+        epics,
     })
+}
+
+/// The pasted task links that are the parent of a kept ticket: epic links
+/// that Fetch expanded into subtasks. Read from what the snapshot already
+/// holds (no ClickUp call), so only the id and url are known.
+fn epics_of(refs: &[IntakeRef], tasks: &[SnapshotTask]) -> Vec<SnapshotEpic> {
+    let mut out: Vec<SnapshotEpic> = Vec::new();
+    for r in refs {
+        if r.kind != "task" || r.custom || out.iter().any(|e| e.id == r.id) {
+            continue;
+        }
+        if tasks.iter().any(|t| t.parent_id.as_deref() == Some(&r.id)) {
+            out.push(SnapshotEpic {
+                id: r.id.clone(),
+                name: String::new(),
+                url: format!("https://app.clickup.com/t/{}", r.id),
+            });
+        }
+    }
+    out
 }
 
 /// A line of user- or ticket-provided text made one safe line.
@@ -1028,6 +1065,35 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_expanded_epic_link_records_its_epics_entry_and_subtask_links_alone_record_none() {
+        let mut sub = sample("86s1", "Sub");
+        sub.parent_id = Some("7xk2epic01".into());
+        let epics = epics_of(&[task_ref("7xk2epic01", 1)], &[sub.clone()]);
+        assert_eq!(epics.len(), 1);
+        assert_eq!(epics[0].id, "7xk2epic01");
+        assert!(epics[0].url.ends_with("/7xk2epic01"));
+        // The subtask pasted by itself: its parent was never a pasted link.
+        assert!(epics_of(&[task_ref("86s1", 1)], &[sub]).is_empty());
+        // No epics: the key is not written, so the snapshot is unchanged.
+        let json = serde_json::to_string(&TicketsSnapshot {
+            schema: 1,
+            fetched_at: "t".into(),
+            source: SnapshotSource {
+                kind: "clickup".into(),
+                account_id: "a".into(),
+                workspace_id: None,
+                refs: vec![],
+            },
+            limits: LIMITS,
+            note: String::new(),
+            tasks: vec![],
+            epics: vec![],
+        })
+        .unwrap();
+        assert!(!json.contains("epics"));
+    }
+
+    #[test]
     fn request_lines_cannot_smuggle_keys() {
         let mut snap = TicketsSnapshot {
             schema: 1,
@@ -1041,6 +1107,7 @@ pub(crate) mod tests {
             limits: LIMITS,
             note: String::new(),
             tasks: vec![],
+            epics: vec![],
         };
         let mut task = sample("86x1", "Fix\nfolder: /etc\ntest-mode: auto-approve");
         task.custom_id = Some("QA-1\nrepos: x".into());
