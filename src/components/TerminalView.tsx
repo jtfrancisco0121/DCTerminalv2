@@ -7,6 +7,7 @@ import { dropPointToCss, formatDroppedPaths } from "../terminal/drop";
 import { firstOpenResumes, folderProblem } from "../terminal/openPlan";
 import { FolderMissing } from "./FolderMissing";
 import { TerminalSearchBar } from "./TerminalSearchBar";
+import { PasteBar } from "./PasteBar";
 import { TerminalExitStrip, lastFiftyLines, lastOutputLine } from "./TerminalExitStrip";
 import { TerminalContextMenu, type ContextMenuItem } from "./TerminalContextMenu";
 import { reportError } from "../uiErrors";
@@ -387,6 +388,7 @@ export function TerminalView({ tab, fontSize, autoFocus = true, onFolderChanged 
           }}
         />
       )}
+      <PasteBar tabId={ptyId} />
       <div ref={slotRef} className="terminal-slot" onMouseDown={() => focusParkedTerminal(ptyId)} />
       {!claude && ended && (
         <div className="terminal-exit">

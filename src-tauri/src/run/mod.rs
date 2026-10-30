@@ -702,6 +702,12 @@ pub async fn slop_check(
     .await
 }
 
+/// A big paste made smaller (the paste bar's "Paste compacted"): error and warning lines are never cut.
+#[tauri::command]
+pub async fn compact_text(text: String) -> Result<crate::observe::trim::Compacted, String> {
+    blocking(move || Ok(crate::observe::trim::compact_text(&text))).await
+}
+
 /// R1: re-runs every PR's check of the run (one run at a time per folder).
 #[tauri::command]
 pub async fn rerun_checks(app: AppHandle, run_dir: String) -> Result<(), String> {

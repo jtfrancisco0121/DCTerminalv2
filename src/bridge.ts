@@ -78,6 +78,8 @@ export type TerminalSettings = {
   fontSize: number;
   optionAsMeta: boolean;
   copyOnSelect: boolean;
+  /** Offer to compact a big paste (default on). */
+  compactPaste?: boolean;
 };
 
 export type UiSettings = {

@@ -127,6 +127,99 @@ pub fn trim_output(text: &str, head: usize, tail: usize) -> String {
     out.join("\n")
 }
 
+/// Error and warning lines are never cut by [`compact_text`].
+fn is_keep_line(line: &str) -> bool {
+    is_error_line(line) || line.to_ascii_lowercase().contains("warn")
+}
+
+/// The line with every run of digits folded to `#`, so "Compiling a v0.1.2"
+/// and "Compiling b v0.1.3", or two progress lines, count as the same shape.
+fn shape(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut in_digits = false;
+    for c in line.trim().chars() {
+        if c.is_ascii_digit() {
+            if !in_digits {
+                out.push('#');
+            }
+            in_digits = true;
+        } else {
+            in_digits = false;
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// What the paste bar shows and pastes.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Compacted {
+    pub text: String,
+    pub lines_before: usize,
+    pub lines_after: usize,
+}
+
+/// A big paste (a build or test log) made smaller to read or to hand to an
+/// agent: ANSI and progress redraws stripped, runs of lines of the same shape
+/// folded to the first one and a note, and, when it is still long, the head and
+/// the tail kept with a note of what was left out between them. Error and
+/// warning lines are never cut, and every cut leaves a note.
+pub fn compact_text(text: &str) -> Compacted {
+    let clean = strip_ansi(text);
+    let before = clean.lines().count();
+    let mut folded: Vec<String> = Vec::new();
+    let mut run: Option<(String, usize)> = None; // (shape, extra lines folded)
+    let flush = |folded: &mut Vec<String>, run: &mut Option<(String, usize)>| {
+        if let Some((_, extra)) = run.take() {
+            if extra > 0 {
+                folded.push(format!("  (same kind of line {extra} more times)"));
+            }
+        }
+    };
+    for line in clean.lines() {
+        let line: String = if line.chars().count() > MAX_LINE {
+            format!("{}…", line.chars().take(MAX_LINE).collect::<String>())
+        } else {
+            line.to_string()
+        };
+        let keep = is_keep_line(&line);
+        let this = shape(&line);
+        match run.as_mut() {
+            Some((prev, extra)) if !keep && !this.is_empty() && *prev == this => *extra += 1,
+            _ => {
+                flush(&mut folded, &mut run);
+                folded.push(line);
+                run = Some((if keep { String::new() } else { this }, 0));
+            }
+        }
+    }
+    flush(&mut folded, &mut run);
+    let lines = if folded.len() > HEAD + TAIL {
+        let middle = &folded[HEAD..folded.len() - TAIL];
+        let kept: Vec<&String> = middle
+            .iter()
+            .filter(|l| is_keep_line(l) || l.starts_with("  (same kind of line"))
+            .collect();
+        let cut = middle.len() - kept.iter().filter(|l| is_keep_line(l)).count();
+        let mut out: Vec<String> = folded[..HEAD].to_vec();
+        out.push(format!(
+            "… {cut} lines left out; error and warning lines kept …"
+        ));
+        out.extend(kept.into_iter().filter(|l| is_keep_line(l)).cloned());
+        out.push("…".into());
+        out.extend(folded[folded.len() - TAIL..].iter().cloned());
+        out
+    } else {
+        folded
+    };
+    Compacted {
+        lines_after: lines.len(),
+        text: lines.join("\n"),
+        lines_before: before,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +257,55 @@ mod tests {
             "x\n  (same line 49 more times)"
         );
         assert_eq!(trim_output("short\n", 5, 5), "short");
+    }
+
+    fn fixture(name: &str) -> String {
+        std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../fixtures/paste")
+                .join(name),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn real_shaped_logs_keep_every_error_and_warning_line_and_shrink() {
+        for name in ["cargo.txt", "npm.txt", "pytest.txt"] {
+            let raw = fixture(name);
+            let out = compact_text(&raw);
+            for line in raw.lines().filter(|l| is_keep_line(l)) {
+                assert!(out.text.contains(line.trim_end()), "{name}: lost `{line}`");
+            }
+            assert!(out.lines_after * 3 < out.lines_before, "{name}: {out:?}");
+            assert!(
+                out.text.contains("left out") || out.text.contains("same kind of line"),
+                "{name}: no cut note"
+            );
+        }
+    }
+
+    #[test]
+    fn repeats_are_folded_with_a_note_and_the_first_line_stays() {
+        let raw: String = (0..50)
+            .map(|i| format!("Compiling dep-{i} v1.{i}.0\n"))
+            .collect();
+        let out = compact_text(&raw);
+        assert!(out.text.starts_with("Compiling dep-0 v1.0.0"));
+        assert!(out.text.contains("(same kind of line 49 more times)"));
+        assert_eq!(out.lines_before, 50);
+    }
+
+    #[test]
+    fn an_error_line_inside_a_repeating_run_ends_the_run_and_is_kept() {
+        let mut raw = String::new();
+        for i in 0..30 {
+            raw.push_str(&format!("step {i} ok\n"));
+        }
+        raw.push_str("step 30 failed: boom\n");
+        for i in 31..60 {
+            raw.push_str(&format!("step {i} ok\n"));
+        }
+        let out = compact_text(&raw);
+        assert!(out.text.contains("step 30 failed: boom"));
     }
 }

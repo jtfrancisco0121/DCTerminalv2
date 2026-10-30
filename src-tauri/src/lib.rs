@@ -200,6 +200,7 @@ pub fn run() {
             run::read_run,
             run::rerun_checks,
             run::slop_check,
+            run::compact_text,
             run::run_worktrees,
             run::remove_run_worktrees,
             run::read_run_file,

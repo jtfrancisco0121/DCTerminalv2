@@ -528,6 +528,14 @@ export function SettingsPage({ view, onSaved, onClose, section }: Props) {
           />{" "}
           Copy a selection to the clipboard
         </label>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={terminal.compactPaste ?? true}
+            onChange={(event) => setTerminal({ ...terminal, compactPaste: event.target.checked })}
+          />{" "}
+          Offer to compact a big paste (above 200 lines or 16 KB; you choose each time)
+        </label>
         <div className="button-row">
           <button type="button" className="primary-button" onClick={() => void saveTerminal()}>
             Save terminal settings

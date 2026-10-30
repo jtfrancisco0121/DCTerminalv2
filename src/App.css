@@ -2027,3 +2027,13 @@ body,
 .run-slop-file strong {
   word-break: break-all;
 }
+
+.paste-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border, #3338);
+  font-size: 12px;
+}

@@ -4,6 +4,7 @@
  * behind it keeps running).
  */
 
+import { pasteOrOffer, shouldOffer } from "./compactPaste";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -122,6 +123,13 @@ export function setOptionAsMeta(value: boolean): void {
   for (const entry of parked.values()) entry.term.options.macOptionIsMeta = value;
 }
 
+let compactPasteOn = true;
+
+/** Offer to compact big pastes (settings: `terminal.compactPaste`). */
+export function setCompactPaste(value: boolean): void {
+  compactPasteOn = value;
+}
+
 let copyOnSelect = false;
 
 /** Copy a finished selection to the clipboard. Off by default. */
@@ -178,6 +186,18 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
     }, 200);
   });
   term.open(host);
+  // A big paste goes to the paste bar first (nothing is altered unless the user picks Paste compacted).
+  term.textarea?.addEventListener(
+    "paste",
+    (event) => {
+      const text = (event as ClipboardEvent).clipboardData?.getData("text") ?? "";
+      if (!shouldOffer(text, compactPasteOn)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      pasteOrOffer(id, text, compactPasteOn, (t) => term.paste(t));
+    },
+    true,
+  );
   streams.set(id, connectStreams(id, term));
   parkHost().appendChild(host);
   const created = { host, term, fit, search };
@@ -310,6 +330,12 @@ export function pasteIntoTerminal(id: string, text: string): void {
   if (text) parked.get(id)?.term.paste(text);
 }
 
+/** A paste from the app (the scratchpad, the context menu): a big one is offered for compaction first. */
+export function pasteWithOffer(id: string, text: string): void {
+  const term = parked.get(id)?.term;
+  if (text && term) pasteOrOffer(id, text, compactPasteOn, (t) => term.paste(t));
+}
+
 export async function copyTerminalSelection(id: string): Promise<void> {
   const text = parked.get(id)?.term.getSelection() ?? "";
   if (!text) return;
@@ -319,5 +345,5 @@ export async function copyTerminalSelection(id: string): Promise<void> {
 export async function pasteTerminalText(id: string): Promise<void> {
   const text = await navigator.clipboard.readText();
   if (!text) return;
-  parked.get(id)?.term.paste(text);
+  pasteWithOffer(id, text);
 }

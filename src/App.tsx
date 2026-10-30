@@ -48,7 +48,7 @@ import { newTabDefaults, type NewTabDraft } from "./newTab";
 import { detectPlatform } from "./terminal/keys";
 import { ACCOUNT_REMOVED, accountProblem } from "./terminal/openPlan";
 import { dropLivePty, ptyExitCode, ptyRunning, subscribeLivePty, subscribePtyExit } from "./terminal/live";
-import { focusParkedTerminal, refitTerminal, requestTerminalSearch, setCopyOnSelect, setOptionAsMeta, setTerminalTheme } from "./terminal/park";
+import { focusParkedTerminal, refitTerminal, requestTerminalSearch, setCompactPaste, setCopyOnSelect, setOptionAsMeta, setTerminalTheme } from "./terminal/park";
 import { applyTheme, watchSystemTheme } from "./theme";
 import { reportError, setErrorNotifier } from "./uiErrors";
 import { statusLimit, type WindowHistory } from "./usage/limits";
@@ -91,6 +91,7 @@ function currentWindowId(): string {
 function applySettings(view: SettingsView): void {
   setOptionAsMeta(view.terminal.optionAsMeta);
   setCopyOnSelect(view.terminal.copyOnSelect);
+  setCompactPaste(view.terminal.compactPaste ?? true);
   applyTheme(view.ui.theme);
   setTerminalTheme(view.ui.theme);
 }

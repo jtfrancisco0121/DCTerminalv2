@@ -33,6 +33,9 @@ pub struct TerminalSettings {
     /// Copy a finished selection to the clipboard. Off by default.
     #[serde(default)]
     pub copy_on_select: bool,
+    /// Offer to compact a big paste (above 200 lines or 16 KB). On by default.
+    #[serde(default = "default_true")]
+    pub compact_paste: bool,
 }
 
 impl Default for TerminalSettings {
@@ -42,6 +45,7 @@ impl Default for TerminalSettings {
             font_size: default_font_size(),
             option_as_meta: default_option_as_meta(),
             copy_on_select: false,
+            compact_paste: true,
         }
     }
 }
@@ -999,6 +1003,7 @@ mod tests {
                 font_size: 99,
                 option_as_meta: false,
                 copy_on_select: true,
+                compact_paste: true,
             })
             .unwrap();
         assert!(store

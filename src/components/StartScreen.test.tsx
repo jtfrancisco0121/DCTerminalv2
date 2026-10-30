@@ -267,7 +267,7 @@ describe("StartScreen repos and implementers", () => {
     expect(field.value).toBe("8");
     fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
     await vi.waitFor(() => expect(startRun).toHaveBeenCalledOnce());
-    expect(startRun.mock.calls[0].slice(8)).toEqual([["api"], 8]);
+    expect(startRun.mock.calls[0].slice(8)).toEqual([["api"], 8, null]);
   });
 
   it("sends no implementer override when the field is untouched", async () => {
@@ -282,7 +282,7 @@ describe("StartScreen repos and implementers", () => {
     await screen.findByRole("checkbox", { name: "web" });
     fireEvent.click(screen.getByRole("button", { name: "Start Eagle-Eye" }));
     await vi.waitFor(() => expect(startRun).toHaveBeenCalledOnce());
-    expect(startRun.mock.calls[0].slice(8)).toEqual([["api", "web"], null]);
+    expect(startRun.mock.calls[0].slice(8)).toEqual([["api", "web"], null, null]);
   });
 });
 
