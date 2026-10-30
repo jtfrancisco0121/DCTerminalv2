@@ -83,6 +83,8 @@ pub struct LaunchInput {
     pub run_dir: Option<PathBuf>,
     pub max_implementers: u32,
     pub stop_hooks: bool,
+    /// `DCV2_SLOP_CHECK` (the Stop hook's slop check; `run.slopCheck`).
+    pub slop_check: bool,
     pub settings_file: Option<PathBuf>,
     pub memory_prompt: Option<PathBuf>,
 }
@@ -103,6 +105,10 @@ pub fn launch_spec(input: &LaunchInput) -> TabLaunch {
     env.push((
         "DCV2_STOP_HOOKS".into(),
         if input.stop_hooks { "on" } else { "off" }.into(),
+    ));
+    env.push((
+        "DCV2_SLOP_CHECK".into(),
+        if input.slop_check { "on" } else { "off" }.into(),
     ));
     let mut args = vec![
         "--plugin-dir".to_string(),
@@ -251,6 +257,7 @@ mod tests {
             run_dir: run.map(PathBuf::from),
             max_implementers: 2,
             stop_hooks: false,
+            slop_check: false,
             settings_file: None,
             memory_prompt: Some("/d/runs/r1/memory-prompt.md".into()),
         }
@@ -269,6 +276,7 @@ mod tests {
         assert_eq!(get("DCV2_MEMORY_DIR"), Some("/d/memory"));
         assert_eq!(get("DCV2_MAX_IMPLEMENTERS"), Some("2"));
         assert_eq!(get("DCV2_STOP_HOOKS"), Some("off"));
+        assert_eq!(get("DCV2_SLOP_CHECK"), Some("off"));
         assert_eq!(get("DCV2_TEST_MODE"), None);
         assert_eq!(
             spec.args,

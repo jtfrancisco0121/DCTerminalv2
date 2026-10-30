@@ -78,6 +78,7 @@ const runKey = (r: RunSettings) =>
   JSON.stringify({
     maxImplementers: r.maxImplementers,
     stopHooks: r.stopHooks,
+    slopCheck: r.slopCheck ?? true,
     autoCleanup: r.autoCleanup ?? true,
     watchdogMinutes: r.watchdogMinutes ?? 10,
   });
@@ -555,6 +556,14 @@ export function SettingsPage({ view, onSaved, onClose, section }: Props) {
             onChange={(event) => setRun({ ...runSettings, stopHooks: event.target.checked })}
           />{" "}
           Run the repo's checks when an agent stops (stop hooks)
+        </label>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={runSettings.slopCheck ?? true}
+            onChange={(event) => setRun({ ...runSettings, slopCheck: event.target.checked })}
+          />{" "}
+          Also report slop in the lines an agent added (leftover debugging, filler comments) when it stops
         </label>
         <label className="check-label">
           <input

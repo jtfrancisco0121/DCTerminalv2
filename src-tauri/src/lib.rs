@@ -199,6 +199,7 @@ pub fn run() {
             run::resume_run,
             run::read_run,
             run::rerun_checks,
+            run::slop_check,
             run::run_worktrees,
             run::remove_run_worktrees,
             run::read_run_file,

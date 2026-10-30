@@ -21,6 +21,7 @@ pub mod memory;
 pub mod record;
 pub mod repos;
 pub mod requests;
+pub mod slop;
 pub mod status;
 
 use crate::commands::{tab_summary, TabSummary};
@@ -475,6 +476,7 @@ pub async fn start_run(
             run_dir: None,
             max_implementers: ctx.run.max_implementers,
             stop_hooks: ctx.run.stop_hooks,
+            slop_check: ctx.run.slop_check,
             settings_file: launch::launch_settings_file(&plugin),
             memory_prompt: None,
         };
@@ -622,6 +624,7 @@ pub async fn resume_run(
             max_implementers: folder::max_implementers_of(&run_dir)
                 .unwrap_or(ctx.run.max_implementers),
             stop_hooks: ctx.run.stop_hooks,
+            slop_check: ctx.run.slop_check,
             settings_file: launch::launch_settings_file(&plugin),
             memory_prompt: prompt_file,
         });
@@ -670,6 +673,22 @@ pub fn rerun_checks_once(dir: &Path) -> Result<(), String> {
         }
     }
     result
+}
+
+/// The slop verdict for one PR (what `plugin/scripts/stop-check.sh` reports): the
+/// lines the PR added that match `slop-patterns.tsv`. Read-only.
+#[tauri::command]
+pub async fn slop_check(
+    app: AppHandle,
+    run_dir: String,
+    pr: String,
+) -> Result<slop::SlopReport, String> {
+    blocking(move || {
+        let dir = checked_run_dir(&data_dir(&app), &run_dir)?;
+        let plugin = plugin_dir(&app).ok_or(NO_PLUGIN)?;
+        slop::check_pr(&dir, &pr, &plugin)
+    })
+    .await
 }
 
 /// R1: re-runs every PR's check of the run (one run at a time per folder).

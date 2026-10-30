@@ -1,0 +1,10 @@
+# Slop patterns shared by plugin/scripts/stop-check.sh (Python re) and src-tauri/src/run/slop.rs (Rust regex).
+# Columns, tab separated: id, scope, pattern, message. A pattern must compile in both engines (no look-around).
+# Scope: `*` every text file; `code` every file except docs (.md .mdx .txt .rst); `ext:a,b` those extensions (case-insensitive),
+# optionally `@prefix/` to restrict to a folder. Only lines the change added are matched.
+# Excluded paths: this file, fixtures/slop/, plugin/bmad/ (vendored) and lock files.
+dbg-macro	ext:rs	\bdbg!\(	dbg!() left in Rust code
+todo-marker	code	(?:#|//|/\*|<!--)\s*(?:TODO|FIXME|XXX)\b	new TODO/FIXME/XXX comment marker
+ai-disclaimer	*	(?i)\bas an ai\b	assistant disclaimer text
+filler-comment	code	^\s*(?://|#)\s*(?:This (?:function|method|class|component|variable|module) |(?:Increment|Decrement|Initiali[sz]e|Loop through|Iterate over) )	filler comment that only restates the code
+console-log	ext:ts,tsx@src/	\bconsole\.(?:log|debug)\(	console.log/console.debug left in front-end code

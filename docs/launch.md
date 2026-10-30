@@ -11,6 +11,7 @@ env CLAUDE_CONFIG_DIR=<account dir> \
     DCV2_MEMORY_DIR=<app data>/memory     # always
     DCV2_MAX_IMPLEMENTERS=<n>             # Eagle-Eye only; default 3 (setting); the run's meta.json `maxImplementers` wins when present (start and resume)
     DCV2_STOP_HOOKS=on|off                # A3 kill switch; default on (setting)
+    DCV2_SLOP_CHECK=on|off                # the Stop hook's slop check; default on (setting run.slopCheck)
     DCV2_TAB_ID=<tab id> DCV2_HOOK_PORT=<port> DCV2_HOOK_TOKEN=<per-launch token>   # A2 forwarder (P3)
   claude --plugin-dir <plugin> \
          --settings <launch settings file> \

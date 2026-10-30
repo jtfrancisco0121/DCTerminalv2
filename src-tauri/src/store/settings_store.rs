@@ -463,6 +463,9 @@ pub struct RunSettings {
     /// `DCV2_STOP_HOOKS` (A3 kill switch).
     #[serde(default = "default_true")]
     pub stop_hooks: bool,
+    /// `DCV2_SLOP_CHECK`: the Stop hook also reports slop in the lines a PR added.
+    #[serde(default = "default_true")]
+    pub slop_check: bool,
     /// R2 watchdog: minutes with no progress before the panel says so; 0 is off.
     #[serde(default = "default_watchdog_minutes")]
     pub watchdog_minutes: u32,
@@ -493,6 +496,7 @@ impl Default for RunSettings {
         Self {
             max_implementers: default_max_implementers(),
             stop_hooks: true,
+            slop_check: true,
             watchdog_minutes: default_watchdog_minutes(),
             auto_cleanup: true,
         }
@@ -582,6 +586,7 @@ impl SettingsStore {
         self.data.run = RunSettings {
             max_implementers: next.max_implementers.clamp(1, MAX_IMPLEMENTERS_LIMIT),
             stop_hooks: next.stop_hooks,
+            slop_check: next.slop_check,
             watchdog_minutes: next.watchdog_minutes.min(WATCHDOG_MINUTES_LIMIT),
             auto_cleanup: next.auto_cleanup,
         };

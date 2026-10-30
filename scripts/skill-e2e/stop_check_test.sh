@@ -127,10 +127,93 @@ start=$SECONDS
 expect 0 "slow check skipped next time" "$(payload dcv2:implementer "$reply1")"
 okif "skipped without running" '(( SECONDS - start < 2 ))'
 
+echo "# slop check (CAP-1)"
+F="$d/ws/f"; WT3="$d/ws/f-worktrees/dcv2-r-s-pr3"; mkdir -p "$F"
+FBASE="$(sh "$ROOT/fixtures/slop/setup.sh" "$WT3")"
+slopset() { # <check command as JSON>
+  printf '{"schema": 1, "repos": [{"name": "f", "path": "%s", "check": %s}]}\n' "$F" "$1" > "$RUN/repos.json"
+  python3 - "$RUN" "$F" "$WT3" "$FBASE" <<'PY'
+import json, sys
+run, f, wt, base = sys.argv[1:5]
+json.dump({"schema": 1, "runId": "r-s", "stage": "building", "prs": [{"id": "PR3", "repoPath": f, "worktree": wt, "state": "building",
+           "base": "main", "check": {"command": "x", "result": "not-run", "cwd": wt}}]}, open(run + "/status.json", "w"))
+json.dump({"schema": 1, "runDir": run, "repos": [f], "worktrees": {"PR3": wt}, "bases": {"PR3": base}}, open(run + "/.guard.json", "w"))
+PY
+  rm -f "$RUN/logs/.stop-check.json"
+}
+reply3='{"pr": "PR3", "status": "IMPLEMENTED"}'
+found() { sed -n 's/^  \([^ :]*\):\([0-9]*\): \[\([a-z-]*\)\].*/\1:\2:\3/p' "$d/err" | sort > "$d/found.txt"; }
+slopset '"true"'
+expect 2 "a passing check: slop reported" "$(payload dcv2:implementer "$reply3")"
+found; okif "  the findings equal fixtures/slop/expected.txt" 'diff -u <(sort "$ROOT/fixtures/slop/expected.txt") "$d/found.txt" >"$d/diff.txt" || { cat "$d/diff.txt"; false; }'
+okif "  unchanged lines are never flagged (old.ts line 2)" '! grep -q "^src/old.ts:2:" "$d/found.txt"'
+okif "  real output is not flagged (scripts/run.js, println!)" '! grep -q "scripts/run.js\|:5:" "$d/found.txt"'
+okif "  excluded paths are not flagged (plugin/bmad, lock files)" '! grep -q "plugin/bmad\|yarn.lock" "$d/found.txt"'
+okif "  docs are not matched by the code scope" '! grep -q "^notes.md:3:" "$d/found.txt"'
+errhas "  says what to remove" "leftover debugging or filler"
+slopset '"sleep 5; false"'
+expect 2 "a check slower than the timeout (timed out now): slop still reported" "$(payload dcv2:implementer "$reply3")" DCV2_STOP_CHECK_TIMEOUT=1
+errhas "  says the check did not run" "check not run in the hook (slow)"
+okif "  remembered as slow" 'grep -q "\"slow\": true" "$RUN/logs/.stop-check.json"'
+expect 2 "the cached-slow entry: slop still reported" "$(payload dcv2:implementer "$reply3")"
+errhas "  says the check did not run" "check not run in the hook (slow)"
+slopset null
+expect 2 "no check command: slop reported" "$(payload dcv2:implementer "$reply3")"
+slopset '"echo broken; exit 1"'
+expect 2 "a failing check is reported alone" "$(payload dcv2:implementer "$reply3")"
+errhas "  the check failure" "PR3 check \`echo broken; exit 1\` fails"
+okif "  no slop findings with it" '! grep -q "\[console-log\]\|\[dbg-macro\]" "$d/err"'
+slopset '"true"'
+expect 0 "stop_hook_active: no slop" "$(payload dcv2:implementer "$reply3" true)"
+expect 0 "DCV2_STOP_HOOKS=off: no slop" "$(payload dcv2:implementer "$reply3")" DCV2_STOP_HOOKS=off
+expect 0 "DCV2_SLOP_CHECK=off: no slop" "$(payload dcv2:implementer "$reply3")" DCV2_SLOP_CHECK=off
+# more than 30 findings: capped, exit 2
+for i in $(seq 1 40); do printf 'dbg!(%s);\n' "$i" >> "$WT3/lib.rs"; done
+expect 2 "more than 30 findings" "$(payload dcv2:implementer "$reply3")"
+okif "  at most 30 are listed" '(( $(grep -c "^  [^ ]*:[0-9]*: \[" "$d/err") == 30 ))'
+errhas "  says how many more" "more]"
+git -C "$WT3" checkout -q -- lib.rs; cp "$ROOT/fixtures/slop/uncommitted/lib.rs" "$WT3/lib.rs"
+
+echo "# every pattern: compiles, and has 0 hits on the repo's tracked files at HEAD"
+python3 - "$ROOT" <<'PY' && echo "ok   slop patterns compile and give 0 hits on tracked files" || { echo "FAIL slop patterns"; fails=1; }
+import re, subprocess, sys
+root = sys.argv[1]
+rules = []
+for line in open(root + "/plugin/scripts/slop-patterns.tsv", encoding="utf-8"):
+    if not line.strip() or line.startswith("#"):
+        continue
+    rid, scope, pat, msg = line.rstrip("\n").split("\t")[:4]
+    rules.append((rid, scope, re.compile(pat)))
+assert len(rules) >= 5, "the starter rules"
+DOC = (".md", ".mdx", ".txt", ".rst")
+LOCKS = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "cargo.lock", "go.sum", "poetry.lock"}
+def scoped(scope, path):
+    low = path.lower()
+    if scope == "*": return True
+    if scope == "code": return not low.endswith(DOC)
+    spec, _, prefix = scope[4:].partition("@")
+    return low.endswith(tuple("." + e for e in spec.split(","))) and path.startswith(prefix)
+files = subprocess.run(["git", "-C", root, "ls-files"], capture_output=True, text=True).stdout.split("\n")
+hits = []
+for f in files:
+    if not f or f.startswith(("plugin/scripts/slop-patterns.tsv", "fixtures/slop/", "plugin/bmad/")) or f.rsplit("/", 1)[-1].lower() in LOCKS or f.endswith(".lock"):
+        continue
+    try:
+        text = open(root + "/" + f, encoding="utf-8").read()
+    except (UnicodeDecodeError, OSError):
+        continue
+    for n, line in enumerate(text.split("\n"), 1):
+        for rid, scope, rx in rules:
+            if scoped(scope, f) and rx.search(line):
+                hits.append(f"{f}:{n}:{rid}")
+assert not hits, hits[:10]
+PY
+
 echo "# never blocks on its own errors"
 expect 0 "garbage payload" "not json"
 badpy="$d/badpy"; mkdir -p "$badpy"; printf '#!/bin/sh\nexit 1\n' > "$badpy/python3"; chmod +x "$badpy/python3"
 expect 0 "broken python3 never blocks" "$(payload dcv2:implementer "$reply1")" PATH="$badpy:$PATH"
+status building building; guard; repos '"bash check.sh"' '"true"'
 echo '{' > "$RUN/repos.json"
 expect 0 "unreadable repos.json" "$(payload dcv2:implementer "$reply1")"
 

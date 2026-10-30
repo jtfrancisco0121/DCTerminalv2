@@ -108,6 +108,8 @@ export type ResolvedClaudeAccount = {
 export type RunSettings = {
   maxImplementers: number;
   stopHooks: boolean;
+  /** The Stop hook also reports slop in the lines a PR added (default on). */
+  slopCheck?: boolean;
   watchdogMinutes?: number;
   /** "Clean up merged runs automatically" (default on). */
   autoCleanup?: boolean;

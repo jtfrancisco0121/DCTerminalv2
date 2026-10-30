@@ -2014,3 +2014,16 @@ body,
   margin: var(--space-1) 0;
   font-size: var(--text-sm);
 }
+
+.run-slop {
+  margin-top: 4px;
+}
+
+.run-slop ul {
+  margin: 2px 0 6px;
+  padding-left: 16px;
+}
+
+.run-slop-file strong {
+  word-break: break-all;
+}
