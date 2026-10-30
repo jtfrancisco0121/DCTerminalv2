@@ -1293,7 +1293,7 @@ expect 0 "approve ship" bash "$STATE" approve "$SZ" ship user
 expect 0 "ship-pr on the old run: no size refusal" bash "$STATE" ship-pr "$SZ" PR1
 has "  local-only (the repo has no remote)" "PR1 local-only"
 is "  the old size is still there" "$SZ/status.json" prs.0.size.lines 450
-echo "# PR body sections: Why, What it adds, Review, Verification, Tickets (local mode)"
+echo "# PR body sections: Why, What it adds, Scope, Review, Verification, Tickets (local mode)"
 bdinit() { # the base commit of the toy repo: an npm and a cargo manifest, a go.sum
   printf '{"name":"toy","dependencies":{"left-pad":"1.0.0","kept":"2.0.0"}}\n' > "$1/package.json"
   printf '[package]\nname = "toy"\n\n[dependencies]\nserde = "1.0.100"\nregex = "1"\n' > "$1/Cargo.toml"
@@ -1332,12 +1332,17 @@ B="$SZ/pr-bodies/PR1.md"
 python3 - "$B" <<'PY' && ok "  sections in AD-9 order, Plan line last" || bad "  body order: $(cat "$B")"
 import sys
 t = open(sys.argv[1]).read()
-order = ["## Why", "## What it adds", "## Review", "## Verification", "## Tickets", "Plan: Eagle-Eye run r-pb"]
+order = ["## Why", "## What it adds", "## Scope", "## Review", "## Verification", "## Tickets", "Plan: Eagle-Eye run r-pb"]
 pos = [t.index(x) for x in order]
 assert pos == sorted(pos), pos
 PY
 grep -qF "Users cannot export invoices." "$B" && ok "  Why from the plan" || bad "  no Why: $(cat "$B")"
 grep -qF -- "- S1: First" "$B" && ok "  What it adds lists the story" || bad "  no story"
+grep -qF "src (2 files)" "$B" && grep -qF "docs (1 file)" "$B" && ok "  Scope: src (2 files), docs (1 file)" || bad "  scope: $(cat "$B")"
+grep -qF "package.json: added new-dep ^3.0.0" "$B" && ok "  Scope: added npm dependency" || bad "  scope: $(cat "$B")"
+grep -qF "package.json: removed left-pad" "$B" && grep -qF "kept 2.0.0 → 2.1.0" "$B" && ok "  Scope: removed and bumped npm dependency" || bad "  scope: $(cat "$B")"
+grep -qF "Cargo.toml: bumped serde 1.0.100 → 1.0.200" "$B" && ok "  Scope: bumped Cargo dependency" || bad "  scope: $(cat "$B")"
+grep -qF "go.sum: changed" "$B" && ok "  Scope: go.sum: changed" || bad "  scope: $(cat "$B")"
 grep -qF -- "- 2 review rounds, final verdict APPROVED, gate PASS" "$B" && ok "  Review: rounds, verdict, gate" || bad "  review: $(cat "$B")"
 grep -qF -- "- round 1 blocked: src/x.ts:1 — export() drops the last row; fixed in round 2" "$B" && ok "  Review: a resolved MEDIUM finding" || bad "  review: $(cat "$B")"
 grep -qF "naming only" "$B" && bad "  a LOW finding is listed" || ok "  LOW findings are not listed"
@@ -1355,8 +1360,15 @@ B="$SZ/pr-bodies/PR2.md"
 grep -qE "^## (Why|Tickets)$" "$B" && bad "  empty sections present: $(cat "$B")" || ok "  no Why and no Tickets section"
 grep -qF "App check" "$B" && bad "  App check line without app-checks.json data" || ok "  no App check line"
 grep -qE "\bNone\b|\bnull\b" "$B" && bad "  None/null in the body: $(cat "$B")" || ok "  no None/null in the body"
+grep -qF -- "- Areas: other (1 file)" "$B" && ok "  Scope for PR2 shows only the area (no manifest change)" || bad "  scope: $(cat "$B")"
+grep -qE "added|removed|bumped|changed" "$B" && bad "  PR2 Scope lists a dependency change" || ok "  no dependency lines for PR2"
+echo "# Scope needs the canonical worktree: a missing one leaves the section out and the body is still built"
+mv "$SZ1" "$SZ1.gone"
+expect 0 "pr-body PR1 with its worktree missing" bash "$STATE" pr-body "$SZ" PR1
+mv "$SZ1.gone" "$SZ1"
+hasnt "  no Scope section" "## Scope"; has "  the other sections are there" "## Why"
 expect 0 "pr-body PR1 draft: what is known after round 1" bash "$STATE" pr-body "$SZ" PR1 draft
-has "  Why" "## Why"; has "  What it adds" "## What it adds"; has "  Verification" "## Verification"
+has "  Why" "## Why"; has "  What it adds" "## What it adds"; has "  Scope" "## Scope"; has "  Verification" "## Verification"
 hasnt "  no Review yet" "## Review"; hasnt "  no Tickets yet" "## Tickets"; has "  says review in progress" "review in progress"
 export DCV2_RUN_DIR="$RUN"
 

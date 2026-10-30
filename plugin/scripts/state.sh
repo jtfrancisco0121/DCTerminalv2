@@ -1878,6 +1878,12 @@ def stack_epic_lines(st, pr):
     return lines
 
 
+HEX_SHA = re.compile(r"[0-9a-f]{7,64}")
+LOCK_FILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json", "bun.lockb", "bun.lock", "Cargo.lock",
+              "go.sum", "poetry.lock", "Pipfile.lock", "uv.lock", "Gemfile.lock", "composer.lock"}
+OTHER_MANIFESTS = {"Gemfile", "Pipfile", "pom.xml", "build.gradle", "build.gradle.kts", "composer.json", "setup.py", "setup.cfg", "mix.exs"}
+
+
 def canon_wt(run, st, pr):
     """The PR's canonical worktree (where `state.sh worktree` makes it, on its branch), else None."""
     try:
@@ -1891,6 +1897,137 @@ def canon_wt(run, st, pr):
         return wt
     except (OSError, ValueError, TypeError):
         return None
+
+
+def scope_deps_package_json(text):
+    try:
+        d = json.loads(text or "{}")
+    except ValueError:
+        return {}
+    out = {}
+    if isinstance(d, dict):
+        for sec in ("dependencies", "devDependencies"):
+            if isinstance(d.get(sec), dict):
+                for k, v in d[sec].items():
+                    out[str(k)] = str(v)
+    return out
+
+
+def scope_deps_toml(text):
+    """name -> version for the dependency tables of a Cargo.toml / pyproject.toml (line based, best effort)."""
+    out, sect, cur = {}, "", None
+    for line in (text or "").splitlines():
+        s = line.strip()
+        m = re.match(r"^\[\s*([^\]]+?)\s*\]$", s)
+        if m:
+            sect = m.group(1)
+            sm = re.match(r"^(?:[\w.\-\"']+\.)?(?:dev-|build-)?dependencies\.([\w\-]+)$", sect)
+            cur = sm.group(1) if sm else None
+            if cur:
+                out.setdefault(cur, "*")
+            continue
+        if cur:
+            vm = re.match(r'^version\s*=\s*"([^"]*)"', s)
+            if vm:
+                out[cur] = vm.group(1)
+            continue
+        if not re.search(r"(?:^|\.)(?:dev-|build-)?dependencies$", sect):
+            continue
+        m = re.match(r"^([A-Za-z0-9_\-]+)\s*=\s*(.*)$", s)
+        if m:
+            vm = re.match(r'^"([^"]*)"', m.group(2)) or re.search(r'version\s*=\s*"([^"]*)"', m.group(2))
+            out[m.group(1)] = vm.group(1) if vm else "*"
+    block = re.search(r"(?ms)^\s*dependencies\s*=\s*\[(.*?)\]", text or "")  # pyproject [project] dependencies = [...]
+    if block:
+        for m in re.finditer(r'"([A-Za-z0-9_.\-]+)\s*([^"]*)"', block.group(1)):
+            out[m.group(1)] = m.group(2).strip() or "*"
+    return out
+
+
+def scope_deps_requirements(text):
+    out = {}
+    for line in (text or "").splitlines():
+        if line.lstrip().startswith(("#", "-")):
+            continue
+        m = re.match(r"^\s*([A-Za-z0-9][A-Za-z0-9_.\-]*)(?:\[[^\]]*\])?\s*([=<>!~][^;#\s]*)?", line)
+        if m:
+            out[m.group(1)] = m.group(2) or "*"
+    return out
+
+
+def scope_deps_gomod(text):
+    out, in_block = {}, False
+    for line in (text or "").splitlines():
+        s = line.split("//")[0].strip()
+        if s.startswith("require ("):
+            in_block = True
+            continue
+        if in_block and s == ")":
+            in_block = False
+            continue
+        m = re.match(r"^(?:require\s+)?(\S+)\s+(v\S+)$", s) if (in_block or s.startswith("require ")) else None
+        if m:
+            out[m.group(1)] = m.group(2)
+    return out
+
+
+def scope_manifest_deps(name, text):
+    """{dependency: version} of a known manifest, or None when name is not one."""
+    if name == "package.json":
+        return scope_deps_package_json(text)
+    if name in ("Cargo.toml", "pyproject.toml"):
+        return scope_deps_toml(text)
+    if name == "go.mod":
+        return scope_deps_gomod(text)
+    if re.fullmatch(r"requirements[\w.\-]*\.txt", name):
+        return scope_deps_requirements(text)
+    return None
+
+
+def pr_scope(run, st, pr):
+    """Lines for the body's Scope section from local git only, in the PR's canonical worktree: areas touched (top-level
+    folder, file count) and dependency changes. [] when there is no worktree or git says no: the section is left out."""
+    wt = canon_wt(run, st, pr)
+    base = (guard_rec(run).get("bases") or {}).get(pr.get("id")) or pr.get("baseCommit")
+    if not wt or not isinstance(base, str) or not HEX_SHA.fullmatch(base):
+        return []
+    r = subprocess.run(["git", "-c", "core.fsmonitor=false", "-C", wt, "diff", "--name-only", "-z", "--no-renames", f"{base}..HEAD"],
+                       capture_output=True)
+    if r.returncode != 0:
+        return []
+    paths = sorted({x for x in r.stdout.decode("utf-8", "replace").split("\0") if x})
+    if not paths:
+        return []
+    areas = {}
+    for p in paths:
+        k = p.split("/")[0] if "/" in p else "(root)"
+        areas[k] = areas.get(k, 0) + 1
+    lines = ["- Areas: " + ", ".join(f"{k} ({n} file{'s' if n != 1 else ''})" for k, n in sorted(areas.items(), key=lambda kv: (-kv[1], kv[0])))]
+
+    def show(rev, path):
+        o = subprocess.run(["git", "-c", "core.fsmonitor=false", "-C", wt, "show", f"{rev}:{path}"], capture_output=True)
+        return o.stdout.decode("utf-8", "replace") if o.returncode == 0 else ""
+
+    for p in paths:
+        name = os.path.basename(p)
+        if name in LOCK_FILES or name in OTHER_MANIFESTS:
+            lines.append(f"- {p}: changed")
+            continue
+        if scope_manifest_deps(name, "") is None:
+            continue
+        old, new = scope_manifest_deps(name, show(base, p)), scope_manifest_deps(name, show("HEAD", p))
+        added = [f"{k} {v}" for k, v in sorted(new.items()) if k not in old]
+        removed = [k for k in sorted(old) if k not in new]
+        bumped = [f"{k} {old[k]} → {v}" for k, v in sorted(new.items()) if k in old and old[k] != v]
+        if added:
+            lines.append(f"- {p}: added {', '.join(added)}")
+        if removed:
+            lines.append(f"- {p}: removed {', '.join(removed)}")
+        if bumped:
+            lines.append(f"- {p}: bumped {', '.join(bumped)}")
+        if not (added or removed or bumped):
+            lines.append(f"- {p}: changed")
+    return lines
 
 
 FINDING_RE = re.compile(r"^\s*(?:\d+[.)]|[-*])\s*\**(CRITICAL|HIGH|MEDIUM)\**\s*[—–-]+\s*(.+)$")
@@ -2012,7 +2149,7 @@ def build_body(run, st, pr, mode):
     why = (plan_blocks(plan)[1].get(pr.get("id")) or {}).get("why")
     final = mode == "final"
     shown = screen_lines(run, st, pr, [
-        ("Why", [why] if why else []),
+        ("Why", [why] if why else []), ("Scope", pr_scope(run, st, pr)),
         ("Review", review_lines(run, pr) if final else []), ("Verification", verify_lines(run, st, pr)),
         ("Tickets", ticket_lines(run, plan, pr) if final else [])])
     lines = []
@@ -2023,6 +2160,7 @@ def build_body(run, st, pr, mode):
 
     section("Why", shown["Why"])
     section("What it adds", story_lines(run, pr))
+    section("Scope", shown["Scope"])
     section("Review", shown["Review"])
     rounds = sorted(pr.get("comments") or [], key=lambda c: c.get("round", 0)) if final else []
     section("Eagle-Eye review rounds", [f"- Round {c['round']}: {c['url']}" + (f" (fixes: {c['fixesUrl']})" if c.get("fixesUrl") else "") for c in rounds])
