@@ -1,3 +1,4 @@
+import { dispatchEnqueue, dispatchOverview, type DispatchOverview } from "../run/dispatch";
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -145,6 +146,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   // The same unfinished request is already running: ask before starting it again.
   const [duplicate, setDuplicate] = useState<{ run: DuplicateRun; role: string } | null>(null);
   const [tickets, setTickets] = useState<ClickUpStart | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   const [tooMany, setTooMany] = useState<string | null>(null);
   // The repos ticked for this run (all, until you untick; reset with the folder), and the implementer count.
   const [unticked, setUnticked] = useState<ReadonlySet<string>>(new Set());
@@ -202,7 +204,39 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
     }
   };
 
-  const launch = async (role: string, force = false, requestOverride?: string) => {
+  // The cap is reached: ask whether to queue the run or start it now (never queued silently).
+  const [capAsk, setCapAsk] = useState<{ role: string; holders: DispatchOverview["holders"]; cap: number } | null>(null);
+
+  const queueIt = async (role: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const eagleTickets = tickets;
+      const said = request.trim() || (eagleTickets ? "Do the ClickUp tickets below." : request);
+      await dispatchEnqueue(
+        {
+          windowId,
+          folder: folder.trim(),
+          request: said,
+          role,
+          clickup: eagleTickets,
+          reviewMode: reviewOnGitHub ? "github" : "local",
+          bmadMode,
+          repos: tickedRepos,
+          maxImplementers: implementers !== null ? implementersValue : null,
+          runMode: epicPlan && eagleTickets ? "epic-plan" : null,
+        },
+        said.split("\n")[0]!.slice(0, 80),
+      );
+      setMessage("Queued: it starts when a slot is free (see Runs).");
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const launch = async (role: string, force = false, requestOverride?: string, bypassCap = false) => {
     if (!folder.trim()) {
       setError("Choose a folder.");
       return;
@@ -211,6 +245,17 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
     if (role === "eagle-eye" && !request.trim() && !eagleTickets) {
       setError("Say what should be done.");
       return;
+    }
+    if (role === "eagle-eye" && !bypassCap) {
+      try {
+        const o = await dispatchOverview();
+        if (o.atCap) {
+          setCapAsk({ role, holders: o.holders, cap: o.cap });
+          return;
+        }
+      } catch {
+        // The dispatcher could not be read: start as before.
+      }
     }
     setBusy(true);
     setError(null);
@@ -571,6 +616,56 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           </p>
         </Dialog>
       )}
+      {capAsk && (
+        <Dialog
+          title="The run limit is reached"
+          onClose={() => setCapAsk(null)}
+          footer={
+            <>
+              <button type="button" className="secondary-button" onClick={() => setCapAsk(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={busy}
+                onClick={() => {
+                  const role = capAsk.role;
+                  setCapAsk(null);
+                  void launch(role, false, undefined, true);
+                }}
+              >
+                Start now
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busy}
+                onClick={() => {
+                  const role = capAsk.role;
+                  setCapAsk(null);
+                  void queueIt(role);
+                }}
+              >
+                Queue it
+              </button>
+            </>
+          }
+        >
+          <p>
+            {capAsk.holders.length} of {capAsk.cap} runs are live:
+          </p>
+          <ul data-testid="cap-holders">
+            {capAsk.holders.map((h) => (
+              <li key={h.runDir}>
+                {h.runId} · {h.stage ?? "starting"} · {h.why}
+              </li>
+            ))}
+          </ul>
+          <p>Queue this one to start when a slot is free, or start it now past the limit.</p>
+        </Dialog>
+      )}
+      {message && <p className="hint" role="status">{message}</p>}
       {report && <TextDialog title={report.title} text={report.text} onClose={() => setReport(null)} />}
       {overview?.pluginVersion && <p className="hint run-version">dcv2 roles {overview.pluginVersion}</p>}
     </div>

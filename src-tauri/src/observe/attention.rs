@@ -1108,6 +1108,12 @@ pub fn spawn(app: &AppHandle, notifier: Box<dyn Notifier>) {
                         .map(|r| (r.run_id.clone(), r.clone()))
                         .collect(),
                 );
+                let live_runs: std::collections::HashSet<String> = observed
+                    .tabs
+                    .iter()
+                    .filter_map(|t| t.run_dir.clone())
+                    .collect();
+                crate::run::dispatch::on_tick(&app, &live_runs);
                 for push in push_diff.diff(&observed) {
                     emit_push(&app, push);
                 }

@@ -81,6 +81,8 @@ const runKey = (r: RunSettings) =>
     slopCheck: r.slopCheck ?? true,
     autoCleanup: r.autoCleanup ?? true,
     watchdogMinutes: r.watchdogMinutes ?? 10,
+    maxActiveRuns: r.maxActiveRuns ?? 2,
+    usageHoldPercent: r.usageHoldPercent ?? null,
   });
 
 /** "Unsaved changes" beside a section's Save button. */
@@ -569,6 +571,28 @@ export function SettingsPage({ view, onSaved, onClose, section }: Props) {
             max={8}
             value={runSettings.maxImplementers}
             onChange={(event) => setRun({ ...runSettings, maxImplementers: Number(event.target.value) || 3 })}
+          />
+        </label>
+        <label className="field-label">
+          Runs live at once (the rest wait in the queue)
+          <input
+            className="text-input text-input-narrow"
+            type="number"
+            min={1}
+            max={8}
+            value={runSettings.maxActiveRuns ?? 2}
+            onChange={(event) => setRun({ ...runSettings, maxActiveRuns: Number(event.target.value) || 2 })}
+          />
+        </label>
+        <label className="field-label">
+          Hold queued starts at this five-hour usage percent (empty is off)
+          <input
+            className="text-input text-input-narrow"
+            type="number"
+            min={1}
+            max={100}
+            value={runSettings.usageHoldPercent ?? ""}
+            onChange={(event) => setRun({ ...runSettings, usageHoldPercent: event.target.value === "" ? null : Number(event.target.value) })}
           />
         </label>
         <label className="check-label">

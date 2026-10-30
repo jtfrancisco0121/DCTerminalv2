@@ -484,6 +484,12 @@ pub struct RunSettings {
     /// R2 watchdog: minutes with no progress before the panel says so; 0 is off.
     #[serde(default = "default_watchdog_minutes")]
     pub watchdog_minutes: u32,
+    /// How many runs may be live at once (dispatcher slots), 1..=8.
+    #[serde(default = "default_max_active_runs")]
+    pub max_active_runs: u32,
+    /// Hold queued starts while the entry's account is at or past this percent of its five-hour usage (None: off).
+    #[serde(default)]
+    pub usage_hold_percent: Option<u32>,
     /// "Clean up merged runs automatically" (plan 2026-10-27): finished
     /// runs' merged PRs lose their worktree, local and remote branch.
     #[serde(default = "default_true")]
@@ -491,6 +497,10 @@ pub struct RunSettings {
 }
 
 pub const WATCHDOG_MINUTES_LIMIT: u32 = 240;
+
+fn default_max_active_runs() -> u32 {
+    2
+}
 
 fn default_watchdog_minutes() -> u32 {
     crate::observe::watchdog::DEFAULT_MINUTES
@@ -513,6 +523,8 @@ impl Default for RunSettings {
             stop_hooks: true,
             slop_check: true,
             watchdog_minutes: default_watchdog_minutes(),
+            max_active_runs: default_max_active_runs(),
+            usage_hold_percent: None,
             auto_cleanup: true,
         }
     }
@@ -606,6 +618,8 @@ impl SettingsStore {
             stop_hooks: next.stop_hooks,
             slop_check: next.slop_check,
             watchdog_minutes: next.watchdog_minutes.min(WATCHDOG_MINUTES_LIMIT),
+            max_active_runs: next.max_active_runs.clamp(1, MAX_IMPLEMENTERS_LIMIT),
+            usage_hold_percent: next.usage_hold_percent.map(|p| p.clamp(1, 100)),
             auto_cleanup: next.auto_cleanup,
         };
         self.save()

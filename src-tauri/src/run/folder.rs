@@ -121,6 +121,8 @@ pub struct RunMeta {
     /// `epic-plan`: the run only plans an epic in waves (no code, no PR); `None`
     /// is a normal run and is not recorded.
     pub mode: Option<String>,
+    /// The queue entry (dispatch.json) that started this run; a restart reads it to tell the entry started.
+    pub dispatch_entry_id: Option<String>,
 }
 
 /// The run modes meta.json can record (`mode`); a normal run has none.
@@ -263,6 +265,9 @@ pub fn create_run(
     }
     if let Some(mode) = meta.mode.as_deref().filter(|m| RUN_MODES.contains(m)) {
         meta_json["mode"] = json!(mode);
+    }
+    if let Some(id) = meta.dispatch_entry_id.as_deref() {
+        meta_json["dispatchEntryId"] = json!(id);
     }
     if let Some(n) = meta.max_implementers {
         meta_json["maxImplementers"] = json!(n.clamp(1, MAX_IMPLEMENTERS_LIMIT));
@@ -789,6 +794,7 @@ mod tests {
             bmad_version: None,
             max_implementers: None,
             mode: None,
+            dispatch_entry_id: None,
         };
         assert!(create_run(dir.path(), Path::new("/w"), &repos, &[], "  ", &meta).is_err());
         let one = create_run(

@@ -115,6 +115,10 @@ export type RunSettings = {
   /** The Stop hook also reports slop in the lines a PR added (default on). */
   slopCheck?: boolean;
   watchdogMinutes?: number;
+  /** How many runs may be live at once (default 2, 1..8); more wait in the queue. */
+  maxActiveRuns?: number;
+  /** Hold queued starts at or past this five-hour usage percent (null: off). */
+  usageHoldPercent?: number | null;
   /** "Clean up merged runs automatically" (default on). */
   autoCleanup?: boolean;
 };
