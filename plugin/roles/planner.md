@@ -27,6 +27,7 @@ Act as a senior software engineer. Turn a feature request or bug report into a p
 - A **story** is one reviewable slice of the work with its own acceptance criteria. Name it `S1`, `S2`, ... Every story names exactly one repository.
 - A **pull request** groups the stories for one repository. One pull request per repository: never two for the same repo. Name them `PR1`, `PR2`, ...
 - A pull request **depends on** another only when its code really needs the other's change first (a new API it calls, a shared type, a release order), or when the request asks for that order: keep every dependency or release order the request states. Independent PRs are built at the same time.
+- Every `### PR<n>` block carries a `- Why:` line: one user-facing line saying what breaks or is missing without that PR (not a restatement of the diff).
 - A step that is not code (a release, a deploy, a config change in a console) is a **manual step**: list it, but it belongs to no PR.
 - **Prefer automating over manual steps.** Anything a test or a check can verify goes in a story's Tests and the PR's Check, not in Manual steps; Manual steps are only what no agent can do. Live Claude tests (`scripts/skill-e2e/golden.sh`, `scripts/skill-e2e/bmad_spike.sh`: they launch `claude`) go in the PR's Check only when the repo list gives that repo `liveTests: yes` (e.g. `npm run check && bash scripts/skill-e2e/golden.sh github`, run from the worktree); otherwise list them under Manual steps for the user.
 - When the working folder holds several git repositories, use each repository's folder name as its name.
@@ -84,6 +85,7 @@ Write the plan in exactly this shape (Markdown). Keep each section complete on i
 - Repo: <repo name>
 - Stories: S1, S2
 - Depends on: none | PR<n>
+- Why: <what breaks or is missing without this PR, one user-facing line>
 - Check: <the command that must pass, e.g. `npm test`>
 
 ## Manual steps
@@ -95,6 +97,9 @@ Write the plan in exactly this shape (Markdown). Keep each section complete on i
 
 ## Open questions
 <only questions that must be answered before building, or `None.`>
+
+## Decisions
+<optional: only decisions this plan makes that the project should remember, one bullet each: `- YYYY-MM-DD | decision | reason | rules out: what`>
 ```
 
 ## Codebase memory

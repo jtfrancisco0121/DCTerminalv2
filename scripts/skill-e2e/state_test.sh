@@ -255,6 +255,28 @@ has "  has t1" "- t1 | T-1"; hasnt "  stops before Risks" "secret risk text"
 expect 0 "plan stories" bash "$STATE" plan "$RUN" stories
 has "  story headings" "### S2: Prefix results"; hasnt "  headings only" "Tickets: t1"
 
+expect 0 "plan why, none yet" bash "$STATE" plan "$RUN" why PR1
+[[ -z "$out" ]] && ok "  no Why line gives an empty result" || bad "  why: $out"
+expect 0 "plan decisions, none yet" bash "$STATE" plan "$RUN" decisions
+has "  no Decisions section" "no ## Decisions section"
+cp "$RUN/plan.md" "$d/plan.bak"
+python3 - "$RUN/plan.md" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace("### PR1: Fix multiply\n- Repo: r\n", "### PR1: Fix multiply\n- Repo: r\n- Why:   multiply returns the wrong value without it  \n")
+s += "\n## Decisions\n- 2026-10-30 | use x | because y | rules out: z\n"
+open(p, "w").write(s)
+PY
+expect 0 "plan why PR1" bash "$STATE" plan "$RUN" why PR1
+[[ "$out" == "multiply returns the wrong value without it" ]] && ok "  Why is trimmed" || bad "  why: $out"
+expect 0 "plan why PR2 (no line)" bash "$STATE" plan "$RUN" why PR2
+[[ -z "$out" ]] && ok "  PR2 has no Why" || bad "  why PR2: $out"
+expect 0 "plan prs with a Why" bash "$STATE" plan "$RUN" prs
+has "  Why line is printed" "- Why:   multiply returns the wrong value"
+expect 0 "plan decisions" bash "$STATE" plan "$RUN" decisions
+has "  decision bullet" "- 2026-10-30 | use x | because y | rules out: z"
+cp "$d/plan.bak" "$RUN/plan.md"
+
 echo "# base (8)"
 expect 0 "base, no remote" bash "$STATE" base "$R"
 has "  main, no remote" "base=main baseCommit=$BASE remote=none"

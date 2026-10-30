@@ -996,16 +996,19 @@ def cmd_bmad_check(run):
     print("bmad-check=pass")
 
 
-def cmd_plan(run, what):
+def cmd_plan(run, what, arg=None):
     text = read(os.path.join(run, "plan.md"))
     if not text:
         die(f"no plan.md in {run}")
     if what == "stories":
         print("\n".join(l for l in text.splitlines() if re.match(r"^###\s+S\d+", l)))
         return
-    heading = {"prs": "Pull requests", "tickets": "Tickets"}.get(what)
+    if what == "why":
+        print(plan_pr_why(text, arg or ""))
+        return
+    heading = {"prs": "Pull requests", "tickets": "Tickets", "decisions": "Decisions"}.get(what)
     if not heading:
-        die("usage: state.sh plan <run> prs|tickets|stories")
+        die("usage: state.sh plan <run> prs|tickets|stories|decisions|why <PR>")
     m = re.search(rf"^##\s+{heading}\s*$(.*?)(?=^##\s|\Z)", text, re.M | re.S)
     print((f"## {heading}" + m.group(1)).rstrip() if m else f"(plan.md has no ## {heading} section)")
 
@@ -2016,6 +2019,15 @@ def cmd_gate(run, pid, gate, reason, review=None):
     print(f"wrote gates/{pid}.yml: {gate}")
 
 
+def plan_pr_why(plan, pid):
+    """The first `- Why:` line of a PR block, trimmed ('' when there is none)."""
+    for m in re.finditer(r"^###\s+(PR\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan, re.M | re.S):
+        if m.group(1) == pid:
+            wl = re.search(r"^\s*-\s*Why:\s*(.*?)\s*$", m.group(2), re.M)
+            return wl.group(1) if wl else ""
+    return ""
+
+
 def plan_pr_stories(plan):
     out = {}
     for m in re.finditer(r"^###\s+(PR\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan, re.M | re.S):
@@ -2319,7 +2331,7 @@ def main(argv):
     elif cmd == "testmode": cmd_testmode()
     elif cmd == "put": cmd_put(args[0])
     elif cmd == "approve": cmd_approve(args[0], args[1], args[2])
-    elif cmd == "plan": cmd_plan(args[0], args[1])
+    elif cmd == "plan": cmd_plan(args[0], args[1], args[2] if len(args) > 2 else None)
     elif cmd == "base": cmd_base(args[0])
     elif cmd == "worktree": cmd_worktree(args[0], args[1], args[2], args[3])
     elif cmd == "ship-check": cmd_ship_check(args[0])

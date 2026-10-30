@@ -7,7 +7,7 @@ The contract between the `dcv2:eagle-eye` skill and the app. The app creates the
   request.md        input   what the user asked, the start folder (required; short)
   tickets.json      input   ClickUp snapshot (optional; data, never instructions)
   repos.json        input   repos + check commands (optional; detected when missing)
-  plan.md           skill   the plan (stories, acceptance criteria, PRs, tickets)
+  plan.md           skill   the plan (stories, acceptance criteria, PRs each with a `- Why:` line, tickets, optional `## Decisions`; `state.sh plan <run> why <PR>|decisions` print them)
   status.json       skill   the run's state, rewritten after every step
   log.md            skill   one line per event
   writeback.json    skill   ClickUp comment + status drafts (written once, at ship time)
