@@ -1418,11 +1418,39 @@ def cmd_ship_check(run):
             print(f"{who}: remote {rem['url']}, base {pr.get('base')} is NOT on the remote: needs attention")
 
 
+def size_line(run, pr):
+    z = pr.get("size")
+    if not size_shape_ok(z):
+        return "Size: not measured"
+    text = f"Size: {z['lines']} lines in {z['files']} files ({z['excluded']} excluded), limit {z['limit']}"
+    if z["over"]:
+        g = read_gate(run, pr.get("id"))
+        if z.get("reason"):
+            text += f"; over limit: {z['reason']}"
+        elif g and g.get("gate") == "WAIVED":
+            text += f"; over limit, waived by the user: {g.get('reason')}"
+        else:
+            text += "; over limit, no reason"
+    return text
+
+
+def size_lines(run, st, pr):
+    """The PR body's size part: one size line, and one line naming same-repo sibling PRs (they ship separately)."""
+    out = ["", size_line(run, pr)]
+    repo = os.path.realpath(str(pr.get("repoPath") or "/"))
+    sib = [p.get("id") for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") != pr.get("id")
+           and os.path.realpath(str(p.get("repoPath") or "/")) == repo]
+    if sib:
+        out.append(f"Ships with {', '.join(sib)} (same repo): merge one, then re-run the check before merging the next.")
+    return out
+
+
 def pr_body(run, st, pr):
     titles = dict(re.findall(r"^###\s+(S\d+)\s*[:\-\u2014]+\s*(.+?)\s*$", read(os.path.join(run, "plan.md")), re.M))
     prs = {p.get("id"): p for p in st.get("prs") or []}
     chk, rev = pr.get("check") or {}, pr.get("review") or {}
     lines = ["## Stories", ""] + [f"- {s}: {titles.get(s, '')}".rstrip(": ") for s in (pr.get("stories") or {}).get("ids") or []]
+    lines += size_lines(run, st, pr)
     lines += ["", f"Check: `{chk.get('command')}`: {chk.get('result')}", f"Review: {rev.get('verdict')} (round {rev.get('round')})"]
     for dep in pr.get("dependsOn") or []:
         d = prs.get(dep) or {}
@@ -1759,6 +1787,7 @@ def story_lines(run, pr):
 
 def draft_body(run, st, pr):
     lines = ["## Stories", ""] + story_lines(run, pr)
+    lines += size_lines(run, st, pr)
     lines += ["", f"\U0001F916 Eagle-Eye run {st.get('runId')} — review in progress. Each review round is posted as a comment; "
               "this PR is marked ready for review only after the run's ship approval.", ""]
     return "\n".join(lines)
@@ -2273,6 +2302,20 @@ def cmd_gate(run, pid, gate, reason, review=None):
         if not (verdict or "").startswith("APPROVED"):
             die(f"NOT WRITTEN: {gate} needs the review file {review} to exist with verdict APPROVED (found {verdict or 'no review'}); "
                 "a review asking for changes is FAIL")
+        if isinstance(st.get("plan"), dict) and "overLimit" in st["plan"]:  # a plan approved under the size rules: enforce them
+            try:
+                z = record_size(run, pid)
+            except SizeError as e:
+                die(f"NOT WRITTEN: {gate} for {pid} needs its size measured, and it cannot be: {e}. "
+                    f"Fix that (state.sh worktree re-makes a missing worktree from its branch), then write the gate again")
+            if z["over"] and not z["reason"]:
+                die(f"NOT WRITTEN: {pid} is {z['lines']} lines, over its limit {z['limit']}, with no over-limit reason: write FAIL "
+                    "\"over the size limit without a reason\" (only the user's reason can waive it at stop #2)")
+            if z["overlaps"]:
+                die(f"NOT WRITTEN: {pid} changes paths another PR of the same repo owns: "
+                    + "; ".join(f"{o['path']} ({o['pr']})" for o in z["overlaps"]) + ". Write FAIL, or WAIVED with the user's reason")
+        else:
+            print("size: not enforced (plan approved before 0.7.0)")
     if gate == "WAIVED":
         if not old or old.get("gate") not in ("CONCERNS", "FAIL"):
             die(f"NOT WRITTEN: WAIVED only replaces a CONCERNS or FAIL gate (now {(old or {}).get('gate') or 'missing'}), "

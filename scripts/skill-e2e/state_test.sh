@@ -137,6 +137,12 @@ expect 0 "approve plan user" bash "$STATE" approve "$RUN" plan user
 is "  plan.approval.by user" "$RUN/status.json" plan.approval.by '"user"'
 has "  logged" "plan approved by the user"
 grep -q "plan approved by the user" "$RUN/log.md" && ok "  log.md has the approval" || bad "  log.md has no approval line"
+# The gate tests below run on a fixture with no worktree. Under the size rules `approve` froze plan.overLimit and the gate would
+# enforce size (and refuse: it cannot measure). Drop the key here, so this fixture is the legacy run: a plan approved before 0.7.0.
+python3 - "$RUN/status.json" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1])); del st["plan"]["overLimit"]; json.dump(st, open(sys.argv[1], "w"))
+PY
 expect 1 "put cannot forge a ship approval" put < <(status shipping reviewed reviewed 'doc["shipApproval"]={"by":"user","at":"2026-10-22T00:00:00Z"}')
 expect 1 "invalid JSON refused" put <<<'{"schema": 1,'
 is "  old file kept" "$RUN/status.json" stage '"plan-approval"'
@@ -181,6 +187,7 @@ expect 0 "WAIVED over FAIL (the user's reason)" bash "$STATE" gate "$RUN" PR1 WA
 grep -q '^waived: "FAIL"$' "$RUN/gates/PR1.yml" && ok "  records what was waived" || bad "  gate file: $(cat "$RUN/gates/PR1.yml")"
 printf '## Verdict\n**APPROVED**\n' > "$RUN/reviews/PR1-round1.md"
 expect 0 "gate PASS over an APPROVED review" bash "$STATE" gate "$RUN" PR1 PASS "no findings; check passes"
+has "  a plan approved before 0.7.0 is not size-checked" "size: not enforced (plan approved before 0.7.0)"
 expect 1 "WAIVED over PASS refused" bash "$STATE" gate "$RUN" PR1 WAIVED "x"
 printf '## Verdict\nAPPROVED\n' > "$RUN/reviews/PR2-round1.md"
 expect 0 "gate CONCERNS for PR2" bash "$STATE" gate "$RUN" PR2 CONCERNS "1 LOW: naming"
@@ -397,6 +404,7 @@ is "  PR2 url" "$RUN/status.json" prs.1.prUrl '"https://github.com/o/rr/pull/8"'
 git -C "$d/origin.git" show-ref --verify -q refs/heads/dcv2/r-t-pr2 && ok "  branch pushed" || bad "  branch not on origin"
 grep -q -- "--body-file $RUN/pr-bodies/PR2.md" "$d/gh.log" && ok "  body from pr-bodies/PR2.md" || bad "  gh args: $(cat "$d/gh.log")"
 grep -q "Plan: Eagle-Eye run r-t" "$RUN/pr-bodies/PR2.md" && ok "  body names the run" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
+grep -qx "Size: not measured" "$RUN/pr-bodies/PR2.md" && ok "  body has one size line" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
 expect 1 "put cannot move an opened PR back" put < <(status shipping local-only reviewed)
 expect 0 "ship-pr again is a no-op" bash "$STATE" ship-pr "$RUN" PR2
 has "  already opened" "PR2 already opened"
@@ -1164,6 +1172,33 @@ for i in 3 4 5 6; do bash "$STATE" worktree "$SZ" "$SR" PR$i "$SZBASE" >/dev/nul
 wait
 n="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["worktrees"]))' "$SZ/.guard.json")"
 [[ "$n" == 6 ]] && ok "  .guard.json records all 6 worktrees" || bad "  .guard.json records $n of 6 worktrees"
+export DCV2_RUN_DIR="$RUN"
+
+echo "# gate: size and overlaps are enforced for a plan approved under the size rules"
+szsetup sb
+seq 1 450 > "$SZ1/src/a.ts"; szcommit "$SZ1" "450 lines"
+mkdir -p "$SZ/reviews"; printf '## Verdict\nAPPROVED\n' > "$SZ/reviews/PR1-round1.md"; printf '## Verdict\nAPPROVED\n' > "$SZ/reviews/PR2-round1.md"
+expect 1 "gate PASS refused: over the limit with no reason" bash "$STATE" gate "$SZ" PR1 PASS "clean"
+has "  names size and limit" "PR1 is 450 lines, over its limit 400, with no over-limit reason"
+expect 1 "gate CONCERNS refused too" bash "$STATE" gate "$SZ" PR1 CONCERNS "1 LOW"
+is "  the gate re-measured and recorded the size" "$SZ/status.json" prs.0.size.over true
+[[ ! -f "$SZ/gates/PR1.yml" ]] && ok "  no gate file written" || bad "  gate file exists"
+expect 0 "gate FAIL is not size-checked" bash "$STATE" gate "$SZ" PR1 FAIL "over the size limit without a reason"
+expect 0 "WAIVED over FAIL is accepted (the user's reason)" bash "$STATE" gate "$SZ" PR1 WAIVED "user: keep it as one PR"
+grep -q '^waived: "FAIL"$' "$SZ/gates/PR1.yml" && ok "  waiver recorded in the gate file" || bad "  gate: $(cat "$SZ/gates/PR1.yml")"
+echo changed > "$SZ2/src/a.ts"; szcommit "$SZ2" "PR2 changes a path PR1 owns"
+expect 1 "gate PASS refused with overlaps" bash "$STATE" gate "$SZ" PR2 PASS "clean"
+has "  names the path and the owner" "src/a.ts (PR1)"
+rm -rf "$SZ2"; git -C "$SR" worktree prune
+expect 1 "gate PASS refused when the worktree is missing" bash "$STATE" gate "$SZ" PR2 PASS "clean"
+has "  says it cannot be measured" "cannot be"
+szsetup sc "the parser and its table must ship together"
+is "  the Over limit reason is frozen at approve" "$SZ/status.json" plan.overLimit.PR1 '"the parser and its table must ship together"'
+seq 1 450 > "$SZ1/src/a.ts"; szcommit "$SZ1" "450 lines"
+mkdir -p "$SZ/reviews"; printf '## Verdict\nAPPROVED\n' > "$SZ/reviews/PR1-round1.md"
+expect 0 "gate PASS for the same diff when the plan carried an Over limit reason" bash "$STATE" gate "$SZ" PR1 PASS "clean"
+is "  size.over true" "$SZ/status.json" prs.0.size.over true
+is "  size.reason is the approved text" "$SZ/status.json" prs.0.size.reason '"the parser and its table must ship together"'
 export DCV2_RUN_DIR="$RUN"
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

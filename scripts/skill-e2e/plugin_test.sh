@@ -57,6 +57,8 @@ grep -qiE 'one pull request per repository|never two for the same repo' "$pl" "$
 for k in '- Files:' '- Size:' '- Over limit:'; do grep -qF -- "$k" "$pl" && ok "planner.md has $k" || bad "planner.md lacks $k"; done
 for k in 'without an `Over limit:`' 'overlap' 'needless split' 'boilerplate'; do grep -qF -- "$k" "$pr" && ok "plan-reviewer.md names: $k" || bad "plan-reviewer.md lacks: $k"; done
 
+grep -qF '[MEDIUM] size: split or justify' "$P/roles/pr-reviewer.md" && ok "pr-reviewer.md has the fixed size finding" || bad "pr-reviewer.md lacks '[MEDIUM] size: split or justify'"
+
 echo "# hooks and launch settings (A3, A4)"
 python3 - "$P" <<'PY' && ok "hooks.json and launch/settings.json are valid" || fails=1
 import json, os, re, sys
