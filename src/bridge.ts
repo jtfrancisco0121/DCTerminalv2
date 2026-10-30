@@ -383,6 +383,8 @@ export type ActiveRun = {
   stalled: boolean;
   prsDone: number;
   prsTotal: number;
+  /** Per-epic progress (plugin 0.8.0 runs with 2+ epics); absent or empty: a flat count. */
+  epics?: { id: string | null; title: string | null; done: number; total: number }[];
 };
 
 export type AttentionSummary = { needsYou: number; activeRuns: number };

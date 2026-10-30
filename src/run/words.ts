@@ -50,6 +50,73 @@ const PR_STATES: Record<string, string> = {
   "local-only": "local only",
 };
 
+/** A PR counts as done once it is opened on GitHub, merged, or kept local. */
+const DONE_STATES = ["opened", "merged", "local-only"];
+
+export type EpicGroup = { key: string; id: string | null; title: string | null; prs: PrView[]; done: number };
+
+/**
+ * The PRs grouped by epic: plan order of first appearance, "No epic" last.
+ * Fewer than two groups (an old run, one epic) gives [], and the caller shows a flat list.
+ */
+export function epicGroups(prs: PrView[]): EpicGroup[] {
+  const groups: EpicGroup[] = [];
+  const noEpic: EpicGroup = { key: "none", id: null, title: null, prs: [], done: 0 };
+  for (const pr of prs) {
+    const epic = pr.epic && typeof pr.epic.id === "string" && pr.epic.id ? pr.epic : null;
+    let group = epic ? groups.find((g) => g.id === epic.id) : noEpic;
+    if (!group) {
+      group = { key: epic!.id, id: epic!.id, title: epic!.title || null, prs: [], done: 0 };
+      groups.push(group);
+    }
+    group.prs.push(pr);
+    if (pr.state && DONE_STATES.includes(pr.state)) group.done += 1;
+  }
+  if (noEpic.prs.length > 0) groups.push(noEpic);
+  return groups.length >= 2 ? groups : [];
+}
+
+/** `Epic <title>`, `Epic <id>` when there is no title, or `No epic`. */
+export function epicLabel(group: { id: string | null; title: string | null }): string {
+  if (!group.id) return "No epic";
+  return `Epic ${group.title || group.id}`;
+}
+
+/** `3 PRs · 1 done` (the heading's counts). */
+export function epicCounts(total: number, done: number): string {
+  return `${total} ${total === 1 ? "PR" : "PRs"} · ${done} done`;
+}
+
+function idNumber(id: string): number {
+  const m = /(\d+)$/.exec(id);
+  return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
+}
+
+/** Ids in stack order: a parent first, then its children, otherwise by PR number. */
+export function stackOrder(items: { id: string; stackedOn?: string | null }[]): string[] {
+  const ids = new Set(items.map((i) => i.id));
+  const byNumber = (a: string, b: string) => idNumber(a) - idNumber(b) || a.localeCompare(b);
+  const children = new Map<string, string[]>();
+  const roots: string[] = [];
+  for (const item of items) {
+    const parent = item.stackedOn;
+    if (parent && parent !== item.id && ids.has(parent)) children.set(parent, [...(children.get(parent) ?? []), item.id]);
+    else roots.push(item.id);
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const walk = (id: string) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    out.push(id);
+    for (const child of (children.get(id) ?? []).sort(byNumber)) walk(child);
+  };
+  for (const root of roots.sort(byNumber)) walk(root);
+  // A stack loop in a damaged file: still list every id once.
+  for (const item of items) walk(item.id);
+  return out;
+}
+
 export function prStateText(state: string | null): string {
   if (!state) return "unknown";
   return PR_STATES[state] ?? state;
