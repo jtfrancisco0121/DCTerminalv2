@@ -30,6 +30,7 @@
       },
       "appCheckStale": false,
       "appCommand": "npm test",
+      "base": null,
       "branch": "dcv2/r-20261022-1304-pr1",
       "check": {
         "command": "npm test",
@@ -43,7 +44,9 @@
       "ciError": null,
       "comments": [],
       "currentHead": null,
+      "dependsOn": [],
       "draft": null,
+      "epic": null,
       "gate": {
         "gate": "PASS",
         "problem": null,
@@ -73,6 +76,7 @@
         "over": false,
         "reason": null
       },
+      "stackedOn": null,
       "state": "reviewed",
       "storiesDone": 2,
       "storiesTotal": 2,
@@ -95,6 +99,7 @@
       },
       "appCheckStale": false,
       "appCommand": "npm run check",
+      "base": null,
       "branch": null,
       "check": {
         "command": "npm test",
@@ -108,7 +113,9 @@
       "ciError": null,
       "comments": [],
       "currentHead": null,
+      "dependsOn": [],
       "draft": null,
+      "epic": null,
       "gate": {
         "gate": "WAIVED",
         "problem": null,
@@ -138,6 +145,7 @@
         "over": true,
         "reason": "the parser and its table must ship together"
       },
+      "stackedOn": null,
       "state": "reviewed",
       "storiesDone": 1,
       "storiesTotal": 1,
@@ -149,6 +157,7 @@
       "appCheck": null,
       "appCheckStale": false,
       "appCommand": null,
+      "base": null,
       "branch": null,
       "check": {
         "command": null,
@@ -162,7 +171,9 @@
       "ciError": null,
       "comments": [],
       "currentHead": null,
+      "dependsOn": [],
       "draft": null,
+      "epic": null,
       "gate": {
         "gate": null,
         "problem": "no gate: line",
@@ -185,6 +196,7 @@
         "verdict": "REQUEST CHANGES"
       },
       "size": null,
+      "stackedOn": null,
       "state": "needs-attention",
       "storiesDone": 0,
       "storiesTotal": 1,
@@ -196,6 +208,7 @@
       "appCheck": null,
       "appCheckStale": false,
       "appCommand": null,
+      "base": null,
       "branch": null,
       "check": {
         "command": null,
@@ -218,7 +231,9 @@
         }
       ],
       "currentHead": null,
+      "dependsOn": [],
       "draft": false,
+      "epic": null,
       "gate": null,
       "gateStatus": {
         "kind": "none",
@@ -236,6 +251,7 @@
         "verdict": null
       },
       "size": null,
+      "stackedOn": null,
       "state": "opened",
       "storiesDone": null,
       "storiesTotal": null,
@@ -247,6 +263,7 @@
       "appCheck": null,
       "appCheckStale": false,
       "appCommand": null,
+      "base": null,
       "branch": null,
       "check": {
         "command": null,
@@ -260,7 +277,9 @@
       "ciError": null,
       "comments": [],
       "currentHead": null,
+      "dependsOn": [],
       "draft": null,
+      "epic": null,
       "gate": {
         "gate": "PASS",
         "problem": null,
@@ -283,6 +302,7 @@
         "verdict": "APPROVED"
       },
       "size": null,
+      "stackedOn": null,
       "state": "reviewed",
       "storiesDone": 1,
       "storiesTotal": 1,

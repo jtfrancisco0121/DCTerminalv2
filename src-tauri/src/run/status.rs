@@ -130,43 +130,53 @@ pub struct PrView {
     pub ci_error: Option<String>,
     /// The PR's state on GitHub: `OPEN`, `MERGED` or `CLOSED`; None until read.
     pub pr_state: Option<String>,
-    /// `prs[].size` (measured and written only by `state.sh size` / `gate`);
-    /// None when missing or any part has the wrong type.
-    pub size: Option<SizeView>,
+    /// `prs[].epic`: the epic this PR belongs to; None when missing or of
+    /// the wrong type.
+    pub epic: Option<EpicView>,
+    /// `prs[].stackedOn`: the PR id whose branch this PR is built on.
+    pub stacked_on: Option<String>,
+    /// `prs[].base`: the branch the PR opens against.
+    pub base: Option<String>,
+    /// `prs[].dependsOn`: PR ids this PR waits for (empty when missing).
+    pub depends_on: Vec<String>,
 }
 
-/// A PR's measured size (docs/run-folder.md `prs[].size`): the app shows it
-/// and never compares `lines` with `limit` itself.
+/// A PR's epic (docs/run-folder.md `prs[].epic`).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SizeView {
-    pub lines: i64,
-    pub files: i64,
-    pub excluded: i64,
-    pub limit: i64,
-    /// `state.sh` found `lines` above `limit`.
-    pub over: bool,
-    /// The approved Over limit reason, if any.
-    pub reason: Option<String>,
+pub struct EpicView {
+    pub id: String,
+    /// `state.sh` writes a null title when no title is known.
+    pub title: Option<String>,
 }
 
-/// None unless every part is of the type `state.sh size` writes.
-fn parse_size(pr: &Value) -> Option<SizeView> {
-    let z = pr.get("size")?.as_object()?;
-    let n = |key: &str| z.get(key)?.as_i64().filter(|v| *v >= 0);
-    let reason = match z.get("reason") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(text)) => Some(text.clone()),
-        Some(_) => return None,
-    };
-    Some(SizeView {
-        lines: n("lines")?,
-        files: n("files")?,
-        excluded: n("excluded")?,
-        limit: n("limit")?,
-        over: z.get("over")?.as_bool()?,
-        reason,
+/// A string value only: numbers and booleans give None.
+fn strict_str(v: &Value, key: &str) -> Option<String> {
+    v.get(key)?.as_str().map(str::to_string)
+}
+
+/// None unless `epic` is an object with a string `id`; a missing or non-string
+/// `title` (null is allowed) gives no title.
+fn parse_epic(pr: &Value) -> Option<EpicView> {
+    let e = pr.get("epic")?.as_object()?;
+    Some(EpicView {
+        id: e.get("id")?.as_str()?.to_string(),
+        title: e.get("title").and_then(Value::as_str).map(str::to_string),
     })
+}
+
+/// The strings of `dependsOn`; anything else gives an empty list.
+fn parse_depends_on(pr: &Value) -> Vec<String> {
+    pr.get("dependsOn")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .take(50)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -402,7 +412,10 @@ fn parse_pr(pr: &Value, index: usize) -> PrView {
             open_findings: i(review, "openFindings"),
         },
         pr_url: s(pr, "prUrl"),
-        size: parse_size(pr),
+        epic: parse_epic(pr),
+        stacked_on: strict_str(pr, "stackedOn"),
+        base: strict_str(pr, "base"),
+        depends_on: parse_depends_on(pr),
         draft: pr.get("draft").and_then(Value::as_bool),
         comments: pr
             .get("comments")
@@ -1044,46 +1057,54 @@ mod draft_pr_tests {
     use serde_json::json;
 
     #[test]
-    fn a_prs_recorded_size_is_read_and_a_wrong_type_gives_none() {
-        let size = |z: serde_json::Value| {
-            let view =
-                parse_status(&json!({"schema": 1, "prs": [{"id": "PR1", "size": z}]})).unwrap();
-            view.prs[0].size.clone()
+    fn epic_and_stack_fields_are_read_and_a_wrong_type_gives_none() {
+        let pr = |p: serde_json::Value| {
+            let view = parse_status(&json!({"schema": 1, "prs": [p]})).unwrap();
+            view.prs[0].clone()
         };
-        let good = json!({"lines": 512, "added": 500, "deleted": 12, "files": 9, "excluded": 1,
-                          "limit": 400, "over": true, "reason": "ship together", "overlaps": [], "head": "x", "at": "t"});
+        let good = pr(json!({"id": "PR2", "epic": {"id": "E1", "title": "Auth"},
+            "stackedOn": "PR1", "base": "dcv2/r-1-pr1", "dependsOn": ["PR1", 3, "PR0"]}));
         assert_eq!(
-            size(good.clone()),
-            Some(SizeView {
-                lines: 512,
-                files: 9,
-                excluded: 1,
-                limit: 400,
-                over: true,
-                reason: Some("ship together".into()),
+            good.epic,
+            Some(EpicView {
+                id: "E1".into(),
+                title: Some("Auth".into())
             })
         );
-        let mut no_reason = good.clone();
-        no_reason["reason"] = json!(null);
-        assert_eq!(size(no_reason).unwrap().reason, None);
-        for (key, bad) in [
-            ("lines", json!("512")),
-            ("lines", json!(-1)),
-            ("files", json!(null)),
-            ("limit", json!(4.5)),
-            ("over", json!("yes")),
-            ("reason", json!(5)),
-        ] {
-            let mut z = good.clone();
-            z[key] = bad;
-            assert_eq!(size(z), None, "{key}");
+        assert_eq!(good.stacked_on.as_deref(), Some("PR1"));
+        assert_eq!(good.base.as_deref(), Some("dcv2/r-1-pr1"));
+        assert_eq!(good.depends_on, ["PR1", "PR0"]);
+        for bad in [json!("E1"), json!({"id": 1, "title": "x"}), json!(null)] {
+            assert_eq!(pr(json!({"id": "PR1", "epic": bad})).epic, None);
         }
-        let mut missing = good.clone();
-        missing.as_object_mut().unwrap().remove("excluded");
-        assert_eq!(size(missing), None);
-        assert_eq!(size(json!("big")), None);
-        let none = parse_status(&json!({"schema": 1, "prs": [{"id": "PR1"}]})).unwrap();
-        assert_eq!(none.prs[0].size, None);
+        let untitled = |e: serde_json::Value| pr(json!({"id": "PR1", "epic": e})).epic;
+        let no_title = Some(EpicView {
+            id: "E1".into(),
+            title: None,
+        });
+        assert_eq!(untitled(json!({"id": "E1", "title": null})), no_title);
+        assert_eq!(untitled(json!({"id": "E1"})), no_title);
+        let wrong = pr(json!({"id": "PR1", "stackedOn": 1, "base": ["x"], "dependsOn": "PR1"}));
+        assert_eq!(wrong.stacked_on, None);
+        assert_eq!(wrong.base, None);
+        assert!(wrong.depends_on.is_empty());
+        let none = pr(json!({"id": "PR1"}));
+        assert!(none.epic.is_none() && none.stacked_on.is_none() && none.depends_on.is_empty());
+    }
+
+    #[test]
+    fn a_0_7_0_status_with_size_and_over_limit_parses_without_error() {
+        let view = parse_status(&json!({
+            "schema": 1, "stage": "building",
+            "plan": {"overLimit": [{"pr": "PR1", "reason": "ship together"}]},
+            "prs": [{"id": "PR1", "state": "building",
+                     "size": {"lines": 512, "files": 9, "excluded": 1, "limit": 400,
+                              "over": true, "reason": "ship together"}}]
+        }))
+        .unwrap();
+        assert_eq!(view.prs[0].id, "PR1");
+        assert_eq!(view.prs[0].state.as_deref(), Some("building"));
+        assert!(view.prs[0].epic.is_none());
     }
 
     #[test]
@@ -1213,8 +1234,13 @@ mod fixture_tests {
             let text = serde_json::to_string_pretty(&actual).unwrap() + "\n";
             std::fs::write(&expected_path, text).unwrap();
         }
-        let expected: serde_json::Value =
+        let mut expected: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&expected_path).unwrap()).unwrap();
+        // The page tests still read the 0.7.0 `size` of each PR from this file
+        // (their page code goes with the page PR); the app no longer emits it.
+        for pr in expected["prs"].as_array_mut().unwrap() {
+            pr.as_object_mut().unwrap().remove("size");
+        }
         assert_eq!(actual, expected);
         let kinds: Vec<&str> = view
             .prs
