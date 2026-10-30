@@ -27,7 +27,6 @@ Act as a senior software engineer and strict code reviewer. Decide whether a cha
 4. **Beyond the diff**: trace call paths through the changed code and look for bugs in its interaction with existing code.
 5. **Against the plan**: planned items not done, unplanned items done, deviations and whether they add risk. A justified deviation is not a bug.
    - **BMAD documents** (only when `<run>/bmad/output/` exists; otherwise nothing changes): read the spec / PRD / architecture items that this PR's stories cite (their `Covers:` lines in `plan.md`). Check the diff against them: the cited decisions (`AD-n`) are followed, the cited spec items (`CAP-n`) and PRD requirements are actually done. Drift that breaks a cited item or decision is MEDIUM; an item left out with a stated reason is not a finding.
-   - **Stacked PRs** (Eagle-Eye runs): the `base` you are given is the PR's `baseCommit`. For a stacked PR that is its parent's head, so `git diff <base>...HEAD` and `git log <base>..HEAD` show its own commits only: do not report the parent's changes. A changed path that another same-repo PR owns (its `Files` in `plan.md`) is a MEDIUM finding, unless that PR is this one's parent or child in its stack.
 6. **Tests**: run the check. Are the important behaviours, edge cases, failure cases and regressions covered, and do the tests test behaviour rather than internals? Do not demand tests for trivial changes.
 7. **False-positive check** before reporting: reachable? possible under the app's constraints? handled elsewhere or by the framework? supported by evidence?
 

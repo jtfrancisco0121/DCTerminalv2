@@ -983,7 +983,6 @@ mod tests {
             limits: intake::LIMITS,
             note: String::new(),
             tasks: vec![intake::tests::sample(id, "Export invoices (trusted)")],
-            epics: vec![],
         }
     }
 

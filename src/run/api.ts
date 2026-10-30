@@ -144,14 +144,6 @@ export type PrView = {
   ciError?: string | null;
   /** The PR's state on GitHub: `OPEN`, `MERGED`, `CLOSED`; null until read. */
   prState?: string | null;
-  /** The PR's epic (status.json `prs[].epic`, plugin 0.8.0+); absent on older runs. */
-  epic?: { id: string; title: string | null } | null;
-  /** The PR this one is stacked on (`prs[].stackedOn`); absent when not stacked. */
-  stackedOn?: string | null;
-  /** The branch this PR opens against (`prs[].base`). */
-  base?: string | null;
-  /** The PRs this one depends on (`prs[].dependsOn`). */
-  dependsOn?: string[];
 };
 
 /** BMAD planning of a run (auto or on); absent for older runs and runs with it off. */

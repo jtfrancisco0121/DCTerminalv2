@@ -55,20 +55,6 @@ describe("ActiveRuns", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("shows one line per epic only for 2+ groups", async () => {
-    list = [
-      run("m", { epics: [{ id: "e1", title: "Billing", done: 1, total: 2 }, { id: null, title: null, done: 0, total: 1 }] }),
-      run("s", { epics: [{ id: "e1", title: "Billing", done: 1, total: 2 }] }),
-      run("o"),
-    ];
-    render(<ActiveRuns onClose={() => {}} onAllRuns={() => {}} />);
-    await act(async () => {});
-    const lines = within(screen.getByTestId("active-epics-m")).getAllByRole("listitem").map((li) => li.textContent);
-    expect(lines).toEqual(["Billing · 1/2 PRs", "No epic · 0/1 PRs"]);
-    expect(screen.queryByTestId("active-epics-s")).toBeNull();
-    expect(screen.queryByTestId("active-epics-o")).toBeNull();
-  });
-
   it("polls at most every 3 s while open, closes on Escape, and the footer opens All runs", async () => {
     list = [];
     const onClose = vi.fn();

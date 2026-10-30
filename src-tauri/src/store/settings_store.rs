@@ -806,7 +806,6 @@ mod tests {
         assert_eq!(saved.setup.as_deref(), Some("pnpm i"));
         assert_eq!(saved.copy_files, [".env", "cfg/.env.local"]);
         assert!(saved.live_tests);
-        store.set_repo_setup("/w/b", RepoSetup::default()).unwrap();
         assert!(store
             .set_repo_setup(
                 "/w/a",
@@ -1021,24 +1020,6 @@ mod tests {
             old.terminal.option_as_meta,
             "a missing key keeps its default"
         );
-    }
-
-    #[test]
-    fn an_old_pr_size_limit_in_saved_settings_loads_and_is_not_written_back() {
-        let dir = TempDir::new("settings_old_limit");
-        std::fs::write(
-            dir.join("settings.json"),
-            r#"{"schemaVersion":1,"worktreeSetup":{"/w/a":{"setup":"pnpm i","prSizeLimit":600}}}"#,
-        )
-        .unwrap();
-        let store = SettingsStore::open(dir.path()).unwrap();
-        assert_eq!(
-            store.repo_setup("/w/a").and_then(|r| r.setup.as_deref()),
-            Some("pnpm i")
-        );
-        store.save().unwrap();
-        let text = std::fs::read_to_string(dir.join("settings.json")).unwrap();
-        assert!(!text.contains("prSizeLimit"));
     }
 
     #[test]

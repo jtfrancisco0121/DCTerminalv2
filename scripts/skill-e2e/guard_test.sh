@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 GUARD="$ROOT/plugin/scripts/guard.sh"
 STATE="$ROOT/plugin/scripts/state.sh"
-QSTATE="$(printf %q "$STATE")"   # shell-quoted for the command texts below: the repo path may hold a space (merge-check runs under Application Support)
 d="$(mktemp -d)"; d="$(cd "$d" && pwd -P)"
 trap 'rm -rf "$d"' EXIT
 
@@ -306,7 +305,7 @@ b 2 "" "gh pr create --base main --head dcv2/r-x-pr1 --title x --body-file /dev/
 b 2 "" "echo '{}' > $RUN/status.json"
 b 2 "" "cp /dev/null $RUN/writeback.json"
 b 0 "" "git -C $R status && git -C $R remote"
-b 0 "" "bash $QSTATE log $RUN building <<'EOF'
+b 0 "" "bash $STATE log $RUN building <<'EOF'
 PR1 built; git push later
 EOF"
 b 2 "" "gh pr merge 12"
@@ -381,27 +380,27 @@ python3 - "$RUN/status.json" <<'PY'
 import json, sys
 json.dump({"schema": 1, "stage": "building", "plan": {"approval": None}, "shipApproval": None}, open(sys.argv[1], "w"))
 PY
-b 2 "" "bash $QSTATE draft-pr $RUN PR1"                                 # before the plan approval
+b 2 "" "bash $STATE draft-pr $RUN PR1"                                 # before the plan approval
 b 2 "" "bash \"\${CLAUDE_PLUGIN_ROOT}/scripts/state.sh\" post-review $RUN PR1 1"
 python3 - "$RUN/status.json" <<'PY'
 import json, sys
 json.dump({"schema": 1, "stage": "building", "plan": {"approval": {"by": "user", "at": "2026-10-24T00:00:00Z"}}, "shipApproval": None}, open(sys.argv[1], "w"))
 PY
-b 0 "" "bash $QSTATE draft-pr $RUN PR1"
+b 0 "" "bash $STATE draft-pr $RUN PR1"
 b 0 "" "bash \"\${CLAUDE_PLUGIN_ROOT}/scripts/state.sh\" post-review $RUN PR1 1"
-b 0 "" "bash $QSTATE push $RUN PR1"
-b 0 "" "bash $QSTATE comment $RUN PR1 fixes 1"
-b 2 "" "bash $QSTATE ready $RUN PR1"                                    # before the ship approval
+b 0 "" "bash $STATE push $RUN PR1"
+b 0 "" "bash $STATE comment $RUN PR1 fixes 1"
+b 2 "" "bash $STATE ready $RUN PR1"                                    # before the ship approval
 b 2 "" "git -C $WT push -u origin dcv2/r-x-pr1"                         # only through state.sh
 b 2 "" "gh pr create --draft --base main --head dcv2/r-x-pr1 --title x --body-file /dev/null"
 b 2 "" "gh pr comment 1 --body x"
-b 2 dcv2:implementer "bash $QSTATE draft-pr $RUN PR1 && gh pr create --draft"
+b 2 dcv2:implementer "bash $STATE draft-pr $RUN PR1 && gh pr create --draft"
 python3 - "$RUN/status.json" <<'PY'
 import json, sys
 json.dump({"schema": 1, "stage": "shipping", "plan": {"approval": {"by": "user", "at": "2026-10-24T00:00:00Z"}},
            "shipApproval": {"by": "user", "at": "2026-10-24T01:00:00Z"}}, open(sys.argv[1], "w"))
 PY
-b 0 "" "bash $QSTATE ready $RUN PR1"
+b 0 "" "bash $STATE ready $RUN PR1"
 b 2 "" "git -C $WT push -u origin dcv2/r-x-pr1"                         # still only through state.sh
 b 2 "" "gh pr create --base main --head dcv2/r-x-pr1 --title x --body-file /dev/null"
 b 2 "" "gh pr ready 1"
@@ -491,7 +490,7 @@ expect 0 "normal tab: env -u DCV2_MEMORY_DIR … allowed" "$(payload "" Bash com
 expect 0 "normal tab: its own DCV2_MEMORY_DIR allowed" "$(payload "" Bash command "DCV2_MEMORY_DIR=$APPD/memory bash $STATE now")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$APPD/memory"
 expect 0 "plain terminal (nothing bound): not judged" "$(payload "" Bash command "DCV2_TEST_MODE=x bash $STATE now")" -u DCV2_RUN_DIR -u DCV2_MEMORY_DIR
 
-b 2 "" "bash $QSTATE draft-pr $RUN PR1"                                 # local mode: no drafts
+b 2 "" "bash $STATE draft-pr $RUN PR1"                                 # local mode: no drafts
 b 0 "" "git -C $WT push -u origin dcv2/r-x-pr1"                         # local mode: today's ship rule
 
 echo "# files copied in from the main checkout are never staged (copyFiles)"
@@ -518,20 +517,20 @@ json.dump({"schema": 1, "stage": "shipping", "plan": {"approval": {"by": "user",
 PY
 for who in dcv2:implementer dcv2:pr-reviewer dcv2:planner implementer; do                      # MED 2
   for sub in draft-pr push "post-review" "comment" ready ship-pr; do
-    b 2 "$who" "bash $QSTATE $sub $RUN PR1 1"
+    b 2 "$who" "bash $STATE $sub $RUN PR1 1"
   done
 done
-b 0 dcv2:implementer "bash $QSTATE plan $RUN prs"
-b 2 dcv2:pr-reviewer "$QSTATE post-review $RUN PR1 1"                                       # MED 3: by path, no bash
+b 0 dcv2:implementer "bash $STATE plan $RUN prs"
+b 2 dcv2:pr-reviewer "$STATE post-review $RUN PR1 1"                                       # MED 3: by path, no bash
 b 2 dcv2:pr-reviewer "/some/other/copy/scripts/state.sh ready $RUN PR1"
 b 2 dcv2:implementer "sh ./state.sh draft-pr $RUN PR1" "$ROOT/plugin/scripts"
-b 0 "" "$QSTATE ready $RUN PR1"
+b 0 "" "$STATE ready $RUN PR1"
 python3 - "$RUN/status.json" <<'PY'
 import json, sys
 json.dump({"schema": 1, "stage": "building", "plan": {"approval": {"by": "user", "at": "2026-10-24T00:00:00Z"}}, "shipApproval": None}, open(sys.argv[1], "w"))
 PY
-b 2 "" "$QSTATE ready $RUN PR1"                                                             # by path: still gated
-b 0 "" "$QSTATE draft-pr $RUN PR1"
+b 2 "" "$STATE ready $RUN PR1"                                                             # by path: still gated
+b 0 "" "$STATE draft-pr $RUN PR1"
 for c in "gh api -iX PUT repos/o/r/x" "gh api -iXPUT repos/o/r/x" "gh api -XPATCH repos/o/r/x" "gh api --method POST repos/o/r/x" \
          "gh api --method=delete repos/o/r/x" "gh api -X put repos/o/r/x" "gh api -if body=x repos/o/r/x" "gh api --raw-field=a=b x"; do   # MED 4
   b 2 "" "$c"
@@ -561,11 +560,11 @@ for c in "git -C $R worktree remove $WT" "git -C $R worktree remove --force $WT"
   b 2 "" "$c"
 done
 b 0 "" "git -C $R worktree list && git -C $R branch --list 'dcv2/*' && git -C $WT branch --show-current"
-b 0 "" "bash $QSTATE cleanup $RUN"
-b 0 "" "bash $QSTATE request $RUN recheck && bash $QSTATE request-wait $RUN 20261027T100000Z-recheck"
+b 0 "" "bash $STATE cleanup $RUN"
+b 0 "" "bash $STATE request $RUN recheck && bash $STATE request-wait $RUN 20261027T100000Z-recheck"
 for who in dcv2:implementer dcv2:pr-reviewer dcv2:planner dcv2:plan-reviewer dcv2:risk-reviewer; do
-  b 2 "$who" "bash $QSTATE cleanup $RUN"
-  b 2 "$who" "bash $QSTATE request $RUN recheck"
+  b 2 "$who" "bash $STATE cleanup $RUN"
+  b 2 "$who" "bash $STATE request $RUN recheck"
 done
 for who in "" dcv2:implementer; do                                  # requests/ and the app's cleanup record
   w 2 "$who" "$RUN/requests/20261027T100000Z-recheck.result.json"
@@ -645,11 +644,11 @@ for who in "" dcv2:implementer; do
   w 2 "$who" "$RB/app-cleanup.json"
   b 2 "$who" "echo '{}' > $RB/requests/20261027T000000Z-selftest.result.json"
 done
-b 2 "" "bash $QSTATE request $RB selftest"
-b 2 "" "bash $QSTATE cleanup $RB"
-b 2 "" "bash $QSTATE request-wait $RB 20261027T000000Z-selftest"
-b 2 "" "bash -- $QSTATE cleanup $RB"
-b 0 "" "bash $QSTATE request $RUN selftest"
+b 2 "" "bash $STATE request $RB selftest"
+b 2 "" "bash $STATE cleanup $RB"
+b 2 "" "bash $STATE request-wait $RB 20261027T000000Z-selftest"
+b 2 "" "bash -- $STATE cleanup $RB"
+b 0 "" "bash $STATE request $RUN selftest"
 
 echo "# claude and the live suites, any form (review of #11; liveTests off)"
 for c in "bash -x scripts/skill-e2e/golden.sh github" "bash -- scripts/skill-e2e/golden.sh" "timeout 600 bash scripts/skill-e2e/golden.sh" \
@@ -675,10 +674,10 @@ for c in "bash -lc 'git -C $O worktree remove --force $O'" "bash -lc 'git push -
 done
 b 2 "" "git -C $WT fetch . +HEAD:refs/heads/main"
 b 2 "" "sh -ec 'git -C $WT push --delete origin dcv2/r-x-pr1'"
-b 2 "" "bash $QSTATE cleanup \$DCV2_RUN_DIR/../r-b"
-b 0 "" "bash $QSTATE request \$DCV2_RUN_DIR recheck"
+b 2 "" "bash $STATE cleanup \$DCV2_RUN_DIR/../r-b"
+b 0 "" "bash $STATE request \$DCV2_RUN_DIR recheck"
 for who in "" dcv2:implementer; do
-  b 2 "$who" "DCV2_TEST_LOCAL_REMOTES=1 bash $QSTATE cleanup $RUN"
+  b 2 "$who" "DCV2_TEST_LOCAL_REMOTES=1 bash $STATE cleanup $RUN"
 done
 for c in "git fetch origin" "git fetch origin main" "git fetch origin +refs/heads/main:refs/remotes/origin/main" "git fetch . HEAD:refs/heads/dcv2/r-x-pr1" \
          "git config user.name" "git config --get user.email" "git config --list" "git config get user.name" \
@@ -789,7 +788,7 @@ for who in "" dcv2:implementer dcv2:planner; do
 done
 for who in "" dcv2:implementer; do
   b 0 "$who" "echo hi | tee $WT/x.txt" "$WT"
-  b 0 "$who" "cat $WT/x.txt | grep a | bash $QSTATE log $RUN building" "$WT"
+  b 0 "$who" "cat $WT/x.txt | grep a | bash $STATE log $RUN building" "$WT"
   b 0 "$who" "git -C $WT diff | head -5" "$WT"
 done
 b 0 "" "gh api repos/o/r | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"name\"])'" "$WT"      # the orchestrator reads JSON

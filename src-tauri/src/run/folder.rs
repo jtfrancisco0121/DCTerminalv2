@@ -692,11 +692,6 @@ mod tests {
                 .len(),
             2
         );
-        let json = read_json_value(&run.join("repos.json")).unwrap();
-        assert!(
-            json["repos"][0].get("prSizeLimit").is_none(),
-            "no line limit is written"
-        );
     }
 
     #[test]
@@ -780,7 +775,6 @@ mod tests {
         assert_eq!(repos_json["repos"][0]["copyFiles"][0], ".env");
         assert!(repos_json["repos"][0]["setup"].is_null());
         assert_eq!(repos_json["repos"][0]["liveTests"], true);
-        assert!(repos_json["repos"][0].get("prSizeLimit").is_none());
         assert!(meta_json.get("reviewMode").is_none(), "not recorded");
         assert_eq!(review_mode_of(run), "local");
         assert!(meta_json.get("bmad").is_none(), "no mode, nothing recorded");

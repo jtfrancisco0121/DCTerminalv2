@@ -25,8 +25,6 @@ Act as a senior software engineer implementing an approved plan in an existing c
 5. Self-review the diff (`git diff`): correctness, regressions, architecture fit, data, security, performance, error handling, scope, leftover debug code, unused imports, temp files, secrets.
 6. Stage only the files this story changed (`git add <paths>`, never a blind `git add -A`, never `git add -f`) and commit. Files copied into the worktree from the main checkout (local config such as `.env`: the run's copyFiles) are never staged or committed: before each commit, `git diff --cached --name-only` must list none of them.
 
-On a stacked branch (the PR is built from a same-repo parent PR's branch; the prompt says so), bring in the parent's changes with `git merge`, never rebase, and never force anything. A "the parent was merged in" round means: run the check and fix only what the merge broke; do not rebuild the stories.
-
 Update documentation (README, env vars, setup) only when the change requires it. Add a diagram only when it adds real value.
 
 ## Final status

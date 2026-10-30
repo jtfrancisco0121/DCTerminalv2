@@ -1,5 +1,5 @@
 import type { RunView } from "../run/api";
-import { appCheckText, approvalTitle, epicGroups, epicName, epicTooltip, isKnownApproval, prStateText } from "../run/words";
+import { appCheckText, approvalTitle, isKnownApproval, prStateText } from "../run/words";
 
 type Props = {
   view: RunView;
@@ -18,9 +18,6 @@ type Props = {
  */
 export function ApprovalCard({ view, waitingFor, onReadPlan, onGoToPrompt }: Props) {
   const known = isKnownApproval(waitingFor);
-  // Rows by epic group, then plan order; a flat plan-order list for one group or an old run.
-  const groups = epicGroups(view.prs);
-  const rows = groups.length > 0 ? groups.flatMap((g) => g.prs) : view.prs;
   return (
     <section className="approval-card" role="status" aria-label="Approval" data-testid="approval-card">
       <h3 data-testid="approval-title">{approvalTitle(waitingFor)}</h3>
@@ -39,7 +36,6 @@ export function ApprovalCard({ view, waitingFor, onReadPlan, onGoToPrompt }: Pro
               <thead>
                 <tr>
                   <th>PR</th>
-                  <th>Epic</th>
                   <th>State</th>
                   <th>Gate</th>
                   <th>Check (app)</th>
@@ -47,16 +43,9 @@ export function ApprovalCard({ view, waitingFor, onReadPlan, onGoToPrompt }: Pro
                 </tr>
               </thead>
               <tbody>
-                {rows.map((pr) => (
+                {view.prs.map((pr) => (
                   <tr key={pr.id} data-testid={`approval-${pr.id}`}>
                     <td>{pr.id}</td>
-                    <td
-                      className="epic-cell"
-                      data-testid={`approval-epic-${pr.id}`}
-                      title={pr.epic?.id ? epicTooltip({ id: pr.epic.id, title: pr.epic.title }) : undefined}
-                    >
-                      {pr.epic?.id ? epicName({ id: pr.epic.id, title: pr.epic.title }) : "–"}
-                    </td>
                     <td>{prStateText(pr.state)}</td>
                     <td>{pr.gateStatus && pr.gateStatus.kind !== "none" ? pr.gateStatus.text : "–"}</td>
                     <td>{appCheckText(pr)}</td>

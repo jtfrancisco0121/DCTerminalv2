@@ -826,7 +826,6 @@ mod tests {
             limits: crate::clickup::intake::LIMITS,
             note: String::new(),
             tasks: vec![task],
-            epics: vec![],
         };
         assert_eq!(request_with_tickets("Fix it", None), "Fix it");
         let md = folder::request_md(

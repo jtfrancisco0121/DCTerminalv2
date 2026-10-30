@@ -1,17 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Repo, RepoSetup } from "../run/api";
-import { setRepoSetup } from "../run/api";
+import { describe, expect, it } from "vitest";
 import { ensureWebStorage } from "../storage/webStorage";
-import { parseCopyFiles, WorktreeSetup } from "./WorktreeSetup";
+import { parseCopyFiles } from "./WorktreeSetup";
 import { rememberedBmadMode, rememberedReviewOnGitHub } from "./StartScreen";
 import { summaryText } from "./ImportDevDialog";
-
-vi.mock("../run/api", async (original) => ({
-  ...(await original<typeof import("../run/api")>()),
-  setRepoSetup: vi.fn(async (_path: string, setup: RepoSetup) => setup),
-}));
 
 ensureWebStorage();
 
@@ -43,23 +35,5 @@ describe("start screen choices", () => {
     expect(
       summaryText({ windows: ["win-2"], tabs: 1, closedTabs: 2, runs: 1, accountsAdded: ["Work"], memoryCopied: true, notes: [] }),
     ).toBe("Imported 1 tab in 1 window, 2 recently closed, 1 run adopted in place, memory copied, accounts added: Work. Reopen the windows from File › Reopen Closed Window.");
-  });
-});
-
-describe("worktree setup save", () => {
-  const repo: Repo = { name: "mathlib", path: "/w/mathlib", check: null };
-  const mocked = vi.mocked(setRepoSetup);
-  afterEach(() => {
-    cleanup();
-    mocked.mockClear();
-  });
-
-  it("has no PR line limit field and saves no size limit", async () => {
-    render(<WorktreeSetup repos={[repo]} />);
-    expect(screen.queryByLabelText("PR line limit of mathlib")).toBeNull();
-    expect(screen.queryByText(/PR line limit/)).toBeNull();
-    fireEvent.click(screen.getByText("Save"));
-    await waitFor(() => expect(mocked).toHaveBeenCalledTimes(1));
-    expect(Object.keys(mocked.mock.calls[0][1]).sort()).toEqual(["copyFiles", "liveTests", "setup"]);
   });
 });
