@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { activeRuns, focusTab, type ActiveRun } from "../bridge";
 import { stageText } from "../run/words";
+import { BatchOverview } from "./BatchOverview";
 import { reportError } from "../uiErrors";
 import { RUN_STATE_EVENT, TAB_STATE_EVENT, usePushRefresh } from "../run/events";
 
@@ -65,6 +66,7 @@ export function ActiveRuns({ onClose, onAllRuns }: Props) {
           </li>
         ))}
       </ul>
+      <BatchOverview compact />
       <div className="active-runs-footer">
         <button
           type="button"

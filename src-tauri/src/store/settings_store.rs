@@ -490,6 +490,13 @@ pub struct RunSettings {
     /// Hold queued starts while the entry's account is at or past this percent of its five-hour usage (None: off).
     #[serde(default)]
     pub usage_hold_percent: Option<u32>,
+    /// Phone pushes for the batch and wave milestones (`batch-planned`, `batch-ready`, `wave-ready`); the
+    /// desktop notification for each is always raised.
+    #[serde(default = "default_true")]
+    pub batch_pushes: bool,
+    /// A ready wave starts on its own (through the cap) instead of waiting for "Start wave".
+    #[serde(default)]
+    pub auto_start_waves: bool,
     /// "Clean up merged runs automatically" (plan 2026-10-27): finished
     /// runs' merged PRs lose their worktree, local and remote branch.
     #[serde(default = "default_true")]
@@ -525,6 +532,8 @@ impl Default for RunSettings {
             watchdog_minutes: default_watchdog_minutes(),
             max_active_runs: default_max_active_runs(),
             usage_hold_percent: None,
+            batch_pushes: true,
+            auto_start_waves: false,
             auto_cleanup: true,
         }
     }
@@ -620,6 +629,8 @@ impl SettingsStore {
             watchdog_minutes: next.watchdog_minutes.min(WATCHDOG_MINUTES_LIMIT),
             max_active_runs: next.max_active_runs.clamp(1, MAX_IMPLEMENTERS_LIMIT),
             usage_hold_percent: next.usage_hold_percent.map(|p| p.clamp(1, 100)),
+            batch_pushes: next.batch_pushes,
+            auto_start_waves: next.auto_start_waves,
             auto_cleanup: next.auto_cleanup,
         };
         self.save()

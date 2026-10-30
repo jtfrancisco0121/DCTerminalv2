@@ -22,12 +22,15 @@ pub const TIMEOUT: Duration = Duration::from_secs(10);
 const RETRY_AFTER: Duration = Duration::from_secs(2);
 /// The events that go to the phone: the ones that matter when nobody is
 /// at the Mac.
-pub const PUSH_KINDS: [&str; 5] = [
+pub const PUSH_KINDS: [&str; 8] = [
     "stall",
     "check-failed",
     "ci-failed",
     "merged-cleaned",
     "autopost-failed",
+    "batch-planned",
+    "batch-ready",
+    "wave-ready",
 ];
 /// The secret slots (the item's account field in the keychain).
 pub const SECRET_NAMES: [&str; 4] = [
@@ -747,5 +750,38 @@ mod tests {
             == 1));
         assert!(seen.lock().unwrap()[0]
             .contains(r#""run":"r-20261027-0900-abcd","event":"merged-cleaned""#));
+    }
+
+    #[test]
+    fn a_batch_milestone_push_says_only_the_batch_id_and_the_kind() {
+        let on = settings("ntfy");
+        let payload = Payload::for_event(
+            &event(Kind::BatchPlanned, Some("b-20261030-1000-ab12")),
+            &on,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_string(&payload).unwrap(),
+            r#"{"run":"b-20261030-1000-ab12","event":"batch-planned"}"#
+        );
+        for kind in [Kind::BatchReady, Kind::WaveReady] {
+            assert!(Payload::for_event(&event(kind, Some("r")), &on).is_some());
+        }
+        // With no push target nothing is sent; the desktop notification does not depend on it.
+        assert!(
+            Payload::for_event(&event(Kind::BatchPlanned, Some("b")), &settings("none")).is_none()
+        );
+        let notify = crate::store::settings_store::NotifySettings::default();
+        for kind in [
+            Kind::BatchPlanned,
+            Kind::BatchReady,
+            Kind::WaveReady,
+            Kind::ApprovalWait,
+        ] {
+            assert!(
+                crate::observe::notify::route(kind, &notify, true).system,
+                "{kind:?} reaches the desktop"
+            );
+        }
     }
 }

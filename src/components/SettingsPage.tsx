@@ -83,6 +83,8 @@ const runKey = (r: RunSettings) =>
     watchdogMinutes: r.watchdogMinutes ?? 10,
     maxActiveRuns: r.maxActiveRuns ?? 2,
     usageHoldPercent: r.usageHoldPercent ?? null,
+    batchPushes: r.batchPushes ?? true,
+    autoStartWaves: r.autoStartWaves ?? false,
   });
 
 /** "Unsaved changes" beside a section's Save button. */
@@ -594,6 +596,22 @@ export function SettingsPage({ view, onSaved, onClose, section }: Props) {
             value={runSettings.usageHoldPercent ?? ""}
             onChange={(event) => setRun({ ...runSettings, usageHoldPercent: event.target.value === "" ? null : Number(event.target.value) })}
           />
+        </label>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={runSettings.batchPushes ?? true}
+            onChange={(event) => setRun({ ...runSettings, batchPushes: event.target.checked })}
+          />{" "}
+          Phone pushes when a batch has every plan ready, or is ready to ship (the Mac is always told)
+        </label>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={runSettings.autoStartWaves ?? false}
+            onChange={(event) => setRun({ ...runSettings, autoStartWaves: event.target.checked })}
+          />{" "}
+          Start a ready wave on its own (through the run limit)
         </label>
         <label className="check-label">
           <input

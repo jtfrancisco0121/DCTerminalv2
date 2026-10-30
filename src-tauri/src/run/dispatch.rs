@@ -567,6 +567,210 @@ pub fn finish(state: &mut Dispatch, id: &str, outcome: Result<Option<String>, St
     }
 }
 
+// ---- batches: the overview and the milestones --------------------------------------------
+
+const PLANNED_FROM: &[&str] = &[
+    "plan-approval",
+    "building",
+    "ship-approval",
+    "shipping",
+    "done",
+];
+const READY_FROM: &[&str] = &["ship-approval", "shipping", "done"];
+
+/// The milestone a batch has just reached, and has not announced yet: `batch-planned` when every counted run
+/// has its plan ready for approval (or past it), `batch-ready` when every one is ready to ship. A run still in
+/// the queue (no run folder yet) keeps both back; a removed run is not counted. `stages`: one per counted run.
+pub fn batch_milestone(stages: &[Option<&str>], notified: &[String]) -> Option<&'static str> {
+    if stages.is_empty() || stages.iter().any(|s| s.is_none()) {
+        return None;
+    }
+    let all = |set: &[&str]| stages.iter().all(|s| s.is_some_and(|s| set.contains(&s)));
+    for (name, set) in [("batch-ready", READY_FROM), ("batch-planned", PLANNED_FROM)] {
+        if all(set) && !notified.iter().any(|n| n == name) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn stage_of(run_dir: &str) -> Option<String> {
+    std::fs::read_to_string(Path::new(run_dir).join("status.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["stage"].as_str().map(String::from))
+        .or_else(|| Some("planning".to_string()))
+}
+
+/// The milestone events of every batch, each once (remembered in dispatch.json). They go through the notifier like
+/// any attention event, so the desktop is always told and the phone only when the push target and `batchPushes`
+/// allow it. Nothing here touches approval-wait notifications.
+pub fn milestone_events(app: &AppHandle) -> Vec<crate::observe::attention::Event> {
+    use crate::observe::attention::{Event, Kind};
+    let data = data_dir(app);
+    if !path_in(&data).exists() {
+        return vec![];
+    }
+    let fired = with(&data, |d| {
+        let mut fired = Vec::new();
+        for batch in d.batches.iter_mut() {
+            let stages: Vec<Option<String>> = batch
+                .runs
+                .iter()
+                .filter(|r| !r.removed)
+                .map(|r| r.run_dir.as_deref().and_then(stage_of))
+                .collect();
+            let refs: Vec<Option<&str>> = stages.iter().map(|s| s.as_deref()).collect();
+            if let Some(name) = batch_milestone(&refs, &batch.notified) {
+                batch.notified.push(name.to_string());
+                // Reaching ready also covers planned: the earlier announcement is not made late.
+                if name == "batch-ready" && !batch.notified.iter().any(|n| n == "batch-planned") {
+                    batch.notified.push("batch-planned".into());
+                }
+                fired.push((batch.id.clone(), name));
+            }
+        }
+        fired
+    })
+    .unwrap_or_default();
+    fired
+        .into_iter()
+        .map(|(id, name)| Event {
+            kind: if name == "batch-ready" {
+                Kind::BatchReady
+            } else {
+                Kind::BatchPlanned
+            },
+            subject: id.clone(),
+            tab_id: None,
+            window_label: None,
+            tab_label: None,
+            run_id: Some(id),
+            run_dir: None,
+            detail: None,
+        })
+        .collect()
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchRowView {
+    pub entry_id: String,
+    pub label: String,
+    pub ticket_ids: Vec<String>,
+    pub removed: bool,
+    pub run_dir: Option<String>,
+    /// `queued`, `starting` or the run's stage.
+    pub stage: String,
+    /// `plan-approval` or `ship-approval` while the run waits for you.
+    pub waiting_for: Option<String>,
+    pub pr_url: Option<String>,
+    /// From app-github.json: `pass`, `fail`, `pending`, `none`, `unknown`.
+    pub ci: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchView {
+    pub id: String,
+    pub created_at: String,
+    pub rows: Vec<BatchRowView>,
+    /// Counted rows that wait for the user now.
+    pub waiting_for_you: usize,
+}
+
+fn row_view(d: &Dispatch, run: &BatchRun) -> BatchRowView {
+    let (mut stage, mut waiting, mut pr_url, mut ci) = ("queued".to_string(), None, None, None);
+    if let Some(e) = d.queue.iter().find(|e| e.id == run.entry_id) {
+        stage = e.state.clone();
+    } else if let Some(dir) = &run.run_dir {
+        let status: Option<Value> = std::fs::read_to_string(Path::new(dir).join("status.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok());
+        stage = status
+            .as_ref()
+            .and_then(|v| v["stage"].as_str())
+            .unwrap_or("planning")
+            .to_string();
+        waiting = status
+            .as_ref()
+            .and_then(|v| v["waitingFor"].as_str())
+            .map(String::from);
+        let gh = super::github::read_github(Path::new(dir));
+        let first = status
+            .as_ref()
+            .and_then(|v| v["prs"].as_array())
+            .and_then(|a| a.first().cloned());
+        if let Some(pr) = first {
+            pr_url = pr["prUrl"].as_str().map(String::from);
+            ci = pr["id"]
+                .as_str()
+                .and_then(|id| gh.prs.get(id))
+                .map(|g| g.ci.clone());
+        }
+    }
+    BatchRowView {
+        entry_id: run.entry_id.clone(),
+        label: run.label.clone(),
+        ticket_ids: run.ticket_ids.clone(),
+        removed: run.removed,
+        run_dir: run.run_dir.clone(),
+        stage,
+        waiting_for: waiting,
+        pr_url,
+        ci,
+    }
+}
+
+pub fn batch_views(d: &Dispatch) -> Vec<BatchView> {
+    d.batches
+        .iter()
+        .map(|b| {
+            let rows: Vec<BatchRowView> = b.runs.iter().map(|r| row_view(d, r)).collect();
+            let waiting_for_you = rows
+                .iter()
+                .filter(|r| !r.removed && r.waiting_for.is_some())
+                .count();
+            BatchView {
+                id: b.id.clone(),
+                created_at: b.created_at.clone(),
+                rows,
+                waiting_for_you,
+            }
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn batch_overview(app: AppHandle) -> Result<Vec<BatchView>, String> {
+    tauri::async_runtime::spawn_blocking(move || batch_views(&load(&data_dir(&app))))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Takes a run out of its batch (it keeps running; it no longer counts for the batch's milestones).
+#[tauri::command]
+pub async fn batch_remove_run(
+    app: AppHandle,
+    batch_id: String,
+    entry_id: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        with(&data_dir(&app), |d| {
+            if let Some(run) = d
+                .batches
+                .iter_mut()
+                .find(|b| b.id == batch_id)
+                .and_then(|b| b.runs.iter_mut().find(|r| r.entry_id == entry_id))
+            {
+                run.removed = true;
+            }
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Overview {
@@ -1171,6 +1375,75 @@ mod tests {
                 "no ticket bodies in request.md"
             );
         }
+    }
+
+    #[test]
+    fn a_batch_and_its_removed_flags_survive_a_reload_and_the_milestones_fire_once() {
+        let (mut batch, _) = plan_batch(&params("x"), &[group("t1"), group("t2")], "a", "b-1");
+        batch.runs[1].removed = true;
+        let mut state = Dispatch::default();
+        state.batches.push(batch);
+        let back: Dispatch = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert!(back.batches[0].runs[1].removed && !back.batches[0].runs[0].removed);
+        let views = batch_views(&back);
+        assert!(
+            views[0].rows[1].removed,
+            "a removed member is reported removed"
+        );
+        // Milestones: a queued member keeps both back; planned fires once; ready covers the rest.
+        let none: Vec<String> = vec![];
+        assert_eq!(batch_milestone(&[None, Some("plan-approval")], &none), None);
+        assert_eq!(
+            batch_milestone(&[Some("planning"), Some("plan-approval")], &none),
+            None
+        );
+        assert_eq!(
+            batch_milestone(&[Some("plan-approval"), Some("building")], &none),
+            Some("batch-planned")
+        );
+        assert_eq!(
+            batch_milestone(
+                &[Some("plan-approval"), Some("building")],
+                &["batch-planned".to_string()]
+            ),
+            None,
+            "once only"
+        );
+        assert_eq!(
+            batch_milestone(
+                &[Some("ship-approval"), Some("done")],
+                &["batch-planned".to_string()]
+            ),
+            Some("batch-ready")
+        );
+        assert_eq!(
+            batch_milestone(&[Some("ship-approval"), Some("failed")], &none),
+            None,
+            "a failed member holds both back"
+        );
+        assert_eq!(batch_milestone(&[], &none), None);
+    }
+
+    #[test]
+    fn a_batch_counts_the_runs_waiting_for_you() {
+        let dir = std::env::temp_dir().join(format!("dcv2-batch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("status.json"),
+            r#"{"stage":"plan-approval","waitingFor":"plan-approval","prs":[]}"#,
+        )
+        .unwrap();
+        let (mut batch, _) = plan_batch(&params("x"), &[group("t1"), group("t2")], "a", "b-2");
+        batch.runs[0].run_dir = Some(dir.display().to_string());
+        let mut state = Dispatch::default();
+        state.batches.push(batch);
+        let view = &batch_views(&state)[0];
+        assert_eq!(view.waiting_for_you, 1);
+        assert_eq!(view.rows[0].stage, "plan-approval");
+        assert_eq!(view.rows[0].waiting_for.as_deref(), Some("plan-approval"));
+        assert_eq!(view.rows[1].stage, "queued");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

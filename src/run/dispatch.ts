@@ -38,6 +38,22 @@ export const dispatchRuns = (base: StartParams, groups: { clickup: { refs: unkno
   invoke<string>("dispatch_runs", { base, groups });
 export const dispatchEnqueue = (params: StartParams, label: string) => invoke<string>("dispatch_enqueue", { params, label });
 
+export type BatchRow = {
+  entryId: string;
+  label: string;
+  ticketIds: string[];
+  removed: boolean;
+  runDir: string | null;
+  /** `queued`, `starting` or the run's stage. */
+  stage: string;
+  waitingFor: string | null;
+  prUrl: string | null;
+  ci: string | null;
+};
+export type Batch = { id: string; createdAt: string; rows: BatchRow[]; waitingForYou: number };
+export const batchOverview = () => invoke<Batch[]>("batch_overview");
+export const batchRemoveRun = (batchId: string, entryId: string) => invoke<void>("batch_remove_run", { batchId, entryId });
+
 /** One line for a queue entry's state: its reason, or that it starts when a slot is free. */
 export function queueStateText(e: QueueEntry): string {
   if (e.state === "starting") return "starting now";

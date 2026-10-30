@@ -119,6 +119,10 @@ export type RunSettings = {
   maxActiveRuns?: number;
   /** Hold queued starts at or past this five-hour usage percent (null: off). */
   usageHoldPercent?: number | null;
+  /** Phone pushes for batch and wave milestones (default on); the desktop notification is always raised. */
+  batchPushes?: boolean;
+  /** A ready wave starts on its own (default off). */
+  autoStartWaves?: boolean;
   /** "Clean up merged runs automatically" (default on). */
   autoCleanup?: boolean;
 };
