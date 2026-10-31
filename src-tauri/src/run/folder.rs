@@ -1127,17 +1127,34 @@ mod tests {
 
         let mut list = list_runs(dir.path());
         let totals = |l: &[RunListItem], id: &str| {
-            l.iter().find(|r| r.run_id == id).unwrap().record.clone().unwrap()
+            l.iter()
+                .find(|r| r.run_id == id)
+                .unwrap()
+                .record
+                .clone()
+                .unwrap()
         };
         let t = totals(&list, "r-20261029-1000-aaaa");
-        assert_eq!((t.wait_minutes, t.span_minutes), (None, None), "no log read");
+        assert_eq!(
+            (t.wait_minutes, t.span_minutes),
+            (None, None),
+            "no log read"
+        );
         fill_wait_span(&mut list);
         let t = totals(&list, "r-20261029-1000-aaaa");
         assert_eq!((t.wait_minutes, t.span_minutes), (Some(10.0), Some(20.0)));
         let t = totals(&list, "r-20261028-1000-bbbb");
-        assert_eq!((t.wait_minutes, t.span_minutes), (Some(1.5), Some(9.0)), "kept");
+        assert_eq!(
+            (t.wait_minutes, t.span_minutes),
+            (Some(1.5), Some(9.0)),
+            "kept"
+        );
         let t = totals(&list, "r-20261027-1000-cccc");
-        assert_eq!((t.wait_minutes, t.span_minutes), (None, None), "over the cap");
+        assert_eq!(
+            (t.wait_minutes, t.span_minutes),
+            (None, None),
+            "over the cap"
+        );
         assert_eq!(std::fs::read(old.join("app-usage.json")).unwrap(), before);
     }
 }

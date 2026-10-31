@@ -80,7 +80,10 @@ pub fn wait_and_span(log: &str) -> (Option<f64>, Option<f64>) {
         .filter(|b| b.kind == "wait")
         .map(|b| b.end_ms - b.start_ms)
         .sum();
-    (Some(minutes(wait_ms)), Some(minutes((last.0 - first.0).max(0))))
+    (
+        Some(minutes(wait_ms)),
+        Some(minutes((last.0 - first.0).max(0))),
+    )
 }
 
 /// Stage bands (consecutive lines of one stage) and approval waits (from a `waiting for ... approval`

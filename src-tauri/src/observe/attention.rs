@@ -1937,7 +1937,10 @@ mod tests {
         );
         assert_eq!(snap.active_runs().len(), 1);
         assert_eq!(snap.summary().active_runs, 1);
-        assert_eq!(all[0].waiting_since.as_deref(), Some("2026-11-01T10:00:00Z"));
+        assert_eq!(
+            all[0].waiting_since.as_deref(),
+            Some("2026-11-01T10:00:00Z")
+        );
         assert_eq!(all[1].waiting_since, None);
         assert_eq!(all[0].prs.len(), 1);
         assert_eq!(all[0].prs[0].id, "PR1");
