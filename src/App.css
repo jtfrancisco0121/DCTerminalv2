@@ -2039,7 +2039,7 @@ body,
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  border-bottom: 1px solid var(--border, #3338);
+  border-bottom: 1px solid var(--border);
   font-size: 12px;
 }
 
@@ -2048,7 +2048,7 @@ body,
   flex-direction: column;
   gap: 6px;
   padding: 8px 10px;
-  border-top: 1px solid var(--border, #3338);
+  border-top: 1px solid var(--border);
 }
 
 .scratchpad-text {
@@ -2080,7 +2080,7 @@ body,
   flex-direction: column;
   flex: 0 0 min(42%, 560px);
   min-width: 320px;
-  border-left: 1px solid var(--border, #3338);
+  border-left: 1px solid var(--border);
   overflow: hidden;
 }
 
@@ -2089,7 +2089,7 @@ body,
   justify-content: space-between;
   gap: 8px;
   padding: 6px 10px;
-  border-bottom: 1px solid var(--border, #3338);
+  border-bottom: 1px solid var(--border);
 }
 
 .preview-body {
@@ -2117,7 +2117,7 @@ body,
     inset: 0;
     z-index: 5;
     min-width: 0;
-    background: var(--bg, #111);
+    background: var(--bg);
   }
 }
 
@@ -2146,7 +2146,7 @@ body,
 .fleet-track {
   position: relative;
   height: 14px;
-  background: var(--panel-bg, #8881);
+  background: var(--bg-muted);
   border-radius: 3px;
 }
 
@@ -2154,7 +2154,10 @@ body,
   position: absolute;
   top: 0;
   bottom: 0;
-  background: repeating-linear-gradient(45deg, #d9a40044, #d9a40044 4px, transparent 4px, transparent 8px);
+  /* Solid --warning stripes keep 3:1 against the track in every theme. */
+  background:
+    repeating-linear-gradient(45deg, var(--warning) 0 2px, transparent 2px 6px),
+    var(--warning-subtle);
 }
 
 .fleet-bar {
@@ -2162,7 +2165,7 @@ body,
   top: 2px;
   bottom: 2px;
   border-radius: 2px;
-  background: #4c8bf5;
+  background: var(--accent);
 }
 
 .fleet-bar:focus-visible {
@@ -2172,12 +2175,16 @@ body,
 
 .fleet-bar-failed,
 .fleet-bar-killed {
-  background: #d9534f;
+  background: var(--danger);
 }
 
 .fleet-bar-unfinished,
 .fleet-bar-open {
-  background: repeating-linear-gradient(90deg, #4c8bf5, #4c8bf5 6px, #4c8bf588 6px, #4c8bf588 10px);
+  background: repeating-linear-gradient(
+    90deg,
+    var(--accent) 0 6px,
+    color-mix(in srgb, var(--accent) 50%, transparent) 6px 10px
+  );
 }
 
 /* Status tones (src/run/words.ts Tone): the one place a status maps to a
