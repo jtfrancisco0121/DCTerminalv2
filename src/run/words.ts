@@ -1,6 +1,89 @@
 /** Plain words for the run panel: stages, PR states, check results. */
 
+import type { UsageTone } from "../usage/limits";
 import type { PrView, RunView } from "./api";
+
+/**
+ * The one status vocabulary of the UI. Components pick a tone from these
+ * functions and the `.tone-*` classes in App.css map it to theme tokens, so
+ * no component names a status colour. Every function is total: null, empty or
+ * unknown input is `muted`.
+ */
+export type Tone = "success" | "warn" | "danger" | "running" | "muted" | "you";
+
+export function checkTone(result: string | null | undefined): Tone {
+  switch (result) {
+    case "pass":
+      return "success";
+    case "fail":
+    case "error":
+    case "timeout":
+      return "danger";
+    case "running":
+      return "running";
+    case "interrupted":
+      return "warn";
+    default:
+      return "muted";
+  }
+}
+
+export function prStateTone(state: string | null | undefined): Tone {
+  switch (state) {
+    case "reviewed":
+    case "opened":
+    case "drafted":
+    case "pushed":
+    case "local-only":
+      return "success";
+    case "building":
+    case "reviewing":
+      return "running";
+    case "fixing":
+      return "warn";
+    case "needs-attention":
+      return "danger";
+    default:
+      return "muted";
+  }
+}
+
+export function gateTone(kind: string | null | undefined): Tone {
+  switch (kind) {
+    case "proven":
+      return "success";
+    case "review-only":
+    case "claimed":
+    case "concerns":
+    case "unreadable":
+      return "warn";
+    case "fail":
+      return "danger";
+    default:
+      return "muted";
+  }
+}
+
+/** Open findings are a warning; a verdict with none open is fine; no review yet is muted. */
+export function reviewTone(review: { round?: number | null; verdict?: string | null; openFindings?: number | null } | null | undefined): Tone {
+  if (!review) return "muted";
+  if (review.openFindings && review.openFindings > 0) return "warn";
+  if (review.verdict) return "success";
+  return "muted";
+}
+
+export function usageTone(tone: UsageTone | null | undefined): Tone {
+  switch (tone) {
+    case "ok":
+      return "success";
+    case "warn":
+      return "warn";
+    case "hot":
+      return "danger";
+    default:
+      return "muted";
+  }
+}
 
 const STAGES: Record<string, string> = {
   planning: "Planning",
@@ -143,7 +226,7 @@ export function ciChip(pr: {
   ci?: string | null;
   ciAt?: string | null;
   ciError?: string | null;
-}): { text: string; tone: "success" | "danger" | "muted"; title: string } | null {
+}): { text: string; tone: Tone; title: string } | null {
   if (!pr.prUrl || !pr.ci) return null;
   const read = pr.ciAt ? localTime(pr.ciAt) : null;
   const title = [pr.ciError, read ? `read ${read.short}` : null].filter(Boolean).join(" · ");

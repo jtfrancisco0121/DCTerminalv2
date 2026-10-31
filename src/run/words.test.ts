@@ -1,6 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import pushRs from "../../src-tauri/src/observe/push.rs?raw";
-import { ATTENTION_KINDS, ciChip, localTime, minutesText, PUSH_KINDS, relativeDate, runMatches } from "./words";
+import {
+  ATTENTION_KINDS,
+  checkTone,
+  ciChip,
+  gateTone,
+  localTime,
+  minutesText,
+  prStateTone,
+  PUSH_KINDS,
+  relativeDate,
+  reviewTone,
+  runMatches,
+  usageTone,
+} from "./words";
 
 describe("runs list words", () => {
   const run = { title: "Add multiply()", folder: "/w/App", runId: "r-20261027-0900-abcd", ticketIds: ["86b1aa001", "QA-129"] };
@@ -83,5 +96,42 @@ describe("ciChip", () => {
     expect(ciChip({ ...pr, ci: null })).toBeNull();
     expect(ciChip({ prUrl: null, ci: "pass" })).toBeNull();
     vi.unstubAllEnvs();
+  });
+});
+
+describe("tones", () => {
+  it("maps known values", () => {
+    expect(checkTone("pass")).toBe("success");
+    expect(["fail", "error", "timeout"].map(checkTone)).toEqual(["danger", "danger", "danger"]);
+    expect(checkTone("running")).toBe("running");
+    expect(checkTone("interrupted")).toBe("warn");
+    for (const state of ["reviewed", "opened", "drafted", "pushed", "local-only"]) expect(prStateTone(state)).toBe("success");
+    expect(prStateTone("building")).toBe("running");
+    expect(prStateTone("reviewing")).toBe("running");
+    expect(prStateTone("fixing")).toBe("warn");
+    expect(prStateTone("needs-attention")).toBe("danger");
+    expect(prStateTone("pending")).toBe("muted");
+    expect(gateTone("proven")).toBe("success");
+    for (const kind of ["review-only", "claimed", "concerns", "unreadable"]) expect(gateTone(kind)).toBe("warn");
+    expect(gateTone("fail")).toBe("danger");
+    expect(gateTone("none")).toBe("muted");
+    expect(reviewTone({ round: 1, verdict: "APPROVED", openFindings: 2 })).toBe("warn");
+    expect(reviewTone({ round: 1, verdict: "APPROVED", openFindings: 0 })).toBe("success");
+    expect(usageTone("ok")).toBe("success");
+    expect(usageTone("warn")).toBe("warn");
+    expect(usageTone("hot")).toBe("danger");
+    expect(usageTone("muted")).toBe("muted");
+  });
+
+  it("maps null, undefined, empty and unknown values to muted without throwing", () => {
+    for (const bad of [null, undefined, "", "time-travel"]) {
+      expect(checkTone(bad)).toBe("muted");
+      expect(prStateTone(bad)).toBe("muted");
+      expect(gateTone(bad)).toBe("muted");
+      expect(usageTone(bad as never)).toBe("muted");
+    }
+    expect(reviewTone(null)).toBe("muted");
+    expect(reviewTone(undefined)).toBe("muted");
+    expect(reviewTone({ round: null, verdict: null, openFindings: null })).toBe("muted");
   });
 });

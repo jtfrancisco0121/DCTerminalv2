@@ -2175,3 +2175,33 @@ body,
 .fleet-bar-open {
   background: repeating-linear-gradient(90deg, #4c8bf5, #4c8bf5 6px, #4c8bf588 6px, #4c8bf588 10px);
 }
+
+/* Status tones (src/run/words.ts Tone): the one place a status maps to a
+   theme token. --tone-bg is the soft fill of a pill or meter. */
+.tone-success {
+  color: var(--success);
+}
+
+.tone-warn {
+  color: var(--warning);
+}
+
+.tone-danger {
+  color: var(--danger);
+}
+
+.tone-running {
+  color: var(--accent);
+}
+
+.tone-muted {
+  color: var(--fg-muted);
+}
+
+.tone-you {
+  color: var(--attention);
+}
+
+:is(.tone-success, .tone-warn, .tone-danger, .tone-running, .tone-muted, .tone-you) {
+  --tone-bg: color-mix(in srgb, currentColor 14%, transparent);
+}
