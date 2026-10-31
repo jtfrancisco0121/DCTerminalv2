@@ -2643,3 +2643,46 @@ body,
   flex-wrap: wrap;
   gap: var(--space-1);
 }
+
+.chart-block {
+  margin-bottom: var(--space-4);
+}
+
+.chart-block h3 {
+  margin: 0 0 var(--space-1);
+}
+
+.chart {
+  width: 100%;
+  max-width: 40rem;
+  height: auto;
+  display: block;
+}
+
+.chart-bar {
+  fill: var(--accent);
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--done);
+  stroke-width: 2;
+}
+
+.chart-dot {
+  fill: var(--done);
+}
+
+.chart-bar:focus-visible,
+.chart-dot:focus-visible {
+  outline: 2px solid var(--fg);
+}
+
+.chart-axis line {
+  stroke: var(--fg-muted);
+}
+
+.chart-axis text {
+  fill: var(--fg-muted);
+  font-size: 11px;
+}

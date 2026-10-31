@@ -36,6 +36,7 @@ import { InlineNotice } from "./components/InlineNotice";
 import { NewTabForm } from "./components/NewTabForm";
 import { RunPanel } from "./components/RunPanel";
 import { PreviewHost } from "./components/PreviewPane";
+import { RunAnalytics } from "./components/RunAnalytics";
 import { RunDashboard } from "./components/RunDashboard";
 import { RunsView } from "./components/RunsView";
 import { StartScreen } from "./components/StartScreen";
@@ -619,6 +620,13 @@ function App() {
       detail: "Every unfinished run tab",
       run: () => setPage("dashboard"),
     });
+    items.push({
+      id: "page:analytics",
+      group: "Runs",
+      label: "Run analytics",
+      detail: "Cost, duration and waiting over finished runs",
+      run: () => setPage("analytics"),
+    });
     for (const section of SETTINGS_SECTIONS) {
       items.push({
         id: `settings:${section}`,
@@ -764,6 +772,7 @@ function App() {
           </div>
         )}
         {page === "dashboard" && <RunDashboard runs={runTabReadings} onClose={() => setPage(null)} />}
+        {page === "analytics" && <RunAnalytics onClose={() => setPage(null)} />}
       </section>
       <AttentionNotices />
       {activeRunsOpen && (
@@ -849,6 +858,10 @@ function App() {
           windowId={windowId}
           onClose={() => setDialog(null)}
           onStarted={(run) => void started(run)}
+          onAnalytics={() => {
+            setDialog(null);
+            setPage("analytics");
+          }}
         />
       )}
       {paletteOpen && <CommandPalette items={paletteItems()} onClose={() => setPaletteOpen(false)} />}

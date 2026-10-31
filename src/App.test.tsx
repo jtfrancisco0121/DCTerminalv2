@@ -570,4 +570,36 @@ describe("App run pages", () => {
     cleanup();
     endState();
   });
+
+  it("opens analytics from the palette and from the Runs dialog; terminals stay; Escape closes it", async () => {
+    await openApp();
+
+    await paletteOpen(/Run analytics/);
+    const page = await screen.findByRole("region", { name: "Run analytics" });
+    expect(await within(page).findAllByRole("img")).toHaveLength(3);
+    expect(terminalLife.mounts).toBe(1);
+    expect(terminalLife.unmounts).toBe(0);
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(screen.queryByRole("region", { name: "Run analytics" })).toBeNull();
+
+    // The Runs dialog (status bar > Active runs > All runs): its Analytics button closes the dialog and opens the page.
+    fireEvent.click(await screen.findByTestId("status-attention"));
+    fireEvent.click(await screen.findByRole("button", { name: "All runs" }));
+    const analytics = await screen.findByRole("button", { name: "Analytics" });
+    fireEvent.click(analytics);
+    expect(await screen.findByRole("region", { name: "Run analytics" })).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Runs" })).toBeNull();
+    expect(await screen.findAllByRole("img")).toHaveLength(3);
+    expect(terminalLife.mounts).toBe(1);
+    expect(terminalLife.unmounts).toBe(0);
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(screen.queryByRole("region", { name: "Run analytics" })).toBeNull();
+    vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
+    cleanup();
+    endState();
+  });
 });
