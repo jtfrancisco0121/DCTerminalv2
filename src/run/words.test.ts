@@ -293,7 +293,7 @@ describe("tabProgress", () => {
     const waiting = tabProgress({ ...base, stage: "ship-approval", waitingFor: "ship-approval" })!;
     expect(waiting).toMatchObject({ tone: "you", waiting: true });
     expect(waiting.title).toBe("Waiting for you · 2/3 PRs");
-    expect(tabProgress({ ...base, stage: "done", prsDone: 3 })).toMatchObject({ fraction: 1, tone: "success", title: "Done · 2/3 PRs".replace("2/3", "3/3") });
+    expect(tabProgress({ ...base, stage: "done", prsDone: 3 })).toMatchObject({ fraction: 1, tone: "success", title: "Done · 3/3 PRs" });
     const failed = tabProgress({ ...base, stage: "failed", prsTotal: 0 })!;
     expect(failed).toMatchObject({ fraction: 1, tone: "danger", waiting: false, title: "Failed" });
   });
