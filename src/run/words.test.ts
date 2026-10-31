@@ -7,10 +7,12 @@ import {
   gateTone,
   localTime,
   minutesText,
+  planReviewTone,
   prStateTone,
   PUSH_KINDS,
   relativeDate,
   reviewTone,
+  riskTone,
   runMatches,
   usageTone,
 } from "./words";
@@ -133,5 +135,16 @@ describe("tones", () => {
     expect(reviewTone(null)).toBe("muted");
     expect(reviewTone(undefined)).toBe("muted");
     expect(reviewTone({ round: null, verdict: null, openFindings: null })).toBe("muted");
+  });
+});
+
+describe("approval tones", () => {
+  it("tones the plan review and the risk verdict", () => {
+    expect(planReviewTone(0)).toBe("success");
+    expect(planReviewTone(2)).toBe("warn");
+    expect(planReviewTone(null)).toBe("muted");
+    expect(riskTone("NO BLOCKING RISKS")).toBe("success");
+    expect(riskTone("RISKS FOUND")).toBe("warn");
+    for (const bad of [null, undefined, "", "MAYBE"]) expect(riskTone(bad)).toBe("muted");
   });
 });

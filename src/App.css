@@ -2268,3 +2268,10 @@ body,
   background: transparent;
   border-width: 2px;
 }
+
+.approval-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-2);
+}

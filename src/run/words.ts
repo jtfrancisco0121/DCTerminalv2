@@ -72,6 +72,24 @@ export function reviewTone(review: { round?: number | null; verdict?: string | n
   return "muted";
 }
 
+/** The plan review badge: no open findings is fine, open ones warn, unknown is muted. */
+export function planReviewTone(openFindings: number | null | undefined): Tone {
+  if (openFindings == null) return "muted";
+  return openFindings > 0 ? "warn" : "success";
+}
+
+/** The Risk Reviewer's verdict (plan.risk): unknown verdicts are muted. */
+export function riskTone(verdict: string | null | undefined): Tone {
+  switch (verdict) {
+    case "NO BLOCKING RISKS":
+      return "success";
+    case "RISKS FOUND":
+      return "warn";
+    default:
+      return "muted";
+  }
+}
+
 export function usageTone(tone: UsageTone | null | undefined): Tone {
   switch (tone) {
     case "ok":

@@ -222,9 +222,13 @@ describe("RunPanelView", () => {
         riskOpenFindings: 2,
       },
     });
-    expect(screen.getByTestId("approval-prs").textContent).toBe(
-      `${view.prs.length} PRs · plan review round 5 · 0 open plan findings · risk review: risks found, 2 open risks`,
-    );
+    expect(screen.getByTestId("approval-prs").textContent).toBe(`${view.prs.length} PRs`);
+    const plan = screen.getByTestId("approval-plan-badge");
+    expect(plan.textContent).toBe("Plan review: round 5 · 0 open");
+    expect(plan.className).toContain("tone-success");
+    const risk = screen.getByTestId("approval-risk-badge");
+    expect(risk.textContent).toBe("Risk: RISKS FOUND · 2 open");
+    expect(risk.className).toContain("tone-warn");
   });
 
   it("the approval card says no blocking risks without a count", () => {
@@ -239,9 +243,10 @@ describe("RunPanelView", () => {
         riskOpenFindings: 0,
       },
     });
-    expect(screen.getByTestId("approval-prs").textContent).toBe(
-      `${view.prs.length} PRs · plan review round 1 · 0 open plan findings · risk review: no blocking risks`,
-    );
+    expect(screen.getByTestId("approval-prs").textContent).toBe(`${view.prs.length} PRs`);
+    const risk = screen.getByTestId("approval-risk-badge");
+    expect(risk.textContent).toBe("Risk: NO BLOCKING RISKS · 0 open");
+    expect(risk.className).toContain("tone-success");
   });
 
   it("the approval card shows the PR count, each PR's gate, app check and open findings, and the plan review", () => {
@@ -257,11 +262,13 @@ describe("RunPanelView", () => {
       },
     });
     expect(screen.getByTestId("approval-title").textContent).toBe("Plan approval");
-    expect(screen.getByTestId("approval-prs").textContent).toBe(
-      `${view.prs.length} PRs · plan review round 2 · 1 open plan findings`,
-    );
+    expect(screen.getByTestId("approval-prs").textContent).toBe(`${view.prs.length} PRs`);
+    const plan = screen.getByTestId("approval-plan-badge");
+    expect(plan.textContent).toBe("Plan review: round 2 · 1 open");
+    expect(plan.className).toContain("tone-warn");
+    expect(screen.queryByTestId("approval-risk-badge")).toBeNull();
     const row = within(screen.getByTestId("approval-PR2"));
-    expect(row.getByText(/✗ fail/)).toBeTruthy();
+    expect(row.getByText(/✗ fail/).className).toContain("pill");
     expect(row.getAllByRole("cell")).toHaveLength(5);
     expect(screen.queryByRole("button", { name: /approve|yes|go ahead/i })).toBeNull();
   });
