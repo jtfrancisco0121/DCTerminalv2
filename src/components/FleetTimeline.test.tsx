@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Timeline } from "../run/timeline";
 import { FleetTimelineView } from "./FleetTimeline";
@@ -37,6 +37,41 @@ describe("FleetTimelineView", () => {
     const unfinished = screen.getByLabelText(/implementer, Build PR1: unfinished/);
     expect(unfinished).toBeTruthy();
     expect(screen.getByLabelText(/plan-reviewer, Review: completed/)).toBeTruthy();
+  });
+
+  it("draws the stage strip, labelling wide bands and only titling narrow ones", () => {
+    const withStages: Timeline = {
+      ...timeline,
+      bands: [
+        ...timeline.bands,
+        { kind: "stage", name: "building", startMs: 0, endMs: 540000 },
+        { kind: "stage", name: "fixing", startMs: 540000, endMs: 570000 },
+      ],
+    };
+    render(<FleetTimelineView timeline={withStages} />);
+    const strip = within(screen.getByTestId("fleet-stages"));
+    expect(strip.getByText("Building")).toBeTruthy();
+    expect(strip.queryByText("fixing")).toBeNull();
+    expect(screen.getByTitle("fixing")).toBeTruthy();
+  });
+
+  it("has no strip without stage bands, and an axis with two local times", () => {
+    render(<FleetTimelineView timeline={timeline} />);
+    expect(screen.queryByTestId("fleet-stages")).toBeNull();
+    const axis = screen.getByTestId("fleet-axis");
+    expect(axis.querySelectorAll("[title]")).toHaveLength(2);
+    expect(axis.textContent).toMatch(/\d\d:\d\d\d\d:\d\d/);
+    cleanup();
+    render(<FleetTimelineView timeline={{ ...timeline, bands: [], startedMs: null, endedMs: null, lanes: [{ ...timeline.lanes[0]!, startMs: null, finishMs: null }] }} />);
+    expect(screen.queryByTestId("fleet-axis")).toBeNull();
+  });
+
+  it("shows each lane's duration and cost", () => {
+    render(<FleetTimelineView timeline={timeline} />);
+    const lanes = screen.getAllByRole("listitem");
+    expect(lanes[0]!.querySelector(".fleet-lane-total")?.textContent).toBe("10 min · $0.40");
+    expect(lanes[1]!.querySelector(".fleet-lane-total")?.textContent).toBe("3 min · $0.10");
+    expect(lanes[2]!.querySelector(".fleet-lane-total")?.textContent).toBe("7 min · cost unknown so far");
   });
 
   it("says so when nothing was recorded", () => {

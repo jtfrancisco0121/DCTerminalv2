@@ -1,6 +1,8 @@
 import { useState } from "react";
 import {
   activityText,
+  costBarLabel,
+  costSegments,
   costText,
   nudgeTab,
   observeTab,
@@ -9,6 +11,7 @@ import {
 } from "../run/observe";
 import { TAB_STATE_EVENT, usePushRefresh } from "../run/events";
 import { errorText } from "./InlineNotice";
+import { Meter } from "./Meter";
 
 const POLL_MS = 3000;
 
@@ -33,6 +36,7 @@ export function ObserveView({ seen, nudging, onNudge, onResume }: ViewProps) {
     onNudge();
   };
   const usage = seen.usage;
+  const segments = usage ? costSegments(usage.stages) : [];
   const subs = seen.subagents.slice(-8).reverse();
   return (
     <section className="run-observe" aria-label="Session">
@@ -89,7 +93,17 @@ export function ObserveView({ seen, nudging, onNudge, onResume }: ViewProps) {
       {seen.context && (
         <p className={seen.context.warn ? "hint warn" : "hint"} data-testid="context-meter">
           Context {seen.context.percent.toFixed(0)}% ({tokensText(seen.context.used)} of {tokensText(seen.context.window)})
-          {seen.context.warn && " — over 60%: consider /compact in the tab"}
+          {seen.context.warn &&
+            (seen.context.warnPercent != null
+              ? ` — over ${seen.context.warnPercent}%: consider /compact in the tab`
+              : " — consider /compact in the tab")}{" "}
+          <Meter
+            value={seen.context.percent}
+            tone={seen.context.warn ? "warn" : "running"}
+            label={`Context ${seen.context.percent.toFixed(0)}%`}
+            marker={seen.context.warnPercent}
+            testId="context-bar"
+          />
         </p>
       )}
       {subs.length > 0 && (
@@ -107,6 +121,13 @@ export function ObserveView({ seen, nudging, onNudge, onResume }: ViewProps) {
           <summary>
             This session: {tokensText(usage.totalTokens)} tokens · {costText(usage.totalCostUsd)} estimate ·{" "}
             {usage.minutes.toFixed(0)} min
+            {segments.length > 0 && (
+              <span className="cost-bar" role="img" aria-label={costBarLabel(usage.stages)}>
+                {segments.map((segment, at) => (
+                  <span key={segment.name} className={`cost-seg series-${at % 5}`} style={{ width: `${segment.share}%` }} title={segment.text} />
+                ))}
+              </span>
+            )}
           </summary>
           <table>
             <thead>

@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import process from "node:process";
 import {
+  assertNoStrayHexColours,
   envWithout,
   PLUGIN_SUITES,
   quoteCmdArg,
   spawnCommand,
   steps,
   stepsFor,
+  strayHexColours,
   usesCmdShim,
   windowsCmdPayload,
   windowsInvocation,
@@ -202,5 +207,62 @@ describe("check steps", () => {
     );
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("1|true");
+  });
+});
+
+describe("strayHexColours", () => {
+  it("allows hex colours in the theme blocks", () => {
+    const css = ":root {\n  --bg: #0d1117;\n}\n:root[data-theme=\"nord\"] {\n  --bg: #2e3440;\n}\n";
+    expect(strayHexColours(css)).toEqual([]);
+  });
+
+  it("refuses a hex in a plain rule, in a var() fallback and after a theme block, with the line", () => {
+    const css = [
+      ":root {",
+      "  --bg: #0d1117;",
+      "}",
+      ".x {",
+      "  color: #fff;",
+      "  border: 1px solid var(--a, #abcdef12);",
+      "}",
+      ":root[data-theme=\"nord\"] {",
+      "  --bg: #2e3440;",
+      "}",
+      ".y { background: #123; }",
+    ].join("\n");
+    expect(strayHexColours(css)).toEqual([
+      { line: 5, text: "color: #fff;" },
+      { line: 6, text: "border: 1px solid var(--a, #abcdef12);" },
+      { line: 11, text: ".y { background: #123; }" },
+    ]);
+  });
+
+  it("ignores comments and id selectors", () => {
+    const css = [
+      "/* old: #ff0000 */",
+      "#root { margin: 0; }",
+      "#terminal-park,",
+      "#add:hover,",
+      "#fade { opacity: 1; }",
+      ".z { /* #abc */ color: red; }",
+    ].join("\n");
+    expect(strayHexColours(css)).toEqual([]);
+  });
+
+  it("finds a hex in a nested at-rule but not a theme block inside one", () => {
+    const css = "@media (min-width: 1px) {\n  .a {\n    color: #fff;\n  }\n}\n";
+    expect(strayHexColours(css)).toEqual([{ line: 3, text: "color: #fff;" }]);
+  });
+
+  it("reports nothing for the real App.css", () => {
+    expect(strayHexColours(readFileSync("src/App.css", "utf8"))).toEqual([]);
+    expect(() => assertNoStrayHexColours()).not.toThrow();
+  });
+
+  it("throws naming the file and line", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "stray-"));
+    const file = path.join(dir, "App.css");
+    writeFileSync(file, ".a {\n  color: #fff;\n}\n");
+    expect(() => assertNoStrayHexColours(file)).toThrow(/App\.css:2: color: #fff;/);
   });
 });

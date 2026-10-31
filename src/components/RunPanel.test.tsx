@@ -94,6 +94,33 @@ describe("RunPanelView", () => {
     expect(screen.queryByTestId("badge-PR1")).toBeNull();
   });
 
+  it("draws state, checks, CI and gate of a PR row as toned pills", () => {
+    const base = view.prs[0];
+    const prs = [
+      {
+        ...base,
+        id: "PR1",
+        state: "reviewed",
+        prUrl: "https://github.com/o/mathlib/pull/9",
+        ci: "fail",
+        checkKnown: true,
+        check: { ...base.check, result: "pass" },
+        appCheck: { ...(base.appCheck ?? ({} as never)), result: "fail" },
+        gateStatus: { kind: "fail", text: "FAIL" },
+      },
+      { ...base, id: "PR2", state: "time-travel", gateStatus: null, review: { round: null, verdict: null, openFindings: null } },
+    ] as RunView["prs"];
+    renderPanel({ prs });
+    const one = within(screen.getByTestId("pr-PR1"));
+    expect(one.getByText("reviewed").className).toContain("pill tone-success");
+    expect(one.getByText(/check \(Claude\)/).className).toContain("tone-success");
+    expect(one.getByText(/check \(app\)/).className).toContain("tone-danger");
+    expect(screen.getByTestId("ci-PR1").className).toContain("pill tone-danger");
+    expect(screen.getByTestId("gate-PR1").className).toContain("pill tone-danger");
+    const two = within(screen.getByTestId("pr-PR2")).getByText("time-travel");
+    expect(two.className).toContain("pill tone-muted");
+  });
+
   it("names a drafted PR a draft and links it from the first draft", () => {
     const prs = view.prs.map((pr) =>
       pr.id === "PR1"
@@ -176,6 +203,40 @@ describe("RunPanelView", () => {
     expect(screen.queryByTestId("bmad")).toBeNull();
   });
 
+  it("shows the stepper beside the stage, and only the sentence for an unknown stage", () => {
+    renderPanel({ stage: "building", waitingFor: null });
+    expect(screen.getByRole("list", { name: "Run steps" })).toBeTruthy();
+    expect(screen.getByTestId("run-stage").textContent).toBe("Building");
+    cleanup();
+    renderPanel({ stage: "time-travel", waitingFor: null });
+    expect(screen.queryByRole("list", { name: "Run steps" })).toBeNull();
+    expect(screen.getByTestId("run-stage").textContent).toBe("time-travel");
+    cleanup();
+    renderPanel({ stage: null, waitingFor: null });
+    expect(screen.queryByRole("list", { name: "Run steps" })).toBeNull();
+    expect(screen.getByTestId("run-stage").textContent).toBe("Starting");
+  });
+
+  it("a failed run shows the step it reached from the log", () => {
+    renderPanel({
+      stage: "failed",
+      waitingFor: null,
+      timeline: [
+        { time: null, stage: "planning", text: "a" },
+        { time: null, stage: "building", text: "b" },
+        { time: null, stage: "failed", text: "c" },
+      ],
+    });
+    expect(screen.getByTitle("Building").className).toContain("step-done");
+    expect(screen.getByTitle("Ship approval (your step)").className).toContain("step-todo");
+    expect(screen.getByText("Failed", { selector: ".step-label" })).toBeTruthy();
+  });
+
+  it("an epic-plan run at done has three steps", () => {
+    renderPanel({ stage: "done", waitingFor: null, runMode: "epic-plan" });
+    expect(screen.getByRole("list", { name: "Run steps" }).querySelectorAll("li")).toHaveLength(3);
+  });
+
   it("shows the stage, the approval card, and the plan", () => {
     renderPanel();
     expect(screen.getByTestId("run-stage").textContent).toBe("Waiting for your go to open the PRs");
@@ -195,9 +256,13 @@ describe("RunPanelView", () => {
         riskOpenFindings: 2,
       },
     });
-    expect(screen.getByTestId("approval-prs").textContent).toBe(
-      `${view.prs.length} PRs · plan review round 5 · 0 open plan findings · risk review: risks found, 2 open risks`,
-    );
+    expect(screen.getByTestId("approval-prs").textContent).toBe(`${view.prs.length} PRs`);
+    const plan = screen.getByTestId("approval-plan-badge");
+    expect(plan.textContent).toBe("Plan review: round 5 · 0 open");
+    expect(plan.className).toContain("tone-success");
+    const risk = screen.getByTestId("approval-risk-badge");
+    expect(risk.textContent).toBe("Risk: RISKS FOUND · 2 open");
+    expect(risk.className).toContain("tone-warn");
   });
 
   it("the approval card says no blocking risks without a count", () => {
@@ -212,9 +277,10 @@ describe("RunPanelView", () => {
         riskOpenFindings: 0,
       },
     });
-    expect(screen.getByTestId("approval-prs").textContent).toBe(
-      `${view.prs.length} PRs · plan review round 1 · 0 open plan findings · risk review: no blocking risks`,
-    );
+    expect(screen.getByTestId("approval-prs").textContent).toBe(`${view.prs.length} PRs`);
+    const risk = screen.getByTestId("approval-risk-badge");
+    expect(risk.textContent).toBe("Risk: NO BLOCKING RISKS · 0 open");
+    expect(risk.className).toContain("tone-success");
   });
 
   it("the approval card shows the PR count, each PR's gate, app check and open findings, and the plan review", () => {
@@ -230,11 +296,13 @@ describe("RunPanelView", () => {
       },
     });
     expect(screen.getByTestId("approval-title").textContent).toBe("Plan approval");
-    expect(screen.getByTestId("approval-prs").textContent).toBe(
-      `${view.prs.length} PRs · plan review round 2 · 1 open plan findings`,
-    );
+    expect(screen.getByTestId("approval-prs").textContent).toBe(`${view.prs.length} PRs`);
+    const plan = screen.getByTestId("approval-plan-badge");
+    expect(plan.textContent).toBe("Plan review: round 2 · 1 open");
+    expect(plan.className).toContain("tone-warn");
+    expect(screen.queryByTestId("approval-risk-badge")).toBeNull();
     const row = within(screen.getByTestId("approval-PR2"));
-    expect(row.getByText(/✗ fail/)).toBeTruthy();
+    expect(row.getByText(/✗ fail/).className).toContain("pill");
     expect(row.getAllByRole("cell")).toHaveLength(5);
     expect(screen.queryByRole("button", { name: /approve|yes|go ahead/i })).toBeNull();
   });
@@ -320,6 +388,35 @@ describe("RunPanelView", () => {
     const items = screen.getByLabelText("Timeline").querySelectorAll("li");
     expect(items.length).toBe(3);
     expect(items[0].textContent).toContain("waiting for ship approval");
+  });
+
+  it("groups the timeline by stage: the newest group open, older ones closed, the user's choice kept", () => {
+    const line = (stage: string, n: number) => ({ time: `2026-10-27T10:0${n}:00Z`, stage, text: `line ${n}` });
+    const timeline = [line("planning", 1), line("planning", 2), line("building", 3)];
+    const { rerender } = render(
+      <RunPanelView view={{ ...view, timeline }} checking={false} onRerunChecks={vi.fn()} onOpenFile={vi.fn()} onOpenUrl={vi.fn()} onCleanUp={vi.fn()} />,
+    );
+    const groups = () => Array.from(screen.getByLabelText("Timeline").querySelectorAll("details"));
+    expect(groups().map((g) => g.open)).toEqual([true, false]);
+    expect(groups().map((g) => g.querySelector("summary")?.textContent)).toEqual(["Building · 1 line", "Planning · 2 lines"]);
+    groups()[1]!.open = true;
+    rerender(
+      <RunPanelView
+        view={{ ...view, timeline: [...timeline, line("building", 4)] }}
+        checking={false}
+        onRerunChecks={vi.fn()}
+        onOpenFile={vi.fn()}
+        onOpenUrl={vi.fn()}
+        onCleanUp={vi.fn()}
+      />,
+    );
+    expect(groups().map((g) => g.open)).toEqual([true, true]);
+    expect(groups()[0]!.querySelector("summary")?.textContent).toBe("Building · 2 lines");
+  });
+
+  it("puts lines without a stage under Other", () => {
+    renderPanel({ timeline: [{ time: null, stage: null, text: "stray" }] });
+    expect(screen.getByLabelText("Timeline").querySelector("summary")?.textContent).toBe("Other · 1 line");
   });
 
   it("lists the lines since you were away with local times, at most 10, a count of the rest and Dismiss", () => {

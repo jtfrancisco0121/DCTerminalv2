@@ -275,6 +275,7 @@
   "reviewMode": "local",
   "runDir": "",
   "runId": "r-20261022-1304",
+  "runMode": null,
   "shipApproved": false,
   "shipNote": null,
   "stage": "ship-approval",

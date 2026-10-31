@@ -104,6 +104,10 @@ body,
   line-height: 1.5;
   color: var(--fg);
   background-color: var(--bg);
+  /* Motion is theme-independent; src/App.css has one reduced-motion rule. */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 120ms;
+  --dur-spin: 900ms;
 }
 
 :root[data-theme="github-light"] {
@@ -1361,7 +1365,8 @@ body,
 .run-rail {
   flex: none;
   display: flex;
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: center;
   width: 1.75rem;
   border-left: 1px solid var(--border);
   padding-top: var(--space-2);
@@ -1458,18 +1463,6 @@ body,
   font-weight: 600;
 }
 
-.ci-chip-success {
-  color: var(--success);
-}
-
-.ci-chip-danger {
-  color: var(--danger);
-}
-
-.ci-chip-muted {
-  color: var(--fg-muted);
-}
-
 .run-time {
   color: var(--fg-muted);
 }
@@ -1478,13 +1471,10 @@ body,
   margin-left: auto;
 }
 
-.run-pr-state-reviewed,
-.run-pr-state-opened {
-  color: var(--success);
-}
-
-.run-pr-state-needs-attention {
-  color: var(--warning);
+.run-pr-app-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 
 .run-pr-facts {
@@ -1496,24 +1486,8 @@ body,
 
 .run-gate {
   margin-top: 0.25rem;
-  color: var(--fg-muted);
 }
 
-.run-gate-proven {
-  color: var(--success);
-}
-
-.run-gate-review-only {
-  color: var(--fg-muted);
-}
-
-.run-gate-concerns,
-.run-gate-unreadable,
-.run-gate-claimed {
-  color: var(--warning);
-}
-
-.run-gate-fail,
 .run-problem {
   color: var(--danger);
 }
@@ -1920,17 +1894,6 @@ body,
 }
 
 /* Review on GitHub: the PR's draft / ready badge and its review-round comment links. */
-.run-pr-badge {
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 11px;
-  padding: 0 6px;
-}
-
-.run-pr-badge-ready {
-  color: var(--success);
-}
-
 /* BMAD planning: the start-screen control and the run panel section. */
 .bmad-mode {
   display: flex;
@@ -2035,7 +1998,7 @@ body,
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  border-bottom: 1px solid var(--border, #3338);
+  border-bottom: 1px solid var(--border);
   font-size: 12px;
 }
 
@@ -2044,7 +2007,7 @@ body,
   flex-direction: column;
   gap: 6px;
   padding: 8px 10px;
-  border-top: 1px solid var(--border, #3338);
+  border-top: 1px solid var(--border);
 }
 
 .scratchpad-text {
@@ -2076,7 +2039,7 @@ body,
   flex-direction: column;
   flex: 0 0 min(42%, 560px);
   min-width: 320px;
-  border-left: 1px solid var(--border, #3338);
+  border-left: 1px solid var(--border);
   overflow: hidden;
 }
 
@@ -2085,7 +2048,7 @@ body,
   justify-content: space-between;
   gap: 8px;
   padding: 6px 10px;
-  border-bottom: 1px solid var(--border, #3338);
+  border-bottom: 1px solid var(--border);
 }
 
 .preview-body {
@@ -2113,7 +2076,7 @@ body,
     inset: 0;
     z-index: 5;
     min-width: 0;
-    background: var(--bg, #111);
+    background: var(--bg);
   }
 }
 
@@ -2131,18 +2094,65 @@ body,
   gap: 4px;
 }
 
-.fleet-lane {
+.fleet-lane,
+.fleet-stages,
+.fleet-axis {
   display: grid;
-  grid-template-columns: 7rem 1fr 5rem;
+  grid-template-columns: 7rem 1fr 9rem;
   align-items: center;
   gap: 6px;
   font-size: 12px;
 }
 
+.fleet-stages {
+  align-items: stretch;
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+
+.fleet-stages-track {
+  position: relative;
+  height: 16px;
+}
+
+.fleet-stage {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--fg-muted) 18%, transparent);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fleet-stage:nth-child(even) {
+  background: color-mix(in srgb, var(--fg-muted) 10%, transparent);
+}
+
+.fleet-axis {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.fleet-axis-ends {
+  display: flex;
+  justify-content: space-between;
+}
+
+.fleet-lane-total {
+  color: var(--fg-muted);
+  text-align: right;
+}
+
 .fleet-track {
   position: relative;
   height: 14px;
-  background: var(--panel-bg, #8881);
+  background: var(--bg-muted);
   border-radius: 3px;
 }
 
@@ -2150,7 +2160,10 @@ body,
   position: absolute;
   top: 0;
   bottom: 0;
-  background: repeating-linear-gradient(45deg, #d9a40044, #d9a40044 4px, transparent 4px, transparent 8px);
+  /* Solid --warning stripes keep 3:1 against the track in every theme. */
+  background:
+    repeating-linear-gradient(45deg, var(--warning) 0 2px, transparent 2px 6px),
+    var(--warning-subtle);
 }
 
 .fleet-bar {
@@ -2158,7 +2171,7 @@ body,
   top: 2px;
   bottom: 2px;
   border-radius: 2px;
-  background: #4c8bf5;
+  background: var(--accent);
 }
 
 .fleet-bar:focus-visible {
@@ -2168,10 +2181,374 @@ body,
 
 .fleet-bar-failed,
 .fleet-bar-killed {
-  background: #d9534f;
+  background: var(--danger);
 }
 
 .fleet-bar-unfinished,
 .fleet-bar-open {
-  background: repeating-linear-gradient(90deg, #4c8bf5, #4c8bf5 6px, #4c8bf588 6px, #4c8bf588 10px);
+  background: repeating-linear-gradient(
+    90deg,
+    var(--accent) 0 6px,
+    color-mix(in srgb, var(--accent) 50%, transparent) 6px 10px
+  );
+}
+
+/* Status tones (src/run/words.ts Tone): the one place a status maps to a
+   theme token. --tone-bg is the soft fill of a pill or meter. */
+.tone-success {
+  color: var(--success);
+}
+
+.tone-warn {
+  color: var(--warning);
+}
+
+.tone-danger {
+  color: var(--danger);
+}
+
+.tone-running {
+  color: var(--accent);
+}
+
+.tone-muted {
+  color: var(--fg-muted);
+}
+
+.tone-you {
+  color: var(--attention);
+}
+
+:is(.tone-success, .tone-warn, .tone-danger, .tone-running, .tone-muted, .tone-you) {
+  --tone-bg: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+/* Inline SVG icons (src/components/icons.tsx). */
+.icon {
+  vertical-align: -2px;
+  flex: none;
+}
+
+/* Motion: short hover transitions and fade-ins only. Never `width`, never the
+   terminal or xterm selectors (a refit mid-animation would read a wrong size). */
+.primary-button,
+.secondary-button,
+.link-button,
+.status-bar-button,
+.status-bar-item,
+.tab {
+  transition:
+    color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.dialog,
+.errors-popover,
+.active-runs,
+.usage-spark {
+  animation: pop-in var(--dur-fast) var(--ease);
+}
+
+.run-rail,
+.run-panel-frame {
+  animation: fade-in var(--dur-fast) var(--ease);
+}
+
+@keyframes icon-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.icon-spin {
+  animation: icon-spin var(--dur-spin) linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* Pill (src/components/Pill.tsx): a status word with a tone. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
+  border-radius: 999px;
+  background: var(--tone-bg);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* "Your step": outlined with no fill, so it differs from warn by shape, not hue. */
+.pill.tone-you {
+  background: transparent;
+  border-width: 2px;
+}
+
+.approval-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-2);
+}
+
+/* Stepper (src/components/Stepper.tsx): the steps of a run. */
+.stepper {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin: var(--space-1) 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-xs);
+}
+
+.step {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-muted);
+}
+
+.step + .step::before {
+  content: "";
+  width: 10px;
+  border-top: 1px solid var(--border);
+  margin-right: var(--space-1);
+}
+
+.step-current,
+.step-waiting,
+.step-done {
+  color: var(--fg);
+}
+
+.step-current .step-label {
+  font-weight: 700;
+}
+
+.step-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+}
+
+.step-current .step-dot {
+  background: currentColor;
+}
+
+.step-done .step-dot {
+  background: var(--tone-bg);
+}
+
+/* Waiting for you: a hollow dot with a ring, so it differs from warn by shape. */
+.step-waiting .step-dot {
+  margin: 0 3px;
+  box-shadow:
+    0 0 0 2px var(--bg),
+    0 0 0 3.5px currentColor;
+}
+
+.step-mark,
+.step-extra {
+  color: var(--fg-muted);
+}
+
+.step-extra {
+  margin-left: 2px;
+}
+
+.stepper-vertical {
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+.stepper-vertical .step + .step::before {
+  width: 0;
+  height: 8px;
+  margin: 2px 0;
+  border-top: 0;
+  border-left: 1px solid var(--border);
+}
+
+.stepper-vertical .step {
+  flex-direction: column;
+}
+
+.stepper-compact {
+  flex-wrap: nowrap;
+  gap: 0 var(--space-1);
+}
+
+.timeline-group > summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.timeline-group {
+  margin-bottom: var(--space-1);
+}
+
+/* Session cost bar: one segment per stage. Series colours, not status tones (AD-15). */
+.cost-bar {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  margin-top: 4px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--bg-muted);
+}
+
+.cost-seg {
+  height: 100%;
+  min-width: 2px;
+}
+
+.series-0 {
+  background: var(--accent);
+}
+
+.series-1 {
+  background: var(--done);
+}
+
+.series-2 {
+  background: var(--orange);
+}
+
+.series-3 {
+  background: var(--success);
+}
+
+.series-4 {
+  background: var(--attention);
+}
+
+/* Meter (src/components/Meter.tsx): a percent bar; unknown is hatched, never empty-as-zero. */
+.meter {
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+  width: 4.5rem;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-muted);
+}
+
+.meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: currentColor;
+}
+
+.meter-marker {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--fg);
+}
+
+.meter-unknown {
+  background:
+    repeating-linear-gradient(45deg, color-mix(in srgb, var(--fg-muted) 40%, transparent) 0 2px, transparent 2px 5px),
+    var(--bg-muted);
+}
+
+/* Status bar usage meters and their sparkline popover (not the per-tab UsagePopover). */
+.status-meters {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.status-meter-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.status-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  cursor: default;
+}
+
+.status-meter .status-meter-bar {
+  width: 3rem;
+}
+
+.usage-spark {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  z-index: 20;
+  margin-bottom: 4px;
+  padding: var(--space-2);
+  min-width: 9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.usage-spark-title {
+  font-weight: 600;
+}
+
+.usage-spark-line {
+  display: block;
+  color: var(--accent);
 }

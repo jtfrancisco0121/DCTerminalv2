@@ -68,6 +68,8 @@ pub struct ContextMeter {
     pub window: u64,
     pub percent: f64,
     pub warn: bool,
+    /// The percent the meter warns from (`CONTEXT_WARN`), so the UI restates no threshold.
+    pub warn_percent: f64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -372,6 +374,7 @@ impl SessionTracker {
             window,
             percent: (percent * 1000.0).round() / 10.0,
             warn: percent >= CONTEXT_WARN,
+            warn_percent: CONTEXT_WARN * 100.0,
         })
     }
 
@@ -657,6 +660,11 @@ mod tests {
         assert_eq!(
             (meter.used, meter.percent, meter.warn),
             (120_000, 60.0, true)
+        );
+        assert_eq!(meter.warn_percent, CONTEXT_WARN * 100.0);
+        assert_eq!(
+            serde_json::to_value(&meter).unwrap()["warnPercent"],
+            json!(60.0)
         );
         let mut side = assistant("m2", "2026-10-22T10:00:00Z", 1, 1);
         side["isSidechain"] = json!(true);

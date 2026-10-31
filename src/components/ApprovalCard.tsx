@@ -1,5 +1,17 @@
 import type { RunView } from "../run/api";
-import { appCheckText, approvalTitle, isKnownApproval, prStateText } from "../run/words";
+import {
+  appCheckText,
+  approvalTitle,
+  checkTone,
+  gateTone,
+  isKnownApproval,
+  planReviewTone,
+  prStateText,
+  prStateTone,
+  reviewTone,
+  riskTone,
+} from "../run/words";
+import { Pill } from "./Pill";
 
 type Props = {
   view: RunView;
@@ -25,12 +37,19 @@ export function ApprovalCard({ view, waitingFor, onReadPlan, onGoToPrompt }: Pro
         <>
           <p className="hint" data-testid="approval-prs">
             {view.prs.length} {view.prs.length === 1 ? "PR" : "PRs"}
-            {view.plan?.reviewRound != null && ` · plan review round ${view.plan.reviewRound}`}
-            {view.plan?.openFindings != null && ` · ${view.plan.openFindings} open plan findings`}
-            {view.plan?.riskVerdict != null &&
-              ` · risk review: ${view.plan.riskVerdict.toLowerCase()}` +
-                (view.plan.riskOpenFindings ? `, ${view.plan.riskOpenFindings} open risks` : "")}
           </p>
+          <div className="approval-badges">
+            {view.plan?.reviewRound != null && (
+              <Pill tone={planReviewTone(view.plan.openFindings ?? 0)} testId="approval-plan-badge">
+                Plan review: round {view.plan.reviewRound} · {view.plan.openFindings ?? 0} open
+              </Pill>
+            )}
+            {view.plan?.riskVerdict != null && (
+              <Pill tone={riskTone(view.plan.riskVerdict)} testId="approval-risk-badge">
+                Risk: {view.plan.riskVerdict} · {view.plan.riskOpenFindings ?? 0} open
+              </Pill>
+            )}
+          </div>
           {view.prs.length > 0 && (
             <table className="approval-prs">
               <thead>
@@ -46,10 +65,22 @@ export function ApprovalCard({ view, waitingFor, onReadPlan, onGoToPrompt }: Pro
                 {view.prs.map((pr) => (
                   <tr key={pr.id} data-testid={`approval-${pr.id}`}>
                     <td>{pr.id}</td>
-                    <td>{prStateText(pr.state)}</td>
-                    <td>{pr.gateStatus && pr.gateStatus.kind !== "none" ? pr.gateStatus.text : "–"}</td>
-                    <td>{appCheckText(pr)}</td>
-                    <td>{pr.review.openFindings ?? 0}</td>
+                    <td>
+                      <Pill tone={prStateTone(pr.state)}>{prStateText(pr.state)}</Pill>
+                    </td>
+                    <td>
+                      {pr.gateStatus && pr.gateStatus.kind !== "none" ? (
+                        <Pill tone={gateTone(pr.gateStatus.kind)}>{pr.gateStatus.text}</Pill>
+                      ) : (
+                        "–"
+                      )}
+                    </td>
+                    <td>
+                      <Pill tone={pr.checkKnown ? checkTone(pr.appCheck?.result) : "muted"}>{appCheckText(pr)}</Pill>
+                    </td>
+                    <td>
+                      <Pill tone={reviewTone(pr.review)}>{pr.review.openFindings ?? 0}</Pill>
+                    </td>
                   </tr>
                 ))}
               </tbody>

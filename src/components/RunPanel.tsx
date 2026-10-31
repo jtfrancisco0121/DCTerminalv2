@@ -22,19 +22,29 @@ import {
 import {
   checkMark,
   checkSignature,
+  checkTone,
   ciChip,
   draftBadge,
+  gateTone,
+  groupTimeline,
   localTime,
   prStateText,
+  prsDone,
+  prStateTone,
+  reachedStep,
   reviewText,
+  reviewTone,
   runFinished,
   safeUrl,
   stageText,
   storiesText,
   wantsAppChecks,
+  type TimelineGroup,
 } from "../run/words";
 import { ClickUpRunSection } from "../clickup/ClickUpRunSection";
 import { FleetTimeline } from "./FleetTimeline";
+import { Pill } from "./Pill";
+import { Stepper } from "./Stepper";
 import { checkLogPr, readCheckLog } from "../run/observe";
 import { RUN_STATE_EVENT, usePushRefresh } from "../run/events";
 import { AWAY_ROWS, useAwayNotice } from "../run/away";
@@ -113,6 +123,25 @@ function TimelineTime({ time }: { time: string }) {
     <span className="run-time" title={local?.title ?? time}>
       {local?.short ?? time.slice(11, 16)}
     </span>
+  );
+}
+
+/** One stage's lines. It is open or closed only when it first mounts, so the user's choice survives a poll. */
+function TimelineGroupView({ group, openAtMount }: { group: TimelineGroup; openAtMount: boolean }) {
+  const [open] = useState(openAtMount);
+  return (
+    <details className="timeline-group" open={open}>
+      <summary>
+        {group.label} · {group.lines.length} {group.lines.length === 1 ? "line" : "lines"}
+      </summary>
+      <ol>
+        {group.lines.map((line, at) => (
+          <li key={`${line.time ?? ""}-${at}`}>
+            {line.time && <TimelineTime time={line.time} />} {line.text}
+          </li>
+        ))}
+      </ol>
+    </details>
   );
 }
 
@@ -220,24 +249,32 @@ function PrRow({
       <div className="run-pr-head">
         <strong>{pr.id}</strong>
         {pr.repo && <span className="run-pr-repo">{pr.repo}</span>}
-        <span className={`run-pr-state run-pr-state-${pr.state ?? "unknown"}`}>{prStateText(pr.state)}</span>
+        <Pill tone={prStateTone(pr.state)} className={`run-pr-state run-pr-state-${pr.state ?? "unknown"}`}>
+          {prStateText(pr.state)}
+        </Pill>
         {badge && (
-          <span className={`run-pr-badge run-pr-badge-${badge}`} data-testid={`badge-${pr.id}`}>
+          <Pill
+            tone={badge === "ready" ? "success" : "muted"}
+            className={`run-pr-badge run-pr-badge-${badge}`}
+            testId={`badge-${pr.id}`}
+          >
             {badge}
-          </span>
+          </Pill>
         )}
       </div>
       {pr.title && <div className="run-pr-title">{pr.title}</div>}
       <div className="run-pr-facts">
         {stories && <span>{stories}</span>}
-        <span title={pr.check.summary ?? undefined}>
+        <Pill tone={checkTone(pr.check.result)} title={pr.check.summary ?? undefined}>
           check (Claude): {checkMark(pr.check.result)} {pr.check.result ?? "not run"}
-        </span>
-        {!pr.checkKnown && <span>check (app): no check known</span>}
+        </Pill>
+        {!pr.checkKnown && <Pill tone="muted">check (app): no check known</Pill>}
         {pr.checkKnown && (
-          <span title={pr.appCheck?.detail ?? pr.appCommand ?? undefined}>
-            check (app): {checkMark(pr.appCheck?.result)} {pr.appCheck?.result ?? "not run"}
-            {pr.appCheckStale && " (code changed since)"}
+          <span className="run-pr-app-check">
+            <Pill tone={checkTone(pr.appCheck?.result)} title={pr.appCheck?.detail ?? pr.appCommand ?? undefined}>
+              check (app): {checkMark(pr.appCheck?.result)} {pr.appCheck?.result ?? "not run"}
+              {pr.appCheckStale && " (code changed since)"}
+            </Pill>
             {pr.appCheck?.log && (
               <button
                 type="button"
@@ -250,22 +287,22 @@ function PrRow({
           </span>
         )}
         {ci && (
-          <span className={`ci-chip ci-chip-${ci.tone}`} title={ci.title || undefined} data-testid={`ci-${pr.id}`}>
+          <Pill tone={ci.tone} className={`ci-chip ci-chip-${ci.tone}`} title={ci.title || undefined} testId={`ci-${pr.id}`}>
             {ci.text}
-          </span>
+          </Pill>
         )}
         {pr.checkKnown && pr.check.command && pr.check.command !== pr.appCommand && (
           <span className="run-pr-note" data-testid={`check-differs-${pr.id}`}>
             Claude ran <code>{pr.check.command}</code>; the app runs <code>{pr.appCommand}</code>
           </span>
         )}
-        {review && <span>{review}</span>}
+        {review && <Pill tone={reviewTone(pr.review)}>{review}</Pill>}
       </div>
       {gate && gate.kind !== "none" && (
-        <div className={`run-gate run-gate-${gate.kind}`} data-testid={`gate-${pr.id}`}>
+        <Pill tone={gateTone(gate.kind)} className={`run-gate run-gate-${gate.kind}`} testId={`gate-${pr.id}`}>
           {gate.kind === "proven" ? "✓ " : ""}
           {gate.text}
-        </div>
+        </Pill>
       )}
       {pr.note && <div className="run-pr-note">{pr.note}</div>}
       <div className="run-pr-actions" data-testid={`actions-${pr.id}`}>
@@ -359,7 +396,7 @@ function BmadSection({
 
 /** The progress panel for one run, drawn from a read of its folder. */
 export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch, onSlopCheck, away }: ViewProps) {
-  const timeline = view.timeline.slice(-30).reverse();
+  const timeline = groupTimeline(view.timeline);
   return (
     <aside className="run-panel" aria-label="Run progress">
       {away && <AwayNotice lines={away.lines} onDismiss={away.dismiss} />}
@@ -367,6 +404,13 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
         <div className="run-stage" data-testid="run-stage">
           {stageText(view.stage)}
         </div>
+        <Stepper
+          stage={view.stage}
+          waitingFor={view.waitingFor}
+          prs={{ done: prsDone(view.prs), total: view.prs.length }}
+          mode={view.runMode}
+          reached={reachedStep(view.timeline, view.runMode)}
+        />
         <div className="hint run-id">{view.runId}</div>
       </header>
       {view.statusProblem && <p className="hint warn">{view.statusProblem}</p>}
@@ -443,13 +487,9 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
       {timeline.length > 0 && (
         <section className="run-timeline" aria-label="Timeline">
           <h3>Timeline</h3>
-          <ol>
-            {timeline.map((line, at) => (
-              <li key={`${line.time ?? ""}-${at}`}>
-                {line.time && <TimelineTime time={line.time} />} {line.text}
-              </li>
-            ))}
-          </ol>
+          {timeline.map((group, at) => (
+            <TimelineGroupView key={group.key} group={group} openAtMount={at === 0} />
+          ))}
         </section>
       )}
     </aside>
@@ -692,6 +732,11 @@ export function RunPanel({
         windowId={windowId ?? "main"}
         stageLabel={stageText(view.stage)}
         attention={Boolean(view.waitingFor)}
+        stage={view.stage}
+        waitingFor={view.waitingFor}
+        prs={{ done: prsDone(view.prs), total: view.prs.length }}
+        mode={view.runMode}
+        reached={reachedStep(view.timeline, view.runMode)}
         onLayoutChange={onLayoutChange}
       >
       <div className="run-panel-clicks" onClickCapture={(event) => { altClick.current = event.altKey; }}>

@@ -1,5 +1,6 @@
 /** The fleet timeline: types of `run_timeline` and the layout of its lanes (pure, tested). */
 import { invoke } from "@tauri-apps/api/core";
+import { stageText } from "./words";
 
 export type Lane = {
   id: string;
@@ -24,7 +25,19 @@ export type Timeline = {
 export const runTimeline = (runDir: string) => invoke<Timeline>("run_timeline", { runDir });
 
 export type Bar = { lane: Lane; left: number; width: number; open: boolean; name: string };
-export type Layout = { bars: Bar[]; waits: { left: number; width: number; name: string }[]; spanMs: number };
+/** A stage band of the run: `name` is the log's stage word, `label` its plain words; unlabelled when too narrow to read. */
+export type StageBand = { left: number; width: number; name: string; label: string; labelled: boolean };
+export type Layout = {
+  bars: Bar[];
+  waits: { left: number; width: number; name: string }[];
+  stages: StageBand[];
+  /** The span drawn, for the time axis; null when the run has no times. */
+  axis: { startMs: number; endMs: number } | null;
+  spanMs: number;
+};
+
+/** A stage band narrower than this share of the span (percent) is not labelled; its title holds the label. */
+export const STAGE_LABEL_MIN_PCT = 12;
 
 const usd = (v: number | null) => (v === null ? "cost unknown" : `$${v.toFixed(2)}`);
 const clock = (ms: number | null) => (ms === null ? "unknown time" : new Date(ms).toISOString().slice(11, 16) + " UTC");
@@ -60,7 +73,20 @@ export function layoutTimeline(t: Timeline): Layout {
   const waits = t.bands
     .filter((b) => b.kind === "wait")
     .map((b) => ({ left: pct(b.startMs), width: Math.max(pct(b.endMs) - pct(b.startMs), 0.8), name: b.name }));
-  return { bars, waits, spanMs: span };
+  const stages = t.bands
+    .filter((b) => b.kind === "stage" && b.endMs > b.startMs)
+    .map((b) => {
+      const width = pct(b.endMs) - pct(b.startMs);
+      return { left: pct(b.startMs), width, name: b.name, label: stageText(b.name), labelled: width >= STAGE_LABEL_MIN_PCT };
+    });
+  const axis = times.length ? { startMs: lo, endMs: hi } : null;
+  return { bars, waits, stages, axis, spanMs: span };
+}
+
+/** A lane's length in minutes: an open lane runs to `hiMs` (the span's end); null without a start. */
+export function laneMinutes(lane: Lane, hiMs: number): number | null {
+  if (lane.startMs === null) return null;
+  return Math.max((lane.finishMs ?? hiMs) - lane.startMs, 0) / 60_000;
 }
 
 export const minutesText = (m: number) => (m < 1 ? "under a minute" : m >= 60 ? `${Math.floor(m / 60)} h ${Math.round(m % 60)} min` : `${Math.round(m)} min`);

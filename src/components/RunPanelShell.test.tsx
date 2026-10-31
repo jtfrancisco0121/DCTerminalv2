@@ -121,6 +121,15 @@ describe("RunPanelShell", () => {
     expect(rail.title).toContain("waiting for you");
   });
 
+  it("the collapsed rail shows the stepper when the stage is given", () => {
+    window.localStorage.setItem(layoutKey("main"), JSON.stringify({ width: 20, collapsed: true }));
+    const { unmount } = shell();
+    expect(screen.queryByRole("list", { name: "Run steps" })).toBeNull();
+    unmount();
+    shell({ stage: "building", waitingFor: null, prs: { done: 1, total: 2 } });
+    expect(screen.getByRole("list", { name: "Run steps" }).className).toContain("stepper-vertical");
+  });
+
   it("asks the terminal to refit after each change, not on mount", async () => {
     vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
     const onLayoutChange = vi.fn();

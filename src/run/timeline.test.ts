@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { barName, layoutTimeline, minutesText, type Lane, type Timeline } from "./timeline";
+import { barName, laneMinutes, layoutTimeline, minutesText, type Lane, type Timeline } from "./timeline";
 
 const lane = (over: Partial<Lane>): Lane => ({ id: "x", label: "implementer", description: null, state: "completed", startMs: 0, finishMs: 1000, costUsd: 0.5, ...over });
 const base = (lanes: Lane[], over: Partial<Timeline> = {}): Timeline => ({
@@ -53,5 +53,44 @@ describe("layoutTimeline", () => {
     expect(name).toContain("unfinished (no finish recorded)");
     expect(name).toContain("10:03 UTC");
     expect(name).toContain("cost unknown");
+  });
+});
+
+describe("stage bands and axis", () => {
+  const stage = (name: string, startMs: number, endMs: number) => ({ kind: "stage" as const, name, startMs, endMs });
+
+  it("returns the stage bands with plain labels, dropping zero-length ones", () => {
+    const t = base([lane({})], {
+      bands: [
+        stage("building", 0, 400),
+        stage("fixing", 400, 450),
+        stage("building", 450, 700),
+        stage("time-travel", 700, 700),
+        stage("done", 700, 1000),
+        { kind: "wait", name: "waiting for plan approval", startMs: 100, endMs: 200 },
+      ],
+    });
+    const { stages } = layoutTimeline(t);
+    expect(stages.map((s) => s.label)).toEqual(["Building", "fixing", "Building", "Done"]);
+    expect(stages.map((s) => s.labelled)).toEqual([true, false, true, true]);
+    expect(stages[0]!.left).toBeCloseTo(0);
+    expect(stages[0]!.width).toBeCloseTo(40);
+  });
+
+  it("shows an unknown stage name as it is", () => {
+    const { stages } = layoutTimeline(base([lane({})], { bands: [stage("time-travel", 0, 1000)] }));
+    expect(stages[0]!.label).toBe("time-travel");
+  });
+
+  it("gives the axis the drawn span, or null without times", () => {
+    expect(layoutTimeline(base([lane({ startMs: 100, finishMs: 900 })], { startedMs: 100, endedMs: 900 })).axis).toEqual({ startMs: 100, endMs: 900 });
+    const empty = base([lane({ startMs: null, finishMs: null })], { startedMs: null, endedMs: null });
+    expect(layoutTimeline(empty).axis).toBeNull();
+  });
+
+  it("measures a lane in minutes, open lanes to the end of the span", () => {
+    expect(laneMinutes(lane({ startMs: 0, finishMs: 600_000 }), 999_999)).toBe(10);
+    expect(laneMinutes(lane({ startMs: 60_000, finishMs: null }), 360_000)).toBe(5);
+    expect(laneMinutes(lane({ startMs: null }), 1)).toBeNull();
   });
 });
