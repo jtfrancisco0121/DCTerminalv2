@@ -2499,3 +2499,56 @@ body,
     repeating-linear-gradient(45deg, color-mix(in srgb, var(--fg-muted) 40%, transparent) 0 2px, transparent 2px 5px),
     var(--bg-muted);
 }
+
+/* Status bar usage meters and their sparkline popover (not the per-tab UsagePopover). */
+.status-meters {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.status-meter-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.status-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  cursor: default;
+}
+
+.status-meter .status-meter-bar {
+  width: 3rem;
+}
+
+.usage-spark {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  z-index: 20;
+  margin-bottom: 4px;
+  padding: var(--space-2);
+  min-width: 9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.usage-spark-title {
+  font-weight: 600;
+}
+
+.usage-spark-line {
+  display: block;
+  color: var(--accent);
+}

@@ -4,8 +4,10 @@ import {
   isStale,
   knownUsagePercent,
   limitTone,
+  meterValue,
   nearLimitWarning,
   NEAR_LIMIT_PERCENT,
+  periodReadings,
   statusLimit,
   trendText,
   type RateWindow,
@@ -148,6 +150,16 @@ describe("rate-limit history and the near-limit warning", () => {
     expect(trendText(window(), [])).toBeNull();
     // Readings of the previous window (another reset time) do not count.
     expect(trendText(window(), history([reading(0, 90, 1), reading(5, 10)]))).toBeNull();
+  });
+
+  it("keeps the readings of the current reset period only, and a meter is unknown when stale or without a percent", () => {
+    const kept = periodReadings(window(), history([reading(0, 30), reading(5, null), reading(9, 90, 1), reading(10, 40)]));
+    expect(kept.map((r) => r.utilization)).toEqual([30, 40]);
+    expect(periodReadings(window({ rateLimitType: "seven_day" }), history([reading(0, 30)]))).toEqual([]);
+    expect(meterValue(window({ utilization: 42 }))).toBe(42);
+    expect(meterValue(window({ utilization: 0 }))).toBe(0);
+    expect(meterValue(window({ utilization: null }))).toBeNull();
+    expect(meterValue(window({ resetsAt: 1 }))).toBeNull();
   });
 
   it("puts the trend and the reset time in the status bar tooltip", () => {

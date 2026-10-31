@@ -733,6 +733,8 @@ function App() {
         account={ctx ? { name: ctx.accountName, config: ctx.config } : null}
         folder={active?.cwd ?? null}
         usage={usage ? statusLimit(usage, Date.now(), usageHistory) : null}
+        windows={usage ?? []}
+        history={usageHistory}
         message={message ? { text: message, onDismiss: () => setMessage(null) } : null}
         attention={attention}
         onAttention={() => setActiveRunsOpen((open) => !open)}

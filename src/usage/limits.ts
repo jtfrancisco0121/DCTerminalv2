@@ -112,15 +112,26 @@ export function statusLimit(windows: RateWindow[], now = Date.now(), history: Wi
   return { text: formatWindowLine(current), tone: limitTone(current), title };
 }
 
+/** The saved readings of the window's current reset period: same window type, same reset time, with a percent. */
+export function periodReadings(window: RateWindow, history: WindowHistory[]): Reading[] {
+  return (history.find((h) => h.rateLimitType === window.rateLimitType)?.readings ?? []).filter(
+    (r) => r.utilization != null && r.resetsAt === window.resetsAt,
+  );
+}
+
+/** The percent a meter fills to; null (hatched, never 0) when the reading is stale or has no percent. */
+export function meterValue(window: RateWindow, now = Date.now()): number | null {
+  if (isStale(window, now) || window.utilization == null || !Number.isFinite(window.utilization)) return null;
+  return window.utilization;
+}
+
 /**
  * "rising: +12 points in 40 min" from the saved readings of the window's
  * current reset period (the same reset time); null with fewer than two
  * readings that carry a percent.
  */
 export function trendText(window: RateWindow, history: WindowHistory[]): string | null {
-  const readings = (history.find((h) => h.rateLimitType === window.rateLimitType)?.readings ?? []).filter(
-    (r) => r.utilization != null && r.resetsAt === window.resetsAt,
-  );
+  const readings = periodReadings(window, history);
   if (readings.length < 2) return null;
   const first = readings[0];
   const last = readings[readings.length - 1];

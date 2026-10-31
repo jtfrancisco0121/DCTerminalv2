@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConfigDirInfo } from "../bridge";
 import { clearUiErrors, reportError } from "../uiErrors";
+import { formatReset, type RateWindow, type WindowHistory } from "../usage/limits";
 import { accountFolderWarning, attentionText, StatusBar } from "./StatusBar";
 
 const config = (over: Partial<ConfigDirInfo> = {}): ConfigDirInfo => ({
@@ -33,6 +34,69 @@ describe("StatusBar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(onNewWindow).toHaveBeenCalledOnce();
     expect(onSettings).toHaveBeenCalledOnce();
+  });
+
+  describe("usage meters", () => {
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    const win = (over: Partial<RateWindow> = {}): RateWindow => ({
+      rateLimitType: "five_hour",
+      label: "5h",
+      utilization: 42,
+      resetsAt: future,
+      status: "allowed",
+      seenAtMs: Date.now(),
+      ...over,
+    });
+    const hist = (n: number): WindowHistory[] => [
+      {
+        rateLimitType: "five_hour",
+        readings: Array.from({ length: n }, (_, i) => ({ atMs: i * 600_000, utilization: 30 + i * 6, resetsAt: future })),
+      },
+    ];
+    const bar = (windows: RateWindow[], history: WindowHistory[] = []) =>
+      render(<StatusBar account={null} windows={windows} history={history} onNewWindow={() => {}} onSettings={() => {}} />);
+
+    it("renders one toned meter per window", () => {
+      bar([win(), win({ rateLimitType: "seven_day", label: "7d", utilization: 90, status: "allowed_warning" })]);
+      const ok = screen.getByRole("meter", { name: "Claude 5h 42%" });
+      const warn = screen.getByRole("meter", { name: "Claude 7d 90%" });
+      expect(ok.getAttribute("aria-valuenow")).toBe("42");
+      expect(ok.className).toContain("tone-success");
+      expect(warn.className).toContain("tone-warn");
+      expect(screen.getAllByRole("button", { name: /^Claude (5h|7d)/ })).toHaveLength(2);
+    });
+
+    it("draws a stale window as an unknown hatched meter, never 0", () => {
+      bar([win({ resetsAt: 1 })]);
+      const meter = screen.getByRole("meter", { name: /unknown/ });
+      expect(meter.className).toContain("meter-unknown");
+      expect(meter.hasAttribute("aria-valuenow")).toBe(false);
+    });
+
+    it("opens the sparkline on focus with the reset time, and Escape closes it", () => {
+      bar([win()], hist(3));
+      const button = screen.getByRole("button", { name: "Claude 5h 42%" });
+      expect(screen.queryByRole("tooltip")).toBeNull();
+      fireEvent.focus(button);
+      const tip = screen.getByRole("tooltip");
+      expect(tip.querySelector("svg polyline")).not.toBeNull();
+      expect(tip.textContent).toContain(`resets ${formatReset(future)}`);
+      expect(tip.textContent).toContain("rising");
+      expect(button.getAttribute("aria-describedby")).toBe(tip.id);
+      fireEvent.keyDown(button, { key: "Escape" });
+      expect(screen.queryByRole("tooltip")).toBeNull();
+      fireEvent.mouseEnter(button.parentElement!);
+      expect(screen.getByRole("tooltip")).toBeTruthy();
+      fireEvent.mouseLeave(button.parentElement!);
+      expect(screen.queryByRole("tooltip")).toBeNull();
+    });
+
+    it("says there are not enough readings with one", () => {
+      bar([win()], hist(1));
+      fireEvent.focus(screen.getByRole("button", { name: "Claude 5h 42%" }));
+      expect(screen.getByRole("tooltip").textContent).toContain("Not enough readings yet.");
+      expect(screen.getByRole("tooltip").querySelector("svg")).toBeNull();
+    });
   });
 
   it("words the attention control and hides it at 0", () => {

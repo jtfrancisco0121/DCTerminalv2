@@ -1,8 +1,20 @@
 import { useRef, useState, useSyncExternalStore } from "react";
 import type { ConfigDirInfo } from "../bridge";
 import { subscribeUiErrors, uiErrors } from "../uiErrors";
-import type { LimitLine } from "../usage/limits";
+import {
+  formatReset,
+  limitTone,
+  meterValue,
+  periodReadings,
+  trendText,
+  type LimitLine,
+  type RateWindow,
+  type Reading,
+  type WindowHistory,
+} from "../usage/limits";
+import { usageTone } from "../run/words";
 import { ErrorsPopover } from "./ErrorsPopover";
+import { Meter } from "./Meter";
 
 type Props = {
   /** This window's Claude account. Null until the window context loads. */
@@ -11,6 +23,9 @@ type Props = {
   folder?: string | null;
   /** Claude 5h/7d line. Null hides it. */
   usage?: LimitLine | null;
+  /** The limit windows and their saved readings: one meter each, with a sparkline on hover or focus. */
+  windows?: RateWindow[];
+  history?: WindowHistory[];
   /** A short notice (a failed action), with its dismiss. */
   message?: { text: string; onDismiss: () => void } | null;
   /** Tabs that need you (every window) and unfinished runs. Null hides the control. */
@@ -43,6 +58,73 @@ export function accountFolderWarning(config: ConfigDirInfo): string | null {
   return `Claude config folder not found: ${config.path}`;
 }
 
+const SPARK_W = 140;
+const SPARK_H = 36;
+
+/** A sparkline of utilization (0-100) over time as an inline SVG polyline. */
+function Sparkline({ readings, label }: { readings: Reading[]; label: string }) {
+  const first = readings[0].atMs;
+  const span = Math.max(readings[readings.length - 1].atMs - first, 1);
+  const points = readings
+    .map((r) => {
+      const x = ((r.atMs - first) / span) * (SPARK_W - 4) + 2;
+      const y = SPARK_H - 2 - (Math.min(100, Math.max(0, r.utilization ?? 0)) / 100) * (SPARK_H - 4);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return (
+    <svg className="usage-spark-line" width={SPARK_W} height={SPARK_H} viewBox={`0 0 ${SPARK_W} ${SPARK_H}`} role="img" aria-label={label}>
+      <polyline points={points} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** One window's meter button; hover or focus opens its sparkline, Escape or leaving closes it. */
+function StatusMeter({ window, history, now }: { window: RateWindow; history: WindowHistory[]; now: number }) {
+  const [open, setOpen] = useState(false);
+  const value = meterValue(window, now);
+  const label = `Claude ${window.label} ${value === null ? "unknown" : `${Math.round(value)}%`}`;
+  const readings = periodReadings(window, history);
+  const trend = trendText(window, history);
+  const reset = formatReset(window.resetsAt);
+  const id = `usage-spark-${window.rateLimitType}`;
+  return (
+    <span className="status-meter-wrap" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button
+        type="button"
+        className="status-meter"
+        aria-label={label}
+        aria-describedby={open ? id : undefined}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && open) {
+            event.stopPropagation();
+            setOpen(false);
+          }
+        }}
+      >
+        <span className="status-meter-name" aria-hidden="true">
+          {window.label}
+        </span>
+        <Meter value={value} tone={value === null ? "muted" : usageTone(limitTone(window))} label={label} className="status-meter-bar" />
+      </button>
+      {open && (
+        <div className="usage-spark" id={id} role="tooltip">
+          <div className="usage-spark-title">{label}</div>
+          {readings.length >= 2 ? (
+            <Sparkline readings={readings} label={`${window.label} usage over this period`} />
+          ) : (
+            <div>Not enough readings yet.</div>
+          )}
+          {trend && <div>{trend}</div>}
+          {reset && <div>resets {reset}</div>}
+        </div>
+      )}
+    </span>
+  );
+}
+
 /**
  * One strip under the terminal: the window's account and its folder, the
  * active tab's folder, Claude usage, and the window and settings buttons.
@@ -51,6 +133,8 @@ export function StatusBar({
   account,
   folder = null,
   usage = null,
+  windows = [],
+  history = [],
   message = null,
   attention = null,
   onAttention,
@@ -66,6 +150,7 @@ export function StatusBar({
   };
   const attentionLabel = attention ? attentionText(attention) : null;
   const warning = account ? accountFolderWarning(account.config) : null;
+  const now = Date.now();
   return (
     <footer className="status-bar" aria-label="Status bar">
       {account && (
@@ -90,6 +175,13 @@ export function StatusBar({
           data-testid="status-usage"
         >
           {usage.text}
+        </span>
+      )}
+      {windows.length > 0 && (
+        <span className="status-meters" data-testid="status-meters">
+          {windows.map((w) => (
+            <StatusMeter key={w.rateLimitType} window={w} history={history} now={now} />
+          ))}
         </span>
       )}
       {message && (
