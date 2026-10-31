@@ -5,6 +5,7 @@ import {
   checkTone,
   ciChip,
   gateTone,
+  groupTimeline,
   localTime,
   minutesText,
   planReviewTone,
@@ -231,5 +232,31 @@ describe("run steps", () => {
     expect(reachedStep([line("fixing")])).toBeNull();
     expect(reachedStep([line("planning"), line("building")], "epic-plan")).toBe("planning");
     expect(reachedStep([])).toBeNull();
+  });
+});
+
+describe("groupTimeline", () => {
+  const line = (stage: string | null, n: number) => ({ time: `2026-10-27T10:${String(n).padStart(2, "0")}:00Z`, stage, text: `line ${n}` });
+
+  it("groups consecutive stages, newest first, and a returning stage forms a new group", () => {
+    const groups = groupTimeline([line("planning", 0), line("building", 1), line("building", 2), line("fixing", 3), line("building", 4), line(null, 5)]);
+    expect(groups.map((g) => `${g.label}:${g.lines.length}`)).toEqual(["Other:1", "Building:1", "fixing:1", "Building:2", "Planning:1"]);
+    expect(groups[3]!.lines.map((l) => l.text)).toEqual(["line 2", "line 1"]);
+  });
+
+  it("keeps only the newest 30 lines", () => {
+    const lines = Array.from({ length: 40 }, (_, i) => line("building", i));
+    const groups = groupTimeline(lines);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.lines).toHaveLength(30);
+    expect(groups[0]!.lines[0]!.text).toBe("line 39");
+    expect(groupTimeline(lines, 5)[0]!.lines).toHaveLength(5);
+  });
+
+  it("keys stay the same when a line is appended to the newest group", () => {
+    const before = groupTimeline([line("planning", 0), line("building", 1)]);
+    const after = groupTimeline([line("planning", 0), line("building", 1), line("building", 2)]);
+    expect(after.map((g) => g.key)).toEqual(before.map((g) => g.key));
+    expect(new Set(after.map((g) => g.key)).size).toBe(2);
   });
 });

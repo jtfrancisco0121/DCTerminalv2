@@ -26,6 +26,7 @@ import {
   ciChip,
   draftBadge,
   gateTone,
+  groupTimeline,
   localTime,
   prStateText,
   prsDone,
@@ -38,6 +39,7 @@ import {
   stageText,
   storiesText,
   wantsAppChecks,
+  type TimelineGroup,
 } from "../run/words";
 import { ClickUpRunSection } from "../clickup/ClickUpRunSection";
 import { FleetTimeline } from "./FleetTimeline";
@@ -121,6 +123,25 @@ function TimelineTime({ time }: { time: string }) {
     <span className="run-time" title={local?.title ?? time}>
       {local?.short ?? time.slice(11, 16)}
     </span>
+  );
+}
+
+/** One stage's lines. It is open or closed only when it first mounts, so the user's choice survives a poll. */
+function TimelineGroupView({ group, openAtMount }: { group: TimelineGroup; openAtMount: boolean }) {
+  const [open] = useState(openAtMount);
+  return (
+    <details className="timeline-group" open={open}>
+      <summary>
+        {group.label} · {group.lines.length} {group.lines.length === 1 ? "line" : "lines"}
+      </summary>
+      <ol>
+        {group.lines.map((line, at) => (
+          <li key={`${line.time ?? ""}-${at}`}>
+            {line.time && <TimelineTime time={line.time} />} {line.text}
+          </li>
+        ))}
+      </ol>
+    </details>
   );
 }
 
@@ -375,7 +396,7 @@ function BmadSection({
 
 /** The progress panel for one run, drawn from a read of its folder. */
 export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch, onSlopCheck, away }: ViewProps) {
-  const timeline = view.timeline.slice(-30).reverse();
+  const timeline = groupTimeline(view.timeline);
   return (
     <aside className="run-panel" aria-label="Run progress">
       {away && <AwayNotice lines={away.lines} onDismiss={away.dismiss} />}
@@ -466,13 +487,9 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
       {timeline.length > 0 && (
         <section className="run-timeline" aria-label="Timeline">
           <h3>Timeline</h3>
-          <ol>
-            {timeline.map((line, at) => (
-              <li key={`${line.time ?? ""}-${at}`}>
-                {line.time && <TimelineTime time={line.time} />} {line.text}
-              </li>
-            ))}
-          </ol>
+          {timeline.map((group, at) => (
+            <TimelineGroupView key={group.key} group={group} openAtMount={at === 0} />
+          ))}
         </section>
       )}
     </aside>

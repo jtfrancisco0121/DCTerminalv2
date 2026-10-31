@@ -395,3 +395,28 @@ export function runSteps(
   });
   return { steps, failed };
 }
+
+export type TimelineGroup = { key: string; stage: string | null; label: string; lines: LogLine[] };
+
+/**
+ * The last `limit` log lines, newest first, grouped by consecutive stage (a
+ * stage that comes back forms a new group). A line with no stage is "Other".
+ * The key is the stage plus the group's oldest line, so it stays the same
+ * while newer lines are appended and the window shifts.
+ */
+export function groupTimeline(lines: ReadonlyArray<LogLine>, limit = 30): TimelineGroup[] {
+  const groups: TimelineGroup[] = [];
+  for (const line of lines.slice(-limit).reverse()) {
+    const last = groups[groups.length - 1];
+    if (last && last.stage === line.stage) {
+      last.lines.push(line);
+    } else {
+      groups.push({ key: "", stage: line.stage, label: line.stage ? stageText(line.stage) : "Other", lines: [line] });
+    }
+  }
+  for (const group of groups) {
+    const oldest = group.lines[group.lines.length - 1];
+    group.key = `${group.stage ?? ""}|${oldest.time ?? oldest.text}`;
+  }
+  return groups;
+}

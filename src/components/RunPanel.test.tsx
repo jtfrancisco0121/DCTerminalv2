@@ -390,6 +390,35 @@ describe("RunPanelView", () => {
     expect(items[0].textContent).toContain("waiting for ship approval");
   });
 
+  it("groups the timeline by stage: the newest group open, older ones closed, the user's choice kept", () => {
+    const line = (stage: string, n: number) => ({ time: `2026-10-27T10:0${n}:00Z`, stage, text: `line ${n}` });
+    const timeline = [line("planning", 1), line("planning", 2), line("building", 3)];
+    const { rerender } = render(
+      <RunPanelView view={{ ...view, timeline }} checking={false} onRerunChecks={vi.fn()} onOpenFile={vi.fn()} onOpenUrl={vi.fn()} onCleanUp={vi.fn()} />,
+    );
+    const groups = () => Array.from(screen.getByLabelText("Timeline").querySelectorAll("details"));
+    expect(groups().map((g) => g.open)).toEqual([true, false]);
+    expect(groups().map((g) => g.querySelector("summary")?.textContent)).toEqual(["Building · 1 line", "Planning · 2 lines"]);
+    groups()[1]!.open = true;
+    rerender(
+      <RunPanelView
+        view={{ ...view, timeline: [...timeline, line("building", 4)] }}
+        checking={false}
+        onRerunChecks={vi.fn()}
+        onOpenFile={vi.fn()}
+        onOpenUrl={vi.fn()}
+        onCleanUp={vi.fn()}
+      />,
+    );
+    expect(groups().map((g) => g.open)).toEqual([true, true]);
+    expect(groups()[0]!.querySelector("summary")?.textContent).toBe("Building · 2 lines");
+  });
+
+  it("puts lines without a stage under Other", () => {
+    renderPanel({ timeline: [{ time: null, stage: null, text: "stray" }] });
+    expect(screen.getByLabelText("Timeline").querySelector("summary")?.textContent).toBe("Other · 1 line");
+  });
+
   it("lists the lines since you were away with local times, at most 10, a count of the rest and Dismiss", () => {
     vi.stubEnv("TZ", "Asia/Manila");
     try {
