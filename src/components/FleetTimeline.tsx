@@ -1,8 +1,16 @@
 import { useEffect, useState } from "react";
-import { costText, layoutTimeline, minutesText, runTimeline, type Timeline } from "../run/timeline";
+import { costText, laneMinutes, layoutTimeline, minutesText, runTimeline, type Timeline } from "../run/timeline";
+import { localTime } from "../run/words";
 import { errorText } from "./InlineNotice";
 
 const REFRESH_MS = 5000;
+
+/** "10 min · $0.40" (an unfinished lane adds "so far"); the state word is in the bar's name. */
+function laneTotal(lane: Timeline["lanes"][number], hiMs: number): string {
+  const minutes = laneMinutes(lane, hiMs);
+  const parts = [minutes === null ? null : minutesText(minutes), costText(lane.costUsd)].filter((p): p is string => p !== null);
+  return lane.state === "unfinished" ? `${parts.join(" · ")} so far` : parts.join(" · ");
+}
 
 /** The run panel's "Agents" section: one lane per agent, approval waits shaded, totals for work, waiting and cost. */
 export function FleetTimelineView({ timeline }: { timeline: Timeline }) {
@@ -14,6 +22,19 @@ export function FleetTimelineView({ timeline }: { timeline: Timeline }) {
         <span>Work {minutesText(timeline.workMinutes)}</span> · <span>Waiting for you {minutesText(timeline.waitMinutes)}</span> ·{" "}
         <span>{costText(timeline.costUsd)}</span>
       </p>
+      {layout.stages.length > 0 && (
+        <div className="fleet-stages" data-testid="fleet-stages">
+          <span />
+          <span className="fleet-stages-track">
+            {layout.stages.map((stage, i) => (
+              <span key={i} className="fleet-stage" title={stage.label} style={{ left: `${stage.left}%`, width: `${stage.width}%` }}>
+                {stage.labelled ? stage.label : null}
+              </span>
+            ))}
+          </span>
+          <span />
+        </div>
+      )}
       <ol className="fleet-lanes">
         {layout.bars.map(({ lane, left, width, open, name }) => (
           <li key={lane.id} className="fleet-lane">
@@ -31,10 +52,20 @@ export function FleetTimelineView({ timeline }: { timeline: Timeline }) {
                 style={{ left: `${left}%`, width: `${width}%` }}
               />
             </span>
-            <span className="fleet-state">{lane.state === "unfinished" ? "unfinished" : lane.state}</span>
+            <span className="fleet-lane-total">{laneTotal(lane, layout.axis?.endMs ?? 0)}</span>
           </li>
         ))}
       </ol>
+      {layout.axis && (
+        <div className="fleet-axis" data-testid="fleet-axis">
+          <span />
+          <span className="fleet-axis-ends">
+            <span title={localTime(layout.axis.startMs)?.title}>{localTime(layout.axis.startMs)?.short}</span>
+            <span title={localTime(layout.axis.endMs)?.title}>{localTime(layout.axis.endMs)?.short}</span>
+          </span>
+          <span />
+        </div>
+      )}
     </div>
   );
 }

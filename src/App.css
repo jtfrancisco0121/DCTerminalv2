@@ -2094,12 +2094,59 @@ body,
   gap: 4px;
 }
 
-.fleet-lane {
+.fleet-lane,
+.fleet-stages,
+.fleet-axis {
   display: grid;
-  grid-template-columns: 7rem 1fr 5rem;
+  grid-template-columns: 7rem 1fr 9rem;
   align-items: center;
   gap: 6px;
   font-size: 12px;
+}
+
+.fleet-stages {
+  align-items: stretch;
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+
+.fleet-stages-track {
+  position: relative;
+  height: 16px;
+}
+
+.fleet-stage {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--fg-muted) 18%, transparent);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fleet-stage:nth-child(even) {
+  background: color-mix(in srgb, var(--fg-muted) 10%, transparent);
+}
+
+.fleet-axis {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.fleet-axis-ends {
+  display: flex;
+  justify-content: space-between;
+}
+
+.fleet-lane-total {
+  color: var(--fg-muted);
+  text-align: right;
 }
 
 .fleet-track {
