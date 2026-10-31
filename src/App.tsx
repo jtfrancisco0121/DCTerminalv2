@@ -6,6 +6,7 @@ import {
   closeTab,
   getAppState,
   attentionSummary,
+  runTabs,
   getClaudeUsage,
   getSettings,
   moveTab,
@@ -20,6 +21,7 @@ import {
   splitTab,
   windowContext,
   type AppStateSnapshot,
+  type ActiveRun,
   type AttentionSummary,
   type RateWindow,
   type SettingsView,
@@ -38,7 +40,7 @@ import { RunsView } from "./components/RunsView";
 import { StartScreen } from "./components/StartScreen";
 import { resumeRun, runOverview, startRun, type RunOverview, type StartedRun } from "./run/api";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
-import { stageText } from "./run/words";
+import { stageText, tabProgress, type TabProgress } from "./run/words";
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
 import { TabBar } from "./components/TabBar";
@@ -187,6 +189,16 @@ function App() {
   usePushRefresh(["attention", TAB_STATE_EVENT, RUN_STATE_EVENT], refreshAttention, {
     fastMs: ATTENTION_POLL_MS,
   });
+
+  // Every run tab of every window, finished ones included: the tab bar's
+  // progress and (later) the run dashboard read this one state.
+  const [runTabReadings, setRunTabReadings] = useState<ActiveRun[]>([]);
+  const refreshRunTabs = useCallback(
+    () =>
+      runTabs().then(setRunTabReadings, (err: unknown) => reportError("Run progress", err, { once: "run-tabs" })),
+    [],
+  );
+  usePushRefresh([RUN_STATE_EVENT, TAB_STATE_EVENT], refreshRunTabs, { fastMs: 3000 });
 
   useEffect(() => subscribeLivePty(() => setLiveVersion((n) => n + 1)), []);
   useEffect(() => subscribePtyExit(() => refreshUsage()), [refreshUsage]);
@@ -615,6 +627,14 @@ function App() {
   // A Claude tab of a removed account shows the notice, never a terminal.
   const blocked = active ? accountProblem(active, accountMissing) : null;
 
+  // This window's run tabs only; a tab with no run (or a stage-less one) has no entry.
+  const progress: Record<string, TabProgress> = {};
+  for (const reading of runTabReadings) {
+    if (!(state?.tabs ?? []).some((tab) => tab.id === reading.tabId)) continue;
+    const found = tabProgress(reading);
+    if (found) progress[reading.tabId] = found;
+  }
+
   const exited = new Set((state?.tabs ?? []).filter((tab) => ptyExitCode(tab.id) != null).map((tab) => tab.id));
   const fontSize = settings?.terminal.fontSize ?? 14;
 
@@ -626,6 +646,7 @@ function App() {
           activeTabId={state.activeTabId}
           exited={exited}
           activity={activity}
+          progress={progress}
           onActivityClick={(id) => setUsageTab((current) => (current === id ? null : id))}
           onSelect={select}
           onClose={requestClose}

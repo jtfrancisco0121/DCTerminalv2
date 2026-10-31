@@ -71,6 +71,7 @@ vi.mock("./bridge", () => ({
   focusTab: vi.fn(async () => null),
   attentionSummary: vi.fn(async () => ({ needsYou: 0, activeRuns: 0 })),
   activeRuns: vi.fn(async () => []),
+  runTabs: vi.fn(async () => []),
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 // The terminal itself is xterm in a real webview; here it is a marker.

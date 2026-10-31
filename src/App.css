@@ -546,6 +546,24 @@ body,
   border-bottom: 0;
   border-radius: var(--radius-md) var(--radius-md) 0 0;
   color: var(--fg-muted);
+  position: relative;
+}
+
+/* Run progress (TabBar progress prop): an underline as wide as the run's
+   progress, in the run's tone; a waiting run gets an outline in the "you" tone. */
+.tab-progress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+  pointer-events: none;
+}
+
+.tab-waiting {
+  outline: 1px solid var(--attention);
+  outline-offset: -1px;
 }
 
 .tab-active {
