@@ -1,7 +1,7 @@
 /** Plain words for the run panel: stages, PR states, check results. */
 
 import type { UsageTone } from "../usage/limits";
-import type { PrView, RunView } from "./api";
+import type { LogLine, PrView, RunView } from "./api";
 
 /**
  * The one status vocabulary of the UI. Components pick a tone from these
@@ -322,4 +322,76 @@ export function localTime(at: string | number): { short: string; title: string }
     hourCycle: "h23",
   }).format(date);
   return { short, title: `${full} (UTC ${date.toISOString().replace(/\.\d{3}Z$/, "Z")})` };
+}
+
+/** The steps of a normal run, in order (the `stage` values of status.json). */
+export const RUN_STEPS: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "planning", label: "Planning" },
+  { key: "plan-approval", label: "Plan approval" },
+  { key: "building", label: "Building" },
+  { key: "ship-approval", label: "Ship approval" },
+  { key: "shipping", label: "Shipping" },
+  { key: "done", label: "Done" },
+];
+
+/** An epic-plan run only plans: it never builds or ships (plugin/scripts/state.sh). */
+export const EPIC_PLAN_STEPS: ReadonlyArray<string> = ["planning", "plan-approval", "done"];
+
+/** The steps where the user answers. */
+export const USER_STEPS: ReadonlyArray<string> = ["plan-approval", "ship-approval"];
+
+/** PR states that count as done in `n/m PRs` (the same set as src-tauri/src/observe/attention.rs). */
+export const PR_DONE_STATES: ReadonlyArray<string> = ["reviewed", "drafted", "opened", "pushed", "local-only"];
+
+export function prsDone(prs: ReadonlyArray<{ state: string | null }>): number {
+  return prs.filter((pr) => pr.state != null && PR_DONE_STATES.includes(pr.state)).length;
+}
+
+function stepSetFor(mode: string | null | undefined): ReadonlyArray<{ key: string; label: string }> {
+  return mode === "epic-plan" ? RUN_STEPS.filter((step) => EPIC_PLAN_STEPS.includes(step.key)) : RUN_STEPS;
+}
+
+/** The step a failed run had reached: the stage of the last log line (oldest first) that names a step of the run's mode. */
+export function reachedStep(timeline: ReadonlyArray<LogLine>, mode?: string | null): string | null {
+  const keys = stepSetFor(mode).map((step) => step.key);
+  for (let at = timeline.length - 1; at >= 0; at -= 1) {
+    const stage = timeline[at].stage;
+    if (stage && keys.includes(stage)) return stage;
+  }
+  return null;
+}
+
+export type StepStatus = "done" | "current" | "todo" | "waiting";
+export type RunStep = { key: string; label: string; status: StepStatus; you: boolean; extra?: string };
+
+/**
+ * The stepper's steps for a run, or null for a stage the stepper does not
+ * know (the stage sentence stands alone). A `failed` run shows the steps up to
+ * `reached` done and the rest todo, then the failed end.
+ */
+export function runSteps(
+  stage: string | null,
+  waitingFor: string | null,
+  prs: { done: number; total: number },
+  opts: { mode?: string | null; reached?: string | null } = {},
+): { steps: RunStep[]; failed: boolean } | null {
+  if (!stage) return null;
+  const set = stepSetFor(opts.mode);
+  const index = (key: string | null | undefined) => (key ? set.findIndex((step) => step.key === key) : -1);
+  const failed = stage === "failed";
+  const at = index(stage);
+  if (!failed && at < 0) return null;
+  const reachedAt = failed ? index(opts.reached) : -1;
+  const waitAt = failed ? -1 : index(waitingFor);
+  const steps = set.map((step, i): RunStep => {
+    let status: StepStatus;
+    if (failed) status = i <= reachedAt ? "done" : "todo";
+    else if (stage === "done") status = "done";
+    else if (waitAt >= 0) status = i < waitAt ? "done" : i === waitAt ? "waiting" : "todo";
+    else status = i < at ? "done" : i === at ? "current" : "todo";
+    const out: RunStep = { key: step.key, label: step.label, status, you: USER_STEPS.includes(step.key) };
+    if (step.key === "building" && prs.total > 0) out.extra = `${prs.done}/${prs.total} PRs`;
+    return out;
+  });
+  return { steps, failed };
 }

@@ -1365,7 +1365,8 @@ body,
 .run-rail {
   flex: none;
   display: flex;
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: center;
   width: 1.75rem;
   border-left: 1px solid var(--border);
   padding-top: var(--space-2);
@@ -2274,4 +2275,100 @@ body,
   flex-wrap: wrap;
   gap: var(--space-1);
   margin: 0 0 var(--space-2);
+}
+
+/* Stepper (src/components/Stepper.tsx): the steps of a run. */
+.stepper {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin: var(--space-1) 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-xs);
+}
+
+.step {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-muted);
+}
+
+.step + .step::before {
+  content: "";
+  width: 10px;
+  border-top: 1px solid var(--border);
+  margin-right: var(--space-1);
+}
+
+.step-current,
+.step-waiting,
+.step-done {
+  color: var(--fg);
+}
+
+.step-current .step-label {
+  font-weight: 700;
+}
+
+.step-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+}
+
+.step-current .step-dot {
+  background: currentColor;
+}
+
+.step-done .step-dot {
+  background: var(--tone-bg);
+}
+
+/* Waiting for you: a hollow dot with a ring, so it differs from warn by shape. */
+.step-waiting .step-dot {
+  margin: 0 3px;
+  box-shadow:
+    0 0 0 2px var(--bg),
+    0 0 0 3.5px currentColor;
+}
+
+.step-mark,
+.step-extra {
+  color: var(--fg-muted);
+}
+
+.step-extra {
+  margin-left: 2px;
+}
+
+.stepper-vertical {
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+.stepper-vertical .step + .step::before {
+  width: 0;
+  height: 8px;
+  margin: 2px 0;
+  border-top: 0;
+  border-left: 1px solid var(--border);
+}
+
+.stepper-vertical .step {
+  flex-direction: column;
+}
+
+.stepper-compact {
+  flex-wrap: nowrap;
+  gap: 0 var(--space-1);
 }

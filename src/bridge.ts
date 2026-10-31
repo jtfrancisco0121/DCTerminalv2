@@ -394,6 +394,8 @@ export type ActiveRun = {
   runDir: string | null;
   stage: string | null;
   waitingFor: string | null;
+  /** The run's mode (`epic-plan`); missing or null is a normal run. */
+  runMode?: string | null;
   stalled: boolean;
   prsDone: number;
   prsTotal: number;

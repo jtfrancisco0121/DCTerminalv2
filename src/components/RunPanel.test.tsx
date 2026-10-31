@@ -203,6 +203,40 @@ describe("RunPanelView", () => {
     expect(screen.queryByTestId("bmad")).toBeNull();
   });
 
+  it("shows the stepper beside the stage, and only the sentence for an unknown stage", () => {
+    renderPanel({ stage: "building", waitingFor: null });
+    expect(screen.getByRole("list", { name: "Run steps" })).toBeTruthy();
+    expect(screen.getByTestId("run-stage").textContent).toBe("Building");
+    cleanup();
+    renderPanel({ stage: "time-travel", waitingFor: null });
+    expect(screen.queryByRole("list", { name: "Run steps" })).toBeNull();
+    expect(screen.getByTestId("run-stage").textContent).toBe("time-travel");
+    cleanup();
+    renderPanel({ stage: null, waitingFor: null });
+    expect(screen.queryByRole("list", { name: "Run steps" })).toBeNull();
+    expect(screen.getByTestId("run-stage").textContent).toBe("Starting");
+  });
+
+  it("a failed run shows the step it reached from the log", () => {
+    renderPanel({
+      stage: "failed",
+      waitingFor: null,
+      timeline: [
+        { time: null, stage: "planning", text: "a" },
+        { time: null, stage: "building", text: "b" },
+        { time: null, stage: "failed", text: "c" },
+      ],
+    });
+    expect(screen.getByTitle("Building").className).toContain("step-done");
+    expect(screen.getByTitle("Ship approval (your step)").className).toContain("step-todo");
+    expect(screen.getByText("Failed", { selector: ".step-label" })).toBeTruthy();
+  });
+
+  it("an epic-plan run at done has three steps", () => {
+    renderPanel({ stage: "done", waitingFor: null, runMode: "epic-plan" });
+    expect(screen.getByRole("list", { name: "Run steps" }).querySelectorAll("li")).toHaveLength(3);
+  });
+
   it("shows the stage, the approval card, and the plan", () => {
     renderPanel();
     expect(screen.getByTestId("run-stage").textContent).toBe("Waiting for your go to open the PRs");

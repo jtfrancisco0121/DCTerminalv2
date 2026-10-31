@@ -193,6 +193,8 @@ pub struct RunFacts {
     pub stage: Option<String>,
     /// status.json `waitingFor` (`plan-approval`, `ship-approval`).
     pub waiting_for: Option<String>,
+    /// meta.json's `mode` (`epic-plan`); `None` is a normal run.
+    pub run_mode: Option<String>,
     pub prs_done: u32,
     pub prs_total: u32,
     /// PRs whose app check failed, timed out or errored.
@@ -519,6 +521,8 @@ pub struct TabSnap {
     pub run_dir: Option<String>,
     pub stage: Option<String>,
     pub waiting_for: Option<String>,
+    /// The run's mode (`epic-plan`); `None` is a normal run.
+    pub run_mode: Option<String>,
     pub stalled: bool,
     pub prs_done: u32,
     pub prs_total: u32,
@@ -565,6 +569,7 @@ impl Snapshot {
                         run_dir: t.run_dir.clone(),
                         stage: run.and_then(|r| r.stage.clone()),
                         waiting_for: run.and_then(|r| r.waiting_for.clone()),
+                        run_mode: run.and_then(|r| r.run_mode.clone()),
                         stalled: t.stalled,
                         prs_done: run.map_or(0, |r| r.prs_done),
                         prs_total: run.map_or(0, |r| r.prs_total),
@@ -803,6 +808,7 @@ impl Reader {
                 .as_ref()
                 .and_then(|v| v.waiting_for.clone())
                 .filter(|w| !w.is_empty()),
+            run_mode: folder::run_mode_of(run_dir),
             prs_done: prs
                 .iter()
                 .filter(|pr| {
@@ -1839,6 +1845,7 @@ mod tests {
         waiting.waiting_for = Some("plan-approval".into());
         waiting.prs_total = 3;
         waiting.prs_done = 1;
+        waiting.run_mode = Some("epic-plan".into());
         let mut done = run("r-2");
         done.stage = Some("done".into());
         let runs: HashMap<String, RunFacts> = [waiting, done]
@@ -1863,6 +1870,8 @@ mod tests {
         assert_eq!(active.len(), 1);
         assert_eq!((active[0].prs_done, active[0].prs_total), (1, 3));
         assert_eq!(active[0].tab_id, "t1");
+        assert_eq!(active[0].run_mode.as_deref(), Some("epic-plan"));
+        assert_eq!(snap.tabs[1].run_mode, None);
         assert_eq!(Snapshot::default().summary(), Summary::default());
         assert_eq!(snap.tabs[0].waiting_for.as_deref(), Some("plan-approval"));
         assert_eq!(snap.tabs[2].activity, TabActivity::NeedsYou);

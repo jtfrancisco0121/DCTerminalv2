@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { activeRuns, focusTab, type ActiveRun } from "../bridge";
 import { stageText } from "../run/words";
+import { Stepper } from "./Stepper";
 import { BatchOverview } from "./BatchOverview";
 import { reportError } from "../uiErrors";
 import { RUN_STATE_EVENT, TAB_STATE_EVENT, usePushRefresh } from "../run/events";
@@ -52,6 +53,13 @@ export function ActiveRuns({ onClose, onAllRuns }: Props) {
                 <span className="active-flag active-flag-wait"> needs you</span>
               )}
               {run.stalled && <span className="active-flag active-flag-stall"> no progress</span>}
+              <Stepper
+                stage={run.stage}
+                waitingFor={run.waitingFor}
+                prs={{ done: run.prsDone, total: run.prsTotal }}
+                mode={run.runMode}
+                variant="compact"
+              />
             </div>
             <button
               type="button"

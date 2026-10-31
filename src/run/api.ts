@@ -188,6 +188,8 @@ export type RunView = {
   hasReport: boolean;
   /** meta.json's review mode; missing is `local`. */
   reviewMode?: string;
+  /** meta.json's `mode` (`epic-plan`); missing or null is a normal run. */
+  runMode?: string | null;
   /** status.json has `shipApproval`. */
   shipApproved?: boolean;
   /** BMAD planning; missing or null when the run has it off (or is older). */

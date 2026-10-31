@@ -9,6 +9,7 @@ import {
   STEP_REM,
   type PanelLayout,
 } from "../runPanelLayout";
+import { Stepper } from "./Stepper";
 
 type Props = {
   windowId: string;
@@ -16,6 +17,12 @@ type Props = {
   stageLabel: string;
   /** The run waits for the user (an approval stop): the rail says so. */
   attention: boolean;
+  /** The run's stage and progress, for the stepper in the collapsed rail (none: no stepper). */
+  stage?: string | null;
+  waitingFor?: string | null;
+  prs?: { done: number; total: number };
+  mode?: string | null;
+  reached?: string | null;
   /** The layout changed: the terminal beside the panel refits. */
   onLayoutChange?: () => void;
   children: ReactNode;
@@ -26,7 +33,7 @@ type Props = {
  * keys; double-click resets), a collapse control, and a narrow rail when
  * collapsed. Width and state are kept per window.
  */
-export function RunPanelShell({ windowId, stageLabel, attention, onLayoutChange, children }: Props) {
+export function RunPanelShell({ windowId, stageLabel, attention, stage, waitingFor, prs, mode, reached, onLayoutChange, children }: Props) {
   const [layout, setLayout] = useState<PanelLayout>(() => loadLayout(windowId));
   const frame = useRef<HTMLDivElement>(null);
   const first = useRef(true);
@@ -71,6 +78,16 @@ export function RunPanelShell({ windowId, stageLabel, attention, onLayoutChange,
   if (layout.collapsed) {
     return (
       <aside className="run-rail" aria-label="Run progress (collapsed)">
+        {stage != null && (
+          <Stepper
+            stage={stage}
+            waitingFor={waitingFor ?? null}
+            prs={prs ?? { done: 0, total: 0 }}
+            mode={mode}
+            reached={reached}
+            variant="vertical"
+          />
+        )}
         <button
           type="button"
           className={`run-rail-button${attention ? " run-rail-attention" : ""}`}

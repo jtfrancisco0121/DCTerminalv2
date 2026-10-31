@@ -48,11 +48,19 @@ describe("ActiveRuns", () => {
     await act(async () => {});
     const a = within(screen.getByTestId("active-a"));
     expect(a.getByText(/Building · 1\/3 PRs/)).toBeTruthy();
+    expect(a.getByRole("list", { name: "Run steps" }).querySelectorAll("li")).toHaveLength(6);
     expect(within(screen.getByTestId("active-b")).getByText("waiting for you")).toBeTruthy();
     expect(within(screen.getByTestId("active-c")).getByText("no progress")).toBeTruthy();
     fireEvent.click(within(screen.getByTestId("active-b")).getByText("Go to tab"));
     expect(focusTab).toHaveBeenCalledWith("b");
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("shows three steps for an epic-plan run", async () => {
+    list = [run("e", { runMode: "epic-plan", stage: "planning", prsTotal: 0 })];
+    render(<ActiveRuns onClose={() => {}} onAllRuns={() => {}} />);
+    await act(async () => {});
+    expect(within(screen.getByTestId("active-e")).getByRole("list", { name: "Run steps" }).querySelectorAll("li")).toHaveLength(3);
   });
 
   it("polls at most every 3 s while open, closes on Escape, and the footer opens All runs", async () => {

@@ -290,6 +290,7 @@ mod tests {
             run_dir: None,
             stage: None,
             waiting_for: waiting_for.map(str::to_string),
+            run_mode: None,
             stalled: false,
             prs_done: 0,
             prs_total: 0,

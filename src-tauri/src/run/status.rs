@@ -189,6 +189,8 @@ pub struct RunView {
     pub has_report: bool,
     /// meta.json's `reviewMode` (`github` / `local`; missing is `local`).
     pub review_mode: String,
+    /// meta.json's `mode` (`epic-plan`); `None` is a normal run.
+    pub run_mode: Option<String>,
     /// status.json has `shipApproval` (the yes at stop #2).
     pub ship_approved: bool,
     /// BMAD planning, when the run's mode is auto or on.
@@ -626,6 +628,7 @@ pub fn read_run(run_dir: &Path, checks_running: bool) -> RunView {
     view.run_id = run_id;
     view.run_dir = run_dir.display().to_string();
     view.review_mode = super::folder::review_mode_of(run_dir);
+    view.run_mode = super::folder::run_mode_of(run_dir);
     // BMAD: shown only for a run started with auto or on; an old run (no
     // `bmad` in meta.json) shows nothing.
     let bmad_mode = super::folder::bmad_mode_of(run_dir);
@@ -883,6 +886,18 @@ mod tests {
             "unreadable"
         );
         assert_eq!(gate_status(None, &ok).kind, "none");
+    }
+
+    #[test]
+    fn the_run_mode_comes_from_meta_json_and_only_when_known() {
+        let dir = TempDir::new("run_mode");
+        let run = dir.join("r-1");
+        std::fs::create_dir_all(&run).unwrap();
+        assert_eq!(read_run(&run, false).run_mode, None);
+        std::fs::write(run.join("meta.json"), r#"{"mode":"epic-plan"}"#).unwrap();
+        assert_eq!(read_run(&run, false).run_mode.as_deref(), Some("epic-plan"));
+        std::fs::write(run.join("meta.json"), r#"{"mode":"bogus"}"#).unwrap();
+        assert_eq!(read_run(&run, false).run_mode, None);
     }
 
     #[test]

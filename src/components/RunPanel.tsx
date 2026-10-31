@@ -28,7 +28,9 @@ import {
   gateTone,
   localTime,
   prStateText,
+  prsDone,
   prStateTone,
+  reachedStep,
   reviewText,
   reviewTone,
   runFinished,
@@ -40,6 +42,7 @@ import {
 import { ClickUpRunSection } from "../clickup/ClickUpRunSection";
 import { FleetTimeline } from "./FleetTimeline";
 import { Pill } from "./Pill";
+import { Stepper } from "./Stepper";
 import { checkLogPr, readCheckLog } from "../run/observe";
 import { RUN_STATE_EVENT, usePushRefresh } from "../run/events";
 import { AWAY_ROWS, useAwayNotice } from "../run/away";
@@ -380,6 +383,13 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
         <div className="run-stage" data-testid="run-stage">
           {stageText(view.stage)}
         </div>
+        <Stepper
+          stage={view.stage}
+          waitingFor={view.waitingFor}
+          prs={{ done: prsDone(view.prs), total: view.prs.length }}
+          mode={view.runMode}
+          reached={reachedStep(view.timeline, view.runMode)}
+        />
         <div className="hint run-id">{view.runId}</div>
       </header>
       {view.statusProblem && <p className="hint warn">{view.statusProblem}</p>}
@@ -705,6 +715,11 @@ export function RunPanel({
         windowId={windowId ?? "main"}
         stageLabel={stageText(view.stage)}
         attention={Boolean(view.waitingFor)}
+        stage={view.stage}
+        waitingFor={view.waitingFor}
+        prs={{ done: prsDone(view.prs), total: view.prs.length }}
+        mode={view.runMode}
+        reached={reachedStep(view.timeline, view.runMode)}
         onLayoutChange={onLayoutChange}
       >
       <div className="run-panel-clicks" onClickCapture={(event) => { altClick.current = event.altKey; }}>

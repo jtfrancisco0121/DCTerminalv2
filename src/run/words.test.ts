@@ -8,12 +8,15 @@ import {
   localTime,
   minutesText,
   planReviewTone,
+  prsDone,
   prStateTone,
   PUSH_KINDS,
   relativeDate,
+  reachedStep,
   reviewTone,
   riskTone,
   runMatches,
+  runSteps,
   usageTone,
 } from "./words";
 
@@ -146,5 +149,87 @@ describe("approval tones", () => {
     expect(riskTone("NO BLOCKING RISKS")).toBe("success");
     expect(riskTone("RISKS FOUND")).toBe("warn");
     for (const bad of [null, undefined, "", "MAYBE"]) expect(riskTone(bad)).toBe("muted");
+  });
+});
+
+describe("run steps", () => {
+  const none = { done: 0, total: 0 };
+  const status = (stage: string, waitingFor: string | null = null, opts = {}) =>
+    runSteps(stage, waitingFor, none, opts)?.steps.map((step) => `${step.key}:${step.status}`);
+
+  it("lists six steps with the current one marked, for each normal stage", () => {
+    expect(status("planning")).toEqual([
+      "planning:current",
+      "plan-approval:todo",
+      "building:todo",
+      "ship-approval:todo",
+      "shipping:todo",
+      "done:todo",
+    ]);
+    expect(status("building")?.slice(0, 4)).toEqual(["planning:done", "plan-approval:done", "building:current", "ship-approval:todo"]);
+    expect(status("shipping")?.[4]).toBe("shipping:current");
+    expect(status("done")?.every((s) => s.endsWith(":done"))).toBe(true);
+    expect(runSteps("building", null, none)?.failed).toBe(false);
+  });
+
+  it("marks the step waited at as waiting, earlier ones done, later ones todo", () => {
+    expect(status("plan-approval", "plan-approval")).toEqual([
+      "planning:done",
+      "plan-approval:waiting",
+      "building:todo",
+      "ship-approval:todo",
+      "shipping:todo",
+      "done:todo",
+    ]);
+    expect(status("ship-approval", "ship-approval")?.slice(2)).toEqual(["building:done", "ship-approval:waiting", "shipping:todo", "done:todo"]);
+  });
+
+  it("marks both approval steps as the user's at every stage", () => {
+    for (const stage of ["planning", "plan-approval", "building", "ship-approval", "shipping", "done", "failed"]) {
+      const steps = runSteps(stage, null, none)?.steps ?? [];
+      expect(steps.filter((s) => s.you).map((s) => s.key), stage).toEqual(["plan-approval", "ship-approval"]);
+    }
+  });
+
+  it("an epic-plan run has Planning, Plan approval and Done only", () => {
+    const at = (stage: string) => runSteps(stage, null, none, { mode: "epic-plan" })?.steps.map((s) => `${s.label}:${s.status}`);
+    expect(at("done")).toEqual(["Planning:done", "Plan approval:done", "Done:done"]);
+    expect(at("planning")).toEqual(["Planning:current", "Plan approval:todo", "Done:todo"]);
+    expect(at("building")).toBeUndefined();
+    expect(runSteps("building", null, none, { mode: "something-new" })?.steps).toHaveLength(6);
+  });
+
+  it("is null for no stage or an unknown one", () => {
+    expect(runSteps(null, null, none)).toBeNull();
+    expect(runSteps("time-travel", null, none)).toBeNull();
+  });
+
+  it("a failed run shows the steps reached, then the failed end", () => {
+    const reached = runSteps("failed", null, none, { reached: "building" });
+    expect(reached?.failed).toBe(true);
+    expect(reached?.steps.map((s) => s.status)).toEqual(["done", "done", "done", "todo", "todo", "todo"]);
+    const unknown = runSteps("failed", null, none);
+    expect(unknown?.failed).toBe(true);
+    expect(unknown?.steps.every((s) => s.status === "todo")).toBe(true);
+  });
+
+  it("shows n/m PRs on Building only with PRs", () => {
+    const withPrs = runSteps("building", null, { done: 2, total: 3 });
+    expect(withPrs?.steps.find((s) => s.key === "building")?.extra).toBe("2/3 PRs");
+    expect(withPrs?.steps.filter((s) => s.extra)).toHaveLength(1);
+    expect(runSteps("building", null, none)?.steps.some((s) => s.extra)).toBe(false);
+  });
+
+  it("counts exactly the five done PR states", () => {
+    const states = ["reviewed", "drafted", "opened", "pushed", "local-only", "building", "fixing", "pending", "needs-attention", null];
+    expect(prsDone(states.map((state) => ({ state })))).toBe(5);
+  });
+
+  it("finds the step a run reached from the newest known-stage line", () => {
+    const line = (stage: string | null) => ({ time: null, stage, text: "x" });
+    expect(reachedStep([line("planning"), line("building"), line("fixing"), line(null)])).toBe("building");
+    expect(reachedStep([line("fixing")])).toBeNull();
+    expect(reachedStep([line("planning"), line("building")], "epic-plan")).toBe("planning");
+    expect(reachedStep([])).toBeNull();
   });
 });
