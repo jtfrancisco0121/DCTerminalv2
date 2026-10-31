@@ -93,6 +93,65 @@ function assertReleaseVersionsMatch() {
   console.log(`release version ${npmVersion} matches across npm, Tauri, and Cargo`);
 }
 
+const THEME_SELECTOR = /^:root(?:\[data-theme="[a-z0-9-]+"\])?$/;
+const HEX_COLOUR = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\b/g;
+
+/**
+ * Hex colours in declaration values outside the theme blocks (`:root` and
+ * `:root[data-theme="…"]`), as `{line, text}`. Colours belong to the themes;
+ * everything else uses their tokens (a hex in a `var()` fallback counts).
+ * Comments are ignored and selectors such as `#root` are not declarations.
+ */
+export function strayHexColours(css) {
+  const clean = css.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, " "));
+  const lines = css.split("\n");
+  const found = [];
+  const stack = [];
+  let buffer = "";
+  let bufferLine = 1;
+  let line = 1;
+  const skipping = () => stack.some(Boolean);
+  const declaration = () => {
+    const colon = buffer.indexOf(":");
+    if (colon >= 0 && !skipping()) {
+      const head = buffer.slice(0, colon);
+      const before = (head.trimStart().match(/\n/g) ?? []).length;
+      const value = buffer.slice(colon + 1);
+      for (const match of value.matchAll(HEX_COLOUR)) {
+        const at = bufferLine + before + (value.slice(0, match.index).match(/\n/g) ?? []).length;
+        found.push({ line: at, text: (lines[at - 1] ?? "").trim() });
+      }
+    }
+    buffer = "";
+  };
+  for (const char of clean) {
+    if (char === "{") {
+      stack.push(THEME_SELECTOR.test(buffer.trim()));
+      buffer = "";
+    } else if (char === ";") {
+      declaration();
+    } else if (char === "}") {
+      declaration();
+      stack.pop();
+    } else {
+      if (buffer.trim() === "" && char.trim() !== "") bufferLine = line;
+      buffer += char;
+    }
+    if (char === "\n") line += 1;
+  }
+  return found;
+}
+
+export function assertNoStrayHexColours(file = "src/App.css") {
+  const stray = strayHexColours(readFileSync(file, "utf8"));
+  if (stray.length > 0) {
+    const lines = stray.map(({ line, text }) => `App.css:${line}: ${text}`).join("\n");
+    throw new Error(
+      `hex colours outside the theme blocks in ${file}; use the theme tokens (var(--x)):\n${lines}`,
+    );
+  }
+}
+
 // Characters that must be quoted. `%` is handled separately: cmd /c does
 // not turn `%%` back into `%` inside a quoted argument, so a percent is
 // written as `^%` outside quotes.
@@ -253,6 +312,7 @@ export { steps };
 if (isDirectRun()) {
   try {
     assertReleaseVersionsMatch();
+    assertNoStrayHexColours();
   } catch (error) {
     console.error(error instanceof Error ? error.message : error);
     process.exit(1);
