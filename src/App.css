@@ -2205,3 +2205,9 @@ body,
 :is(.tone-success, .tone-warn, .tone-danger, .tone-running, .tone-muted, .tone-you) {
   --tone-bg: color-mix(in srgb, currentColor 14%, transparent);
 }
+
+/* Inline SVG icons (src/components/icons.tsx). */
+.icon {
+  vertical-align: -2px;
+  flex: none;
+}
