@@ -193,6 +193,9 @@ pub struct RunFacts {
     pub stage: Option<String>,
     /// status.json `waitingFor` (`plan-approval`, `ship-approval`).
     pub waiting_for: Option<String>,
+    /// status.json `updatedAt` while `waiting_for` is set: when the wait was
+    /// written (approximate: a later status write during the wait moves it).
+    pub waiting_since: Option<String>,
     /// meta.json's `mode` (`epic-plan`); `None` is a normal run.
     pub run_mode: Option<String>,
     pub prs_done: u32,
@@ -521,11 +524,15 @@ pub struct TabSnap {
     pub run_dir: Option<String>,
     pub stage: Option<String>,
     pub waiting_for: Option<String>,
+    /// When the current approval wait was written; `None` unless waiting.
+    pub waiting_since: Option<String>,
     /// The run's mode (`epic-plan`); `None` is a normal run.
     pub run_mode: Option<String>,
     pub stalled: bool,
     pub prs_done: u32,
     pub prs_total: u32,
+    /// The run's PRs with their states, for the dashboard.
+    pub prs: Vec<PrFact>,
 }
 
 impl TabSnap {
@@ -569,10 +576,12 @@ impl Snapshot {
                         run_dir: t.run_dir.clone(),
                         stage: run.and_then(|r| r.stage.clone()),
                         waiting_for: run.and_then(|r| r.waiting_for.clone()),
+                        waiting_since: run.and_then(|r| r.waiting_since.clone()),
                         run_mode: run.and_then(|r| r.run_mode.clone()),
                         stalled: t.stalled,
                         prs_done: run.map_or(0, |r| r.prs_done),
                         prs_total: run.map_or(0, |r| r.prs_total),
+                        prs: run.map(|r| r.prs.clone()).unwrap_or_default(),
                     }
                 })
                 .collect(),
@@ -581,13 +590,20 @@ impl Snapshot {
 }
 
 impl Snapshot {
-    /// Run tabs whose run has not finished, windows in tab order.
-    pub fn active_runs(&self) -> Vec<TabSnap> {
+    /// Every run tab, finished or not, windows in tab order.
+    pub fn run_tabs(&self) -> Vec<TabSnap> {
         self.tabs
             .iter()
             .filter(|t| t.run_id.is_some())
-            .filter(|t| !matches!(t.stage.as_deref(), Some("done") | Some("failed")))
             .cloned()
+            .collect()
+    }
+
+    /// Run tabs whose run has not finished, windows in tab order.
+    pub fn active_runs(&self) -> Vec<TabSnap> {
+        self.run_tabs()
+            .into_iter()
+            .filter(|t| !matches!(t.stage.as_deref(), Some("done") | Some("failed")))
             .collect()
     }
 
@@ -801,13 +817,17 @@ impl Reader {
                 }
             })
             .collect();
+        let waiting_for = view
+            .as_ref()
+            .and_then(|v| v.waiting_for.clone())
+            .filter(|w| !w.is_empty());
         Some(RunFacts {
             run_dir: run_dir.display().to_string(),
             stage: view.as_ref().and_then(|v| v.stage.clone()),
-            waiting_for: view
+            waiting_for: waiting_for.clone(),
+            waiting_since: waiting_for
                 .as_ref()
-                .and_then(|v| v.waiting_for.clone())
-                .filter(|w| !w.is_empty()),
+                .and_then(|_| view.as_ref().and_then(|v| v.updated_at.clone())),
             run_mode: folder::run_mode_of(run_dir),
             prs_done: prs
                 .iter()
@@ -923,6 +943,13 @@ fn now_ms() -> u64 {
 #[tauri::command]
 pub fn active_runs(state: tauri::State<AttentionState>) -> Vec<TabSnap> {
     state.snapshot().active_runs()
+}
+
+/// Every run tab of every window, finished ones included (the tab progress
+/// and the run dashboard); `active_runs` is this minus done/failed.
+#[tauri::command]
+pub fn run_tabs(state: tauri::State<AttentionState>) -> Vec<TabSnap> {
+    state.snapshot().run_tabs()
 }
 
 /// The count behind the status bar's attention control (every window).
@@ -1876,5 +1903,48 @@ mod tests {
         assert_eq!(snap.tabs[0].waiting_for.as_deref(), Some("plan-approval"));
         assert_eq!(snap.tabs[2].activity, TabActivity::NeedsYou);
         assert_eq!((snap.tabs[0].prs_done, snap.tabs[0].prs_total), (1, 3));
+    }
+
+    #[test]
+    fn run_tabs_keep_finished_runs_and_carry_the_wait_start_and_prs() {
+        let mut waiting = run("r-1");
+        waiting.waiting_for = Some("plan-approval".into());
+        waiting.waiting_since = Some("2026-11-01T10:00:00Z".into());
+        waiting.prs = vec![PrFact {
+            id: "PR1".into(),
+            state: Some("opened".into()),
+            ..Default::default()
+        }];
+        let mut done = run("r-2");
+        done.stage = Some("done".into());
+        let mut failed = run("r-3");
+        failed.stage = Some("failed".into());
+        let runs: HashMap<String, RunFacts> = [waiting, done, failed]
+            .into_iter()
+            .map(|r| (r.run_id.clone(), r))
+            .collect();
+        let tabs = vec![
+            run_tab("t1", "r-1"),
+            run_tab("t2", "r-2"),
+            run_tab("t3", "r-3"),
+            tab("plain"),
+        ];
+        let snap = Snapshot::build(&tabs, &runs);
+        let all = snap.run_tabs();
+        assert_eq!(
+            all.iter().map(|t| t.tab_id.as_str()).collect::<Vec<_>>(),
+            ["t1", "t2", "t3"]
+        );
+        assert_eq!(snap.active_runs().len(), 1);
+        assert_eq!(snap.summary().active_runs, 1);
+        assert_eq!(
+            all[0].waiting_since.as_deref(),
+            Some("2026-11-01T10:00:00Z")
+        );
+        assert_eq!(all[1].waiting_since, None);
+        assert_eq!(all[0].prs.len(), 1);
+        assert_eq!(all[0].prs[0].id, "PR1");
+        let json = serde_json::to_value(&all[0]).unwrap();
+        assert!(json.get("waitingSince").is_some() && json.get("prs").is_some());
     }
 }

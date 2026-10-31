@@ -13,10 +13,12 @@ type Props = {
   onClose: () => void;
   /** The footer link: open the Runs view. */
   onAllRuns: () => void;
+  /** The footer button: open the run dashboard page. */
+  onDashboard?: () => void;
 };
 
 /** Every unfinished run tab of every window, with its stage, flags and PR progress. */
-export function ActiveRuns({ onClose, onAllRuns }: Props) {
+export function ActiveRuns({ onClose, onAllRuns, onDashboard }: Props) {
   const [runs, setRuns] = useState<ActiveRun[] | null>(null);
 
   // Events from the detector; polls at POLL_MS when none arrive.
@@ -86,6 +88,18 @@ export function ActiveRuns({ onClose, onAllRuns }: Props) {
         >
           All runs
         </button>
+        {onDashboard && (
+          <button
+            type="button"
+            className="link-button"
+            onClick={() => {
+              onDashboard();
+              onClose();
+            }}
+          >
+            Open dashboard
+          </button>
+        )}
         <button type="button" className="link-button" onClick={onClose}>
           Close
         </button>

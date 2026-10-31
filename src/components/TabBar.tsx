@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { TabSummary } from "../bridge";
 import { urgentActivity } from "../run/observe";
+import type { TabProgress } from "../run/words";
 import { DRAG_THRESHOLD_PX, dropIndex, markerX } from "../tabDrag";
 import { TabContextMenu } from "./TabContextMenu";
 import type { ContextMenuItem } from "./TerminalContextMenu";
@@ -16,6 +17,8 @@ type Props = {
   onNew: () => void;
   /** P3b: tab id → what its Claude does (`working`, `waiting`, `needs-you`). */
   activity?: Readonly<Record<string, string>>;
+  /** Run tabs: tab id → the run's progress (underline, tooltip); other tabs have none. */
+  progress?: Readonly<Record<string, TabProgress>>;
   /** Click on the dot of a plain Claude tab (no run): shows its usage. */
   onActivityClick?: (tabId: string) => void;
   /** A tab was dragged to this place among the window's tabs. */
@@ -105,7 +108,7 @@ export function activityTitle(activity: string): string {
 }
 
 /** The window's tabs: click to show, double-click to rename, × to close, + for a new one. */
-export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename, onNew, activity, onActivityClick, onMove, onDuplicate, onReveal, onCloseMany, onSplit }: Props) {
+export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename, onNew, activity, progress, onActivityClick, onMove, onDuplicate, onReveal, onCloseMany, onSplit }: Props) {
   const [editing, setEditing] = useState<{ id: string; value: string } | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
@@ -180,7 +183,8 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
       {tabs.map((tab) => {
         const active = tab.id === activeTabId;
         const dragging = drag?.active && drag.id === tab.id;
-        const classes = ["tab", active ? "tab-active" : "", exited.has(tab.id) ? "tab-exited" : "", dragging ? "tab-dragging" : ""]
+        const run = progress?.[tab.id];
+        const classes = ["tab", active ? "tab-active" : "", run?.waiting ? "tab-waiting" : "", exited.has(tab.id) ? "tab-exited" : "", dragging ? "tab-dragging" : ""]
           .filter(Boolean)
           .join(" ");
         // A split tab's dot shows its most urgent pane.
@@ -193,7 +197,7 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
           <div
             key={tab.id}
             className={classes}
-            title={tab.cwd}
+            title={run ? `${tab.cwd}\n${run.title}` : tab.cwd}
             onContextMenu={(event) => {
               event.preventDefault();
               setMenu({ tabId: tab.id, x: event.clientX, y: event.clientY });
@@ -222,6 +226,7 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
                 type="button"
                 role="tab"
                 aria-selected={active}
+                aria-label={run ? `${tab.label}, ${run.title}` : undefined}
                 className="tab-label"
                 onPointerDown={(event) => {
                   // Middle-click closes the tab (on release); no autoscroll.
@@ -267,6 +272,14 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
                 title={activityTitle(shown!)}
                 aria-label={`Claude ${shown!}: show usage`}
                 onClick={() => onActivityClick!(tab.id)}
+              />
+            )}
+            {run && (
+              <span
+                className={`tab-progress tone-${run.tone}`}
+                data-testid={`tab-progress-${tab.id}`}
+                style={{ width: `${Math.round(run.fraction * 100)}%` }}
+                aria-hidden
               />
             )}
             <button

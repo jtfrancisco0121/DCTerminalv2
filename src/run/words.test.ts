@@ -3,6 +3,10 @@ import pushRs from "../../src-tauri/src/observe/push.rs?raw";
 import {
   ATTENTION_KINDS,
   checkTone,
+  ESTIMATE_NOTE,
+  ESTIMATES_CAPTION,
+  outcomeTone,
+  tabProgress,
   ciChip,
   gateTone,
   groupTimeline,
@@ -258,5 +262,54 @@ describe("groupTimeline", () => {
     const after = groupTimeline([line("planning", 0), line("building", 1), line("building", 2)]);
     expect(after.map((g) => g.key)).toEqual(before.map((g) => g.key));
     expect(new Set(after.map((g) => g.key)).size).toBe(2);
+  });
+});
+
+describe("tabProgress", () => {
+  const base = { runId: "r-1", stage: "building", waitingFor: null, prsDone: 2, prsTotal: 3 };
+
+  it("is null for a tab without a run or a run without a stage", () => {
+    expect(tabProgress(null)).toBeNull();
+    expect(tabProgress({ ...base, runId: null })).toBeNull();
+    expect(tabProgress({ ...base, stage: null })).toBeNull();
+  });
+
+  it("shows PRs done of total for a running run", () => {
+    const p = tabProgress(base)!;
+    expect(p.fraction).toBeCloseTo(2 / 3);
+    expect(p.tone).toBe("running");
+    expect(p.waiting).toBe(false);
+    expect(p.title).toBe("Building · 2/3 PRs");
+  });
+
+  it("falls back to the share of steps without PRs, and honours the epic-plan steps", () => {
+    expect(tabProgress({ ...base, stage: "planning", prsDone: 0, prsTotal: 0 })!.fraction).toBe(0);
+    expect(tabProgress({ ...base, stage: "ship-approval", prsDone: 0, prsTotal: 0 })!.fraction).toBeCloseTo(0.6);
+    expect(tabProgress({ ...base, stage: "plan-approval", prsDone: 0, prsTotal: 0, runMode: "epic-plan" })!.fraction).toBe(0.5);
+    expect(tabProgress({ ...base, stage: "mystery", prsDone: 0, prsTotal: 0 })!.fraction).toBe(0);
+  });
+
+  it("marks a waiting run, a done run and a failed run", () => {
+    const waiting = tabProgress({ ...base, stage: "ship-approval", waitingFor: "ship-approval" })!;
+    expect(waiting).toMatchObject({ tone: "you", waiting: true });
+    expect(waiting.title).toBe("Waiting for you · 2/3 PRs");
+    expect(tabProgress({ ...base, stage: "done", prsDone: 3 })).toMatchObject({ fraction: 1, tone: "success", title: "Done · 3/3 PRs" });
+    const failed = tabProgress({ ...base, stage: "failed", prsTotal: 0 })!;
+    expect(failed).toMatchObject({ fraction: 1, tone: "danger", waiting: false, title: "Failed" });
+  });
+});
+
+describe("outcomeTone and the estimate words", () => {
+  it("takes the outcome, else the stage", () => {
+    expect(outcomeTone("done", "done")).toBe("success");
+    expect(outcomeTone("failed", "failed")).toBe("danger");
+    expect(outcomeTone(null, "failed")).toBe("danger");
+    expect(outcomeTone(null, "building")).toBe("running");
+    expect(outcomeTone(null, null)).toBe("muted");
+  });
+
+  it("keeps the one wording of an estimate", () => {
+    expect(ESTIMATE_NOTE).toBe("An estimate at API list prices, not a bill");
+    expect(ESTIMATES_CAPTION).toBe("Estimates at API list prices");
   });
 });

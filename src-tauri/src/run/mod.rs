@@ -200,6 +200,8 @@ pub fn spawn_prune_launch_prompts(app: &AppHandle) {
 pub async fn run_overview(app: AppHandle) -> Result<RunOverview, String> {
     blocking(move || {
         let plugin = plugin_dir(&app);
+        let mut runs = folder::list_runs(&data_dir(&app));
+        folder::fill_wait_span(&mut runs);
         Ok(RunOverview {
             plugin_version: plugin.as_deref().and_then(launch::plugin_version),
             plugin_dir: plugin.map(|p| p.display().to_string()),
@@ -210,7 +212,7 @@ pub async fn run_overview(app: AppHandle) -> Result<RunOverview, String> {
                     label: label.to_string(),
                 })
                 .collect(),
-            runs: folder::list_runs(&data_dir(&app)),
+            runs,
         })
     })
     .await

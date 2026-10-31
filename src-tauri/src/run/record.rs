@@ -82,6 +82,13 @@ pub struct RunRecord {
     pub estimate_usd: Option<f64>,
     #[serde(default)]
     pub active_minutes_by_stage: BTreeMap<String, f64>,
+    /// Minutes spent in approval waits (`timeline::wait_and_span`); None in a
+    /// record written before the field existed.
+    #[serde(default)]
+    pub wait_minutes: Option<f64>,
+    /// Minutes from the first to the last log.md line.
+    #[serde(default)]
+    pub span_minutes: Option<f64>,
     #[serde(default)]
     pub first_activity: Option<String>,
     #[serde(default)]
@@ -240,6 +247,14 @@ pub fn ensure_record(run_dir: &Path) -> Result<bool, String> {
     record.tokens = tokens.into();
     record.estimate_usd = cost;
     record.active_minutes_by_stage = minutes_by_stage(&log);
+    // A log cut at the read cap would give a partial figure: none then.
+    let (wait_min, span_min) = if log.len() as u64 >= MAX_LOG_BYTES {
+        (None, None)
+    } else {
+        super::timeline::wait_and_span(&log)
+    };
+    record.wait_minutes = wait_min;
+    record.span_minutes = span_min;
     record.first_activity = span.and_then(|(first, _)| rfc3339(first));
     record.last_activity = span.and_then(|(_, last)| rfc3339(last));
     record.status_updated_at = Some(updated);

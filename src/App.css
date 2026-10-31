@@ -502,6 +502,7 @@ body,
 }
 
 .workspace-body {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -546,6 +547,24 @@ body,
   border-bottom: 0;
   border-radius: var(--radius-md) var(--radius-md) 0 0;
   color: var(--fg-muted);
+  position: relative;
+}
+
+/* Run progress (TabBar progress prop): an underline as wide as the run's
+   progress, in the run's tone; a waiting run gets an outline in the "you" tone. */
+.tab-progress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+  pointer-events: none;
+}
+
+.tab-waiting {
+  outline: 1px solid var(--attention);
+  outline-offset: -1px;
 }
 
 .tab-active {
@@ -1658,24 +1677,48 @@ body,
   flex: 1;
 }
 
-.runs-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.runs-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-4);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.runs-table-wrap {
   max-height: 60vh;
   overflow-y: auto;
 }
 
-.runs-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1) var(--space-3);
-  padding: var(--space-2) 0;
+.runs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.runs-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--fg-muted);
+  padding: var(--space-1) var(--space-2);
   border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.runs-table td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.runs-table th .link-button {
+  font: inherit;
+  color: inherit;
 }
 
 .runs-main {
-  flex: 1 1 100%;
+  min-width: 12rem;
 }
 
 .runs-facts,
@@ -2551,4 +2594,95 @@ body,
 .usage-spark-line {
   display: block;
   color: var(--accent);
+}
+
+/* A window-level page (run dashboard, analytics): a layer over .workspace-body,
+   so the terminals underneath stay mounted. */
+.page {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg);
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.page-header h2 {
+  margin: 0;
+}
+
+.run-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+  gap: var(--space-3);
+}
+
+.run-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+}
+
+.run-card-prs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.chart-block {
+  margin-bottom: var(--space-4);
+}
+
+.chart-block h3 {
+  margin: 0 0 var(--space-1);
+}
+
+.chart {
+  width: 100%;
+  max-width: 40rem;
+  height: auto;
+  display: block;
+}
+
+.chart-bar {
+  fill: var(--accent);
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--done);
+  stroke-width: 2;
+}
+
+.chart-dot {
+  fill: var(--done);
+}
+
+.chart-bar:focus-visible,
+.chart-dot:focus-visible {
+  outline: 2px solid var(--fg);
+}
+
+.chart-axis line {
+  stroke: var(--fg-muted);
+}
+
+.chart-axis text {
+  fill: var(--fg-muted);
+  font-size: 11px;
 }
