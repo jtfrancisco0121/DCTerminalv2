@@ -2430,3 +2430,39 @@ body,
 .timeline-group {
   margin-bottom: var(--space-1);
 }
+
+/* Session cost bar: one segment per stage. Series colours, not status tones (AD-15). */
+.cost-bar {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  margin-top: 4px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--bg-muted);
+}
+
+.cost-seg {
+  height: 100%;
+  min-width: 2px;
+}
+
+.series-0 {
+  background: var(--accent);
+}
+
+.series-1 {
+  background: var(--done);
+}
+
+.series-2 {
+  background: var(--orange);
+}
+
+.series-3 {
+  background: var(--success);
+}
+
+.series-4 {
+  background: var(--attention);
+}

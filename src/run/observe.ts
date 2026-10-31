@@ -141,6 +141,33 @@ export function costText(usd: number | null): string {
   return `$${usd.toFixed(2)}`;
 }
 
+/** Whether every stage has a cost: only then is the bar drawn by cost (a mix would draw a misleading partial bar). */
+const allCosted = (stages: CostLine[]) => stages.length > 0 && stages.every((line) => line.costUsd !== null);
+
+/**
+ * The stacked cost bar: one segment per stage, `share` in percent of the
+ * total by cost, or by tokens when some stage has no cost. Empty with a zero
+ * total. `text` is the segment's hover: stage, tokens and cost.
+ */
+export function costSegments(stages: CostLine[]): { name: string; share: number; text: string }[] {
+  const byCost = allCosted(stages);
+  const weight = (line: CostLine) => (byCost ? (line.costUsd ?? 0) : line.totalTokens);
+  const total = stages.reduce((sum, line) => sum + weight(line), 0);
+  if (!(total > 0)) return [];
+  return stages.map((line) => ({
+    name: line.name,
+    share: (weight(line) / total) * 100,
+    text: `${line.name} · ${tokensText(line.totalTokens)} tokens · ${costText(line.costUsd)}`,
+  }));
+}
+
+/** The bar's accessible name: "Cost by stage: planning $0.20, building $1.03" (tokens when a cost is missing). */
+export function costBarLabel(stages: CostLine[]): string {
+  const byCost = allCosted(stages);
+  const parts = stages.map((line) => `${line.name} ${byCost ? costText(line.costUsd) : `${tokensText(line.totalTokens)} tokens`}`);
+  return `${byCost ? "Cost" : "Tokens"} by stage: ${parts.join(", ")}`;
+}
+
 /** `logs/<PR>-app-check.txt` → `<PR>`, else null. */
 export function checkLogPr(path: string): string | null {
   const match = /^logs\/(.+)-app-check\.txt$/.exec(path);

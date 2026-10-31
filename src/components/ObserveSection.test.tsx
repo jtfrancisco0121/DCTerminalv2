@@ -48,6 +48,21 @@ describe("ObserveView", () => {
     expect(screen.getByTestId("run-cost").textContent).not.toMatch(/run total/i);
   });
 
+  it("draws a cost bar in the summary with one segment per stage, its hover giving stage, tokens and cost", () => {
+    const stage = (name: string, costUsd: number) => ({ name, tokens, totalTokens: 1015, costUsd, minutes: 1 });
+    const two = { ...seen, usage: { ...seen.usage!, stages: [stage("planning", 0.2), stage("building", 1.03)] } };
+    render(<ObserveView seen={two} nudging={false} onNudge={vi.fn()} onResume={vi.fn()} />);
+    const bar = screen.getByTestId("run-cost").querySelector("summary .cost-bar")!;
+    expect(bar.getAttribute("role")).toBe("img");
+    expect(bar.getAttribute("aria-label")).toBe("Cost by stage: planning $0.20, building $1.03");
+    const segments = Array.from(bar.querySelectorAll(".cost-seg"));
+    expect(segments).toHaveLength(2);
+    expect(segments[0]!.getAttribute("title")).toBe("planning · 1k tokens · $0.20");
+    expect(segments[0]!.className).toContain("series-0");
+    expect(bar.querySelector('[class*="tone-"]')).toBeNull();
+    expect(screen.getByText(/Estimate at API list prices/)).toBeTruthy();
+  });
+
   it("says how long the run has waited for you, only once the watchdog threshold passed", () => {
     const { rerender } = render(<ObserveView seen={seen} nudging={false} onNudge={vi.fn()} onResume={vi.fn()} />);
     expect(screen.queryByTestId("run-waiting")).toBeNull();

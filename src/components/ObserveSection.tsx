@@ -1,6 +1,8 @@
 import { useState } from "react";
 import {
   activityText,
+  costBarLabel,
+  costSegments,
   costText,
   nudgeTab,
   observeTab,
@@ -33,6 +35,7 @@ export function ObserveView({ seen, nudging, onNudge, onResume }: ViewProps) {
     onNudge();
   };
   const usage = seen.usage;
+  const segments = usage ? costSegments(usage.stages) : [];
   const subs = seen.subagents.slice(-8).reverse();
   return (
     <section className="run-observe" aria-label="Session">
@@ -107,6 +110,13 @@ export function ObserveView({ seen, nudging, onNudge, onResume }: ViewProps) {
           <summary>
             This session: {tokensText(usage.totalTokens)} tokens · {costText(usage.totalCostUsd)} estimate ·{" "}
             {usage.minutes.toFixed(0)} min
+            {segments.length > 0 && (
+              <span className="cost-bar" role="img" aria-label={costBarLabel(usage.stages)}>
+                {segments.map((segment, at) => (
+                  <span key={segment.name} className={`cost-seg series-${at % 5}`} style={{ width: `${segment.share}%` }} title={segment.text} />
+                ))}
+              </span>
+            )}
           </summary>
           <table>
             <thead>

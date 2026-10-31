@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activityText, checkLogPr, costText, pollsActivity, tokensText, urgentActivity, versionNote, versionWarning } from "./observe";
+import { activityText, checkLogPr, costBarLabel, costSegments, costText, pollsActivity, tokensText, urgentActivity, versionNote, versionWarning } from "./observe";
 
 describe("pollsActivity", () => {
   it("polls while any Claude tab exists, even with no run tab", () => {
@@ -63,5 +63,29 @@ describe("version note after a passing self-test", () => {
     const status = { ...base, range: "below" };
     expect(versionWarning(status)).toContain("older than");
     expect(versionNote(status)).toBeNull();
+  });
+});
+
+describe("costSegments", () => {
+  const tokens = { input: 0, output: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0 };
+  const line = (name: string, totalTokens: number, costUsd: number | null) => ({ name, tokens, totalTokens, costUsd, minutes: 1 });
+
+  it("splits by cost when every stage has one", () => {
+    const stages = [line("planning", 4000, 0.2), line("building", 1000, 0.6)];
+    const segments = costSegments(stages);
+    expect(segments.map((s) => Math.round(s.share))).toEqual([25, 75]);
+    expect(segments[0]!.text).toBe("planning · 4k tokens · $0.20");
+    expect(costBarLabel(stages)).toBe("Cost by stage: planning $0.20, building $0.60");
+  });
+
+  it("splits by tokens when a cost is missing (never a partial bar)", () => {
+    const stages = [line("planning", 3000, null), line("building", 1000, 5)];
+    expect(costSegments(stages).map((s) => Math.round(s.share))).toEqual([75, 25]);
+    expect(costBarLabel(stages)).toBe("Tokens by stage: planning 3k tokens, building 1k tokens");
+  });
+
+  it("is empty for a zero total or no stages", () => {
+    expect(costSegments([line("planning", 0, 0)])).toEqual([]);
+    expect(costSegments([])).toEqual([]);
   });
 });
