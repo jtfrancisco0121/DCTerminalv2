@@ -104,6 +104,10 @@ body,
   line-height: 1.5;
   color: var(--fg);
   background-color: var(--bg);
+  /* Motion is theme-independent; src/App.css has one reduced-motion rule. */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 120ms;
+  --dur-spin: 900ms;
 }
 
 :root[data-theme="github-light"] {
@@ -2210,4 +2214,70 @@ body,
 .icon {
   vertical-align: -2px;
   flex: none;
+}
+
+/* Motion: short hover transitions and fade-ins only. Never `width`, never the
+   terminal or xterm selectors (a refit mid-animation would read a wrong size). */
+.primary-button,
+.secondary-button,
+.link-button,
+.status-bar-button,
+.status-bar-item,
+.tab {
+  transition:
+    color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.dialog,
+.errors-popover,
+.active-runs,
+.usage-spark {
+  animation: pop-in var(--dur-fast) var(--ease);
+}
+
+.run-rail,
+.run-panel-frame {
+  animation: fade-in var(--dur-fast) var(--ease);
+}
+
+@keyframes icon-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.icon-spin {
+  animation: icon-spin var(--dur-spin) linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
 }
