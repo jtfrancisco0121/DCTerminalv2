@@ -11,6 +11,7 @@ import {
 } from "../run/observe";
 import { TAB_STATE_EVENT, usePushRefresh } from "../run/events";
 import { errorText } from "./InlineNotice";
+import { Meter } from "./Meter";
 
 const POLL_MS = 3000;
 
@@ -92,7 +93,17 @@ export function ObserveView({ seen, nudging, onNudge, onResume }: ViewProps) {
       {seen.context && (
         <p className={seen.context.warn ? "hint warn" : "hint"} data-testid="context-meter">
           Context {seen.context.percent.toFixed(0)}% ({tokensText(seen.context.used)} of {tokensText(seen.context.window)})
-          {seen.context.warn && " — over 60%: consider /compact in the tab"}
+          {seen.context.warn &&
+            (seen.context.warnPercent != null
+              ? ` — over ${seen.context.warnPercent}%: consider /compact in the tab`
+              : " — consider /compact in the tab")}{" "}
+          <Meter
+            value={seen.context.percent}
+            tone={seen.context.warn ? "warn" : "running"}
+            label={`Context ${seen.context.percent.toFixed(0)}%`}
+            marker={seen.context.warnPercent}
+            testId="context-bar"
+          />
         </p>
       )}
       {subs.length > 0 && (

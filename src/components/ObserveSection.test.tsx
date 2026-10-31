@@ -11,7 +11,7 @@ const seen: TabObservation = {
   hooksActive: true,
   hooksInstalled: true,
   transcriptFound: true,
-  context: { model: "claude-opus-5-5", used: 650_000, window: 1_000_000, percent: 65, warn: true },
+  context: { model: "claude-opus-5-5", used: 650_000, window: 1_000_000, percent: 65, warn: true, warnPercent: 60 },
   subagents: [
     {
       toolUseId: "t1",
@@ -46,6 +46,32 @@ describe("ObserveView", () => {
     expect(screen.getByTestId("run-cost").textContent).toContain("$1.23 estimate");
     expect(screen.getByTestId("run-cost").querySelector("summary")?.textContent).toContain("This session:");
     expect(screen.getByTestId("run-cost").textContent).not.toMatch(/run total/i);
+  });
+
+  it("draws the context meter with a marker at the backend threshold, and no hint when it is not over", () => {
+    const { rerender } = render(<ObserveView seen={seen} nudging={false} onNudge={vi.fn()} onResume={vi.fn()} />);
+    const meter = screen.getByTestId("context-bar");
+    expect(meter.getAttribute("aria-valuenow")).toBe("65");
+    expect(meter.className).toContain("tone-warn");
+    expect((meter.querySelector(".meter-marker") as HTMLElement).style.left).toBe("60%");
+    rerender(
+      <ObserveView
+        seen={{ ...seen, context: { ...seen.context!, percent: 30, warn: false } }}
+        nudging={false}
+        onNudge={vi.fn()}
+        onResume={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("context-bar").className).toContain("tone-running");
+    expect(screen.getByTestId("context-meter").textContent).not.toContain("consider /compact");
+  });
+
+  it("hides the marker and the number when an older backend sends no threshold", () => {
+    const { warnPercent: _omit, ...older } = seen.context!;
+    render(<ObserveView seen={{ ...seen, context: older }} nudging={false} onNudge={vi.fn()} onResume={vi.fn()} />);
+    expect(screen.getByTestId("context-bar").querySelector(".meter-marker")).toBeNull();
+    expect(screen.getByTestId("context-meter").textContent).toContain("consider /compact in the tab");
+    expect(screen.getByTestId("context-meter").textContent).not.toContain("over");
   });
 
   it("draws a cost bar in the summary with one segment per stage, its hover giving stage, tokens and cost", () => {

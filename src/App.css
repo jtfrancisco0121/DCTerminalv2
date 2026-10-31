@@ -2466,3 +2466,36 @@ body,
 .series-4 {
   background: var(--attention);
 }
+
+/* Meter (src/components/Meter.tsx): a percent bar; unknown is hatched, never empty-as-zero. */
+.meter {
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+  width: 4.5rem;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-muted);
+}
+
+.meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: currentColor;
+}
+
+.meter-marker {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--fg);
+}
+
+.meter-unknown {
+  background:
+    repeating-linear-gradient(45deg, color-mix(in srgb, var(--fg-muted) 40%, transparent) 0 2px, transparent 2px 5px),
+    var(--bg-muted);
+}

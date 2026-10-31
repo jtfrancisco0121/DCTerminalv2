@@ -33,7 +33,15 @@ export type UsageSummary = {
   messages: number;
 };
 
-export type ContextMeter = { model: string; used: number; window: number; percent: number; warn: boolean };
+export type ContextMeter = {
+  model: string;
+  used: number;
+  window: number;
+  percent: number;
+  warn: boolean;
+  /** The percent the backend warns from; missing from an older backend (no marker then). */
+  warnPercent?: number;
+};
 
 export type SubagentInfo = {
   toolUseId: string;
