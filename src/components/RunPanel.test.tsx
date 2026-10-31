@@ -94,6 +94,33 @@ describe("RunPanelView", () => {
     expect(screen.queryByTestId("badge-PR1")).toBeNull();
   });
 
+  it("draws state, checks, CI and gate of a PR row as toned pills", () => {
+    const base = view.prs[0];
+    const prs = [
+      {
+        ...base,
+        id: "PR1",
+        state: "reviewed",
+        prUrl: "https://github.com/o/mathlib/pull/9",
+        ci: "fail",
+        checkKnown: true,
+        check: { ...base.check, result: "pass" },
+        appCheck: { ...(base.appCheck ?? ({} as never)), result: "fail" },
+        gateStatus: { kind: "fail", text: "FAIL" },
+      },
+      { ...base, id: "PR2", state: "time-travel", gateStatus: null, review: { round: null, verdict: null, openFindings: null } },
+    ] as RunView["prs"];
+    renderPanel({ prs });
+    const one = within(screen.getByTestId("pr-PR1"));
+    expect(one.getByText("reviewed").className).toContain("pill tone-success");
+    expect(one.getByText(/check \(Claude\)/).className).toContain("tone-success");
+    expect(one.getByText(/check \(app\)/).className).toContain("tone-danger");
+    expect(screen.getByTestId("ci-PR1").className).toContain("pill tone-danger");
+    expect(screen.getByTestId("gate-PR1").className).toContain("pill tone-danger");
+    const two = within(screen.getByTestId("pr-PR2")).getByText("time-travel");
+    expect(two.className).toContain("pill tone-muted");
+  });
+
   it("names a drafted PR a draft and links it from the first draft", () => {
     const prs = view.prs.map((pr) =>
       pr.id === "PR1"

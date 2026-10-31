@@ -22,11 +22,15 @@ import {
 import {
   checkMark,
   checkSignature,
+  checkTone,
   ciChip,
   draftBadge,
+  gateTone,
   localTime,
   prStateText,
+  prStateTone,
   reviewText,
+  reviewTone,
   runFinished,
   safeUrl,
   stageText,
@@ -35,6 +39,7 @@ import {
 } from "../run/words";
 import { ClickUpRunSection } from "../clickup/ClickUpRunSection";
 import { FleetTimeline } from "./FleetTimeline";
+import { Pill } from "./Pill";
 import { checkLogPr, readCheckLog } from "../run/observe";
 import { RUN_STATE_EVENT, usePushRefresh } from "../run/events";
 import { AWAY_ROWS, useAwayNotice } from "../run/away";
@@ -220,24 +225,32 @@ function PrRow({
       <div className="run-pr-head">
         <strong>{pr.id}</strong>
         {pr.repo && <span className="run-pr-repo">{pr.repo}</span>}
-        <span className={`run-pr-state run-pr-state-${pr.state ?? "unknown"}`}>{prStateText(pr.state)}</span>
+        <Pill tone={prStateTone(pr.state)} className={`run-pr-state run-pr-state-${pr.state ?? "unknown"}`}>
+          {prStateText(pr.state)}
+        </Pill>
         {badge && (
-          <span className={`run-pr-badge run-pr-badge-${badge}`} data-testid={`badge-${pr.id}`}>
+          <Pill
+            tone={badge === "ready" ? "success" : "muted"}
+            className={`run-pr-badge run-pr-badge-${badge}`}
+            testId={`badge-${pr.id}`}
+          >
             {badge}
-          </span>
+          </Pill>
         )}
       </div>
       {pr.title && <div className="run-pr-title">{pr.title}</div>}
       <div className="run-pr-facts">
         {stories && <span>{stories}</span>}
-        <span title={pr.check.summary ?? undefined}>
+        <Pill tone={checkTone(pr.check.result)} title={pr.check.summary ?? undefined}>
           check (Claude): {checkMark(pr.check.result)} {pr.check.result ?? "not run"}
-        </span>
-        {!pr.checkKnown && <span>check (app): no check known</span>}
+        </Pill>
+        {!pr.checkKnown && <Pill tone="muted">check (app): no check known</Pill>}
         {pr.checkKnown && (
-          <span title={pr.appCheck?.detail ?? pr.appCommand ?? undefined}>
-            check (app): {checkMark(pr.appCheck?.result)} {pr.appCheck?.result ?? "not run"}
-            {pr.appCheckStale && " (code changed since)"}
+          <span className="run-pr-app-check">
+            <Pill tone={checkTone(pr.appCheck?.result)} title={pr.appCheck?.detail ?? pr.appCommand ?? undefined}>
+              check (app): {checkMark(pr.appCheck?.result)} {pr.appCheck?.result ?? "not run"}
+              {pr.appCheckStale && " (code changed since)"}
+            </Pill>
             {pr.appCheck?.log && (
               <button
                 type="button"
@@ -250,22 +263,22 @@ function PrRow({
           </span>
         )}
         {ci && (
-          <span className={`ci-chip ci-chip-${ci.tone}`} title={ci.title || undefined} data-testid={`ci-${pr.id}`}>
+          <Pill tone={ci.tone} className={`ci-chip ci-chip-${ci.tone}`} title={ci.title || undefined} testId={`ci-${pr.id}`}>
             {ci.text}
-          </span>
+          </Pill>
         )}
         {pr.checkKnown && pr.check.command && pr.check.command !== pr.appCommand && (
           <span className="run-pr-note" data-testid={`check-differs-${pr.id}`}>
             Claude ran <code>{pr.check.command}</code>; the app runs <code>{pr.appCommand}</code>
           </span>
         )}
-        {review && <span>{review}</span>}
+        {review && <Pill tone={reviewTone(pr.review)}>{review}</Pill>}
       </div>
       {gate && gate.kind !== "none" && (
-        <div className={`run-gate run-gate-${gate.kind}`} data-testid={`gate-${pr.id}`}>
+        <Pill tone={gateTone(gate.kind)} className={`run-gate run-gate-${gate.kind}`} testId={`gate-${pr.id}`}>
           {gate.kind === "proven" ? "✓ " : ""}
           {gate.text}
-        </div>
+        </Pill>
       )}
       {pr.note && <div className="run-pr-note">{pr.note}</div>}
       <div className="run-pr-actions" data-testid={`actions-${pr.id}`}>

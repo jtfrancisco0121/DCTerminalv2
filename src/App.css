@@ -1462,18 +1462,6 @@ body,
   font-weight: 600;
 }
 
-.ci-chip-success {
-  color: var(--success);
-}
-
-.ci-chip-danger {
-  color: var(--danger);
-}
-
-.ci-chip-muted {
-  color: var(--fg-muted);
-}
-
 .run-time {
   color: var(--fg-muted);
 }
@@ -1482,13 +1470,10 @@ body,
   margin-left: auto;
 }
 
-.run-pr-state-reviewed,
-.run-pr-state-opened {
-  color: var(--success);
-}
-
-.run-pr-state-needs-attention {
-  color: var(--warning);
+.run-pr-app-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 
 .run-pr-facts {
@@ -1500,24 +1485,8 @@ body,
 
 .run-gate {
   margin-top: 0.25rem;
-  color: var(--fg-muted);
 }
 
-.run-gate-proven {
-  color: var(--success);
-}
-
-.run-gate-review-only {
-  color: var(--fg-muted);
-}
-
-.run-gate-concerns,
-.run-gate-unreadable,
-.run-gate-claimed {
-  color: var(--warning);
-}
-
-.run-gate-fail,
 .run-problem {
   color: var(--danger);
 }
@@ -1924,17 +1893,6 @@ body,
 }
 
 /* Review on GitHub: the PR's draft / ready badge and its review-round comment links. */
-.run-pr-badge {
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 11px;
-  padding: 0 6px;
-}
-
-.run-pr-badge-ready {
-  color: var(--success);
-}
-
 /* BMAD planning: the start-screen control and the run panel section. */
 .bmad-mode {
   display: flex;
@@ -2287,4 +2245,26 @@ body,
     transition: none !important;
     animation: none !important;
   }
+}
+
+/* Pill (src/components/Pill.tsx): a status word with a tone. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
+  border-radius: 999px;
+  background: var(--tone-bg);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* "Your step": outlined with no fill, so it differs from warn by shape, not hue. */
+.pill.tone-you {
+  background: transparent;
+  border-width: 2px;
 }
