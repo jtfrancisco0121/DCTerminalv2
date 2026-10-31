@@ -502,6 +502,7 @@ body,
 }
 
 .workspace-body {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -2593,4 +2594,52 @@ body,
 .usage-spark-line {
   display: block;
   color: var(--accent);
+}
+
+/* A window-level page (run dashboard, analytics): a layer over .workspace-body,
+   so the terminals underneath stay mounted. */
+.page {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg);
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.page-header h2 {
+  margin: 0;
+}
+
+.run-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+  gap: var(--space-3);
+}
+
+.run-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+}
+
+.run-card-prs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
 }

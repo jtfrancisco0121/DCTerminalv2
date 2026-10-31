@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useEffect } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { attentionSummary, type AppStateSnapshot, type TabSummary } from "./bridge";
 import { clearUiErrors, uiErrors } from "./uiErrors";
@@ -75,8 +76,18 @@ vi.mock("./bridge", () => ({
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 // The terminal itself is xterm in a real webview; here it is a marker.
+const terminalLife = vi.hoisted(() => ({ mounts: 0, unmounts: 0 }));
 vi.mock("./components/TerminalView", () => ({
-  TerminalView: ({ tab: shown }: { tab: TabSummary }) => <div data-testid="terminal">{shown.label}</div>,
+  TerminalView: ({ tab: shown }: { tab: TabSummary }) => {
+    // Counts mounts and unmounts: opening a page must not unmount a terminal.
+    useEffect(() => {
+      terminalLife.mounts += 1;
+      return () => {
+        terminalLife.unmounts += 1;
+      };
+    }, []);
+    return <div data-testid="terminal">{shown.label}</div>;
+  },
   destroyTerminal: vi.fn(),
 }));
 vi.mock("./terminal/park", () => ({
@@ -457,5 +468,106 @@ describe("App split panes", () => {
     });
     expect(screen.getByRole("dialog", { name: "Command palette" })).toBeTruthy();
     state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
+});
+
+describe("App run pages", () => {
+  const runningTab: TabSummary = { ...tab, id: "tab_run", label: "Eagle-Eye · app", runDir: "/d/runs/r-1", role: "eagle-eye" };
+  const reading = {
+    windowLabel: "main",
+    tabId: "tab_run",
+    label: "Eagle-Eye · app",
+    activity: "working",
+    runId: "r-1",
+    runDir: "/d/runs/r-1",
+    stage: "building",
+    waitingFor: null,
+    stalled: false,
+    prsDone: 1,
+    prsTotal: 2,
+    prs: [{ id: "PR1", state: "opened", appCheck: null, ci: null, prState: null }],
+  };
+  const finishedRun = (id: string, day: number, usd: number) => ({
+    runId: id,
+    runDir: `/d/runs/${id}`,
+    folder: "/w/app",
+    createdAt: `2026-10-${day}T10:00:00Z`,
+    stage: "done",
+    updatedAt: null,
+    title: id,
+    repos: ["app"],
+    record: {
+      outcome: "done",
+      totalTokens: 1,
+      estimateUsd: usd,
+      minutes: 10 + day,
+      waitMinutes: 5,
+      spanMinutes: 20,
+      prUrls: [],
+      firstActivity: null,
+      lastActivity: null,
+    },
+  });
+
+  async function openApp() {
+    const bridge = await import("./bridge");
+    vi.mocked(bridge.runTabs).mockResolvedValue([reading]);
+    vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 1 });
+    const api = await import("./run/api");
+    vi.mocked(api.runOverview).mockResolvedValue({
+      pluginDir: "/app/plugin",
+      pluginVersion: "abc123",
+      roles: [],
+      runs: [finishedRun("r-a", 20, 1.5), finishedRun("r-b", 21, 2.5)],
+    } as never);
+    state = { windowId: "main", activeTabId: "tab_run", tabs: [runningTab], closedTabs: [] };
+    terminalLife.mounts = 0;
+    terminalLife.unmounts = 0;
+    render(<App />);
+    await screen.findByTestId("terminal");
+  }
+
+  async function paletteOpen(label: RegExp) {
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "K", ctrlKey: true, shiftKey: true });
+    });
+    fireEvent.click(await screen.findByRole("option", { name: label }));
+  }
+
+  const endState = () => {
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  };
+
+  it("shows the dashboard over the terminal; Escape, Close and a tab click close it; no terminal is unmounted", async () => {
+    await openApp();
+    await waitFor(() => expect(screen.getByTestId("tab-progress-tab_run")).toBeTruthy());
+    expect(terminalLife.mounts).toBe(1);
+
+    await paletteOpen(/Run dashboard/);
+    expect(await screen.findByRole("region", { name: "Run dashboard" })).toBeTruthy();
+    expect(screen.getByTestId("card-tab_run")).toBeTruthy();
+    expect(screen.getByTestId("terminal")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(screen.queryByRole("region", { name: "Run dashboard" })).toBeNull();
+
+    await paletteOpen(/Run dashboard/);
+    await screen.findByRole("region", { name: "Run dashboard" });
+    fireEvent.click(screen.getByRole("tab", { name: /Eagle-Eye · app/ }));
+    expect(screen.queryByRole("region", { name: "Run dashboard" })).toBeNull();
+
+    await paletteOpen(/Run dashboard/);
+    await screen.findByRole("region", { name: "Run dashboard" });
+    fireEvent.click(within(screen.getByRole("region", { name: "Run dashboard" })).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("region", { name: "Run dashboard" })).toBeNull();
+
+    expect(screen.getByTestId("terminal")).toBeTruthy();
+    expect(terminalLife.mounts).toBe(1);
+    expect(terminalLife.unmounts).toBe(0);
+    vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
+    cleanup();
+    endState();
   });
 });

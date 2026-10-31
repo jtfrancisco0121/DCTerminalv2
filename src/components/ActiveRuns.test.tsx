@@ -84,4 +84,18 @@ describe("ActiveRuns", () => {
     fireEvent.click(screen.getByRole("button", { name: "All runs" }));
     expect(onAllRuns).toHaveBeenCalledOnce();
   });
+  it("Open dashboard calls back and closes the popover; absent without the callback", async () => {
+    list = [run("a")];
+    const onDashboard = vi.fn();
+    const onClose = vi.fn();
+    const { unmount } = render(<ActiveRuns onClose={onClose} onAllRuns={() => {}} onDashboard={onDashboard} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByText("Open dashboard"));
+    expect(onDashboard).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+    unmount();
+    render(<ActiveRuns onClose={onClose} onAllRuns={() => {}} />);
+    await act(async () => {});
+    expect(screen.queryByText("Open dashboard")).toBeNull();
+  });
 });

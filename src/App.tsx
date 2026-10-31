@@ -36,6 +36,7 @@ import { InlineNotice } from "./components/InlineNotice";
 import { NewTabForm } from "./components/NewTabForm";
 import { RunPanel } from "./components/RunPanel";
 import { PreviewHost } from "./components/PreviewPane";
+import { RunDashboard } from "./components/RunDashboard";
 import { RunsView } from "./components/RunsView";
 import { StartScreen } from "./components/StartScreen";
 import { resumeRun, runOverview, startRun, type RunOverview, type StartedRun } from "./run/api";
@@ -111,6 +112,8 @@ function App() {
   // Tabs that need you and unfinished runs, in every window (the status bar's control).
   const [attention, setAttention] = useState<AttentionSummary | null>(null);
   const [activeRunsOpen, setActiveRunsOpen] = useState(false);
+  // A window-level page drawn over the workspace; the terminals stay mounted underneath.
+  const [page, setPage] = useState<"dashboard" | "analytics" | null>(null);
   const [dialog, setDialog] = useState<"new-tab" | "new-window" | "pick-account" | "settings" | "runs" | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
   // The command palette (Cmd+K), the run list it offers, and the Settings section it opens.
@@ -206,6 +209,7 @@ function App() {
   const active = state?.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
 
   const select = (tabId: string) => {
+    setPage(null);
     setState((current) => (current ? { ...current, activeTabId: tabId } : current));
     selectTab(windowId, tabId).catch((err: unknown) => fail("Select tab", err));
   };
@@ -554,6 +558,16 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [dialog, paletteOpen]);
 
+  // Escape closes a page (a dialog or the palette on top takes the key first).
+  useEffect(() => {
+    if (!page || dialog || paletteOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPage(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [page, dialog, paletteOpen]);
+
   // The palette offers unfinished runs and the role tiles: read them when it opens.
   useEffect(() => {
     if (!paletteOpen) return;
@@ -598,6 +612,13 @@ function App() {
         },
       });
     }
+    items.push({
+      id: "page:dashboard",
+      group: "Runs",
+      label: "Run dashboard",
+      detail: "Every unfinished run tab",
+      run: () => setPage("dashboard"),
+    });
     for (const section of SETTINGS_SECTIONS) {
       items.push({
         id: `settings:${section}`,
@@ -725,10 +746,10 @@ function App() {
             </button>
           </div>
         )}
-        {active && !blocked && !active.runDir && terminalsOf(active, !dialog)}
+        {active && !blocked && !active.runDir && terminalsOf(active, !dialog && !page)}
         {active && !blocked && active.runDir && (
           <div className="run-layout">
-            {terminalsOf(active, !dialog)}
+            {terminalsOf(active, !dialog && !page)}
             <PreviewHost onLayoutChange={() => refitTerminal(active.id)} />
             <RunPanel
               key={active.runDir}
@@ -742,12 +763,14 @@ function App() {
             />
           </div>
         )}
+        {page === "dashboard" && <RunDashboard runs={runTabReadings} onClose={() => setPage(null)} />}
       </section>
       <AttentionNotices />
       {activeRunsOpen && (
         <ActiveRuns
           onClose={() => setActiveRunsOpen(false)}
           onAllRuns={() => setDialog("runs")}
+          onDashboard={() => setPage("dashboard")}
         />
       )}
       <StatusBar
