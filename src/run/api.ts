@@ -44,6 +44,9 @@ export type RecordTotals = {
   estimateUsd: number | null;
   /** Active minutes over all stages. */
   minutes: number;
+  /** Minutes in approval waits / first to last log line; null when unknown. */
+  waitMinutes?: number | null;
+  spanMinutes?: number | null;
   prUrls: string[];
   firstActivity: string | null;
   lastActivity: string | null;
@@ -67,6 +70,8 @@ export type RunListItem = {
   hasReport?: boolean;
   /** Repos the run works on (request.md `repos:` or repos.json). */
   repoCount?: number | null;
+  /** The repo names behind `repoCount`. */
+  repos?: string[];
   /** BMAD planning was applied (null: not decided yet). */
   bmadApplied?: boolean | null;
 };

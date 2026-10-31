@@ -416,6 +416,9 @@ pub struct RunListItem {
     /// has one, else repos.json's count (None when neither is readable).
     #[serde(default)]
     pub repo_count: Option<u32>,
+    /// The names behind `repo_count` (same precedence); empty when unknown.
+    #[serde(default)]
+    pub repos: Vec<String>,
     /// Whether BMAD planning was applied: status.json `bmad.applied`; else
     /// mode `on` is true and `off` is false (None for `auto` not yet decided).
     #[serde(default)]
@@ -423,7 +426,8 @@ pub struct RunListItem {
 }
 
 /// The repos of a run: request.md's `repos:` names, else repos.json's.
-fn repo_count_of(run_dir: &Path) -> Option<u32> {
+/// None when neither is readable.
+fn repo_names_of(run_dir: &Path) -> Option<Vec<String>> {
     let limited = std::fs::read_to_string(run_dir.join("request.md"))
         .ok()
         .and_then(|text| {
@@ -431,13 +435,28 @@ fn repo_count_of(run_dir: &Path) -> Option<u32> {
                 .take_while(|line| !line.starts_with("## "))
                 .find_map(|line| line.strip_prefix("repos:").map(str::to_string))
         })
-        .map(|names| names.split(',').filter(|n| !n.trim().is_empty()).count() as u32)
-        .filter(|n| *n > 0);
+        .map(|names| {
+            names
+                .split(',')
+                .map(|n| n.trim().to_string())
+                .filter(|n| !n.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .filter(|names| !names.is_empty());
     limited.or_else(|| {
-        read_json_value(&run_dir.join("repos.json"))?
-            .get("repos")?
-            .as_array()
-            .map(|repos| repos.len() as u32)
+        let value = read_json_value(&run_dir.join("repos.json"))?;
+        let repos = value.get("repos")?.as_array()?;
+        Some(
+            repos
+                .iter()
+                .map(|r| {
+                    r.get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string()
+                })
+                .collect(),
+        )
     })
 }
 
@@ -463,6 +482,10 @@ pub struct RecordTotals {
     pub estimate_usd: Option<f64>,
     /// Active minutes over all stages.
     pub minutes: f64,
+    /// The record's own figures (never read from log.md here); see
+    /// `fill_wait_span` for old records.
+    pub wait_minutes: Option<f64>,
+    pub span_minutes: Option<f64>,
     pub pr_urls: Vec<String>,
     pub first_activity: Option<String>,
     pub last_activity: Option<String>,
@@ -482,6 +505,8 @@ fn record_totals(run_dir: &Path) -> Option<RecordTotals> {
             + tokens.cache_read,
         estimate_usd: record.estimate_usd,
         minutes: record.active_minutes_by_stage.values().sum(),
+        wait_minutes: record.wait_minutes,
+        span_minutes: record.span_minutes,
         pr_urls: record.pr_urls,
         first_activity: record.first_activity,
         last_activity: record.last_activity,
@@ -541,6 +566,7 @@ pub fn list_runs(data_dir: &Path) -> Vec<RunListItem> {
             let made = std::fs::metadata(dir.join("request.md"))
                 .and_then(|m| m.modified())
                 .ok();
+            let repos = repo_names_of(&dir);
             Some((
                 RunListItem {
                     folder: run_folder_of(&dir),
@@ -556,7 +582,8 @@ pub fn list_runs(data_dir: &Path) -> Vec<RunListItem> {
                         .map(|prs| prs.len() as u32),
                     ticket_ids: ticket_ids(&dir),
                     has_report: dir.join("report.md").is_file(),
-                    repo_count: repo_count_of(&dir),
+                    repo_count: repos.as_ref().map(|r| r.len() as u32),
+                    repos: repos.unwrap_or_default(),
                     bmad_applied: bmad_applied_of(&dir, &status),
                     run_id,
                     run_dir: dir.display().to_string(),
@@ -573,6 +600,37 @@ pub fn list_runs(data_dir: &Path) -> Vec<RunListItem> {
             .then_with(|| b.run_id.cmp(&a.run_id))
     });
     runs.into_iter().map(|(run, _)| run).collect()
+}
+
+/// The biggest log.md `fill_wait_span` reads.
+const WAIT_LOG_CAP: u64 = 1024 * 1024;
+
+/// Gives finished runs whose record lacks `waitMinutes`/`spanMinutes` (a
+/// record written before they existed) figures computed from log.md, capped at
+/// 1 MiB (a longer log yields none). Never writes the record. Only the Runs
+/// overview calls it: `list_runs` runs in the 2 s detector sweeps and reads no log.
+pub fn fill_wait_span(runs: &mut [RunListItem]) {
+    use std::io::Read;
+    for run in runs.iter_mut() {
+        let Some(totals) = run.record.as_mut() else {
+            continue;
+        };
+        if totals.wait_minutes.is_some() || totals.span_minutes.is_some() {
+            continue;
+        }
+        let Ok(file) = std::fs::File::open(Path::new(&run.run_dir).join("log.md")) else {
+            continue;
+        };
+        let mut bytes = Vec::new();
+        if file.take(WAIT_LOG_CAP + 1).read_to_end(&mut bytes).is_err()
+            || bytes.len() as u64 > WAIT_LOG_CAP
+        {
+            continue;
+        }
+        let (wait, span) = super::timeline::wait_and_span(&String::from_utf8_lossy(&bytes));
+        totals.wait_minutes = wait;
+        totals.span_minutes = span;
+    }
 }
 
 fn request_title(run_dir: &Path) -> Option<String> {
@@ -659,6 +717,11 @@ mod tests {
         let list = list_runs(dir.path());
         let of = |id: &str| list.iter().find(|r| r.run_id == id).unwrap();
         assert_eq!(of(&all.run_id).repo_count, Some(3));
+        assert_eq!(of(&all.run_id).repos, ["a", "b", "c"], "repos.json names");
+        assert_eq!(of(&some.run_id).repos, ["a", "b"], "request.md limit");
+        for run in &list {
+            assert_eq!(Some(run.repos.len() as u32), run.repo_count);
+        }
         assert_eq!(of(&all.run_id).bmad_applied, Some(true), "mode on");
         assert_eq!(of(&some.run_id).repo_count, Some(2));
         assert_eq!(
@@ -1034,5 +1097,47 @@ mod tests {
         assert!(std::fs::read_to_string(dir.join("log.md"))
             .unwrap()
             .contains("app: cleanup done"));
+    }
+
+    #[test]
+    fn old_records_get_wait_and_span_only_in_fill_wait_span_and_are_not_rewritten() {
+        let dir = TempDir::new("run_wait_span");
+        let runs = runs_dir(dir.path());
+        let record_old = r#"{"schema":1,"sessions":[],"outcome":"done","prCount":0,"prUrls":[],"activeMinutesByStage":{"planning":10.0},"statusUpdatedAt":"t"}"#;
+        let record_new = r#"{"schema":1,"sessions":[],"outcome":"done","waitMinutes":1.5,"spanMinutes":9.0,"statusUpdatedAt":"t"}"#;
+        let log = "2026-10-29T10:00:00Z planning start\n\
+2026-10-29T10:01:00Z planning waiting for plan approval\n\
+2026-10-29T10:01:00Z planning app: attention approval-wait\n\
+2026-10-29T10:11:00Z building approved\n\
+2026-10-29T10:20:00Z done run done\n\
+2026-10-29T14:20:00Z done app: cleanup\n";
+        let make = |id: &str, record: &str, log: &str| {
+            let run = runs.join(id);
+            std::fs::create_dir_all(&run).unwrap();
+            std::fs::write(run.join("app-usage.json"), record).unwrap();
+            std::fs::write(run.join("log.md"), log).unwrap();
+            run
+        };
+        let old = make("r-20261029-1000-aaaa", record_old, log);
+        make("r-20261028-1000-bbbb", record_new, log);
+        let big = "2026-10-29T10:00:00Z planning x\n".repeat(40_000);
+        assert!(big.len() as u64 > WAIT_LOG_CAP);
+        make("r-20261027-1000-cccc", record_old, &big);
+        let before = std::fs::read(old.join("app-usage.json")).unwrap();
+
+        let mut list = list_runs(dir.path());
+        let totals = |l: &[RunListItem], id: &str| {
+            l.iter().find(|r| r.run_id == id).unwrap().record.clone().unwrap()
+        };
+        let t = totals(&list, "r-20261029-1000-aaaa");
+        assert_eq!((t.wait_minutes, t.span_minutes), (None, None), "no log read");
+        fill_wait_span(&mut list);
+        let t = totals(&list, "r-20261029-1000-aaaa");
+        assert_eq!((t.wait_minutes, t.span_minutes), (Some(10.0), Some(20.0)));
+        let t = totals(&list, "r-20261028-1000-bbbb");
+        assert_eq!((t.wait_minutes, t.span_minutes), (Some(1.5), Some(9.0)), "kept");
+        let t = totals(&list, "r-20261027-1000-cccc");
+        assert_eq!((t.wait_minutes, t.span_minutes), (None, None), "over the cap");
+        assert_eq!(std::fs::read(old.join("app-usage.json")).unwrap(), before);
     }
 }
