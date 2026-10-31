@@ -384,7 +384,17 @@ export function pushSendTest(): Promise<void> {
   return invoke<void>("push_send_test");
 }
 
-/** One unfinished run tab, from the attention detector (any window). */
+/** One PR of a run tab, as the `run-state` push tells it. */
+export type RunPrFact = {
+  id: string;
+  state: string | null;
+  appCheck: string | null;
+  ci: string | null;
+  prState: string | null;
+};
+
+/** One run tab, from the attention detector (any window). `activeRuns()`
+ * returns the unfinished ones, `runTabs()` also the done and failed ones. */
 export type ActiveRun = {
   windowLabel: string;
   tabId: string;
@@ -394,17 +404,25 @@ export type ActiveRun = {
   runDir: string | null;
   stage: string | null;
   waitingFor: string | null;
+  /** When the current wait was written (status.json `updatedAt`); approximate. */
+  waitingSince?: string | null;
   /** The run's mode (`epic-plan`); missing or null is a normal run. */
   runMode?: string | null;
   stalled: boolean;
   prsDone: number;
   prsTotal: number;
+  prs?: RunPrFact[];
 };
 
 export type AttentionSummary = { needsYou: number; activeRuns: number };
 
 export function activeRuns(): Promise<ActiveRun[]> {
   return invoke<ActiveRun[]>("active_runs");
+}
+
+/** Every run tab of every window, finished ones included. */
+export function runTabs(): Promise<ActiveRun[]> {
+  return invoke<ActiveRun[]>("run_tabs");
 }
 
 export function attentionSummary(): Promise<AttentionSummary> {

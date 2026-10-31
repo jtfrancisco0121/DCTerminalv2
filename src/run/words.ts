@@ -420,3 +420,59 @@ export function groupTimeline(lines: ReadonlyArray<LogLine>, limit = 30): Timeli
   }
   return groups;
 }
+
+/** The note on every cost figure: it is a list-price estimate, not a bill. */
+export const ESTIMATE_NOTE = "An estimate at API list prices, not a bill";
+/** The caption of the cost chart. */
+export const ESTIMATES_CAPTION = "Estimates at API list prices";
+
+/** What `tabProgress` reads of a run tab (the `ActiveRun` of the bridge, structurally). */
+export type TabReading = {
+  runId?: string | null;
+  stage?: string | null;
+  waitingFor?: string | null;
+  runMode?: string | null;
+  prsDone: number;
+  prsTotal: number;
+};
+
+export type TabProgress = {
+  /** 0 to 1: the width of the tab underline. */
+  fraction: number;
+  tone: Tone;
+  /** The run waits for the person. */
+  waiting: boolean;
+  /** For the tab's tooltip and accessible name. */
+  title: string;
+};
+
+/**
+ * The progress of a run tab, or null for a tab without a run or a run without a stage.
+ * With PRs the underline is PRs done of total, else the share of steps reached.
+ */
+export function tabProgress(reading: TabReading | null | undefined): TabProgress | null {
+  if (!reading || !reading.runId || !reading.stage) return null;
+  const { stage, prsDone: done, prsTotal: total } = reading;
+  const prs = total > 0 ? `${done}/${total} PRs` : null;
+  const join = (head: string) => (prs ? `${head} · ${prs}` : head);
+  if (stage === "failed") return { fraction: 1, tone: "danger", waiting: false, title: join("Failed") };
+  if (stage === "done") return { fraction: 1, tone: "success", waiting: false, title: join("Done") };
+  const waiting = Boolean(reading.waitingFor);
+  const set = stepSetFor(reading.runMode);
+  const at = set.findIndex((step) => step.key === stage);
+  const fraction = total > 0 ? Math.min(1, done / total) : at >= 0 ? at / (set.length - 1) : 0;
+  return {
+    fraction,
+    tone: waiting ? "you" : "running",
+    waiting,
+    title: join(waiting ? "Waiting for you" : stageText(stage)),
+  };
+}
+
+/** The tone of a run's outcome in the Runs table: the record's outcome, else the stage. */
+export function outcomeTone(outcome: string | null | undefined, stage: string | null | undefined): Tone {
+  const value = outcome ?? stage;
+  if (value === "done") return "success";
+  if (value === "failed") return "danger";
+  return stage ? "running" : "muted";
+}

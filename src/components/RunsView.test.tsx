@@ -107,3 +107,92 @@ describe("RunsView tickets", () => {
     expect(screen.getByTestId("tickets-r-2").textContent).toContain("QA-7");
   });
 });
+
+describe("RunsView table and summary", () => {
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  const priced = (id: string, created: string, usd: number | null, minutes: number): RunListItem => ({
+    ...base,
+    runId: id,
+    runDir: `/d/runs/${id}`,
+    createdAt: created,
+    ticketIds: [],
+    record: { ...base.record!, estimateUsd: usd, minutes },
+  });
+
+  async function openWith(list: RunListItem[]) {
+    const api = await import("../run/api");
+    vi.mocked(api.runOverview).mockResolvedValueOnce({ pluginDir: null, pluginVersion: null, roles: [], runs: list });
+    render(<RunsView windowId="main" onClose={() => {}} onStarted={() => {}} />);
+    await screen.findByTestId(`run-${list[0].runId}`);
+  }
+
+  it("sorts Estimate ascending, then descending, then back to newest first, unpriced last", async () => {
+    await openWith([
+      priced("r-a", "2026-10-31T10:00:00Z", 3, 10),
+      priced("r-b", "2026-10-30T10:00:00Z", null, 20),
+      priced("r-c", "2026-10-29T10:00:00Z", 1, 30),
+    ]);
+    const header = () => screen.getByRole("columnheader", { name: /Estimate/ });
+    expect(header().getAttribute("aria-sort")).toBe("none");
+    expect(visible()).toEqual(["run-r-a", "run-r-b", "run-r-c"]);
+    fireEvent.click(within(header()).getByRole("button"));
+    expect(header().getAttribute("aria-sort")).toBe("ascending");
+    expect(visible()).toEqual(["run-r-c", "run-r-a", "run-r-b"]);
+    fireEvent.click(within(header()).getByRole("button"));
+    expect(header().getAttribute("aria-sort")).toBe("descending");
+    expect(visible()).toEqual(["run-r-a", "run-r-c", "run-r-b"]);
+    fireEvent.click(within(header()).getByRole("button"));
+    expect(header().getAttribute("aria-sort")).toBe("none");
+    expect(visible()).toEqual(["run-r-a", "run-r-b", "run-r-c"]);
+  });
+
+  it("sorts Duration and moves aria-sort to the clicked column", async () => {
+    await openWith([priced("r-a", "2026-10-31T10:00:00Z", 3, 30), priced("r-b", "2026-10-30T10:00:00Z", 1, 10)]);
+    fireEvent.click(within(screen.getByRole("columnheader", { name: /Duration/ })).getByRole("button"));
+    expect(visible()).toEqual(["run-r-b", "run-r-a"]);
+    fireEvent.click(within(screen.getByRole("columnheader", { name: /Estimate/ })).getByRole("button"));
+    expect(screen.getByRole("columnheader", { name: /Duration/ }).getAttribute("aria-sort")).toBe("none");
+    expect(screen.getByRole("columnheader", { name: /Estimate/ }).getAttribute("aria-sort")).toBe("ascending");
+  });
+
+  it("heads the table with the runs of the last 7 days, the estimate total and the median duration", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-01T12:00:00Z") });
+    await openWith([
+      priced("r-a", "2026-10-31T10:00:00Z", 3, 10),
+      priced("r-b", "2026-10-30T10:00:00Z", 1.25, 30),
+      priced("r-c", "2026-10-30T09:00:00Z", null, 20),
+      priced("r-old", "2026-10-01T10:00:00Z", 50, 500),
+    ]);
+    const text = screen.getByTestId("runs-summary").textContent ?? "";
+    expect(text).toContain("3 runs in the last 7 days");
+    expect(text).toContain("Estimate $4.25 (1 unpriced)");
+    expect(text).toContain("Median duration 20 min");
+    expect(within(screen.getByTestId("runs-summary")).getByText(/^Estimate/).getAttribute("title")).toBe("An estimate at API list prices, not a bill");
+  });
+
+  it("shows a dash, never $0, when no run is priced or in the window", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-01T12:00:00Z") });
+    await openWith([priced("r-old", "2026-10-01T10:00:00Z", 5, 5)]);
+    const text = screen.getByTestId("runs-summary").textContent ?? "";
+    expect(text).toContain("0 runs in the last 7 days");
+    expect(text).toContain("Estimate —");
+    expect(text).toContain("Median duration —");
+    expect(text).not.toContain("$0");
+  });
+
+  it("offers Analytics only when the owner handles it", async () => {
+    const onAnalytics = vi.fn();
+    const { unmount } = render(<RunsView windowId="main" onClose={() => {}} onStarted={() => {}} onAnalytics={onAnalytics} />);
+    await screen.findByTestId("run-r-1");
+    fireEvent.click(screen.getByRole("button", { name: "Analytics" }));
+    expect(onAnalytics).toHaveBeenCalled();
+    unmount();
+    render(<RunsView windowId="main" onClose={() => {}} onStarted={() => {}} />);
+    await screen.findByTestId("run-r-1");
+    expect(screen.queryByRole("button", { name: "Analytics" })).toBeNull();
+  });
+});

@@ -189,6 +189,7 @@ pub fn run() {
             observe::notify::send_test_notification,
             observe::notify::notification_permission,
             observe::attention::active_runs,
+            observe::attention::run_tabs,
             observe::attention::attention_summary,
             run::focus_tab_command,
             run::actions::pr_worktree_checks,

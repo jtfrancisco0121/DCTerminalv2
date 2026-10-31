@@ -6,6 +6,7 @@ import {
   closeTab,
   getAppState,
   attentionSummary,
+  runTabs,
   getClaudeUsage,
   getSettings,
   moveTab,
@@ -20,6 +21,7 @@ import {
   splitTab,
   windowContext,
   type AppStateSnapshot,
+  type ActiveRun,
   type AttentionSummary,
   type RateWindow,
   type SettingsView,
@@ -34,11 +36,13 @@ import { InlineNotice } from "./components/InlineNotice";
 import { NewTabForm } from "./components/NewTabForm";
 import { RunPanel } from "./components/RunPanel";
 import { PreviewHost } from "./components/PreviewPane";
+import { RunAnalytics } from "./components/RunAnalytics";
+import { RunDashboard } from "./components/RunDashboard";
 import { RunsView } from "./components/RunsView";
 import { StartScreen } from "./components/StartScreen";
 import { resumeRun, runOverview, startRun, type RunOverview, type StartedRun } from "./run/api";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
-import { stageText } from "./run/words";
+import { stageText, tabProgress, type TabProgress } from "./run/words";
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
 import { TabBar } from "./components/TabBar";
@@ -109,6 +113,8 @@ function App() {
   // Tabs that need you and unfinished runs, in every window (the status bar's control).
   const [attention, setAttention] = useState<AttentionSummary | null>(null);
   const [activeRunsOpen, setActiveRunsOpen] = useState(false);
+  // A window-level page drawn over the workspace; the terminals stay mounted underneath.
+  const [page, setPage] = useState<"dashboard" | "analytics" | null>(null);
   const [dialog, setDialog] = useState<"new-tab" | "new-window" | "pick-account" | "settings" | "runs" | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
   // The command palette (Cmd+K), the run list it offers, and the Settings section it opens.
@@ -188,12 +194,23 @@ function App() {
     fastMs: ATTENTION_POLL_MS,
   });
 
+  // Every run tab of every window, finished ones included: the tab bar's
+  // progress and (later) the run dashboard read this one state.
+  const [runTabReadings, setRunTabReadings] = useState<ActiveRun[]>([]);
+  const refreshRunTabs = useCallback(
+    () =>
+      runTabs().then(setRunTabReadings, (err: unknown) => reportError("Run progress", err, { once: "run-tabs" })),
+    [],
+  );
+  usePushRefresh([RUN_STATE_EVENT, TAB_STATE_EVENT], refreshRunTabs, { fastMs: 3000 });
+
   useEffect(() => subscribeLivePty(() => setLiveVersion((n) => n + 1)), []);
   useEffect(() => subscribePtyExit(() => refreshUsage()), [refreshUsage]);
 
   const active = state?.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
 
   const select = (tabId: string) => {
+    setPage(null);
     setState((current) => (current ? { ...current, activeTabId: tabId } : current));
     selectTab(windowId, tabId).catch((err: unknown) => fail("Select tab", err));
   };
@@ -542,6 +559,16 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [dialog, paletteOpen]);
 
+  // Escape closes a page (a dialog or the palette on top takes the key first).
+  useEffect(() => {
+    if (!page || dialog || paletteOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPage(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [page, dialog, paletteOpen]);
+
   // The palette offers unfinished runs and the role tiles: read them when it opens.
   useEffect(() => {
     if (!paletteOpen) return;
@@ -586,6 +613,20 @@ function App() {
         },
       });
     }
+    items.push({
+      id: "page:dashboard",
+      group: "Runs",
+      label: "Run dashboard",
+      detail: "Every unfinished run tab",
+      run: () => setPage("dashboard"),
+    });
+    items.push({
+      id: "page:analytics",
+      group: "Runs",
+      label: "Run analytics",
+      detail: "Cost, duration and waiting over finished runs",
+      run: () => setPage("analytics"),
+    });
     for (const section of SETTINGS_SECTIONS) {
       items.push({
         id: `settings:${section}`,
@@ -615,6 +656,14 @@ function App() {
   // A Claude tab of a removed account shows the notice, never a terminal.
   const blocked = active ? accountProblem(active, accountMissing) : null;
 
+  // This window's run tabs only; a tab with no run (or a stage-less one) has no entry.
+  const progress: Record<string, TabProgress> = {};
+  for (const reading of runTabReadings) {
+    if (!(state?.tabs ?? []).some((tab) => tab.id === reading.tabId)) continue;
+    const found = tabProgress(reading);
+    if (found) progress[reading.tabId] = found;
+  }
+
   const exited = new Set((state?.tabs ?? []).filter((tab) => ptyExitCode(tab.id) != null).map((tab) => tab.id));
   const fontSize = settings?.terminal.fontSize ?? 14;
 
@@ -626,6 +675,7 @@ function App() {
           activeTabId={state.activeTabId}
           exited={exited}
           activity={activity}
+          progress={progress}
           onActivityClick={(id) => setUsageTab((current) => (current === id ? null : id))}
           onSelect={select}
           onClose={requestClose}
@@ -704,10 +754,10 @@ function App() {
             </button>
           </div>
         )}
-        {active && !blocked && !active.runDir && terminalsOf(active, !dialog)}
+        {active && !blocked && !active.runDir && terminalsOf(active, !dialog && !page)}
         {active && !blocked && active.runDir && (
           <div className="run-layout">
-            {terminalsOf(active, !dialog)}
+            {terminalsOf(active, !dialog && !page)}
             <PreviewHost onLayoutChange={() => refitTerminal(active.id)} />
             <RunPanel
               key={active.runDir}
@@ -721,12 +771,15 @@ function App() {
             />
           </div>
         )}
+        {page === "dashboard" && <RunDashboard runs={runTabReadings} onClose={() => setPage(null)} />}
+        {page === "analytics" && <RunAnalytics onClose={() => setPage(null)} />}
       </section>
       <AttentionNotices />
       {activeRunsOpen && (
         <ActiveRuns
           onClose={() => setActiveRunsOpen(false)}
           onAllRuns={() => setDialog("runs")}
+          onDashboard={() => setPage("dashboard")}
         />
       )}
       <StatusBar
@@ -805,6 +858,10 @@ function App() {
           windowId={windowId}
           onClose={() => setDialog(null)}
           onStarted={(run) => void started(run)}
+          onAnalytics={() => {
+            setDialog(null);
+            setPage("analytics");
+          }}
         />
       )}
       {paletteOpen && <CommandPalette items={paletteItems()} onClose={() => setPaletteOpen(false)} />}

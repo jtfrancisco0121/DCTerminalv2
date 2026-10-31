@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { dropIndex, markerX } from "../tabDrag";
 import type { TabSummary } from "../bridge";
+import { tabProgress } from "../run/words";
 import { TabBar, tabMenuItems } from "./TabBar";
 
 const tab = (id: string, label: string, kind: TabSummary["kind"] = "claude"): TabSummary => ({
@@ -327,5 +328,51 @@ describe("TabBar split tabs", () => {
     expect((screen.getByRole("menuitem", { name: "Split right" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("menuitem", { name: "Split down" }) as HTMLButtonElement).disabled).toBe(true);
     unmount();
+  });
+});
+
+describe("TabBar run progress", () => {
+  const props = {
+    activeTabId: "plain",
+    exited: new Set<string>(),
+    onSelect: vi.fn(),
+    onClose: vi.fn(),
+    onRename: vi.fn(),
+    onNew: vi.fn(),
+  };
+  const tabs = [tab("plain", "Claude · plain"), { ...tab("r", "Eagle-Eye · r"), role: "eagle-eye", runDir: "/d/r" }];
+
+  afterEach(cleanup);
+
+  it("draws a two-thirds underline and puts the PRs in the tooltip and the name", () => {
+    const progress = { r: tabProgress({ runId: "r-1", stage: "building", waitingFor: null, prsDone: 2, prsTotal: 3 })! };
+    render(<TabBar {...props} tabs={tabs} progress={progress} />);
+    const line = screen.getByTestId("tab-progress-r");
+    expect(line.style.width).toBe("67%");
+    expect(line.className).toContain("tone-running");
+    expect(screen.getByRole("tab", { name: /Eagle-Eye · r, Building · 2\/3 PRs/ })).toBeTruthy();
+    expect(line.parentElement?.getAttribute("title")).toContain("2/3 PRs");
+    expect(line.parentElement?.className).not.toContain("tab-waiting");
+  });
+
+  it("outlines a waiting run, shows a finished run full in success and a failed run in danger", () => {
+    const waiting = tabProgress({ runId: "r-1", stage: "plan-approval", waitingFor: "plan-approval", prsDone: 0, prsTotal: 0 })!;
+    const { rerender } = render(<TabBar {...props} tabs={tabs} progress={{ r: waiting }} />);
+    expect(screen.getByTestId("tab-progress-r").parentElement?.className).toContain("tab-waiting");
+    const done = tabProgress({ runId: "r-1", stage: "done", waitingFor: null, prsDone: 1, prsTotal: 1 })!;
+    rerender(<TabBar {...props} tabs={tabs} progress={{ r: done }} />);
+    expect(screen.getByTestId("tab-progress-r").style.width).toBe("100%");
+    expect(screen.getByTestId("tab-progress-r").className).toContain("tone-success");
+    const failed = tabProgress({ runId: "r-1", stage: "failed", waitingFor: null, prsDone: 0, prsTotal: 0 })!;
+    rerender(<TabBar {...props} tabs={tabs} progress={{ r: failed }} />);
+    expect(screen.getByTestId("tab-progress-r").className).toContain("tone-danger");
+    expect(screen.getByRole("tab", { name: /Failed/ })).toBeTruthy();
+  });
+
+  it("renders a tab without a run as before", () => {
+    render(<TabBar {...props} tabs={tabs} progress={{}} />);
+    expect(screen.queryByTestId("tab-progress-plain")).toBeNull();
+    expect(screen.getByRole("tab", { name: "Claude · plain" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Claude · plain" }).parentElement?.getAttribute("title")).toBe("/w/plain");
   });
 });

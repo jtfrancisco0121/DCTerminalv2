@@ -50,18 +50,40 @@ fn short(kind: &str) -> String {
 }
 
 /// `(time, stage, text)` of every log.md line (`<UTC time> <stage> <text>`).
+/// The app's own notes (`app: ...`: attention, cleanup) are not run progress and are left out, so
+/// they neither end a wait nor extend the span.
 fn log_lines(text: &str) -> Vec<(i64, String, String)> {
     text.lines()
         .filter_map(|line| {
             let mut parts = line.splitn(3, ' ');
             let at = parse_time_ms(parts.next()?)?;
-            Some((
-                at,
-                parts.next()?.to_string(),
-                parts.next().unwrap_or("").to_string(),
-            ))
+            let stage = parts.next()?.to_string();
+            let text = parts.next().unwrap_or("").to_string();
+            (!text.starts_with("app:")).then_some((at, stage, text))
         })
         .collect()
+}
+
+fn minutes(ms: i64) -> f64 {
+    (ms as f64 / 6_000.0).round() / 10.0
+}
+
+/// `(wait, span)` in minutes (one decimal) from log.md: approval waits, and first to last timed
+/// line. `(None, None)` when the log has no timed line.
+pub fn wait_and_span(log: &str) -> (Option<f64>, Option<f64>) {
+    let lines = log_lines(log);
+    let (Some(first), Some(last)) = (lines.first(), lines.last()) else {
+        return (None, None);
+    };
+    let wait_ms: i64 = bands(log)
+        .iter()
+        .filter(|b| b.kind == "wait")
+        .map(|b| b.end_ms - b.start_ms)
+        .sum();
+    (
+        Some(minutes(wait_ms)),
+        Some(minutes((last.0 - first.0).max(0))),
+    )
 }
 
 /// Stage bands (consecutive lines of one stage) and approval waits (from a `waiting for ... approval`
@@ -120,7 +142,6 @@ pub fn timeline(run_dir: &Path) -> Timeline {
         (Some(a), Some(b)) => (b - a).max(0),
         _ => 0,
     };
-    let minutes = |ms: i64| (ms as f64 / 6_000.0).round() / 10.0;
     let mut lanes: Vec<Lane> = Vec::new();
     let mut total: Option<f64> = None;
     let sessions: Vec<SessionRef> = read_record(run_dir).map(|r| r.sessions).unwrap_or_default();
@@ -284,5 +305,45 @@ mod tests {
         let t = timeline(dir.path());
         assert!(t.lanes.is_empty() && t.bands.is_empty());
         assert_eq!((t.work_minutes, t.wait_minutes), (0.0, 0.0));
+    }
+
+    /// The shape of r-20261029-041728-330f: the app's notes sit right after the waiting line.
+    const REAL_SHAPED: &str = "\
+2026-10-29T04:40:00Z planning plan ready
+2026-10-29T04:51:27Z planning waiting for plan approval
+2026-10-29T04:51:27Z planning app: attention approval-wait
+2026-10-29T05:01:27Z planning app: attention waiting-reminder
+2026-10-29T05:02:27Z building plan approved
+2026-10-29T05:30:00Z done run done
+2026-10-29T09:30:00Z done app: cleanup
+";
+
+    #[test]
+    fn app_lines_neither_end_a_wait_nor_extend_the_span() {
+        let (wait, span) = wait_and_span(REAL_SHAPED);
+        assert_eq!(wait, Some(11.0));
+        assert_eq!(span, Some(50.0));
+        let waits: Vec<Band> = bands(REAL_SHAPED)
+            .into_iter()
+            .filter(|b| b.kind == "wait")
+            .collect();
+        assert_eq!(waits.len(), 1);
+        assert_eq!(waits[0].end_ms - waits[0].start_ms, 11 * 60_000);
+    }
+
+    #[test]
+    fn wait_and_span_sums_waits_and_is_none_without_timed_lines() {
+        let log = "\
+2026-10-29T10:00:00Z planning start
+2026-10-29T10:01:00Z planning waiting for plan approval
+2026-10-29T10:03:00Z building approved
+2026-10-29T10:10:00Z shipping waiting for ship approval
+2026-10-29T10:12:30Z done run done
+";
+        assert_eq!(wait_and_span(log), (Some(4.5), Some(12.5)));
+        let none = "2026-10-29T10:00:00Z a start\n2026-10-29T10:10:00Z a end\n";
+        assert_eq!(wait_and_span(none), (Some(0.0), Some(10.0)));
+        assert_eq!(wait_and_span("no timed lines here\n"), (None, None));
+        assert_eq!(wait_and_span(""), (None, None));
     }
 }
