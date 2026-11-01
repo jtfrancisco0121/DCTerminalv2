@@ -138,7 +138,7 @@ pub struct GhCli;
 
 impl PrLookup for GhCli {
     fn view(&self, url: &str, repo: &str) -> Result<PrInfo, String> {
-        let mut cmd = Command::new("gh");
+        let mut cmd = crate::platform::quiet_command("gh");
         cmd.args([
             "pr",
             "view",
@@ -189,7 +189,7 @@ pub fn safe_remote_url(url: &str) -> bool {
 /// where e.g. Homebrew git keeps the credential helper (osxkeychain) that
 /// https remotes need.
 fn net_command(args: &[&str], dir: &Path) -> Command {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::platform::quiet_command("git");
     cmd.args([
         "-c",
         "protocol.allow=never",

@@ -3,12 +3,12 @@
 //! made with no store lock held (it spawns a process).
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// `git -C <dir> <args>`: stdout (trimmed) on success, else the first stderr line.
 pub fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     // Paths come from LLM-written files: never run a repo's fsmonitor hook.
-    let output = Command::new("git")
+    let output = crate::platform::quiet_command("git")
         .args(["-c", "core.fsmonitor=false"])
         .arg("-C")
         .arg(dir)

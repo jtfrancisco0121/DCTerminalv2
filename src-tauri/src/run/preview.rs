@@ -361,7 +361,7 @@ pub async fn open_file_link(
             col,
             on_path,
         );
-        std::process::Command::new(&argv[0])
+        crate::platform::quiet_command(&argv[0])
             .args(&argv[1..])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())

@@ -20,7 +20,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 pub const GITHUB_FILE: &str = "app-github.json";
@@ -77,7 +76,7 @@ pub struct GhCi;
 
 impl CiLookup for GhCi {
     fn view(&self, url: &str, repo: &str) -> Result<GhPr, String> {
-        let mut cmd = Command::new("gh");
+        let mut cmd = crate::platform::quiet_command("gh");
         cmd.args([
             "pr",
             "view",

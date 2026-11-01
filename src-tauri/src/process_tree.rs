@@ -15,8 +15,6 @@
 //! goes to the leader's [`Detached`] descendants, found by parent pid before
 //! the group exits. A shell's jobs (own group, same session) are left alone.
 
-#[cfg(windows)]
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -28,7 +26,7 @@ pub const STOP_GRACE: Duration = Duration::from_millis(1500);
 #[cfg(windows)]
 fn quiet_taskkill(pid: u32) {
     use std::process::Stdio;
-    let _ = Command::new("taskkill")
+    let _ = crate::platform::quiet_command("taskkill")
         .args(["/F", "/T", "/PID", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())

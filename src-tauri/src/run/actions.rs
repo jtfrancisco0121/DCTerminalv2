@@ -122,7 +122,7 @@ pub async fn pr_worktree_action(
                     .editor_command
                     .clone();
                 let (program, args) = editor_invocation(&setting, &worktree)?;
-                std::process::Command::new(&program)
+                crate::platform::quiet_command(&program)
                     .args(&args)
                     .current_dir(&worktree)
                     .stdin(std::process::Stdio::null())

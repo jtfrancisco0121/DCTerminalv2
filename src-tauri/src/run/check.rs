@@ -10,7 +10,7 @@ use super::status::{app_checks_path, parse_status, read_app_checks, valid_pr_id,
 use crate::store::write_json_atomic;
 use serde_json::json;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 /// How long one PR's check may run.
@@ -46,42 +46,21 @@ pub fn check_folder(cwd: Option<&str>, worktree: &Path) -> Result<PathBuf, Strin
 /// Process groups of checks running now, killed when the app exits.
 static RUNNING: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 
-fn kill_group(pid: u32) {
-    #[cfg(unix)]
-    {
-        let _ = Command::new("kill")
-            .args(["-9", &format!("-{pid}")])
-            .stderr(Stdio::null())
-            .status();
-    }
-    #[cfg(windows)]
-    {
-        let _ = Command::new("taskkill")
-            .args(["/F", "/T", "/PID", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-}
-
 /// Stops every check the app is running (app exit).
 pub fn kill_all() {
     if let Ok(mut running) = RUNNING.lock() {
         for pid in running.drain(..) {
-            kill_group(pid);
+            crate::platform::kill_tree_pid(pid);
         }
     }
 }
 
-fn shell_command(command: &str) -> Command {
-    if cfg!(windows) {
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/C", command]);
-        cmd
-    } else {
-        let mut cmd = Command::new("sh");
-        cmd.args(["-c", command]);
-        cmd
+/// The detail with the shell note first ("ran with cmd /C (Git Bash not found)").
+fn noted(note: Option<&str>, detail: Option<String>) -> Option<String> {
+    match (note, detail) {
+        (Some(note), Some(detail)) => Some(format!("{note}: {detail}")),
+        (Some(note), None) => Some(note.to_string()),
+        (None, detail) => detail,
     }
 }
 
@@ -104,25 +83,21 @@ pub fn run_one(
         Ok(file) => file,
         Err(err) => return ("error".into(), None, Some(format!("log file: {err}"))),
     };
-    let mut cmd = shell_command(command);
+    let (mut cmd, note) = crate::platform::check_command(command);
     cmd.current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::from(file))
         .stderr(Stdio::from(err_file))
         .env("CI", "1")
         .env_remove("DCV2_TEST_MODE");
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
+    crate::platform::spawn_group(&mut cmd);
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(err) => {
             return (
                 "error".into(),
                 None,
-                Some(format!("could not start: {err}")),
+                noted(note, Some(format!("could not start: {err}"))),
             )
         }
     };
@@ -142,23 +117,23 @@ pub fn run_one(
                 untrack();
                 let code = status.code();
                 let result = if status.success() { "pass" } else { "fail" };
-                return (result.into(), code, None);
+                return (result.into(), code, noted(note, None));
             }
             Ok(None) if started.elapsed() >= timeout => {
-                kill_group(pid);
+                crate::platform::kill_tree_pid(pid);
                 untrack();
                 let _ = child.kill();
                 let _ = child.wait();
                 return (
                     "timeout".into(),
                     None,
-                    Some(format!("stopped after {} s", timeout.as_secs())),
+                    noted(note, Some(format!("stopped after {} s", timeout.as_secs()))),
                 );
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(100)),
             Err(err) => {
                 untrack();
-                return ("error".into(), None, Some(err.to_string()));
+                return ("error".into(), None, noted(note, Some(err.to_string())));
             }
         }
     }
@@ -357,6 +332,18 @@ mod tests {
         assert_eq!(checks["PR6"].result, "none");
         let log = std::fs::read_to_string(run_dir.join("logs/PR1-app-check.txt")).unwrap();
         assert!(log.contains("fine"));
+    }
+
+    #[test]
+    fn the_shell_note_comes_first_in_the_detail() {
+        let note = Some("ran with cmd /C (Git Bash not found)");
+        assert_eq!(noted(note, None).as_deref(), note);
+        assert_eq!(
+            noted(note, Some("stopped after 5 s".into())).as_deref(),
+            Some("ran with cmd /C (Git Bash not found): stopped after 5 s")
+        );
+        assert_eq!(noted(None, Some("x".into())).as_deref(), Some("x"));
+        assert_eq!(noted(None, None), None);
     }
 
     #[test]

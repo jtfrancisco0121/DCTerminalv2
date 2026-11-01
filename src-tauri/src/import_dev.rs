@@ -488,7 +488,7 @@ pub fn lock_held(dir: &Path) -> bool {
 
 /// Every process as `pid ppid command` (`ps`), or empty when ps fails.
 pub fn process_lines() -> String {
-    std::process::Command::new("ps")
+    crate::platform::quiet_command("ps")
         .args(["-axww", "-o", "pid=,ppid=,command="])
         .output()
         .ok()
