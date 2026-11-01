@@ -360,6 +360,7 @@ expect 0 "worktree of a mixed-case repo" bash "$STATE" worktree "$RUN" "$MIX" PR
 has "  printed with its original case" "worktree=$(dirname "$R")/RepoX/MyApp-worktrees/dcv2-r-t-pr7"
 is "  .guard.json stores it with that case" "$RUN/.guard.json" worktrees.PR7 "\"$(dirname "$R")/RepoX/MyApp-worktrees/dcv2-r-t-pr7\""
 expect 0 "  and a second call recognises it" bash "$STATE" worktree "$RUN" "$MIX" PR7 "$MIXBASE"
+is "  the run's status keeps the repo path's case" "$RUN/status.json" prs.2.repoPath "\"$MIX\""
 rm -rf "$WT1"
 expect 0 "worktree re-made from its branch" bash "$STATE" worktree "$RUN" "$R" PR1 "$BASE"
 has "  remade" "remade=yes"

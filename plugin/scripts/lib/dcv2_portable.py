@@ -15,6 +15,7 @@ Each OS branch is a small backend chosen by `_backend(os_name)`, so both branche
 logic over paths is written as pure functions over an injected path module (`ntpath`), `cygpath` and `realpath`.
 """
 import functools
+import ntpath
 import os
 import re
 import subprocess
@@ -138,10 +139,14 @@ def kill_group(proc, backend=None):
 # ---- bash for repo checks -------------------------------------------------------------------------------------------
 def bash_exe(os_name=None, env=None):
     """The bash that runs a repo check: on Windows the absolute path the calling script passed in
-    DCV2_BASH_EXE (its own bash, never a bare `bash`, which CreateProcess would find in System32); else `bash`."""
+    DCV2_BASH_EXE (its own bash, never a bare `bash`, which CreateProcess would find in System32); else `bash`.
+    On Windows with DCV2_BASH_EXE unset or not an absolute path it raises FileNotFoundError (fail closed)."""
     env = os.environ if env is None else env
     if (os_name or os.name) == "nt":
-        return env.get("DCV2_BASH_EXE") or "bash"
+        exe = env.get("DCV2_BASH_EXE") or ""
+        if not ntpath.isabs(exe):
+            raise FileNotFoundError("DCV2_BASH_EXE is not set to an absolute bash path; the check was not run")
+        return exe
     return "bash"
 
 

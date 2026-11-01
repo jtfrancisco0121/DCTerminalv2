@@ -873,6 +873,72 @@ mod tests {
         assert_only_detached_stopped(children, "closing the terminal");
     }
 
+    /// Windows: runs a PowerShell script in a ConPTY session.
+    #[cfg(windows)]
+    fn spawn_ps(script: &str, dir: &std::path::Path) -> PtySession {
+        PtySession::spawn(SpawnSpec {
+            program: "powershell.exe".into(),
+            args: vec!["-NoProfile".into(), "-Command".into(), script.into()],
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            cwd: dir.to_path_buf(),
+            cols: 80,
+            rows: 24,
+        })
+        .expect("spawn powershell")
+    }
+
+    /// Seconds until the session reports its exit (None after 30 s).
+    #[cfg(windows)]
+    fn exit_after(session: &PtySession, started: std::time::Instant) -> Option<Duration> {
+        while started.elapsed() < Duration::from_secs(30) {
+            if matches!(
+                session.recv_timeout(Duration::from_millis(50)),
+                Ok(Some(PtyOutput::Exit { .. }))
+            ) {
+                return Some(started.elapsed());
+            }
+        }
+        None
+    }
+
+    // Windows stop ask, honoured: the ask (Ctrl+C) ends a program that reads it,
+    // well inside the grace, without the job being terminated first.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_stop_ask_that_is_honoured_ends_the_program_within_the_grace() {
+        let dir = crate::test_support::TempDir::new("pty_ask_ok");
+        let session = spawn_ps("Write-Host pty_ready; Start-Sleep 60", dir.path());
+        assert!(wait_for_output(&session, "pty_ready"), "script ready");
+        let started = std::time::Instant::now();
+        session.kill();
+        let took = exit_after(&session, started).expect("kill reported an exit");
+        assert!(
+            took < STOP_GRACE,
+            "an honoured ask must not wait the grace: {took:?}"
+        );
+    }
+
+    // Windows stop ask, ignored: Ctrl+C is treated as input, so the program
+    // outlives the grace and is then killed with its job.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_stop_ask_that_is_ignored_is_followed_by_a_kill_after_the_grace() {
+        let dir = crate::test_support::TempDir::new("pty_ask_ignored");
+        let session = spawn_ps(
+            "[Console]::TreatControlCAsInput = $true; Write-Host pty_ready; while ($true) { Start-Sleep -Milliseconds 50 }",
+            dir.path(),
+        );
+        assert!(wait_for_output(&session, "pty_ready"), "script ready");
+        let started = std::time::Instant::now();
+        session.kill();
+        let took = exit_after(&session, started).expect("kill still reported an exit");
+        assert!(
+            took >= STOP_GRACE,
+            "an ignored ask waits the whole grace: {took:?}"
+        );
+    }
+
     #[cfg(unix)]
     fn spawn_sh(script: &str, dir: &std::path::Path) -> PtySession {
         PtySession::spawn(SpawnSpec {

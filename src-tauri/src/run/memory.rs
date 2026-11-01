@@ -37,6 +37,8 @@ pub fn run_script(plugin: &Path, memory: &Path, args: &[&str]) -> Result<String,
 pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<String, String> {
     crate::platform::spawn_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("memory.sh: {e}"))?;
+    crate::platform::adopt_group(&child);
+    let pid = child.id();
     let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -64,6 +66,7 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<String, S
             Err(e) => return Err(format!("memory.sh: {e}")),
         }
     };
+    crate::platform::release_group(pid);
     let stdout = out.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
     let stderr = err.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
     let output = std::process::Output {

@@ -1365,7 +1365,7 @@ analyze(CMD, cwd0)
 sys.exit(0)
 PY
 
-DCV2_LIB_DIR="$_glib" "${DCV2_PY[@]}" -c "$PY" "$GUARD_PLUGIN" <<<"$input"
+DCV2_LIB_DIR="$_glib" "${DCV2_PY[@]}" -I -c "$PY" "$GUARD_PLUGIN" <<<"$input"
 rc=$?
 case $rc in
   0|2) exit $rc ;;

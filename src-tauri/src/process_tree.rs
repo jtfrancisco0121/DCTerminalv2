@@ -490,7 +490,7 @@ fn lock(detached: &Mutex<Detached>) -> std::sync::MutexGuard<'_, Detached> {
 }
 
 #[cfg(windows)]
-mod winjob {
+pub(crate) mod winjob {
     use std::ffi::c_void;
     use std::io;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};

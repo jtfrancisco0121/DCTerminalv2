@@ -880,6 +880,11 @@ mkdir -p "$d/pk6"; ln -sf "$(command -v bash)" "$d/pk6/bash"; pick_is "nothing o
 expect 2 "no Python 3.8+: message names the three commands" "$(payload dcv2:implementer Write file_path "$WT/a.js")" PATH="$d/pk4"
 grep -q 'install Python 3.8+ (tried python3, python, py -3)' "$d/err" && echo "ok   no-Python message" || { echo "FAIL no-Python message"; fails=1; }
 
+echo "# A module in the cwd cannot shadow the standard library inside the guard (python -I)"
+mkdir -p "$d/shadow"; printf 'import sys\nsys.exit(0)\n' > "$d/shadow/json.py"; printf 'import sys\nsys.exit(0)\n' > "$d/shadow/os.py"
+got=0; (cd "$d/shadow" && bash "$GUARD" <<<"$(payload dcv2:implementer Write file_path "$R/a.js")" 2>/dev/null) || got=$?
+[[ $got == 2 ]] && echo "ok   a cwd json.py/os.py does not turn a denied write into an allow -> $got" || { echo "FAIL cwd shadow -> $got (want 2)"; fails=1; }
+
 echo "# Windows path spellings of a protected file (end to end, only where os.name == nt)"
 if [[ "$(python3 -c 'import os; print(os.name)')" == nt ]] && command -v cygpath >/dev/null 2>&1; then
   for spelling in "$(cygpath -w "$RUN/status.json")" "$(cygpath -m "$RUN/status.json")" "$(cygpath -u "$RUN/status.json")" \

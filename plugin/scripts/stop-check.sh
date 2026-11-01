@@ -237,20 +237,25 @@ if cmd:
         outcome = "slow"
     else:
         start = time.time()
-        proc = portable.spawn_group(portable.check_argv(cmd), cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    stdin=subprocess.DEVNULL)
         try:
-            out, _ = proc.communicate(timeout=limit)
-            outcome = "pass" if proc.returncode == 0 else "fail"
-        except subprocess.TimeoutExpired:
-            portable.kill_group(proc)
-            proc.communicate()
-            cache[pid] = {"slow": True, "command": cmd, "seconds": limit}
-            save_cache()
+            proc = portable.spawn_group(portable.check_argv(cmd), cwd=cwd, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        except OSError:  # no usable bash (Windows without DCV2_BASH_EXE): the check is not run, never a bare bash
+            proc = None
             outcome = "slow"
-        if outcome != "slow":
-            cache[pid] = {"slow": False, "command": cmd, "seconds": round(time.time() - start, 1)}
-            save_cache()
+        if proc is not None:
+            try:
+                out, _ = proc.communicate(timeout=limit)
+                outcome = "pass" if proc.returncode == 0 else "fail"
+            except subprocess.TimeoutExpired:
+                portable.kill_group(proc)
+                proc.communicate()
+                cache[pid] = {"slow": True, "command": cmd, "seconds": limit}
+                save_cache()
+                outcome = "slow"
+            if outcome != "slow":
+                cache[pid] = {"slow": False, "command": cmd, "seconds": round(time.time() - start, 1)}
+                save_cache()
 
 if outcome != "fail":
     if slop_on:

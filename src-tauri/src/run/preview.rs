@@ -342,8 +342,18 @@ pub async fn open_file_link(
         let program = crate::platform::which(&argv[0])
             .map(|p| p.into_os_string())
             .unwrap_or_else(|| argv[0].clone().into());
-        crate::platform::quiet_command(program)
-            .args(&argv[1..])
+        let mut command = crate::platform::quiet_command(program);
+        match crate::platform::explorer_select_arg(&argv) {
+            #[cfg(windows)]
+            Some(raw) => {
+                use std::os::windows::process::CommandExt;
+                command.raw_arg(raw);
+            }
+            _ => {
+                command.args(&argv[1..]);
+            }
+        }
+        command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

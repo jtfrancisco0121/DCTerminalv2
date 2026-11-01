@@ -102,10 +102,12 @@ pub fn run_one(
         }
     };
     let pid = child.id();
+    crate::platform::adopt_group(&child);
     if let Ok(mut running) = RUNNING.lock() {
         running.push(pid);
     }
     let untrack = || {
+        crate::platform::release_group(pid);
         if let Ok(mut running) = RUNNING.lock() {
             running.retain(|p| *p != pid);
         }

@@ -44,7 +44,10 @@ class Backend(unittest.TestCase):
         env = {"DCV2_BASH_EXE": r"C:\Program Files\Git\bin\bash.exe"}
         self.assertEqual(p.check_argv("npm test", "nt", env), [r"C:\Program Files\Git\bin\bash.exe", "-c", "npm test"])
         self.assertEqual(p.check_argv("npm test", "posix", env), ["bash", "-c", "npm test"])
-        self.assertEqual(p.check_argv("x", "nt", {}), ["bash", "-c", "x"])
+        with self.assertRaises(FileNotFoundError):
+            p.check_argv("x", "nt", {})
+        with self.assertRaises(FileNotFoundError):
+            p.check_argv("x", "nt", {"DCV2_BASH_EXE": "bash"})
 
 
 @unittest.skipIf(os.name == "nt", "POSIX lock")

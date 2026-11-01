@@ -165,7 +165,7 @@ pub const EDITORS: &[(&str, &str, &str)] = &[
 /// `line`/`col`; any other id reveals the file. Never a shell string. `os` is
 /// `"windows"` or anything else (macOS). `has_cli` says whether the editor's
 /// CLI is on the PATH. Reveal: `open -R` (macOS) or `explorer.exe /select,<path>`
-/// (Windows); an editor without its CLI falls back to the reveal on Windows and
+/// (Windows; see [`explorer_select_arg`] for how the spawn quotes it); an editor without its CLI falls back to the reveal on Windows and
 /// to `open -a <app>` on macOS. Pure.
 pub fn editor_argv(
     os: &str,
@@ -202,6 +202,20 @@ pub fn editor_argv(
         reveal()
     } else {
         vec!["open".into(), "-a".into(), app.to_string(), path]
+    }
+}
+
+/// The text Windows appends to `explorer.exe` for a reveal argv `[explorer.exe,
+/// /select,<path>]`: Explorer parses its own command line, so a path with a
+/// space must be quoted whole (`/select,"C:\a b\c.rs"`), which `Command::arg`
+/// would not do for this shape. `None` when `argv` is not a reveal. Pure.
+pub fn explorer_select_arg(argv: &[String]) -> Option<String> {
+    match argv {
+        [prog, arg] if prog == "explorer.exe" => {
+            let path = arg.strip_prefix("/select,")?;
+            Some(format!("/select,\"{path}\""))
+        }
+        _ => None,
     }
 }
 
@@ -296,6 +310,43 @@ pub fn spawn_group(cmd: &mut Command) {
     let _ = cmd;
 }
 
+/// Windows: the job objects of the running [`spawn_group`] children, by pid. A
+/// job reaches a grandchild whose parent already exited, which `taskkill /T`
+/// (it walks live parent links) cannot.
+#[cfg(windows)]
+fn groups(
+) -> std::sync::MutexGuard<'static, std::collections::HashMap<u32, crate::process_tree::winjob::Job>>
+{
+    use std::sync::{Mutex, OnceLock};
+    static GROUPS: OnceLock<
+        Mutex<std::collections::HashMap<u32, crate::process_tree::winjob::Job>>,
+    > = OnceLock::new();
+    GROUPS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Call right after spawning a [`spawn_group`] child: Windows puts it in a job
+/// object (a failure leaves `taskkill /T` as the fallback); elsewhere nothing.
+pub fn adopt_group(child: &Child) {
+    #[cfg(windows)]
+    if let Ok(job) = crate::process_tree::winjob::Job::create_and_assign_pid(child.id()) {
+        groups().insert(child.id(), job);
+    }
+    #[cfg(not(windows))]
+    let _ = child;
+}
+
+/// Call once a [`spawn_group`] child is done: Windows ends its job (which
+/// stops anything it left behind); elsewhere nothing.
+pub fn release_group(pid: u32) {
+    #[cfg(windows)]
+    drop(groups().remove(&pid));
+    #[cfg(not(windows))]
+    let _ = pid;
+}
+
 /// Kills a [`spawn_group`] child and everything it started.
 pub fn kill_tree(child: &Child) {
     kill_tree_pid(child.id());
@@ -313,6 +364,7 @@ pub fn kill_tree_pid(pid: u32) {
     }
     #[cfg(windows)]
     {
+        release_group(pid); // ends the job: also reaches a grandchild whose parent is gone
         let _ = quiet_command("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .stdout(Stdio::null())
@@ -393,6 +445,53 @@ mod tests {
             check_shell("unix", Ok(PathBuf::from("bash"))),
             ("sh".to_string(), vec!["-c".to_string()], None)
         );
+    }
+
+    // A grandchild whose parent already exited is still reached: `cmd /c start /b`
+    // leaves `ping` running after `cmd` is gone, so only the job object finds it.
+    #[cfg(windows)]
+    #[test]
+    fn kill_tree_pid_reaches_a_grandchild_whose_parent_exited() {
+        let mut cmd = quiet_command("cmd");
+        cmd.args(["/c", "start", "/b", "ping", "-n", "60", "127.0.0.1"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        spawn_group(&mut cmd);
+        let mut child = cmd.spawn().expect("spawn cmd");
+        let pid = child.id();
+        adopt_group(&child);
+        let _ = child.wait();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let alive = groups().get(&pid).map(|job| job.active_processes());
+        assert!(alive.unwrap_or(0) >= 1, "ping outlives cmd inside the job");
+        kill_tree_pid(pid);
+        assert!(groups().get(&pid).is_none(), "the job was ended");
+    }
+
+    #[test]
+    fn explorer_select_arg_quotes_a_path_with_spaces() {
+        let argv = editor_argv(
+            "windows",
+            "finder",
+            Path::new("C:\\My Files\\a b.rs"),
+            None,
+            None,
+            |_| true,
+        );
+        assert_eq!(
+            explorer_select_arg(&argv).as_deref(),
+            Some("/select,\"C:\\My Files\\a b.rs\"")
+        );
+        let editor = editor_argv(
+            "windows",
+            "vscode",
+            Path::new("C:\\a b.rs"),
+            None,
+            None,
+            |_| true,
+        );
+        assert_eq!(explorer_select_arg(&editor), None);
     }
 
     #[test]
