@@ -6,7 +6,6 @@
 //! reading blocks; it must never delay a kill or the exit poll, so no write
 //! happens on the control thread.
 
-#[cfg(unix)]
 use crate::process_tree::STOP_GRACE;
 use crate::process_tree::{PidGuard, PtyGroup};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -41,10 +40,21 @@ pub enum PtyOutput {
     Exit { code: Option<i32> },
 }
 
+/// What Windows types into a Claude tab to ask it to stop (ETX, Ctrl+C) before
+/// the job is terminated. One constant: it may need to become a double ETX if
+/// one only interrupts (tuned in the Windows trial).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const WINDOWS_STOP_ASK: &[u8] = b"\x03";
+
 /// Messages to the writer thread, applied in arrival order.
-enum WriterMsg {
+pub(crate) enum WriterMsg {
     /// Frontend input or a cursor-position report we generated.
     Data(Vec<u8>),
+    /// The app's own stop request (Windows `WINDOWS_STOP_ASK`). Unlike `Data` it
+    /// is written even after a kill began (`discard`), so a closing tab or an
+    /// app quit still asks the program to finish its session log first.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Ask(Vec<u8>),
     /// The program is gone: drop the writer and end the thread.
     Stop,
 }
@@ -86,6 +96,7 @@ pub struct PtySession {
     attached: Arc<AtomicBool>,
     /// Set when the writer thread has ended.
     #[cfg(test)]
+    #[cfg_attr(windows, allow(dead_code))]
     writer_done: Arc<AtomicBool>,
     output: Option<Receiver<PtyOutput>>,
     pid: u32,
@@ -129,7 +140,9 @@ impl PtySession {
             .spawn_command(command)
             .map_err(|err| io::Error::other(err.to_string()))?;
         let pid = child.process_id().unwrap_or(0);
-        let guard = PidGuard::adopt(pid);
+        let (writer_tx, writer_rx) = mpsc::channel();
+        let mut guard = PidGuard::adopt(pid);
+        guard.set_writer(writer_tx.clone());
         let group = guard.group();
         let reader = pair
             .master
@@ -144,7 +157,6 @@ impl PtySession {
         let (out_tx, out_rx) = mpsc::channel();
         let read_out = out_tx.clone();
         let attached = Arc::new(AtomicBool::new(false));
-        let (writer_tx, writer_rx) = mpsc::channel();
         let discard = Arc::new(AtomicBool::new(false));
         let writer_done = Arc::new(AtomicBool::new(false));
         let read_writer = writer_tx.clone();
@@ -363,7 +375,7 @@ impl DsrGate {
 
 /// Owns the PTY writer. Writes block when the program stops reading, so this
 /// is the only thread that may. After `discard` is set (a kill began) queued
-/// data is dropped unwritten. The writer is dropped only on `Stop`, after the
+/// data is dropped unwritten, but a stop `Ask` is still written. The writer is dropped only on `Stop`, after the
 /// program is gone: `UnixMasterWriter::drop` types `\n` + EOF into the
 /// terminal, which a still-running program (during the SIGTERM grace) would
 /// read as Enter + Ctrl-D.
@@ -380,6 +392,10 @@ fn write_loop(
                 if discard.load(Ordering::SeqCst) {
                     continue;
                 }
+                let _ = writer.write_all(&data);
+                let _ = writer.flush();
+            }
+            WriterMsg::Ask(data) => {
                 let _ = writer.write_all(&data);
                 let _ = writer.flush();
             }
@@ -425,7 +441,7 @@ fn control_loop(
             Ok(Ctrl::Kill) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 // Whatever the writer is doing, nothing more reaches the program.
                 discard.store(true, Ordering::SeqCst);
-                finish(&guard, child.as_mut(), &output, &mut exited);
+                finish(&guard, child.as_mut(), &output, &mut exited, &writer);
                 break;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -450,12 +466,16 @@ fn control_loop(
 /// Runs on the control thread, never the UI thread. Unix: SIGTERM to the
 /// group, then up to [`STOP_GRACE`] for it to exit (Claude finishes its
 /// session log), then SIGKILL. An interactive shell ignores SIGTERM and
-/// waits the full grace; the tab is already gone by then.
+/// waits the full grace; the tab is already gone by then. Windows: types
+/// [`WINDOWS_STOP_ASK`] into the terminal (`WriterMsg::Ask`, written even
+/// though the discard flag is set), waits up to [`STOP_GRACE`] for the child to
+/// exit, then terminates the job.
 fn finish(
     guard: &PidGuard,
     child: &mut dyn portable_pty::Child,
     output: &Sender<PtyOutput>,
     exited: &mut bool,
+    #[cfg_attr(unix, allow(unused_variables))] writer: &Sender<WriterMsg>,
 ) {
     #[allow(unused_mut)]
     let mut status = None;
@@ -471,6 +491,22 @@ fn finish(
                 }
             }
             if (status.is_some() && !guard.group_alive()) || std::time::Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+    #[cfg(windows)]
+    {
+        let _ = writer.send(WriterMsg::Ask(WINDOWS_STOP_ASK.to_vec()));
+        let deadline = std::time::Instant::now() + STOP_GRACE;
+        loop {
+            if let Ok(Some(done)) = child.try_wait() {
+                guard.mark_reaped();
+                status = Some(done);
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
                 break;
             }
             thread::sleep(Duration::from_millis(50));
@@ -492,6 +528,52 @@ fn finish(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// A writer into shared memory, to see what `write_loop` wrote.
+    #[derive(Clone, Default)]
+    struct Sink(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn run_write_loop(discard: bool, msgs: Vec<WriterMsg>) -> Vec<u8> {
+        let sink = Sink::default();
+        let (tx, rx) = mpsc::channel();
+        for msg in msgs {
+            tx.send(msg).unwrap();
+        }
+        tx.send(WriterMsg::Stop).unwrap();
+        let flag = Arc::new(AtomicBool::new(discard));
+        let writer = sink.clone();
+        thread::spawn(move || write_loop(Box::new(writer), rx, flag))
+            .join()
+            .expect("Stop ends the write thread");
+        let written = sink.0.lock().unwrap().clone();
+        written
+    }
+
+    #[test]
+    fn a_stop_ask_is_written_after_a_kill_began_but_ordinary_data_is_not() {
+        let msgs = || {
+            vec![
+                WriterMsg::Data(b"typed".to_vec()),
+                WriterMsg::Ask(WINDOWS_STOP_ASK.to_vec()),
+                WriterMsg::Data(b"more".to_vec()),
+            ]
+        };
+        assert_eq!(run_write_loop(true, msgs()), WINDOWS_STOP_ASK);
+        let mut all = b"typed".to_vec();
+        all.extend_from_slice(WINDOWS_STOP_ASK);
+        all.extend_from_slice(b"more");
+        assert_eq!(run_write_loop(false, msgs()), all, "in arrival order");
+    }
 
     fn test_shell() -> Option<(String, Vec<String>)> {
         if cfg!(windows) {

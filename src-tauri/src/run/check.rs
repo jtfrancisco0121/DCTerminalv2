@@ -235,9 +235,11 @@ pub fn rerun_checks(run_dir: &Path, timeout: Duration) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::run::git::testing::{repo_at, run};
     use crate::test_support::TempDir;
 
+    #[cfg(unix)]
     const RUN: &str = "r-20261022-1304";
 
     #[cfg(unix)]

@@ -672,6 +672,7 @@ impl Landing {
     }
 
     /// The dock icon was clicked (macOS `Reopen`): an activation as well.
+    #[cfg(any(target_os = "macos", test))]
     pub fn reopen(&mut self, now_ms: u64) -> Option<String> {
         self.take_fresh(now_ms)
     }
@@ -975,6 +976,7 @@ pub fn on_window_focus(app: &AppHandle, label: &str, focused: bool) {
 }
 
 /// The dock icon was clicked.
+#[cfg(target_os = "macos")]
 pub fn on_reopen(app: &AppHandle) {
     let Some(state) = app.try_state::<AttentionState>() else {
         return;

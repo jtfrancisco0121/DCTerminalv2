@@ -10,7 +10,7 @@ pub use settings::{
     set_observe_settings, set_push_settings, set_run_settings, set_terminal_settings,
     set_ui_settings,
 };
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) use tabs::close_tab_then_kill;
 pub(crate) use tabs::{add_tab, summary as tab_summary, TabSummary};
 pub use tabs::{

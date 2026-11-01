@@ -265,7 +265,7 @@ fn open_is_current(registry: &PtyRegistry, id: &str, token: u64) -> Result<bool,
 
 /// Start the terminal `id`, replacing the one running under that id
 /// ([`begin_open`] then [`open_session_as`], wanted until spawned).
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn open_session(
     registry: &Mutex<PtyRegistry>,
     id: &str,
@@ -277,7 +277,7 @@ fn open_session(
 }
 
 /// [`open_session_with`] with nothing to save after the spawn.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn open_session_as(
     registry: &Mutex<PtyRegistry>,
     id: &str,
