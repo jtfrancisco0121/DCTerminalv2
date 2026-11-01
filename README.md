@@ -8,7 +8,7 @@ Built with Tauri 2 (Rust in `src-tauri/`, React + xterm.js in `src/`) and the bu
 
 | | |
 |---|---|
-| **Terminal** | Tabs and split panes, search, clickable links and file paths, command palette (Cmd+K), prompt scratchpad |
+| **Terminal** | Tabs and split panes, search, clickable links and file paths, command palette (Cmd+K, Ctrl+Shift+K on Windows), prompt scratchpad |
 | **Eagle-Eye runs** | Plan → you approve → parallel builds in git worktrees → review → you approve → PRs opened |
 | **Run panel** | Stage, per-PR progress, checks, review gates, cost and time, timeline, rendered plan and reviews |
 | **ClickUp** | Paste ticket or epic links to start a run; post comments back with one click |
@@ -52,19 +52,68 @@ For a DMG, run `npm run release:mac`.
 
 ### Windows
 
+There is no prebuilt download: `install.ps1` builds the app from source on your PC, then installs it for your user only (no admin rights needed for the install itself).
+
+**1. Install the tools** (once). In PowerShell, with [winget](https://learn.microsoft.com/windows/package-manager/winget/):
+
+```powershell
+winget install --id Git.Git -e                 # Git for Windows (gives Git Bash)
+winget install --id Python.Python.3.12 -e      # Python 3.8+ (not the Microsoft Store stub)
+winget install --id OpenJS.NodeJS.LTS -e       # Node.js + npm
+winget install --id Rustlang.Rustup -e         # Rust (stable, MSVC target by default)
+winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+winget install --id GitHub.cli -e              # optional: PRs, CI status, cleanup
+```
+
+The Build Tools line adds the C++ compiler and Windows SDK that Rust's MSVC target needs. Then **open a new PowerShell window** (so the new PATH applies) and install Claude Code and sign in:
+
+```powershell
+npm install -g @anthropic-ai/claude-code
+claude          # sign in once, then exit
+```
+
+**2. Check them.** Each of these should print a version:
+
+```powershell
+git --version; node --version; npm --version; cargo --version; claude --version
+python --version   # or: py -3 --version
+```
+
+If `python` opens the Microsoft Store, turn off the `python.exe` / `python3.exe` aliases in **Settings → Apps → Advanced app settings → App execution aliases**, then try again.
+
+**3. Build and install:**
+
 ```powershell
 git clone https://github.com/jtfrancisco0121/DCTerminalv2.git
 cd DCTerminalv2
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-`install.ps1` refuses non-Windows systems and refuses while DCTerminalv2 is running, runs `npm ci` and `npm run release:win` (an NSIS installer that also carries `dcv2-hook.exe`), then runs the installer silently for the current user. The installer is **unsigned**: Windows SmartScreen may say "Windows protected your PC". Choose **More info**, then **Run anyway**.
+What `install.ps1` does:
 
-Known limits on Windows: no dock badge and no native menu bar (the shortcuts are `Ctrl+Shift+<key>`), and the installer is unsigned.
+1. Refuses non-Windows systems, and refuses while DCTerminalv2 is running (close all its windows first).
+2. Checks `node`, `npm` and `cargo` are on the PATH.
+3. Runs `npm ci`, then `npm run release:win`: builds the app and an NSIS installer that also carries `dcv2-hook.exe` (the hook forwarder that gives tabs their live state), and fails if the forwarder is missing. The first build takes several minutes.
+4. Runs the installer silently for the current user (into `%LOCALAPPDATA%\DCTerminalv2`).
+
+**4. Start it** from the Start menu (**DCTerminalv2**). The installer is **unsigned**: if Windows SmartScreen says "Windows protected your PC", choose **More info**, then **Run anyway**. App data (settings, runs, memory) lives in `%APPDATA%\com.jtfrancisco.dcterminalv2`.
+
+**Update:** close the app, then in the repo run `git pull` and `powershell -ExecutionPolicy Bypass -File install.ps1` again. **Uninstall:** **Settings → Apps → Installed apps → DCTerminalv2 → Uninstall** (your app data folder is kept unless you tick the uninstaller's option to delete it).
+
+**If something is off:**
+
+| You see | Do |
+|---|---|
+| "Git Bash not found. Install Git for Windows or set CLAUDE_CODE_GIT_BASH_PATH." | Install Git for Windows, or set the user environment variable `CLAUDE_CODE_GIT_BASH_PATH` to your `bash.exe` (e.g. `C:\Program Files\Git\bin\bash.exe`), then restart the app. The app never uses WSL's `bash.exe`. |
+| "Blocked by the dcv2 guard … install Python 3.8+ (tried python3, python, py -3)" | Python is missing or only the Store stub is there: install Python (step 1) and turn off the Store aliases (step 2). |
+| A repo check says "ran with cmd /C (Git Bash not found)" | Same fix as the Git Bash line: checks should run in Git Bash. |
+| `npm run release:win` fails with a linker or `link.exe` error | The Visual Studio Build Tools C++ workload is missing (step 1). |
+
+Known limits on Windows: no dock badge and no native menu bar (shortcuts are `Ctrl+Shift+<key>`, e.g. **Ctrl+Shift+K** for the command palette), and the installer is unsigned.
 
 ## Using it
 
-1. Open **DCTerminalv2** from Applications.
+1. Open **DCTerminalv2** from Applications (macOS) or the Start menu (Windows).
 2. Pick the Claude account for the window. Add accounts in **Settings**.
 3. On the start screen, choose a folder, then:
    - **Eagle-Eye** to start a run: describe the change, or paste ClickUp links.
