@@ -348,6 +348,18 @@ WT1="$(dirname "$R")/r-worktrees/dcv2-r-t-pr1"
 has "  printed" "branch=dcv2/r-t-pr1 worktree=$WT1"
 is "  recorded in .guard.json" "$RUN/.guard.json" worktrees.PR1 "\"$WT1\""
 expect 0 "worktree reused" bash "$STATE" worktree "$RUN" "$R" PR1 "$BASE"
+# A repo in a mixed-case folder: the printed, stored and compared worktree path keeps its case (ident() only decides).
+MIX="$(dirname "$R")/RepoX/MyApp"; mkdir -p "$MIX"; git -C "$MIX" init -q -b main
+git -C "$MIX" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init; MIXBASE="$(git -C "$MIX" rev-parse HEAD)"
+python3 - "$RUN/status.json" "$MIX" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1])); pr = dict(st["prs"][0]); pr.update(id="PR7", repoPath=sys.argv[2], worktree=None, branch=None, commits=0)
+st["prs"].append(pr); json.dump(st, open(sys.argv[1], "w"))
+PY
+expect 0 "worktree of a mixed-case repo" bash "$STATE" worktree "$RUN" "$MIX" PR7 "$MIXBASE"
+has "  printed with its original case" "worktree=$(dirname "$R")/RepoX/MyApp-worktrees/dcv2-r-t-pr7"
+is "  .guard.json stores it with that case" "$RUN/.guard.json" worktrees.PR7 "\"$(dirname "$R")/RepoX/MyApp-worktrees/dcv2-r-t-pr7\""
+expect 0 "  and a second call recognises it" bash "$STATE" worktree "$RUN" "$MIX" PR7 "$MIXBASE"
 rm -rf "$WT1"
 expect 0 "worktree re-made from its branch" bash "$STATE" worktree "$RUN" "$R" PR1 "$BASE"
 has "  remade" "remade=yes"

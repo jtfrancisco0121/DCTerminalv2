@@ -880,4 +880,15 @@ mkdir -p "$d/pk6"; ln -sf "$(command -v bash)" "$d/pk6/bash"; pick_is "nothing o
 expect 2 "no Python 3.8+: message names the three commands" "$(payload dcv2:implementer Write file_path "$WT/a.js")" PATH="$d/pk4"
 grep -q 'install Python 3.8+ (tried python3, python, py -3)' "$d/err" && echo "ok   no-Python message" || { echo "FAIL no-Python message"; fails=1; }
 
+echo "# Windows path spellings of a protected file (end to end, only where os.name == nt)"
+if [[ "$(python3 -c 'import os; print(os.name)')" == nt ]] && command -v cygpath >/dev/null 2>&1; then
+  for spelling in "$(cygpath -w "$RUN/status.json")" "$(cygpath -m "$RUN/status.json")" "$(cygpath -u "$RUN/status.json")" \
+                  "$(cygpath -u "$RUN/status.json" | tr '[:lower:]' '[:upper:]')"; do
+    w 2 "" "$spelling"
+    w 2 dcv2:implementer "$spelling"
+  done
+else
+  echo "skip: the Windows path spelling cases run only where os.name == 'nt' (the Windows branches are never faked here; portable_test.py covers them with ntpath)"
+fi
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

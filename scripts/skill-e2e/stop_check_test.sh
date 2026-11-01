@@ -209,6 +209,22 @@ for f in files:
 assert not hits, hits[:10]
 PY
 
+echo "# a repo in a mixed-case folder still gets its check run (ident() decides, real_path() is what runs)"
+MA="$d/ws/RepoX/MyApp"; MWT="$d/ws/RepoX/MyApp-worktrees/dcv2-r-s-pr1"; mkdir -p "$MA" "$MWT"
+cp "$d/elsewhere/check.sh" "$MWT/check.sh"
+printf '{"schema": 1, "runDir": "%s", "repos": ["%s"], "worktrees": {"PR1": "%s"}}\n' "$RUN" "$MA" "$MWT" > "$RUN/.guard.json"
+printf '{"schema": 1, "repos": [{"name": "a", "path": "%s", "check": "bash check.sh"}]}\n' "$MA" > "$RUN/repos.json"
+python3 - "$RUN" "$MA" "$MWT" <<'PY'
+import json, sys
+run, a, wt = sys.argv[1:4]
+json.dump({"schema": 1, "runId": "r-s", "stage": "building", "prs": [
+    {"id": "PR1", "repoPath": a, "worktree": wt, "state": "building", "check": {"command": "bash check.sh", "result": "not-run", "cwd": wt}}]},
+    open(run + "/status.json", "w"))
+PY
+expect 2 "mixed-case worktree: a failing check blocks the stop (not a silent skip)" "$(payload dcv2:implementer "$reply1")"
+errhas "  ran in that worktree" "PR1 check \`bash check.sh\` fails in $MWT"
+guard; repos '"bash check.sh"' '"true"'; status building building
+
 echo "# never blocks on its own errors"
 expect 0 "garbage payload" "not json"
 badpy="$d/badpy"; mkdir -p "$badpy"; printf '#!/bin/sh\nexit 1\n' > "$badpy/python3"; cp "$badpy/python3" "$badpy/python"; cp "$badpy/python3" "$badpy/py"; chmod +x "$badpy"/py*

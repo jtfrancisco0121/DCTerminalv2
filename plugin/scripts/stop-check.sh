@@ -44,7 +44,7 @@ if not isinstance(data, dict) or data.get("stop_hook_active"):
 agent = str(data.get("agent_type") or "")
 if (agent[5:] if agent.startswith("dcv2:") else agent) != "implementer":
     sys.exit(0)
-run = os.path.realpath(os.environ["DCV2_RUN_DIR"])
+run = portable.real_path(os.environ["DCV2_RUN_DIR"])
 try:
     st = json.load(open(os.path.join(run, "status.json")))
 except Exception:
@@ -82,18 +82,19 @@ pr = by_id.get(pid)
 if not pr or pr.get("state") not in ("building", "fixing"):
     sys.exit(0)
 try:
-    repo = os.path.realpath(str(pr.get("repoPath") or ""))
+    repo = portable.real_path(str(pr.get("repoPath") or ""))
     if not pr.get("repoPath") or not os.path.isabs(pr["repoPath"]):
         sys.exit(0)
     wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-worktrees",
                       f"dcv2-{os.path.basename(run)}-{str(pid).lower()}")
     guard = json.load(open(os.path.join(run, ".guard.json")))
-    if os.path.realpath(str(guard.get("runDir") or "")) != run or \
-            os.path.realpath(str((guard.get("worktrees") or {}).get(pid) or "")) != wt or \
-            os.path.realpath(str(pr.get("worktree") or "")) != wt or not os.path.isdir(wt):
+    if portable.ident(str(guard.get("runDir") or "")) != portable.ident(run) or \
+            portable.ident(str((guard.get("worktrees") or {}).get(pid) or "")) != portable.ident(wt) or \
+            portable.ident(str(pr.get("worktree") or "")) != portable.ident(wt) or not os.path.isdir(wt):
         sys.exit(0)
-    cwd = os.path.realpath(wt)
-    if not (cwd == wt or cwd.startswith(wt + os.sep)):
+    cwd = portable.real_path(wt)  # a value: the folder the check runs in
+    # The resolved folder must still be wt itself (a symlink to elsewhere is skipped): compared as written, so not through ident().
+    if not (os.path.normcase(cwd) == os.path.normcase(wt) or os.path.normcase(cwd).startswith(os.path.normcase(wt) + os.sep)):
         sys.exit(0)
 except SystemExit:
     raise
@@ -104,7 +105,7 @@ cmd = None
 try:
     entries = json.load(open(os.path.join(run, "repos.json"))).get("repos") or []
     entry = next((e for e in entries if isinstance(e, dict) and isinstance(e.get("path"), str)
-                  and os.path.isabs(e["path"]) and os.path.realpath(e["path"]) == repo), None)
+                  and os.path.isabs(e["path"]) and portable.ident(e["path"]) == portable.ident(repo)), None)
     c = entry.get("check") if entry else None
     cmd = c if isinstance(c, str) and c.strip() else None
 except Exception:

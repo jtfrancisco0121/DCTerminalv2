@@ -84,10 +84,15 @@ fallback() { # no working Python 3.8+, or the payload did not parse: fail closed
 
 # The one Python picker (lib/python.sh, from this script's own folder): DCV2_PY is empty when no Python 3.8+ works.
 . "$gdir/lib/python.sh" 2>/dev/null || DCV2_PY=()
+_glib="$(cd "$gdir/lib" 2>/dev/null && pwd -P)" || DCV2_PY=()
 (( ${#DCV2_PY[@]} > 0 )) || fallback
 
 IFS= read -r -d '' PY <<'PY' || true
 import json, os, re, shlex, sys
+
+sys.dont_write_bytecode = True  # no __pycache__ inside the plugin folder (the installed app bundle is sealed)
+sys.path.insert(0, os.environ["DCV2_LIB_DIR"])  # set by guard.sh itself, from its own path
+import dcv2_portable as portable
 
 try:
     data = json.loads(sys.stdin.read())
@@ -107,9 +112,12 @@ inp = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
 cwd0 = str(data.get("cwd") or "/")
 
 def norm(p):
-    """The identity of a path for every allow / deny decision: the real path (symlinks and .. resolved), casefolded
-    (the default macOS volume ignores case, so STATUS.json is status.json and /Users/X is /Users/x)."""
-    return os.path.realpath(p).casefold() if p else ""
+    """The identity of a path for every allow / deny decision (comparison only, never opened or printed): POSIX is the real
+    path (symlinks and .. resolved), casefolded (the default macOS volume ignores case, so STATUS.json is status.json and
+    /Users/X is /Users/x); Windows adds Git Bash path spellings (portable.ident). The null device has no identity (""),
+    and a path that cannot be resolved has the unique UNRESOLVED identity, which `protected` refuses."""
+    ident = portable.ident(p) if p else ""
+    return "" if ident is None else ident
 
 
 def same(a, b):
@@ -117,20 +125,20 @@ def same(a, b):
 
 
 run = os.environ.get("DCV2_RUN_DIR") or ""
-run = os.path.realpath(run) if run else ""
+run = portable.real_path(run) if run else ""
 # The app's signed ClickUp records of each run: <app data>/run-trust (the run is <app data>/runs/<id>).
 trust_root = os.path.join(os.path.dirname(os.path.dirname(run)), "run-trust") if run else ""
 TRUST_MSG = "the app's run records (run-trust) are written only by the app, never by Claude."
 mem = os.environ.get("DCV2_MEMORY_DIR") or ""
-mem = os.path.realpath(os.path.expanduser(mem)) if mem else ""
+mem = portable.real_path(os.path.expanduser(mem)) if mem else ""
 worktrees, repos, status, copied, mode = [], [], {}, set(), "local"
 if run:
     try:
         g = json.load(open(os.path.join(run, ".guard.json")))
         if norm(str(g.get("runDir") or "")) == norm(run):
-            wmap = {k: os.path.realpath(w) for k, w in (g.get("worktrees") or {}).items() if isinstance(w, str) and os.path.isabs(w)}
+            wmap = {k: portable.real_path(w) for k, w in (g.get("worktrees") or {}).items() if isinstance(w, str) and os.path.isabs(w)}
             worktrees = list(wmap.values())
-            repos = [os.path.realpath(r) for r in g.get("repos") or [] if isinstance(r, str) and os.path.isabs(r)]
+            repos = [portable.real_path(r) for r in g.get("repos") or [] if isinstance(r, str) and os.path.isabs(r)]
             for k, files in (g.get("copied") or {}).items():  # files copied in from the main checkout (never committed)
                 if k in wmap and isinstance(files, list):
                     copied.update(norm(os.path.join(wmap[k], str(f))) for f in files)
@@ -160,7 +168,7 @@ def block(msg):
 
 
 def real(p, base):
-    return os.path.realpath(os.path.join(base, os.path.expanduser(p)))
+    return portable.real_path(os.path.join(base, os.path.expanduser(p)))
 
 
 def inside(p, root):
@@ -173,8 +181,8 @@ def inside(p, root):
 def git_user_config(p):
     """The user's own git config (~/.gitconfig, $XDG_CONFIG_HOME/git/): the app's network git reads it (credential
     helpers run from there), so nothing in a run writes it."""
-    home = os.path.realpath(os.path.expanduser("~"))
-    xdg = os.path.realpath(os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"))
+    home = portable.real_path(os.path.expanduser("~"))
+    xdg = portable.real_path(os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"))
     return same(p, os.path.join(home, ".gitconfig")) or inside(p, os.path.join(xdg, "git"))
 
 
@@ -193,15 +201,9 @@ def has_request_md(d):
 
 
 def protected(p):
-    q = p
-    while q and q != os.path.dirname(q):  # requests/ of any run folder: state.sh request and the app only
-        if os.path.basename(q).casefold() == "requests" and (same(os.path.dirname(q), run) or has_request_md(os.path.dirname(q))):
-            return True
-        q = os.path.dirname(q)
-    if os.path.basename(p).casefold() not in PROTECTED_CF:
-        return False
-    d = os.path.dirname(p)
-    return same(d, run) or has_request_md(d)
+    """A protected run file (the names above in a run folder), or anything in a requests/ folder of one; a path that cannot
+    be resolved is refused (fail closed)."""
+    return portable.is_protected(p, norm(run), PROTECTED_CF, os.path, portable.ident, has_request_md)
 
 
 def no_write_zone(p):
@@ -209,7 +211,7 @@ def no_write_zone(p):
     configuration, or the app's data outside the run folder (and, for the implementer, its worktrees)."""
     if not run:
         return None
-    home = os.path.realpath(os.path.expanduser("~"))
+    home = portable.real_path(os.path.expanduser("~"))
     plugin_roots = [r for r in (os.environ.get("CLAUDE_PLUGIN_ROOT") or "", GUARD_PLUGIN) if r]
     if any(inside(p, r) for r in plugin_roots):
         return "the dcv2 plugin (its guard, hooks and scripts)"
@@ -235,7 +237,7 @@ def bmad_config(p):
 BMAD_CFG_MSG = "BMAD's config under <run>/bmad/_bmad is written only by `state.sh bmad-init`, never with Edit, Write or a shell write."
 
 
-GUARD_PLUGIN = os.path.realpath(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1] else ""
+GUARD_PLUGIN = portable.real_path(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1] else ""
 
 
 def write_allowed(p):
@@ -613,7 +615,7 @@ def check_git(args, cwd):
         a = args[i]
         if a == "-C" and i + 1 < len(args):
             v = os.path.expanduser(args[i + 1])
-            target = None if "$" in v else (os.path.realpath(v) if os.path.isabs(v) else (real(v, target) if target else None))
+            target = None if "$" in v else (portable.real_path(v) if os.path.isabs(v) else (real(v, target) if target else None))
             i += 2
             continue
         if a == "--config-env" or a.startswith("--config-env="):
@@ -1363,7 +1365,7 @@ analyze(CMD, cwd0)
 sys.exit(0)
 PY
 
-"${DCV2_PY[@]}" -c "$PY" "$GUARD_PLUGIN" <<<"$input"
+DCV2_LIB_DIR="$_glib" "${DCV2_PY[@]}" -c "$PY" "$GUARD_PLUGIN" <<<"$input"
 rc=$?
 case $rc in
   0|2) exit $rc ;;

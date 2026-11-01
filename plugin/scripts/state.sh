@@ -136,8 +136,10 @@ def load_json(path):
 
 
 def norm(p):
-    """A path's identity for every allow / deny decision: the real path, casefolded (the default macOS volume ignores case)."""
-    return os.path.realpath(p).casefold() if p else ""
+    """A path's identity for every allow / deny decision (comparison only): POSIX is the real path, casefolded (the
+    default macOS volume ignores case); see portable.ident. Never opened, joined, stored or printed."""
+    ident = portable.ident(p) if p else ""
+    return "" if ident is None else ident
 
 
 def same_path(a, b):
@@ -231,7 +233,7 @@ def first_line(s):
 
 
 def canon(repo_path, run_id, pr_id):
-    repo = os.path.realpath(repo_path)
+    repo = portable.real_path(repo_path)
     lc = str(pr_id).lower()
     return f"dcv2/{run_id}-{lc}", os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-worktrees", f"dcv2-{run_id}-{lc}")
 
@@ -462,7 +464,7 @@ def validate_status(doc, run):
         p.append(f"stage {stage!r} not one of {STAGES}")
     if doc.get("waitingFor") not in (None, "plan-approval", "ship-approval"):
         p.append("waitingFor must be null, plan-approval or ship-approval")
-    run_id = os.path.basename(os.path.realpath(run))
+    run_id = os.path.basename(portable.real_path(run))
     if doc.get("runId") != run_id:
         p.append(f"runId must be the run folder's name {run_id!r}")
     plan = doc.get("plan")
@@ -552,7 +554,7 @@ def validate_status(doc, run):
                 branch, wt = canon(pr["repoPath"], run_id, pid)
                 if pr.get("branch") != branch:
                     p.append(f"{pid}: branch must be {branch!r} (as printed by state.sh worktree)")
-                if pr.get("worktree") is not None and os.path.realpath(str(pr["worktree"])) != wt:
+                if pr.get("worktree") is not None and norm(str(pr["worktree"])) != norm(wt):
                     p.append(f"{pid}: worktree must be {wt!r} (as printed by state.sh worktree) or null")
     return p
 
@@ -832,9 +834,9 @@ def cmd_preflight(run, resume=False):
     problems = []
     if not os.path.isdir(run):
         die(f"PREFLIGHT FAILED: no run folder {run}")
-    real = os.path.realpath(run)
+    real = portable.real_path(run)  # a value: printed in the hint below
     env = os.environ.get("DCV2_RUN_DIR", "")
-    if not env or os.path.realpath(env) != real:
+    if not env or norm(env) != norm(real):
         problems.append(f"DCV2_RUN_DIR must be set to the run folder when claude is launched (got {env or 'nothing'}): "
                         f"the guard hook uses it to know this run. Relaunch with DCV2_RUN_DIR={real}")
     if run_cmd(["git", "--version"]).returncode != 0:
@@ -863,7 +865,7 @@ def cmd_preflight(run, resume=False):
     print(f"testmode=auto-approve:{'yes' if tm['auto'] else 'no'},halt-after:{tm['halt'] or 'none'}")
     print(f"maxImplementers={max_implementers()}")
     mem = os.environ.get("DCV2_MEMORY_DIR", "")
-    print(f"memory={os.path.realpath(mem) if mem else 'none'}")
+    print(f"memory={portable.real_path(mem) if mem else 'none'}")
     print(f"reviewMode={review_mode(run)}")
     print(f"bmad={bmad_mode(run)}")
     if epic_mode(run):
@@ -974,8 +976,8 @@ def cmd_bmad_init(run):
         names = [os.path.basename(m.group(1).rstrip("/"))] if m else []
     text = ("[core]\n"
             f"project_name = {toml_str(', '.join(names) or 'project')}\n"
-            f"output_folder = {toml_str(os.path.realpath(out))}\n"
-            f"active_initiative = {toml_str(os.path.basename(os.path.realpath(run)))}\n")
+            f"output_folder = {toml_str(portable.real_path(out))}\n"
+            f"active_initiative = {toml_str(os.path.basename(portable.real_path(run)))}\n")
     atomic_write(cfg, text)
     append_log(run, (load_json(os.path.join(run, "status.json")) or {}).get("stage") or "planning", "BMAD workspace initialised")
     print(f"bmad-init=ok {cfg}")
@@ -1023,11 +1025,11 @@ def bmad_check_docs(run, docs):
     for f in found["architecture"]:
         if body(f, "architecture") is None:
             continue
-        env = dict(os.environ, DCV2_RUN_DIR=os.path.realpath(run))
+        env = dict(os.environ, DCV2_RUN_DIR=portable.real_path(run))
         rt = os.path.join(PLUGIN_ROOT, "bmad", "runtime.mjs")
         skill = os.path.join(PLUGIN_ROOT, "bmad", "skills", "bmad-architecture")
         try:
-            r = subprocess.run(["node", rt, "lint_spine", "--skill-root", skill, "--workspace", os.path.realpath(os.path.dirname(f))],
+            r = subprocess.run(["node", rt, "lint_spine", "--skill-root", skill, "--workspace", portable.real_path(os.path.dirname(f))],
                                capture_output=True, text=True, timeout=60, env=env)
             res = json.loads(r.stdout) if r.returncode == 0 else None
         except (OSError, subprocess.TimeoutExpired, ValueError):
@@ -1199,7 +1201,7 @@ def cmd_waves(run):
 
 
 def cmd_base(repo):
-    repo = os.path.realpath(repo)
+    repo = portable.real_path(repo)
     if git("-C", repo, "rev-parse", "--git-dir").returncode != 0:
         die(f"NO BASE: {repo} is not a git repo")
     remote = remote_of(repo)
@@ -1284,7 +1286,7 @@ def repo_entry(run, repo):
     """repos.json's entry for this repo (matched by real path), or {}."""
     rj = load_json(os.path.join(run, "repos.json"))
     for r in (rj.get("repos") if isinstance(rj, dict) else None) or []:
-        if isinstance(r, dict) and isinstance(r.get("path"), str) and os.path.realpath(r["path"]) == repo:
+        if isinstance(r, dict) and isinstance(r.get("path"), str) and norm(r["path"]) == norm(repo):
             return r
     return {}
 
@@ -1306,7 +1308,7 @@ def copy_files(repo, wt, paths):
         for part in parts:
             d = os.path.join(d, part)
             link = link or os.path.islink(d)
-        if link or not os.path.realpath(src).startswith(repo + os.sep):
+        if link or not norm(src).startswith(norm(repo) + os.sep):
             refused.append(f"{rel}: a symlink (not copied)")
             continue
         if not os.path.isfile(src):
@@ -1380,9 +1382,9 @@ def run_owns_repo(run, repo):
 
 def cmd_worktree(run, repo, pr_id, base):
     epic_refuse(run, "NOT DONE")
-    run = os.path.realpath(run)
+    run = portable.real_path(run)
     run_id = os.path.basename(run)
-    repo = os.path.realpath(repo)
+    repo = portable.real_path(repo)
     if not re.fullmatch(r"PR\d+", pr_id):
         die(f"pr id must be PR<n> (got {pr_id})")
     if not run_owns_repo(run, repo):
@@ -1439,7 +1441,7 @@ def recorded_remote(run, pr):
     rem = (guard_rec(run).get("remotes") or {}).get(pr.get("id"))
     if isinstance(rem, dict) and rem.get("url"):
         return rem
-    repo = os.path.realpath(pr["repoPath"]) if pr.get("repoPath") else ""
+    repo = portable.real_path(pr["repoPath"]) if pr.get("repoPath") else ""
     return remote_record(run, repo) if repo and os.path.isdir(repo) else None
 
 
@@ -1662,7 +1664,7 @@ def canonical_pr(run, st, pid, what="NOT DONE"):
     if pr is None:
         die(f"{what}: no {pid} in status.json")
     branch, wt = canon(pr.get("repoPath") or "/", st.get("runId"), pid)
-    if pr.get("branch") != branch or os.path.realpath(str(pr.get("worktree") or "")) != wt or not os.path.isdir(wt):
+    if pr.get("branch") != branch or norm(str(pr.get("worktree") or "")) != norm(wt) or not os.path.isdir(wt):
         die(f"{what}: {pid} must be on {branch} in its worktree {wt} (made by state.sh worktree)")
     if git("-C", wt, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() != branch:
         die(f"{what}: {wt} is not on {branch}")
@@ -1673,9 +1675,9 @@ def canonical_pr(run, st, pid, what="NOT DONE"):
         # A worktree made before 0.3.0 has no recorded remote. A github-mode run is always a 0.3.0 run (the app
         # writes reviewMode only then), whose worktrees were recorded when made; this fallback records the
         # repo's current remote once, and from then on the guard keeps the Implementer from changing remotes.
-        r = remote_record(run, os.path.realpath(pr["repoPath"]))
+        r = remote_record(run, portable.real_path(pr["repoPath"]))
         if r:
-            record_guard(run, os.path.realpath(pr["repoPath"]), pid, wt, remote=r)
+            record_guard(run, portable.real_path(pr["repoPath"]), pid, wt, remote=r)
             g = guard_rec(run)
     rem = (g.get("remotes") or {}).get(pid)
     if rem and not (isinstance(rem, dict) and rem.get("url")):
@@ -2601,11 +2603,11 @@ def disposable(path):
 def verify_wt(run_id, pid, repo, wt):
     """None when wt is this PR's own linked worktree of repo on its branch, else why not."""
     branch, want = canon(repo, run_id, pid)
-    if os.path.realpath(wt) != want:
+    if norm(wt) != norm(want):
         return f"not where this run's worktrees go ({want})"
     gd = git("-C", wt, "rev-parse", "--absolute-git-dir").stdout.strip()
     common = git("-C", wt, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
-    if not gd or not common or os.path.realpath(gd) == os.path.realpath(common):
+    if not gd or not common or norm(gd) == norm(common):
         return "not a linked worktree"
     # Same git common dir as the recorded repo: right for a repo that is itself a linked worktree, a submodule
     # (common dir under the superproject's .git/modules/) and a --separate-git-dir repo, where the common dir's parent
@@ -2666,10 +2668,10 @@ def merged_head(pr, rem, cwd, branch):
 
 def this_run(run, what):
     """The run folder, refused when it is not the run claude was launched for (DCV2_RUN_DIR)."""
-    run = os.path.realpath(run)
+    run = portable.real_path(run)
     env = os.environ.get("DCV2_RUN_DIR", "")
-    if env and os.path.realpath(env) != run:
-        die(f"{what}: only this session's run ({os.path.realpath(env)}) can be asked about, not {run}")
+    if env and norm(env) != norm(run):
+        die(f"{what}: only this session's run ({portable.real_path(env)}) can be asked about, not {run}")
     return run
 
 
@@ -2680,15 +2682,15 @@ def cmd_cleanup(run):
         die(f"NOT CLEANED: cleanup runs only at stage done or failed (stage {st.get('stage')})")
     run_id = os.path.basename(run)
     g = guard_rec(run)
-    repos = {os.path.realpath(r) for r in g.get("repos") or [] if isinstance(r, str)}
+    repos = {norm(r) for r in g.get("repos") or [] if isinstance(r, str)}  # identities, for the membership test below
     by_id = {p.get("id"): p for p in st.get("prs") or [] if isinstance(p, dict)}
     results = []
     for pid, wt in sorted((g.get("worktrees") or {}).items()):
         if not isinstance(wt, str) or not re.fullmatch(r"PR\d+", pid):
             continue
         pr = by_id.get(pid) or {}
-        repo = os.path.realpath(str(pr.get("repoPath") or ""))
-        if repo not in repos:
+        repo = portable.real_path(str(pr.get("repoPath") or ""))
+        if norm(repo) not in repos:
             results.append(f"{pid}: kept: its repo is not recorded for this run")
             continue
         branch, want = canon(repo, run_id, pid)
