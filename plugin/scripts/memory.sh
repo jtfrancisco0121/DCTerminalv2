@@ -37,11 +37,16 @@ set -euo pipefail
 # The one Python picker (lib/python.sh, next to this script): DCV2_PY is empty when no Python 3.8+ works.
 _mdir="${BASH_SOURCE[0]%/*}"; [[ "$_mdir" != "${BASH_SOURCE[0]}" ]] || _mdir="."
 . "$_mdir/lib/python.sh" 2>/dev/null || DCV2_PY=()
+_mlib="$(cd "$_mdir/lib" 2>/dev/null && pwd -P)" || { echo "memory.sh: lib/ is missing next to this script" >&2; exit 1; }
 (( ${#DCV2_PY[@]} > 0 )) || {
   echo "memory.sh: no usable Python 3.8+ (tried python3, python, py -3)" >&2; exit 1; }
 
 IFS= read -r -d '' PY <<'PY' || true
-import datetime, fcntl, fnmatch, hashlib, json, math, os, re, subprocess, sys, tempfile
+import datetime, fnmatch, hashlib, json, math, os, re, subprocess, sys, tempfile
+
+sys.dont_write_bytecode = True  # no __pycache__ inside the plugin folder (the installed app bundle is sealed)
+sys.path.insert(0, os.environ["DCV2_LIB_DIR"])  # set by memory.sh itself, from its own path
+import dcv2_portable as portable
 
 CAPS = {"index": 8 * 1024, "topic": 12 * 1024, "workspace": 8 * 1024}
 COMPOSE_CAP = 40 * 1024
@@ -147,7 +152,7 @@ def atomic_write(dest, text):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
-        os.replace(tmp, dest)
+        portable.replace(tmp, dest)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -446,7 +451,11 @@ def take_lock(root):
     global LOCK_FILE
     os.makedirs(root, exist_ok=True)
     LOCK_FILE = open(os.path.join(root, ".lock"), "a+")
-    fcntl.flock(LOCK_FILE, fcntl.LOCK_EX)
+    try:
+        portable.lock(LOCK_FILE, float(os.environ.get("DCV2_LOCK_TIMEOUT") or portable.LOCK_BOUND))
+    except portable.LockBusy as busy:
+        print(busy, file=sys.stderr)
+        sys.exit(1)
 
 
 def resolve_target(root, target, rel):
@@ -656,4 +665,4 @@ elif cmd == "scan":
     print("clean")
 PY
 
-DCV2_MEMORY_SH="${BASH_SOURCE[0]}" "${DCV2_PY[@]}" -c "$PY" "$@"
+DCV2_LIB_DIR="$_mlib" DCV2_MEMORY_SH="${BASH_SOURCE[0]}" "${DCV2_PY[@]}" -c "$PY" "$@"

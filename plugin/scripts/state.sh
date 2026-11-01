@@ -80,10 +80,17 @@ set -euo pipefail
 # The one Python picker (lib/python.sh, next to this script): DCV2_PY is empty when no Python 3.8+ works.
 _sdir="${BASH_SOURCE[0]%/*}"; [[ "$_sdir" != "${BASH_SOURCE[0]}" ]] || _sdir="."
 . "$_sdir/lib/python.sh" 2>/dev/null || DCV2_PY=()
+_slib="$(cd "$_sdir/lib" 2>/dev/null && pwd -P)" || DCV2_PY=()
+# The absolute path of this bash for the setup command (never a bare `bash` on Windows): cygpath -w there, as is elsewhere.
+_sbash="$BASH"; if command -v cygpath >/dev/null 2>&1; then _sbash="$(cygpath -w "$BASH" 2>/dev/null || echo "$BASH")"; fi
 py_works() { (( ${#DCV2_PY[@]} > 0 )) && "${DCV2_PY[@]}" -c 'import json, sys; sys.exit(0)' >/dev/null 2>&1; }
 
 IFS= read -r -d '' PY <<'PY' || true
-import datetime, glob, json, os, re, shutil, signal, subprocess, sys, tempfile, time
+import datetime, glob, json, os, re, shutil, subprocess, sys, tempfile, time
+
+sys.dont_write_bytecode = True  # no __pycache__ inside the plugin folder (the installed app bundle is sealed)
+sys.path.insert(0, os.environ["DCV2_LIB_DIR"])  # set by state.sh itself, from its own path
+import dcv2_portable as portable
 
 STAGES = ["planning", "plan-approval", "building", "ship-approval", "shipping", "done", "failed"]
 STATES = ["pending", "building", "drafted", "reviewing", "fixing", "reviewed", "needs-attention", "opened", "pushed", "local-only"]
@@ -150,7 +157,7 @@ def atomic_write(dest, text):
     try:
         with os.fdopen(fd, "w") as f:
             f.write(text)
-        os.replace(tmp, dest)
+        portable.replace(tmp, dest)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -1344,18 +1351,15 @@ def run_setup(run, wt, pr_id, cmd):
         out.write(f"$ {cmd}\n(in {wt})\n")
         out.flush()
         try:
-            p = subprocess.Popen(["bash", "-c", cmd], cwd=wt, stdout=out, stderr=subprocess.STDOUT,
-                                 stdin=subprocess.DEVNULL, start_new_session=True)
+            p = portable.spawn_group(portable.check_argv(cmd), cwd=wt, stdout=out, stderr=subprocess.STDOUT,
+                                     stdin=subprocess.DEVNULL)
         except OSError as e:
             out.write(f"could not start: {e}\n")
             return "failed", log
         try:
             rc = p.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(p.pid, signal.SIGKILL)
-            except OSError:
-                pass
+            portable.kill_group(p)
             p.wait()
             out.write(f"\nsetup timed out after {timeout} s\n")
             return "failed", log
@@ -2852,13 +2856,13 @@ except Exception: print("run")' "$run/status.json" 2>/dev/null || echo run)"
     ;;
   preflight)
     py_works || { echo "PREFLIGHT FAILED: python3 is missing or does not run (no usable Python 3.8+: tried python3, python, py -3); the run cannot validate or write its state. Install Python 3.8+, then resume." >&2; exit 1; }
-    "${DCV2_PY[@]}" -c "$PY" "$@"
+    DCV2_LIB_DIR="$_slib" DCV2_BASH_EXE="$_sbash" "${DCV2_PY[@]}" -c "$PY" "$@"
     ;;
   "")
     echo "usage: see the header of state.sh" >&2; exit 2
     ;;
   *)
     py_works || { echo "NOT WRITTEN: python3 is missing or does not run (no usable Python 3.8+: tried python3, python, py -3; state.sh needs it)" >&2; exit 1; }
-    DCV2_PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" "${DCV2_PY[@]}" -c "$PY" "$@"
+    DCV2_LIB_DIR="$_slib" DCV2_BASH_EXE="$_sbash" DCV2_PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" "${DCV2_PY[@]}" -c "$PY" "$@"
     ;;
 esac

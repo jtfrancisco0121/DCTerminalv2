@@ -24,9 +24,16 @@ input="$(cat)"
 _cdir="${BASH_SOURCE[0]%/*}"; [[ "$_cdir" != "${BASH_SOURCE[0]}" ]] || _cdir="."
 . "$_cdir/lib/python.sh" 2>/dev/null || exit 0
 (( ${#DCV2_PY[@]} > 0 )) || exit 0
+_clib="$(cd "$_cdir/lib" 2>/dev/null && pwd -P)" || exit 0
+# The absolute path of this bash for the check (never a bare `bash` on Windows): cygpath -w there, as is elsewhere.
+_cbash="$BASH"; if command -v cygpath >/dev/null 2>&1; then _cbash="$(cygpath -w "$BASH" 2>/dev/null || echo "$BASH")"; fi
 
 IFS= read -r -d '' PY <<'PY' || true
-import json, os, re, signal, subprocess, sys, tempfile, time
+import json, os, re, subprocess, sys, tempfile, time
+
+sys.dont_write_bytecode = True  # no __pycache__ inside the plugin folder (the installed app bundle is sealed)
+sys.path.insert(0, os.environ["DCV2_LIB_DIR"])  # set by stop-check.sh itself, from its own path
+import dcv2_portable as portable
 
 try:
     data = json.loads(sys.stdin.read())
@@ -117,7 +124,7 @@ def save_cache():
     fd, tmp = tempfile.mkstemp(prefix=".stop-check.json.", suffix=".tmp", dir=logs)
     with os.fdopen(fd, "w") as f:
         json.dump(cache, f)
-    os.replace(tmp, cache_path)
+    portable.replace(tmp, cache_path)
 
 
 # ---- slop: the lines this PR added that match slop-patterns.tsv ---------------------------------
@@ -229,16 +236,13 @@ if cmd:
         outcome = "slow"
     else:
         start = time.time()
-        proc = subprocess.Popen(["bash", "-c", cmd], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, start_new_session=True)
+        proc = portable.spawn_group(portable.check_argv(cmd), cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL)
         try:
             out, _ = proc.communicate(timeout=limit)
             outcome = "pass" if proc.returncode == 0 else "fail"
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except OSError:
-                pass
+            portable.kill_group(proc)
             proc.communicate()
             cache[pid] = {"slow": True, "command": cmd, "seconds": limit}
             save_cache()
@@ -288,7 +292,7 @@ print(f"dcv2 stop check: the {pid} check `{cmd}` fails in {cwd} (exit {proc.retu
 sys.exit(2)
 PY
 
-"${DCV2_PY[@]}" -c "$PY" "$0" <<<"$input"
+DCV2_LIB_DIR="$_clib" DCV2_BASH_EXE="$_cbash" "${DCV2_PY[@]}" -c "$PY" "$0" <<<"$input"
 rc=$?
 [[ $rc == 2 ]] && exit 2
 exit 0
