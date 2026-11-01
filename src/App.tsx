@@ -58,7 +58,7 @@ import { applyTheme, watchSystemTheme } from "./theme";
 import { reportError, setErrorNotifier } from "./uiErrors";
 import { statusLimit, type WindowHistory } from "./usage/limits";
 import { keyAction, pageAction, type PageAction } from "./pageActions";
-import { zoomedFontSize } from "./keyTable";
+import { shortcutLabel, zoomedFontSize } from "./keyTable";
 import { ClaudeVersionBanner } from "./components/ClaudeVersionBanner";
 import { ImportDevDialog, useDevImport } from "./components/ImportDevDialog";
 import { observeTabs, pollsActivity } from "./run/observe";
@@ -643,7 +643,7 @@ function App() {
         id: "scratchpad",
         group: "Tabs",
         label: "Toggle prompt scratchpad",
-        detail: "Cmd+Shift+E",
+        detail: shortcutLabel("scratchpad", detectPlatform(navigator.platform), "text"),
         run: () => {
           window.dispatchEvent(new Event(SCRATCHPAD_EVENT));
         },

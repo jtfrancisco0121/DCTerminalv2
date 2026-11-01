@@ -28,6 +28,7 @@ import {
 import { accountsProblem, addAccount, MAX_ACCOUNTS } from "../settings/accounts";
 import { ATTENTION_KINDS, PUSH_KINDS } from "../run/words";
 import { THEME_CHOICES } from "../theme";
+import { detectPlatform, revealLabel, type Platform } from "../terminal/keys";
 import { Dialog } from "./Dialog";
 import { errorText, InlineNotice } from "./InlineNotice";
 import { ClickUpTokens } from "../clickup/ClickUpTokens";
@@ -39,6 +40,8 @@ type Props = {
   onClose: () => void;
   /** Scroll to this section (its heading, e.g. "Phone push") when the page opens. */
   section?: string;
+  /** The OS, for the click modifier and the reveal option's name. Default: this one. */
+  platform?: Platform;
 };
 
 /** A folder from the native picker, or null when cancelled. */
@@ -106,7 +109,7 @@ function sectionList(names: string[]): string {
  * each), where `claude` is, the terminal, and the theme. Escape or Close goes
  * back to the tabs.
  */
-export function SettingsPage({ view, onSaved, onClose, section }: Props) {
+export function SettingsPage({ view, onSaved, onClose, section, platform = detectPlatform(navigator.platform) }: Props) {
   const [accounts, setAccounts] = useState<ClaudeAccount[]>(view.claude.accounts);
   const [claudePath, setClaudePath] = useState(view.claude.claudePath ?? "");
   const [newName, setNewName] = useState("");
@@ -533,13 +536,13 @@ export function SettingsPage({ view, onSaved, onClose, section }: Props) {
           Copy a selection to the clipboard
         </label>
         <label className="field-label">
-          Cmd+click on a file path in the terminal opens it in
+          {platform === "mac" ? "Cmd" : "Ctrl"}+click on a file path in the terminal opens it in
           <select
             className="text-input text-input-narrow"
             value={terminal.fileLinkEditor ?? "finder"}
             onChange={(event) => setTerminal({ ...terminal, fileLinkEditor: event.target.value as NonNullable<TerminalSettings["fileLinkEditor"]> })}
           >
-            <option value="finder">Finder (reveal)</option>
+            <option value="finder">{revealLabel(platform)}</option>
             <option value="vscode">VS Code</option>
             <option value="cursor">Cursor</option>
             <option value="zed">Zed</option>

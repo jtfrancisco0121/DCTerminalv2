@@ -100,7 +100,8 @@ export function zoomedFontSize(current: number, action: PageAction["kind"]): num
  */
 export const SHORTCUT_SAMPLES: ReadonlyArray<{
   name: string;
-  action: PageAction;
+  /** `scratchpad` is the terminal pane's own shortcut (`terminal/keys.isScratchpadShortcut`), not a page action. */
+  action: PageAction | { kind: "scratchpad" };
   mac: KeyEvent;
   /** Null: there is no such shortcut outside macOS. */
   other: KeyEvent | null;
@@ -120,6 +121,7 @@ export const SHORTCUT_SAMPLES: ReadonlyArray<{
   return [
     { name: "find", action: { kind: "find" }, mac: cmd("f"), other: cs("F"), macMenu: false },
     { name: "command palette", action: { kind: "palette" }, mac: cmd("k"), other: cs("K"), macMenu: false },
+    { name: "scratchpad", action: { kind: "scratchpad" }, mac: cmd("E", { shiftKey: true }), other: cs("E"), macMenu: false },
     { name: "select 3", action: { kind: "select", index: 2 }, mac: cmd("3"), other: cs("3"), macMenu: false },
     { name: "new tab", action: { kind: "new-tab" }, mac: cmd("t"), other: cs("T"), macMenu: true },
     { name: "close tab", action: { kind: "close-tab" }, mac: cmd("w"), other: cs("W"), macMenu: true },
@@ -151,3 +153,29 @@ export const SHORTCUT_SAMPLES: ReadonlyArray<{
     })),
   ];
 })();
+
+/** The shortcuts a label can be asked for: a page action's kind, or the scratchpad. */
+export type ShortcutAction = PageAction["kind"] | "scratchpad";
+
+/**
+ * The label of an action's shortcut on `platform`, derived from `SHORTCUT_SAMPLES`
+ * (the same table the keys come from, so a label cannot drift from its key).
+ * macOS: glyphs (`⌘⇧N`), or the `text` form (`Cmd+Shift+N`). Elsewhere: `Ctrl+Shift+N`.
+ * "" when the key has no binding on that platform.
+ */
+export function shortcutLabel(action: ShortcutAction, platform: Platform, form: "glyph" | "text" = "glyph"): string {
+  const sample = SHORTCUT_SAMPLES.find((s) => s.action.kind === action);
+  const event = platform === "mac" ? sample?.mac : sample?.other;
+  if (!event) return "";
+  const key = event.key.length === 1 ? event.key.toUpperCase() : event.key.replace(/^Arrow/, "");
+  if (platform === "mac") {
+    if (form === "text") {
+      const mods = [event.ctrlKey && "Ctrl", event.altKey && "Alt", event.metaKey && "Cmd", event.shiftKey && "Shift"];
+      return [...mods.filter(Boolean), key].join("+");
+    }
+    const glyphs = [event.ctrlKey && "⌃", event.altKey && "⌥", event.metaKey && "⌘", event.shiftKey && "⇧"];
+    return glyphs.filter(Boolean).join("") + key;
+  }
+  const mods = [event.ctrlKey && "Ctrl", event.altKey && "Alt", event.shiftKey && "Shift"];
+  return [...mods.filter(Boolean), key].join("+");
+}

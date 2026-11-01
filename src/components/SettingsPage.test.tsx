@@ -70,6 +70,20 @@ describe("SettingsPage editor", () => {
   });
 });
 
+describe("SettingsPage file links", () => {
+  it("names the reveal option and the click modifier for the platform, and keeps the stored id", () => {
+    const { unmount } = render(<SettingsPage view={view()} onSaved={() => {}} onClose={() => {}} platform="mac" />);
+    const option = (name: string) => screen.getByRole("option", { name }) as HTMLOptionElement;
+    expect(option("Finder (reveal)").value).toBe("finder");
+    expect(screen.getByText(/^Cmd\+click on a file path/)).toBeTruthy();
+    unmount();
+    render(<SettingsPage view={view()} onSaved={() => {}} onClose={() => {}} platform="windows" />);
+    expect(option("Explorer (reveal)").value).toBe("finder");
+    expect(screen.getByText(/^Ctrl\+click on a file path/)).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "Finder (reveal)" })).toBeNull();
+  });
+});
+
 describe("SettingsPage phone push", () => {
   const withPush = (target: string): SettingsView => ({
     ...view(),

@@ -18,6 +18,7 @@ import { lastLines, TERMINAL_TAIL_LINES } from "./text";
 import { ptySetScheme } from "../bridge";
 import { cachedTheme, isLightTheme, terminalTheme } from "../theme";
 import { detectPlatform } from "./keys";
+import { baseName } from "../paths";
 import { isLinkModifier } from "./links";
 import { reportError } from "../uiErrors";
 import { livePty, sendPtyInput, subscribeLivePty, type LivePty } from "./live";
@@ -138,7 +139,7 @@ const pathCache = new PathCache();
 
 /** Cmd+click on a file path of the terminal output: the preview for a previewable file, else the editor (or Finder). */
 function openFileLink(id: string, hit: PathHit, line?: number, col?: number): void {
-  const name = hit.path?.split("/").pop() ?? "";
+  const name = baseName(hit.path ?? "");
   if (!hit.path) return;
   if (hit.previewable) {
     openPreview({ path: hit.path, title: name });

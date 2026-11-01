@@ -1,3 +1,5 @@
+import { dirName, splitAbsolute } from "../paths";
+
 /** Opening a file in the preview pane: any component asks through this window event. */
 export const PREVIEW_EVENT = "dcv2:preview";
 
@@ -7,10 +9,9 @@ export function openPreview(target: PreviewTarget): void {
   window.dispatchEvent(new CustomEvent<PreviewTarget>(PREVIEW_EVENT, { detail: target }));
 }
 
-/** Folder of an absolute path (no trailing slash). */
+/** Folder of an absolute path (no trailing separator; a Windows drive root is kept). */
 export function dirname(path: string): string {
-  const cut = path.lastIndexOf("/");
-  return cut <= 0 ? "/" : path.slice(0, cut);
+  return dirName(path);
 }
 
 /**
@@ -20,13 +21,13 @@ export function dirname(path: string): string {
 export function resolveRelative(from: string, href: string): string | null {
   const bare = href.split("#")[0]!.split("?")[0]!;
   if (!bare || /^[a-z][a-z0-9+.-]*:/i.test(bare) || bare.startsWith("/") || bare.startsWith("\\") || bare.includes("\0")) return null;
-  const parts = dirname(from).split("/").filter(Boolean);
+  const { root, sep, parts } = splitAbsolute(dirname(from));
   for (const piece of decodeURIComponentSafe(bare).split("/")) {
     if (piece === "" || piece === ".") continue;
     if (piece === "..") parts.pop();
     else parts.push(piece);
   }
-  return "/" + parts.join("/");
+  return root + parts.join(sep);
 }
 
 function decodeURIComponentSafe(text: string): string {
