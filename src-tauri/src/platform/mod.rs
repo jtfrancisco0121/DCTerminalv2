@@ -153,6 +153,101 @@ pub fn script_command(script: &Path) -> Result<Command, String> {
     Ok(cmd)
 }
 
+/// The editors a file link may open, fixed: `(id, command, app name for `open -a`)`.
+pub const EDITORS: &[(&str, &str, &str)] = &[
+    ("vscode", "code", "Visual Studio Code"),
+    ("cursor", "cursor", "Cursor"),
+    ("zed", "zed", "Zed"),
+    ("sublime", "subl", "Sublime Text"),
+];
+
+/// The argument vector (program first) that opens `file` in the editor `id` at
+/// `line`/`col`; any other id reveals the file. Never a shell string. `os` is
+/// `"windows"` or anything else (macOS). `has_cli` says whether the editor's
+/// CLI is on the PATH. Reveal: `open -R` (macOS) or `explorer.exe /select,<path>`
+/// (Windows); an editor without its CLI falls back to the reveal on Windows and
+/// to `open -a <app>` on macOS. Pure.
+pub fn editor_argv(
+    os: &str,
+    id: &str,
+    file: &Path,
+    line: Option<u32>,
+    col: Option<u32>,
+    has_cli: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let windows = os == "windows";
+    let path = file.display().to_string();
+    let reveal = || -> Vec<String> {
+        if windows {
+            vec!["explorer.exe".into(), format!("/select,{path}")]
+        } else {
+            vec!["open".into(), "-R".into(), path.clone()]
+        }
+    };
+    let Some((_, cli, app)) = EDITORS.iter().find(|(e, _, _)| *e == id) else {
+        return reveal();
+    };
+    if has_cli(cli) {
+        let target = match (line, col) {
+            (Some(l), Some(c)) => format!("{path}:{l}:{c}"),
+            (Some(l), None) => format!("{path}:{l}"),
+            _ => path.clone(),
+        };
+        let flag = if *cli == "zed" { None } else { Some("-g") };
+        let mut argv = vec![cli.to_string()];
+        argv.extend(flag.map(String::from));
+        argv.push(target);
+        argv
+    } else if windows {
+        reveal()
+    } else {
+        vec!["open".into(), "-a".into(), app.to_string(), path]
+    }
+}
+
+/// `program` on a PATH (`path_var`, split by the OS), trying each `pathext`
+/// suffix after the bare name (Windows: `.COM;.EXE;.BAT;.CMD`, so `code.cmd`
+/// is found). Returns the full path, which is what a Windows spawn needs for
+/// a batch shim. Pure over `dirs` and `is_file`.
+pub fn find_on_path(
+    program: &str,
+    dirs: &[PathBuf],
+    pathext: &[String],
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    for dir in dirs {
+        let bare = dir.join(program);
+        if is_file(&bare) {
+            return Some(bare);
+        }
+        for ext in pathext {
+            let with = dir.join(format!("{program}{ext}"));
+            if is_file(&with) {
+                return Some(with);
+            }
+        }
+    }
+    None
+}
+
+/// [`find_on_path`] on the real PATH (and PATHEXT on Windows).
+pub fn which(program: &str) -> Option<PathBuf> {
+    let dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default();
+    let pathext: Vec<String> = if cfg!(windows) {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
+            .split(';')
+            .filter(|e| !e.is_empty())
+            .map(|e| e.to_lowercase())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    find_on_path(program, &dirs, &pathext, |p| p.is_file())
+}
+
 /// The note that starts a check's detail when Git Bash is missing on Windows.
 pub const CMD_FALLBACK_NOTE: &str = "ran with cmd /C (Git Bash not found)";
 
@@ -297,6 +392,68 @@ mod tests {
         assert_eq!(
             check_shell("unix", Ok(PathBuf::from("bash"))),
             ("sh".to_string(), vec!["-c".to_string()], None)
+        );
+    }
+
+    #[test]
+    fn windows_editor_argv_reveals_in_explorer_and_opens_editors() {
+        let f = Path::new("C:\\a\\b.rs");
+        let argv =
+            |id: &str, line, col, cli: bool| editor_argv("windows", id, f, line, col, |_| cli);
+        assert_eq!(
+            argv("finder", Some(1), None, true),
+            ["explorer.exe", "/select,C:\\a\\b.rs"]
+        );
+        assert_eq!(
+            argv("nope", None, None, true),
+            ["explorer.exe", "/select,C:\\a\\b.rs"]
+        );
+        assert_eq!(
+            argv("vscode", Some(12), Some(3), true),
+            ["code", "-g", "C:\\a\\b.rs:12:3"]
+        );
+        assert_eq!(
+            argv("cursor", Some(7), None, true),
+            ["cursor", "-g", "C:\\a\\b.rs:7"]
+        );
+        assert_eq!(
+            argv("zed", Some(7), Some(1), true),
+            ["zed", "C:\\a\\b.rs:7:1"]
+        );
+        assert_eq!(
+            argv("sublime", None, None, true),
+            ["subl", "-g", "C:\\a\\b.rs"]
+        );
+        assert_eq!(
+            argv("vscode", Some(1), None, false),
+            ["explorer.exe", "/select,C:\\a\\b.rs"],
+            "no CLI: reveal in Explorer"
+        );
+        // macOS stays as before.
+        let mac = Path::new("/w/a.rs");
+        assert_eq!(
+            editor_argv("macos", "finder", mac, None, None, |_| true),
+            ["open", "-R", "/w/a.rs"]
+        );
+        assert_eq!(
+            editor_argv("macos", "vscode", mac, None, None, |_| false),
+            ["open", "-a", "Visual Studio Code", "/w/a.rs"]
+        );
+    }
+
+    #[test]
+    fn a_batch_shim_is_found_through_pathext() {
+        let dirs = [PathBuf::from("C:\\bin"), PathBuf::from("C:\\code\\bin")];
+        let exts = vec![".exe".to_string(), ".cmd".to_string()];
+        let files = |p: &Path| {
+            p.to_string_lossy().ends_with("code.cmd") && p.to_string_lossy().contains("code")
+        };
+        let found = find_on_path("code", &dirs, &exts, files).unwrap();
+        assert!(found.to_string_lossy().ends_with("code.cmd"));
+        assert_eq!(find_on_path("zed", &dirs, &exts, files), None);
+        assert!(
+            find_on_path("code", &dirs, &[], files).is_none(),
+            "no PATHEXT, no shim"
         );
     }
 

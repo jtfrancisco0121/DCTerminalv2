@@ -296,16 +296,9 @@ pub async fn paths_exist(
     .map_err(|e| e.to_string())?
 }
 
-/// The editors a file link may open, fixed: `(id, command, app name for `open -a`)`.
-pub const EDITORS: &[(&str, &str, &str)] = &[
-    ("vscode", "code", "Visual Studio Code"),
-    ("cursor", "cursor", "Cursor"),
-    ("zed", "zed", "Zed"),
-    ("sublime", "subl", "Sublime Text"),
-];
-
 /// The argument vector (program first) that opens `file` in the editor `id` at `line`/`col`;
 /// `finder` reveals the file instead. Never a shell string. `has_cli` says whether the editor's CLI is on the PATH.
+/// The choice is `platform::editor_argv` (macOS `open`, Windows Explorer).
 pub fn editor_argv(
     id: &str,
     file: &Path,
@@ -313,29 +306,12 @@ pub fn editor_argv(
     col: Option<u32>,
     has_cli: impl Fn(&str) -> bool,
 ) -> Vec<String> {
-    let path = file.display().to_string();
-    let Some((_, cli, app)) = EDITORS.iter().find(|(e, _, _)| *e == id) else {
-        return vec!["open".into(), "-R".into(), path];
-    };
-    if has_cli(cli) {
-        let target = match (line, col) {
-            (Some(l), Some(c)) => format!("{path}:{l}:{c}"),
-            (Some(l), None) => format!("{path}:{l}"),
-            _ => path.clone(),
-        };
-        let flag = if *cli == "zed" { None } else { Some("-g") };
-        let mut argv = vec![cli.to_string()];
-        argv.extend(flag.map(String::from));
-        argv.push(target);
-        argv
-    } else {
-        vec!["open".into(), "-a".into(), app.to_string(), path]
-    }
+    let os = if cfg!(windows) { "windows" } else { "macos" };
+    crate::platform::editor_argv(os, id, file, line, col, has_cli)
 }
 
 fn on_path(program: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|paths| std::env::split_paths(&paths).any(|d| d.join(program).is_file()))
+    crate::platform::which(program).is_some()
 }
 
 /// Opens a linked file in the chosen editor (or reveals it in Finder). The path must be one `paths_exist` would link.
@@ -361,7 +337,12 @@ pub async fn open_file_link(
             col,
             on_path,
         );
-        crate::platform::quiet_command(&argv[0])
+        // A Windows editor CLI is usually a batch shim (`code.cmd`): spawn the resolved full path
+        // (std runs .cmd/.bat through cmd with its argument escaping).
+        let program = crate::platform::which(&argv[0])
+            .map(|p| p.into_os_string())
+            .unwrap_or_else(|| argv[0].clone().into());
+        crate::platform::quiet_command(program)
             .args(&argv[1..])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
