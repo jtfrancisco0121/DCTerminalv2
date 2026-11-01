@@ -45,6 +45,19 @@ describe("MemoryPanelView", () => {
     expect(memoryLine({ present: true })).toBe("present");
   });
 
+  it("shows the Git Bash problem as the backend wrote it", () => {
+    const text = "Git Bash not found. Install Git for Windows or set CLAUDE_CODE_GIT_BASH_PATH.";
+    render(
+      <MemoryPanelView
+        status={{ available: false, problem: text }}
+        onOnboard={() => {}}
+        onRefresh={() => {}}
+        onOpen={() => {}}
+      />,
+    );
+    expect(screen.getByText(`Not available: ${text}`)).toBeTruthy();
+  });
+
   const repo = {
     name: "backend",
     id: "github.com__o__backend",

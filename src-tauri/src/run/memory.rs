@@ -23,9 +23,8 @@ pub fn script(plugin: &Path) -> Option<PathBuf> {
 /// `bash memory.sh <args>` with `DCV2_MEMORY_DIR`; stdout on success.
 pub fn run_script(plugin: &Path, memory: &Path, args: &[&str]) -> Result<String, String> {
     let script = script(plugin).ok_or("memory.sh is not in this plugin yet")?;
-    let mut cmd = Command::new("bash");
-    cmd.arg(script)
-        .args(args)
+    let mut cmd = crate::platform::script_command(&script)?;
+    cmd.args(args)
         .env("DCV2_MEMORY_DIR", memory)
         .env_remove("DCV2_TEST_MODE")
         .stdin(Stdio::null())
@@ -36,11 +35,7 @@ pub fn run_script(plugin: &Path, memory: &Path, args: &[&str]) -> Result<String,
 
 /// Runs `cmd`, killing it (and its process group) after `timeout`.
 pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<String, String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
+    crate::platform::spawn_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("memory.sh: {e}"))?;
     let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
         let (tx, rx) = mpsc::channel();
@@ -60,13 +55,7 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<String, S
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if std::time::Instant::now() >= deadline => {
-                #[cfg(unix)]
-                {
-                    let _ = Command::new("kill")
-                        .args(["-9", &format!("-{}", child.id())])
-                        .stderr(Stdio::null())
-                        .status();
-                }
+                crate::platform::kill_tree(&child);
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err("memory.sh took too long".into());

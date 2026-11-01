@@ -45,6 +45,19 @@ All commands read `DCV2_MEMORY_DIR` (or `--root <dir>`), print nothing secret, e
 | `memory.sh learn <repo id or "workspace:<id>"> <topic or index> < lines` | Adds each stdin line (the `Learned:` lines of a run) under the file's `## Gotchas`, one result line per input: `added`, `duplicate` (equal after normalising, or word-set Jaccard >= 0.8 with an existing line) or `refused <reason>` (a secret-like line, over 300 characters, over the size cap; the other lines are kept). `write` and `learn` hold an `fcntl.flock` on `<memory root>/.lock` around read-merge-write, so runs finishing together lose no line. The file must exist. |
 | `memory.sh scan < text` | The secret scanner alone: `clean` (exit 0), or `looks like a secret on line <n> (<kind>)` (exit 1), never the value. `state.sh` runs it on every GitHub post (fails closed when it cannot run). |
 
+### Git Bash (app-run scripts on Windows)
+
+The app starts `memory.sh` (and every plugin script it runs) through `platform::script_command`. On macOS and Linux that is `bash` from PATH. On Windows it is an absolute Git Bash path, never a bare `bash` (CreateProcess searches `System32` first, where WSL's `bash.exe` lives). The one resolution order, used by the Rust resolver (`src-tauri/src/platform/mod.rs`) and the gate's JS port, and tested against `fixtures/platform/git-bash-cases.json`:
+
+1. `CLAUDE_CODE_GIT_BASH_PATH`, when it is a file (the app keeps it in the env it gives Claude tabs, so the app and Claude agree);
+2. `%ProgramFiles%\Git\bin\bash.exe`;
+3. `%ProgramW6432%\Git\bin\bash.exe`;
+4. `%ProgramFiles(x86)%\Git\bin\bash.exe`;
+5. `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`;
+6. `git --exec-path`, three folders up, `bin\bash.exe`.
+
+Any candidate under `%SystemRoot%\System32` or `WindowsApps` is rejected. With no match the Memory panel shows "Git Bash not found. Install Git for Windows or set CLAUDE_CODE_GIT_BASH_PATH.". Every non-PTY child is built by `platform::quiet_command` (no console window on Windows), and a child that may time out is started with `platform::spawn_group` and stopped with `platform::kill_tree`.
+
 `state.sh put <path> < json` is the one way the skill writes status.json: the path must be `$DCV2_RUN_DIR/status.json` (exact name, same real path); any other path, name or an unset `DCV2_RUN_DIR` is refused with nothing written.
 
 The guard blocks Edit/Write into `DCV2_MEMORY_DIR` (agents use `memory.sh write`). The app's own memory editor (P3) writes files directly, as the user.
