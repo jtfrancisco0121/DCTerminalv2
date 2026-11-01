@@ -1,9 +1,10 @@
 // Local stand-in for CI: `npm run check`.
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import { resolveGitBash } from "./git-bash.mjs";
 
 // The gate for every change: `npm run check`. Rust first (format, lints,
 // tests), then the page (unit tests, then tsc and the production build), then
@@ -46,19 +47,84 @@ export const PLUGIN_SUITES = ["guard", "state", "memory", "github", "stop_check"
 // not leak into the suites: they would pass or fail by the machine they run on.
 export const SUITE_ENV_PREFIX = "DCV2_";
 
-const pluginSteps = PLUGIN_SUITES.map((name) => ({
-  name: `plugin suite ${name}`,
-  cmd: "bash",
-  args: [`scripts/skill-e2e/${name}_test.sh`],
-  removeEnvPrefix: SUITE_ENV_PREFIX,
-}));
-
-/** The gate's steps on `platform`: the bash suites do not run on Windows. */
-export function stepsFor(platform) {
-  return platform === "win32" ? [...baseSteps] : [...baseSteps, ...pluginSteps];
+/** The plugin suites, run by `bash` (on Windows: the Git Bash found by [`resolveGitBash`]). */
+function pluginStepsWith(bash) {
+  return PLUGIN_SUITES.map((name) => ({
+    name: `plugin suite ${name}`,
+    cmd: bash,
+    args: [`scripts/skill-e2e/${name}_test.sh`],
+    removeEnvPrefix: SUITE_ENV_PREFIX,
+  }));
 }
 
-const steps = stepsFor(process.platform);
+/** The Windows cross-compile lint: compiles every `cfg(windows)` branch on a Mac. */
+export const CROSS_CLIPPY = {
+  name: "cargo clippy (windows target)",
+  cmd: "cargo",
+  args: [
+    "clippy",
+    "--manifest-path",
+    "src-tauri/Cargo.toml",
+    "--target",
+    "x86_64-pc-windows-gnu",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings",
+  ],
+};
+
+export const CROSS_CLIPPY_SKIP = "skip: Windows cross-clippy (brew install mingw-w64)";
+
+/** Whether `name` is an executable on the PATH. */
+export function onPath(name, env = process.env) {
+  const dirs = (env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  return dirs.some((dir) => existsSync(path.join(dir, name)));
+}
+
+/**
+ * The gate's steps on `platform`. `opts.mingw` (darwin): true adds the Windows
+ * cross-clippy step, false adds a visible skip note, undefined adds neither.
+ * `opts.bash` (win32): the Git Bash that runs the plugin suites.
+ */
+export function stepsFor(platform, opts = {}) {
+  if (platform === "win32") return [...baseSteps, ...pluginStepsWith(opts.bash ?? "bash")];
+  const cross =
+    platform === "darwin" && opts.mingw === true
+      ? [CROSS_CLIPPY]
+      : platform === "darwin" && opts.mingw === false
+        ? [{ name: CROSS_CLIPPY_SKIP, note: true }]
+        : [];
+  // The cross-clippy step follows the host clippy: same lints, a second target.
+  const [fmt, clippy, ...rest] = baseSteps;
+  return [fmt, clippy, ...cross, ...rest, ...pluginStepsWith("bash")];
+}
+
+/** The real inputs of the Git Bash resolver on this machine. */
+export function resolveGitBashHere() {
+  return resolveGitBash(
+    (name) => process.env[name],
+    (file) => {
+      try {
+        return statSync(file).isFile();
+      } catch {
+        return false;
+      }
+    },
+    () => {
+      const out = spawnSync("git", ["--exec-path"], { encoding: "utf8" });
+      return out.status === 0 ? out.stdout.trim() : null;
+    },
+  );
+}
+
+/** The steps with no machine-specific input (tests look steps up by name here). */
+export const steps = stepsFor(process.platform);
+
+function stepsHere() {
+  if (process.platform === "win32") return stepsFor("win32", { bash: resolveGitBashHere() });
+  return stepsFor(process.platform, { mingw: onPath("x86_64-w64-mingw32-gcc") });
+}
 
 /** `source` without the variables that start with `prefix`. */
 export function envWithout(prefix, source = process.env) {
@@ -283,6 +349,10 @@ export function spawnCommand(command, args, options = {}) {
 }
 
 function runStep(step) {
+  if (step.note) {
+    console.log(`\n${step.name}`);
+    return;
+  }
   console.log(`\n==> ${step.name}`);
   const result = spawnCommand(step.cmd, step.args, {
     env: step.env,
@@ -307,8 +377,6 @@ function isDirectRun() {
   return import.meta.url === pathToFileURL(path.resolve(entry)).href;
 }
 
-export { steps };
-
 if (isDirectRun()) {
   try {
     assertReleaseVersionsMatch();
@@ -318,6 +386,13 @@ if (isDirectRun()) {
     process.exit(1);
   }
 
+  let steps;
+  try {
+    steps = stepsHere();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
   for (const step of steps) {
     runStep(step);
   }

@@ -238,6 +238,7 @@ mod tests {
     }
 
     /// The same verdicts as memory.sh's own scanner, when python3 is here.
+    #[cfg(unix)] // needs python3 (the Windows gate runs the plugin suites)
     #[test]
     fn verdicts_match_memory_sh() {
         let script = crate::run::launch::dev_repo_root().join("plugin/scripts/memory.sh");

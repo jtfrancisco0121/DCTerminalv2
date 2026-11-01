@@ -311,6 +311,7 @@ mod tests {
         assert_eq!(load_rules(&tsv).len(), rows, "a pattern did not compile");
     }
 
+    #[cfg(unix)] // setup.sh needs sh
     #[test]
     fn the_fixture_gives_the_expected_findings() {
         let dir = std::env::temp_dir().join(format!("dcv2-slop-{}", std::process::id()));

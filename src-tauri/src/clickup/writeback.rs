@@ -904,7 +904,9 @@ mod tests {
         assert!(read_drafts(dir.path()).unwrap_err().contains("2 MB"));
     }
 
-    /// LOW 11: the app's tickets.json → `state.sh writeback` → read_drafts.
+    /// LOW 11: the app's tickets.json → `state.sh writeback` → read_drafts. Needs bash and python3
+    /// (the Windows gate runs the plugin suites instead).
+    #[cfg(unix)]
     #[test]
     fn the_skill_writes_drafts_from_the_app_s_tickets_json() {
         if std::process::Command::new("python3")

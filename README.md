@@ -83,7 +83,7 @@ npm run dev:app                                      # tauri dev
 
 - Debug builds use their own data folder (`com.jtfrancisco.dcterminalv2.dev`) and the repo's `plugin/`.
 - The plugin also works in a plain terminal: `claude --plugin-dir plugin "/dcv2:planner <request>"`.
-- **The gate:** `npm run check` runs rustfmt, clippy, cargo tests, Vitest, the build and the plugin test suites. There is no hosted CI.
+- **The gate:** `npm run check` runs rustfmt, clippy, cargo tests, Vitest, the build and the plugin test suites. There is no hosted CI. On a Mac, `brew install mingw-w64` adds a step that compiles every Windows-only branch (`cargo clippy --target x86_64-pc-windows-gnu`); without it the gate prints `skip: Windows cross-clippy (brew install mingw-w64)` and carries on. On Windows the gate runs the plugin suites under Git Bash.
 - Live plugin tests that call Claude live in `scripts/skill-e2e/` (`run.sh`, `golden.sh`, `standalone.sh`, `bmad_spike.sh`).
 
 ## Repository layout
