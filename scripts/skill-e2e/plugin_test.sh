@@ -120,7 +120,7 @@ assert re.search(r"^1\. \[MEDIUM\] .*No hosted CI", rev, re.M) and "REQUIRES REV
 PY
 
 echo "# scripts parse"
-for f in "$P"/scripts/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do
+for f in "$P"/scripts/*.sh "$P"/scripts/lib/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do
   bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"
 done
 

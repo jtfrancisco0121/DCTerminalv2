@@ -58,6 +58,10 @@ The app starts `memory.sh` (and every plugin script it runs) through `platform::
 
 Any candidate under `%SystemRoot%\System32` or `WindowsApps` is rejected. With no match the Memory panel shows "Git Bash not found. Install Git for Windows or set CLAUDE_CODE_GIT_BASH_PATH.". Every non-PTY child is built by `platform::quiet_command` (no console window on Windows), and a child that may time out is started with `platform::spawn_group` and stopped with `platform::kill_tree`.
 
+### Python (plugin scripts)
+
+`guard.sh`, `memory.sh`, `state.sh` and `stop-check.sh` embed Python and start it only through `plugin/scripts/lib/python.sh` (sourced from the script's own folder; `guard.sh` uses its pure-bash folder because the PATH may be broken). The picker sets the array `DCV2_PY` to the first of `python3`, `python`, `py -3` for which `import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)` exits 0, and stops at the first that works; the Microsoft Store stub exits non-zero, so it is skipped. A script runs `"${DCV2_PY[@]}"` only after checking `${#DCV2_PY[@]} -gt 0` (bash 3.2 under `set -u` cannot expand an empty array). With no usable Python, `guard.sh` still fails closed and says "install Python 3.8+ (tried python3, python, py -3)", `memory.sh` and `state.sh` print one error line naming the same three commands, and `stop-check.sh` skips (no check), as before. The guard's interpreter rules also know the Windows spellings: `py` (and its `-3` flag), a `.exe` after any interpreter or shell name, and `bash.exe`.
+
 `state.sh put <path> < json` is the one way the skill writes status.json: the path must be `$DCV2_RUN_DIR/status.json` (exact name, same real path); any other path, name or an unset `DCV2_RUN_DIR` is refused with nothing written.
 
 The guard blocks Edit/Write into `DCV2_MEMORY_DIR` (agents use `memory.sh write`). The app's own memory editor (P3) writes files directly, as the user.

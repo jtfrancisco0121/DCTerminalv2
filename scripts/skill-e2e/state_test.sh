@@ -105,7 +105,7 @@ has "  the implementer cap, default 3 (R6)" "maxImplementers=3"
 has "  memory off without DCV2_MEMORY_DIR" "memory=none"
 expect 0 "preflight with a cap and memory" env DCV2_MAX_IMPLEMENTERS=2 DCV2_MEMORY_DIR="$d/mem" bash "$STATE" preflight "$RUN"
 has "  maxImplementers=2" "maxImplementers=2"; has "  memory root" "memory=$d/mem"
-badpy="$d/badpy"; mkdir -p "$badpy"; printf '#!/bin/sh\nexit 1\n' > "$badpy/python3"; chmod +x "$badpy/python3"
+badpy="$d/badpy"; mkdir -p "$badpy"; printf '#!/bin/sh\nexit 1\n' > "$badpy/python3"; cp "$badpy/python3" "$badpy/python"; cp "$badpy/python3" "$badpy/py"; chmod +x "$badpy"/py*
 expect 1 "preflight with a broken python3 fails" env PATH="$badpy:$PATH" bash "$STATE" preflight "$RUN"
 has "  says python3 does not run" "python3 is missing or does not run"
 cp "$RUN/request.md" "$d/req.bak"; printf 'folder: /etc\n' >> "$RUN/request.md"
@@ -1178,5 +1178,13 @@ has "  needs the ship approval" "ship approval"
 expect 1 "normal: waves refused" bash "$STATE" waves "$B"
 expect 0 "normal: writeback is not skipped" bash "$STATE" writeback "$B"
 [[ -f "$B/writeback.json" ]] && ok "  writeback.json written in a normal run" || bad "  no writeback.json"
+
+echo "# no usable Python (W2)"
+nopy="$d/nopy"; mkdir -p "$nopy"; ln -sf "$(command -v bash)" "$nopy/bash"
+expect 1 "state.sh preflight with no Python 3.8+ says so" env PATH="$nopy" "$BASH" "$STATE" preflight "$RUN"
+has "  names the three commands" "tried python3, python, py -3"
+expect 1 "state.sh (any command but now|log) with no Python 3.8+ says so" env PATH="$nopy" "$BASH" "$STATE" now2 "$RUN"
+has "  names the three commands again" "tried python3, python, py -3"
+if grep -q "unbound variable" <<<"$out"; then bad "  unbound variable crash"; else ok "  no unbound variable crash"; fi
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

@@ -211,7 +211,7 @@ PY
 
 echo "# never blocks on its own errors"
 expect 0 "garbage payload" "not json"
-badpy="$d/badpy"; mkdir -p "$badpy"; printf '#!/bin/sh\nexit 1\n' > "$badpy/python3"; chmod +x "$badpy/python3"
+badpy="$d/badpy"; mkdir -p "$badpy"; printf '#!/bin/sh\nexit 1\n' > "$badpy/python3"; cp "$badpy/python3" "$badpy/python"; cp "$badpy/python3" "$badpy/py"; chmod +x "$badpy"/py*
 expect 0 "broken python3 never blocks" "$(payload dcv2:implementer "$reply1")" PATH="$badpy:$PATH"
 status building building; guard; repos '"bash check.sh"' '"true"'
 echo '{' > "$RUN/repos.json"

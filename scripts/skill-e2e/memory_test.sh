@@ -345,4 +345,10 @@ SEED="$ROOT/fixtures/memory/dcterminalv2-decisions.md"
 [[ "$(grep -c '^- 20' "$SEED")" == 4 ]] && ok "  the seed holds the four known decisions" || bad "  seed bullets"
 sed "s/@SHA@/$A0/" "$SEED" | bash "$MEM" write "$WEBID" topics/decisions.md >/dev/null && ok "  the seed is accepted by memory.sh write" || bad "  the seed was rejected"
 
+echo "# no usable Python (W2)"
+nopy="$d/nopy"; mkdir -p "$nopy"; ln -sf "$(command -v bash)" "$nopy/bash"
+expect 1 "memory.sh with no Python 3.8+ says so" env PATH="$nopy" "$BASH" "$MEM" status "$WS"
+has "  names the three commands" "no usable Python 3.8+ (tried python3, python, py -3)"
+hasnt "  not an unbound variable crash" "unbound variable"
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

@@ -77,7 +77,10 @@
 # Exit 1 = refused (the message says why; nothing was written). Exit 3 = needs attention.
 set -euo pipefail
 
-py_works() { command -v python3 >/dev/null 2>&1 && python3 -c 'import json, sys; sys.exit(0)' >/dev/null 2>&1; }
+# The one Python picker (lib/python.sh, next to this script): DCV2_PY is empty when no Python 3.8+ works.
+_sdir="${BASH_SOURCE[0]%/*}"; [[ "$_sdir" != "${BASH_SOURCE[0]}" ]] || _sdir="."
+. "$_sdir/lib/python.sh" 2>/dev/null || DCV2_PY=()
+py_works() { (( ${#DCV2_PY[@]} > 0 )) && "${DCV2_PY[@]}" -c 'import json, sys; sys.exit(0)' >/dev/null 2>&1; }
 
 IFS= read -r -d '' PY <<'PY' || true
 import datetime, glob, json, os, re, shutil, signal, subprocess, sys, tempfile, time
@@ -2827,7 +2830,7 @@ case "${1:-}" in
     [[ $# -eq 2 || $# -eq 3 ]] || { echo "usage: state.sh log <run dir> [<stage>] <<'EOF' ... EOF (the text on stdin, never as an argument)" >&2; exit 2; }
     run="$2"; stage="${3:-}"
     if [[ -z "$stage" ]]; then
-      stage="$(python3 -c 'import json,sys
+      stage="$(py_works && "${DCV2_PY[@]}" -c 'import json,sys
 try: print(json.load(open(sys.argv[1])).get("stage") or "run")
 except Exception: print("run")' "$run/status.json" 2>/dev/null || echo run)"
     fi
@@ -2848,14 +2851,14 @@ except Exception: print("run")' "$run/status.json" 2>/dev/null || echo run)"
     printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$stage" "$text" >> "$run/log.md"
     ;;
   preflight)
-    py_works || { echo "PREFLIGHT FAILED: python3 is missing or does not run; the run cannot validate or write its state. Install python3, then resume." >&2; exit 1; }
-    python3 -c "$PY" "$@"
+    py_works || { echo "PREFLIGHT FAILED: python3 is missing or does not run (no usable Python 3.8+: tried python3, python, py -3); the run cannot validate or write its state. Install Python 3.8+, then resume." >&2; exit 1; }
+    "${DCV2_PY[@]}" -c "$PY" "$@"
     ;;
   "")
     echo "usage: see the header of state.sh" >&2; exit 2
     ;;
   *)
-    py_works || { echo "NOT WRITTEN: python3 is missing or does not run (state.sh needs it)" >&2; exit 1; }
-    DCV2_PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" python3 -c "$PY" "$@"
+    py_works || { echo "NOT WRITTEN: python3 is missing or does not run (no usable Python 3.8+: tried python3, python, py -3; state.sh needs it)" >&2; exit 1; }
+    DCV2_PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" "${DCV2_PY[@]}" -c "$PY" "$@"
     ;;
 esac

@@ -34,8 +34,11 @@
 # Errors: exit 1 with one stderr line. Nothing secret is printed.
 set -euo pipefail
 
-command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1 || {
-  echo "memory.sh: python3 is missing or does not run" >&2; exit 1; }
+# The one Python picker (lib/python.sh, next to this script): DCV2_PY is empty when no Python 3.8+ works.
+_mdir="${BASH_SOURCE[0]%/*}"; [[ "$_mdir" != "${BASH_SOURCE[0]}" ]] || _mdir="."
+. "$_mdir/lib/python.sh" 2>/dev/null || DCV2_PY=()
+(( ${#DCV2_PY[@]} > 0 )) || {
+  echo "memory.sh: no usable Python 3.8+ (tried python3, python, py -3)" >&2; exit 1; }
 
 IFS= read -r -d '' PY <<'PY' || true
 import datetime, fcntl, fnmatch, hashlib, json, math, os, re, subprocess, sys, tempfile
@@ -653,4 +656,4 @@ elif cmd == "scan":
     print("clean")
 PY
 
-DCV2_MEMORY_SH="${BASH_SOURCE[0]}" python3 -c "$PY" "$@"
+DCV2_MEMORY_SH="${BASH_SOURCE[0]}" "${DCV2_PY[@]}" -c "$PY" "$@"

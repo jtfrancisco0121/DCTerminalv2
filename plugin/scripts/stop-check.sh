@@ -20,7 +20,10 @@
 input="$(cat)"
 [[ "${DCV2_STOP_HOOKS:-on}" == "off" ]] && exit 0
 [[ -n "${DCV2_RUN_DIR:-}" ]] || exit 0
-command -v python3 >/dev/null 2>&1 || exit 0
+# The one Python picker (lib/python.sh, next to this script); no Python 3.8+ means no check, as before.
+_cdir="${BASH_SOURCE[0]%/*}"; [[ "$_cdir" != "${BASH_SOURCE[0]}" ]] || _cdir="."
+. "$_cdir/lib/python.sh" 2>/dev/null || exit 0
+(( ${#DCV2_PY[@]} > 0 )) || exit 0
 
 IFS= read -r -d '' PY <<'PY' || true
 import json, os, re, signal, subprocess, sys, tempfile, time
@@ -285,7 +288,7 @@ print(f"dcv2 stop check: the {pid} check `{cmd}` fails in {cwd} (exit {proc.retu
 sys.exit(2)
 PY
 
-python3 -c "$PY" "$0" <<<"$input"
+"${DCV2_PY[@]}" -c "$PY" "$0" <<<"$input"
 rc=$?
 [[ $rc == 2 ]] && exit 2
 exit 0

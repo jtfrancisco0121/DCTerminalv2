@@ -17,7 +17,7 @@
 #     git checkout (a repo's main checkout, another worktree) are blocked unless the target is
 #     an allowed place. Best effort: commands that write through other programs (node, python,
 #     npm scripts, xargs) are not seen.
-#   - No DCV2_RUN_DIR, python3 missing, or a payload that does not parse: blocked (fail closed).
+#   - No DCV2_RUN_DIR, no Python 3.8+, or a payload that does not parse: blocked (fail closed).
 #     Exceptions: the memory-updater also runs at the end of a standalone /dcv2:developer session,
 #     and the risk-reviewer in the standalone planner / codebase-audit / recommendation sessions
 #     (no run): then they may not Edit/Write anything (the memory-updater writes memory only with
@@ -63,26 +63,28 @@ PIPE_RE='"agent_type"[[:space:]]*:[[:space:]]*"(dcv2:)?(implementer|planner|plan
 gdir="${BASH_SOURCE[0]%/*}"; [[ "$gdir" != "${BASH_SOURCE[0]}" ]] || gdir="."
 GUARD_PLUGIN="$(cd "$gdir/.." 2>/dev/null && pwd -P)" || GUARD_PLUGIN=""
 
-fallback() { # python3 missing or broken, or the payload did not parse: fail closed where it matters
+fallback() { # no working Python 3.8+, or the payload did not parse: fail closed where it matters
   if grep -Eq "$PIPE_RE" <<<"$input"; then
-    echo "Blocked by the dcv2 guard: this call could not be checked (python3 missing or broken, or an unreadable hook payload)." >&2
+    echo "Blocked by the dcv2 guard: this call could not be checked (install Python 3.8+ (tried python3, python, py -3), or an unreadable hook payload)." >&2
     exit 2
   fi
   if [[ -n "${DCV2_RUN_DIR:-}" ]]; then  # a bound run: nothing is let through unchecked
-    echo "Blocked by the dcv2 guard: this call could not be checked (python3 missing or broken, or an unreadable hook payload) and a run is bound." >&2
+    echo "Blocked by the dcv2 guard: this call could not be checked (install Python 3.8+ (tried python3, python, py -3), or an unreadable hook payload) and a run is bound." >&2
     exit 2
   fi
   local p
   for p in "${DCV2_MEMORY_DIR:-}" "${CLAUDE_PLUGIN_ROOT:-}" "$GUARD_PLUGIN"; do  # a dcv2 tab: memory and the plugin stay closed
     if [[ -n "$p" ]] && grep -qiF -- "$p" <<<"$input"; then
-      echo "Blocked by the dcv2 guard: this call names the codebase memory or the plugin folder and could not be checked (python3 missing or broken)." >&2
+      echo "Blocked by the dcv2 guard: this call names the codebase memory or the plugin folder and could not be checked (install Python 3.8+ (tried python3, python, py -3))." >&2
       exit 2
     fi
   done
   exit 0
 }
 
-python3 -c 'import sys' >/dev/null 2>&1 || fallback
+# The one Python picker (lib/python.sh, from this script's own folder): DCV2_PY is empty when no Python 3.8+ works.
+. "$gdir/lib/python.sh" 2>/dev/null || DCV2_PY=()
+(( ${#DCV2_PY[@]} > 0 )) || fallback
 
 IFS= read -r -d '' PY <<'PY' || true
 import json, os, re, shlex, sys
@@ -833,7 +835,6 @@ def check_live(script, cwd):
 
 
 SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
-INTERPRETERS = ("python", "python3", "node", "nodejs", "perl", "ruby", "osascript", "deno", "bun")
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Programs that run the next word as a command, and their options that take a value.
 RUNNERS = {"nohup": (), "caffeinate": (), "stdbuf": (), "command": (), "exec": ("-a",), "builtin": (), "sudo": ("-u", "-g", "-C"),
@@ -987,8 +988,9 @@ def check_security(args):
 # An interpreter's inline code (python3 -c, node -e, perl -e, ruby -e, a heredoc or here-string fed to it) is a program
 # the guard cannot read like a shell command, so a bound run's rules look at what it NAMES. This is best effort (a
 # string-built path evades it); the PROTECTED checks of Edit/Write and shell writes remain.
-INTERP_FAMILY = ((re.compile(r"^python[\d.]*$"), "python"), (re.compile(r"^node(js)?$"), "node"), (re.compile(r"^perl[\d.]*$"), "perl"),
-                 (re.compile(r"^ruby[\d.]*$"), "ruby"))
+# Windows spellings count too: `py` (the launcher) and an optional `.exe` after every name.
+INTERP_FAMILY = ((re.compile(r"^(python[\d.]*|py)(\.exe)?$"), "python"), (re.compile(r"^node(js)?(\.exe)?$"), "node"),
+                 (re.compile(r"^perl[\d.]*(\.exe)?$"), "perl"), (re.compile(r"^ruby[\d.]*(\.exe)?$"), "ruby"))
 STDIN_INTERPRETERS = ("python", "node", "perl", "ruby", "deno", "bun", "osascript", "php", "lua", "Rscript")
 WRITE_PRIM_RE = re.compile(
     r"\bopen\s*\([^,)]*,\s*(?:mode\s*=\s*)?['\"][^'\"]*[wax+]|\bopen\s*\([^)]*\bmode\s*=\s*['\"][^'\"]*[wax+]|\.write_text\b|\.write_bytes\b|\bwriteFile(Sync)?\b|\bappendFile(Sync)?\b|"
@@ -1030,6 +1032,9 @@ def interp_parse(fam, args):
             continue
         if a.startswith("-"):
             cl = a[1:]
+            if fam == "python" and re.fullmatch(r"\d[\d.]*(-\d+)?", cl):  # the `py` launcher's version flag: -3, -3.12, -3-64
+                i += 1
+                continue
             if fam == "python" and "c" in cl:
                 at = cl.index("c")
                 if at == len(cl) - 1 and nxt is not None:
@@ -1164,7 +1169,7 @@ def check_orchestrator_rm(args, cwd):
               "the Implementer's files. Worktrees are removed with `state.sh cleanup` (or by the app).")
 
 
-PROC_SUBST_RE = re.compile(r"(?:^|[\s;&|(])(?:source|\.|bash|sh|zsh|dash|ksh|python[\d.]*|nodejs?|perl[\d.]*|ruby[\d.]*)\s+(?:-[\w-]+\s+)*<\(")
+PROC_SUBST_RE = re.compile(r"(?:^|[\s;&|(])(?:source|\.|bash|sh|zsh|dash|ksh|python[\d.]*|py|nodejs?|perl[\d.]*|ruby[\d.]*)(?:\.exe)?\s+(?:-[\w-]+\s+)*<\(")
 
 
 def check_program_source(name, words, args, script, piped, docs, stdin_text, stdin_files, cwd, depth):
@@ -1290,7 +1295,7 @@ def analyze(cmd, cwd, depth=0):
         words = unwrap(words)
         if not words:
             continue
-        name, args = os.path.basename(words[0]), words[1:]
+        name, args = re.sub(r"\.exe$", "", os.path.basename(words[0]), flags=re.I), words[1:]  # bash.exe is bash
         script = shell_script(args) if name in SHELLS else (args[0] if name in ("source", ".") and args else None)
         if bound:
             check_program_source(name, words, args, script, piped, docs, stdin_text, stdin_files, cwd, depth)
@@ -1358,7 +1363,7 @@ analyze(CMD, cwd0)
 sys.exit(0)
 PY
 
-python3 -c "$PY" "$GUARD_PLUGIN" <<<"$input"
+"${DCV2_PY[@]}" -c "$PY" "$GUARD_PLUGIN" <<<"$input"
 rc=$?
 case $rc in
   0|2) exit $rc ;;
