@@ -541,10 +541,18 @@ pub fn handle_run_event(app: &AppHandle, event: tauri::RunEvent) {
     }
 }
 
-/// App exit: SIGTERM every terminal at once, wait for all of them together
-/// for at most [`STOP_GRACE`] (no registry lock held), then kill what is
-/// left. Claude gets the same chance to finish its session log as on a tab
-/// close. Windows has no SIGTERM, so nothing waits there. The login PATH
+/// Waits while `running()` stays true, until `deadline`; `sleep` is injected so
+/// the loop is tested without waiting. Used on every OS.
+fn wait_for_groups(running: impl Fn() -> bool, deadline: Instant, sleep: impl Fn(Duration)) {
+    while Instant::now() < deadline && running() {
+        sleep(Duration::from_millis(50));
+    }
+}
+
+/// App exit: ask every terminal to stop at once (SIGTERM on Unix, the ETX ask
+/// on Windows), wait for all of them together for at most [`STOP_GRACE`] (no
+/// registry lock held), then kill what is left. Claude gets the same chance to
+/// finish its session log as on a tab close, on every OS. The login PATH
 /// refresh's shell is killed first; it holds nothing worth waiting for.
 fn shutdown_processes(app: &AppHandle) {
     crate::shell_env::stop_login_path_refresh();
@@ -557,12 +565,11 @@ fn shutdown_processes(app: &AppHandle) {
     // Signalled with no registry lock held: each walks its descendants.
     ptys.iter()
         .for_each(crate::process_tree::PtyGroup::terminate);
-    if cfg!(unix) {
-        let deadline = Instant::now() + STOP_GRACE;
-        while Instant::now() < deadline && ptys.iter().any(crate::process_tree::PtyGroup::running) {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
+    wait_for_groups(
+        || ptys.iter().any(crate::process_tree::PtyGroup::running),
+        Instant::now() + STOP_GRACE,
+        std::thread::sleep,
+    );
     for group in ptys {
         group.kill();
     }
@@ -1233,6 +1240,52 @@ pub async fn open_account_window(app: AppHandle, account_id: String) -> Result<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wait_for_groups_returns_at_once_when_nothing_runs_and_stops_at_the_deadline() {
+        let slept = std::cell::Cell::new(0);
+        let count = |_: Duration| slept.set(slept.get() + 1);
+        wait_for_groups(|| false, Instant::now() + Duration::from_secs(5), count);
+        assert_eq!(slept.get(), 0, "nothing running: no wait");
+        let started = Instant::now();
+        wait_for_groups(
+            || true,
+            Instant::now() + Duration::from_millis(60),
+            |_| std::thread::sleep(Duration::from_millis(20)),
+        );
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_millis(60) && took < Duration::from_secs(2),
+            "{took:?}"
+        );
+        let flips = std::cell::Cell::new(0);
+        wait_for_groups(
+            || {
+                flips.set(flips.get() + 1);
+                flips.get() < 3
+            },
+            Instant::now() + Duration::from_secs(5),
+            |_| {},
+        );
+        assert_eq!(flips.get(), 3, "returns as soon as running turns false");
+    }
+
+    #[test]
+    fn app_exit_waits_for_the_stop_ask_on_every_os() {
+        let source = include_str!("windows.rs");
+        let start = source
+            .find("fn shutdown_processes(")
+            .expect("shutdown_processes");
+        let body = &source[start..];
+        let end = body.find("\n}\n").expect("end of shutdown_processes");
+        let body = &body[..end];
+        assert!(
+            !body.contains("cfg!(unix)"),
+            "the wait must not be Unix-only"
+        );
+        assert!(!body.contains("cfg!(windows)"));
+        assert!(body.contains("wait_for_groups("));
+    }
 
     #[test]
     fn titles_include_the_account_on_every_platform() {

@@ -1,0 +1,96 @@
+{
+  "note": "Shared Git Bash resolver cases (AD-2). The Rust resolver (src-tauri/src/platform/mod.rs) and the gate's JS port (scripts/git-bash.mjs) both run every case. 'expect' is the resolved path, or null for the 'Git Bash not found' error.",
+  "cases": [
+    {
+      "name": "env override that is a file wins",
+      "env": {"CLAUDE_CODE_GIT_BASH_PATH": "D:\\tools\\bash.exe", "ProgramFiles": "C:\\Program Files"},
+      "files": ["D:\\tools\\bash.exe", "C:\\Program Files\\Git\\bin\\bash.exe"],
+      "gitExecPath": null,
+      "expect": "D:\\tools\\bash.exe"
+    },
+    {
+      "name": "env override that is not a file is skipped",
+      "env": {"CLAUDE_CODE_GIT_BASH_PATH": "D:\\gone\\bash.exe", "ProgramFiles": "C:\\Program Files"},
+      "files": ["C:\\Program Files\\Git\\bin\\bash.exe"],
+      "gitExecPath": null,
+      "expect": "C:\\Program Files\\Git\\bin\\bash.exe"
+    },
+    {
+      "name": "ProgramFiles",
+      "env": {"ProgramFiles": "C:\\Program Files"},
+      "files": ["C:\\Program Files\\Git\\bin\\bash.exe"],
+      "gitExecPath": null,
+      "expect": "C:\\Program Files\\Git\\bin\\bash.exe"
+    },
+    {
+      "name": "ProgramW6432",
+      "env": {"ProgramFiles": "C:\\Program Files (x86)", "ProgramW6432": "C:\\Program Files"},
+      "files": ["C:\\Program Files\\Git\\bin\\bash.exe"],
+      "gitExecPath": null,
+      "expect": "C:\\Program Files\\Git\\bin\\bash.exe"
+    },
+    {
+      "name": "ProgramFiles(x86)",
+      "env": {"ProgramFiles(x86)": "C:\\Program Files (x86)"},
+      "files": ["C:\\Program Files (x86)\\Git\\bin\\bash.exe"],
+      "gitExecPath": null,
+      "expect": "C:\\Program Files (x86)\\Git\\bin\\bash.exe"
+    },
+    {
+      "name": "LOCALAPPDATA per-user install",
+      "env": {"LOCALAPPDATA": "C:\\Users\\me\\AppData\\Local"},
+      "files": ["C:\\Users\\me\\AppData\\Local\\Programs\\Git\\bin\\bash.exe"],
+      "gitExecPath": null,
+      "expect": "C:\\Users\\me\\AppData\\Local\\Programs\\Git\\bin\\bash.exe"
+    },
+    {
+      "name": "git --exec-path three folders up",
+      "env": {},
+      "files": ["E:\\Dev\\Git\\bin\\bash.exe"],
+      "gitExecPath": "E:\\Dev\\Git\\mingw64\\libexec\\git-core",
+      "expect": "E:\\Dev\\Git\\bin\\bash.exe"
+    },
+    {
+      "name": "git --exec-path with forward slashes",
+      "env": {},
+      "files": ["E:\\Dev\\Git\\bin\\bash.exe"],
+      "gitExecPath": "E:/Dev/Git/mingw64/libexec/git-core",
+      "expect": "E:\\Dev\\Git\\bin\\bash.exe"
+    },
+    {
+      "name": "order: ProgramFiles beats LOCALAPPDATA",
+      "env": {"ProgramFiles": "C:\\Program Files", "LOCALAPPDATA": "C:\\Users\\me\\AppData\\Local"},
+      "files": ["C:\\Program Files\\Git\\bin\\bash.exe", "C:\\Users\\me\\AppData\\Local\\Programs\\Git\\bin\\bash.exe"],
+      "gitExecPath": null,
+      "expect": "C:\\Program Files\\Git\\bin\\bash.exe"
+    },
+    {
+      "name": "System32 bash (WSL) env override is rejected",
+      "env": {"CLAUDE_CODE_GIT_BASH_PATH": "C:\\Windows\\System32\\bash.exe", "SystemRoot": "C:\\Windows"},
+      "files": ["C:\\Windows\\System32\\bash.exe"],
+      "gitExecPath": null,
+      "expect": null
+    },
+    {
+      "name": "System32 is rejected case-insensitively, next candidate is used",
+      "env": {"CLAUDE_CODE_GIT_BASH_PATH": "c:\\WINDOWS\\system32\\bash.exe", "SystemRoot": "C:\\Windows", "ProgramFiles": "C:\\Program Files"},
+      "files": ["c:\\WINDOWS\\system32\\bash.exe", "C:\\Program Files\\Git\\bin\\bash.exe"],
+      "gitExecPath": null,
+      "expect": "C:\\Program Files\\Git\\bin\\bash.exe"
+    },
+    {
+      "name": "WindowsApps is rejected",
+      "env": {"CLAUDE_CODE_GIT_BASH_PATH": "C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe"},
+      "files": ["C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe"],
+      "gitExecPath": null,
+      "expect": null
+    },
+    {
+      "name": "nothing found",
+      "env": {"ProgramFiles": "C:\\Program Files"},
+      "files": [],
+      "gitExecPath": null,
+      "expect": null
+    }
+  ]
+}

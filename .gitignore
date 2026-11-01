@@ -30,3 +30,7 @@ seed/*.json.bak
 
 # Local ACP wire captures (convert into fixtures/acp/permissions/ instead)
 captures/
+
+# Python bytecode (the plugin never writes any; see plugin/scripts/lib)
+__pycache__/
+*.pyc

@@ -15,10 +15,12 @@
 //! goes to the leader's [`Detached`] descendants, found by parent pid before
 //! the group exits. A shell's jobs (own group, same session) are left alone.
 
-#[cfg(windows)]
-use std::process::Command;
+use crate::pty::session::WriterMsg;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
+#[cfg(unix)]
+use std::sync::Mutex;
 use std::time::Duration;
 
 /// How long a stopped terminal gets to exit on SIGTERM (finishing its
@@ -28,7 +30,7 @@ pub const STOP_GRACE: Duration = Duration::from_millis(1500);
 #[cfg(windows)]
 fn quiet_taskkill(pid: u32) {
     use std::process::Stdio;
-    let _ = Command::new("taskkill")
+    let _ = crate::platform::quiet_command("taskkill")
         .args(["/F", "/T", "/PID", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -50,7 +52,10 @@ pub struct PidGuard {
     #[cfg(unix)]
     detached: Arc<Mutex<Detached>>,
     #[cfg(windows)]
-    job: Option<winjob::Job>,
+    job: Option<Arc<winjob::Job>>,
+    /// The session's writer, so [`PtyGroup::terminate`] can type the stop ask (Windows).
+    #[cfg(windows)]
+    writer: Option<Sender<WriterMsg>>,
 }
 
 impl PidGuard {
@@ -61,7 +66,8 @@ impl PidGuard {
                 pid,
                 reaped: AtomicBool::new(false),
                 done: Arc::new(AtomicBool::new(false)),
-                job: winjob::Job::create_and_assign_pid(pid).ok(),
+                job: winjob::Job::create_and_assign_pid(pid).ok().map(Arc::new),
+                writer: None,
             }
         }
         #[cfg(not(windows))]
@@ -76,6 +82,17 @@ impl PidGuard {
         }
     }
 
+    /// The session's writer channel. Windows: [`PtyGroup::terminate`] types the
+    /// stop ask through it. Unix signals the group, so it is not needed.
+    pub fn set_writer(&mut self, writer: Sender<WriterMsg>) {
+        #[cfg(windows)]
+        {
+            self.writer = Some(writer);
+        }
+        #[cfg(not(windows))]
+        let _ = writer;
+    }
+
     /// The group as seen from outside the control thread (app exit).
     pub fn group(&self) -> PtyGroup {
         PtyGroup {
@@ -83,6 +100,10 @@ impl PidGuard {
             done: Arc::clone(&self.done),
             #[cfg(unix)]
             detached: Arc::clone(&self.detached),
+            #[cfg(windows)]
+            job: self.job.clone(),
+            #[cfg(windows)]
+            writer: self.writer.clone(),
         }
     }
 
@@ -326,7 +347,7 @@ fn proc_info(pid: u32) -> Option<ProcInfo> {
 
 /// One `/proc/<pid>/stat` line. The comm may hold spaces and ')', so fields
 /// count from the last ')': state ppid pgrp session ... starttime (22nd).
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", all(test, unix)))]
 fn parse_stat(pid: u32, stat: &str) -> Option<ProcInfo> {
     let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
     Some(ProcInfo {
@@ -385,17 +406,30 @@ pub struct PtyGroup {
     done: Arc<AtomicBool>,
     #[cfg(unix)]
     detached: Arc<Mutex<Detached>>,
+    /// Windows: the session's job (every process of the tab), and its writer.
+    #[cfg(windows)]
+    job: Option<Arc<winjob::Job>>,
+    #[cfg(windows)]
+    writer: Option<Sender<WriterMsg>>,
 }
 
 impl PtyGroup {
-    /// Whether the group may still be ours and has a member. Always false on
-    /// Windows, where exit does not wait.
+    /// Whether the group may still be ours and has a member. Unix: the group
+    /// or a detached descendant. Windows: the job has an active process.
     pub fn running(&self) -> bool {
         #[cfg(unix)]
         {
             self.group_running() || lock(&self.detached).alive()
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            !self.done.load(Ordering::SeqCst)
+                && self
+                    .job
+                    .as_ref()
+                    .is_some_and(|job| job.active_processes() > 0)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             false
         }
@@ -406,16 +440,33 @@ impl PtyGroup {
         !self.done.load(Ordering::SeqCst) && group_alive(self.pid)
     }
 
-    /// SIGTERM to the group. No-op on Windows.
+    /// SIGTERM to the group. Windows: types the stop ask (ETX) into the
+    /// terminal through its writer, so Claude can finish its session log.
     pub fn terminate(&self) {
         #[cfg(unix)]
         signal_pty_tree(self.group_running(), self.pid, &self.detached, SIGTERM);
+        #[cfg(windows)]
+        if !self.done.load(Ordering::SeqCst) {
+            if let Some(writer) = &self.writer {
+                let _ = writer.send(WriterMsg::Ask(
+                    crate::pty::session::WINDOWS_STOP_ASK.to_vec(),
+                ));
+            }
+        }
     }
 
-    /// SIGKILL to the group if it is still running. No-op on Windows.
+    /// SIGKILL to the group if it is still running. Windows: terminates the job.
     pub fn kill(&self) {
         #[cfg(unix)]
         signal_pty_tree(self.group_running(), self.pid, &self.detached, SIGKILL);
+        #[cfg(windows)]
+        if !self.done.load(Ordering::SeqCst) {
+            if let Some(job) = &self.job {
+                job.terminate();
+            } else if self.pid != 0 {
+                quiet_taskkill(self.pid);
+            }
+        }
     }
 }
 
@@ -439,7 +490,7 @@ fn lock(detached: &Mutex<Detached>) -> std::sync::MutexGuard<'_, Detached> {
 }
 
 #[cfg(windows)]
-mod winjob {
+pub(crate) mod winjob {
     use std::ffi::c_void;
     use std::io;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
@@ -500,7 +551,30 @@ mod winjob {
         fn AssignProcessToJobObject(job: RawHandle, process: RawHandle) -> i32;
         fn TerminateJobObject(job: RawHandle, exit_code: u32) -> i32;
         fn OpenProcess(access: u32, inherit_handle: i32, process_id: u32) -> RawHandle;
+        fn QueryInformationJobObject(
+            job: RawHandle,
+            class: i32,
+            info: *mut c_void,
+            len: u32,
+            returned: *mut u32,
+        ) -> i32;
     }
+
+    /// `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`.
+    #[repr(C)]
+    struct BasicAccounting {
+        total_user_time: i64,
+        total_kernel_time: i64,
+        this_period_total_user_time: i64,
+        this_period_total_kernel_time: i64,
+        total_page_fault_count: u32,
+        total_processes: u32,
+        active_processes: u32,
+        total_terminated_processes: u32,
+    }
+
+    const _: () = assert!(std::mem::size_of::<BasicAccounting>() == 48);
+    const BASIC_ACCOUNTING_CLASS: i32 = 1;
 
     /// Owns one Win32 job-object handle.
     ///
@@ -556,6 +630,26 @@ mod winjob {
         pub fn terminate(&self) {
             unsafe {
                 TerminateJobObject(self.0.as_raw_handle(), 1);
+            }
+        }
+
+        /// How many processes of the job are still running (0 when the query fails).
+        pub fn active_processes(&self) -> u32 {
+            // SAFETY: an all-zero accounting struct is valid; the kernel fills at most `len` bytes.
+            unsafe {
+                let mut info: BasicAccounting = std::mem::zeroed();
+                let ok = QueryInformationJobObject(
+                    self.0.as_raw_handle(),
+                    BASIC_ACCOUNTING_CLASS,
+                    &mut info as *mut BasicAccounting as *mut c_void,
+                    std::mem::size_of::<BasicAccounting>() as u32,
+                    std::ptr::null_mut(),
+                );
+                if ok == 0 {
+                    0
+                } else {
+                    info.active_processes
+                }
             }
         }
     }
@@ -739,5 +833,50 @@ pub(crate) mod tests {
     /// `kill(pid, 0)`: works on macOS too (there is no `/proc` there).
     fn process_alive(pid: u32) -> bool {
         crate::test_support::pid_alive(pid) != Some(false)
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn spawn_ping() -> std::process::Child {
+        crate::platform::quiet_command("cmd")
+            .args(["/C", "ping -n 30 127.0.0.1 > NUL"])
+            .spawn()
+            .expect("spawn cmd")
+    }
+
+    // The job reports its active processes, and a kill empties it.
+    #[test]
+    fn running_is_real_and_turns_false_after_kill() {
+        let mut child = spawn_ping();
+        let guard = PidGuard::adopt(child.id());
+        let group = guard.group();
+        assert!(group.running(), "the job holds the child");
+        group.kill();
+        let _ = child.wait();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while group.running() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!group.running(), "no active process after kill");
+    }
+
+    // terminate() types the ask through the writer channel.
+    #[test]
+    fn terminate_sends_the_stop_ask_to_the_writer() {
+        let mut child = spawn_ping();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut guard = PidGuard::adopt(child.id());
+        guard.set_writer(tx);
+        guard.group().terminate();
+        match rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(WriterMsg::Ask(bytes)) => assert_eq!(bytes, crate::pty::session::WINDOWS_STOP_ASK),
+            _ => panic!("no stop ask was sent"),
+        }
+        guard.kill();
+        let _ = child.wait();
     }
 }

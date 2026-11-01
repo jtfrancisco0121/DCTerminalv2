@@ -4,6 +4,23 @@ import { findFilePaths } from "./fileLinks";
 const paths = (line: string) => findFilePaths(line).map((m) => m.path);
 const at = (line: string, path: string) => findFilePaths(line).find((m) => m.path === path)!;
 
+describe("Windows paths", () => {
+  it("finds C:\\a\\b.rs:12 and C:/a/b.rs:12 as one link each, with their line", () => {
+    expect(paths("error in C:\\work\\app\\main.rs:12 and C:/work/app/lib.rs:7:3 done")).toEqual([
+      "C:\\work\\app\\main.rs",
+      "C:/work/app/lib.rs",
+    ]);
+    const hit = at("see C:\\work\\main.rs:12", "C:\\work\\main.rs");
+    expect([hit.line, hit.col, hit.start, hit.end]).toEqual([12, undefined, 4, 22]);
+    const both = at("C:/w/lib.rs:7:3", "C:/w/lib.rs");
+    expect([both.line, both.col]).toEqual([7, 3]);
+  });
+
+  it("does not take a URL or a bare drive letter for a path", () => {
+    expect(paths("https://example.com/a/b.html and C: and C:\\")).toEqual([]);
+  });
+});
+
 describe("file path matcher", () => {
   it("finds relative and absolute paths", () => {
     expect(paths("see docs/plan.md and ./src/a.ts and ../b/c.rs and /Users/me/x.json and ~/notes/todo.txt")).toEqual([

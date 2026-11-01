@@ -10,6 +10,7 @@ mod import_dev;
 mod macos_terminate;
 pub(crate) mod observe;
 mod paths;
+mod platform;
 mod process_tree;
 mod provider;
 mod pty;

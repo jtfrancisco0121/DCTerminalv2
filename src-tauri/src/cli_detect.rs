@@ -3,7 +3,6 @@
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub(crate) fn find_on_path(binary: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
@@ -126,7 +125,7 @@ pub(crate) fn run_cli_within(
 ) -> Result<(String, String, bool), CliRunError> {
     use std::io::Read;
     use std::process::Stdio;
-    let mut command = Command::new(program);
+    let mut command = crate::platform::quiet_command(program);
     for (key, value) in env {
         command.env(key, value);
     }
@@ -137,12 +136,6 @@ pub(crate) fn run_cli_within(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
     let mut child = command.spawn().map_err(|err| {
         CliRunError::Failed(format!(
             "could not run {} {}: {err}",

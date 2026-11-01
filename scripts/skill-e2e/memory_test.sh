@@ -345,4 +345,20 @@ SEED="$ROOT/fixtures/memory/dcterminalv2-decisions.md"
 [[ "$(grep -c '^- 20' "$SEED")" == 4 ]] && ok "  the seed holds the four known decisions" || bad "  seed bullets"
 sed "s/@SHA@/$A0/" "$SEED" | bash "$MEM" write "$WEBID" topics/decisions.md >/dev/null && ok "  the seed is accepted by memory.sh write" || bad "  the seed was rejected"
 
+echo "# a busy lock ends with the bound and one clear line (W3)"
+python3 -c 'import fcntl, sys, time
+f = open(sys.argv[1], "a+"); fcntl.flock(f, fcntl.LOCK_EX); print("held", flush=True); time.sleep(6)' "$DCV2_MEMORY_DIR/.lock" > "$d/holder.out" &
+holder=$!
+for _ in $(seq 1 50); do [[ -s "$d/holder.out" ]] && break; sleep 0.1; done
+expect 1 "learn waits for the busy lock, then gives up" env DCV2_LOCK_TIMEOUT=1 bash "$MEM" learn "$WEBID" index <<<"a lock test line"
+has "  the exact busy message" "memory lock busy: another memory.sh is still running (waited 1 s)"
+kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true
+expect 0 "learn works again once the lock is free" bash "$MEM" learn "$WEBID" index <<<"a lock test line"
+
+echo "# no usable Python (W2)"
+nopy="$d/nopy"; mkdir -p "$nopy"; ln -sf "$(command -v bash)" "$nopy/bash"
+expect 1 "memory.sh with no Python 3.8+ says so" env PATH="$nopy" "$BASH" "$MEM" status "$WS"
+has "  names the three commands" "no usable Python 3.8+ (tried python3, python, py -3)"
+hasnt "  not an unbound variable crash" "unbound variable"
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

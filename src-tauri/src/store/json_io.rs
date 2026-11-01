@@ -3,20 +3,127 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// Data files moved aside since startup, as one line each for the user.
 /// Process-wide so every store can add to it without an AppHandle.
 static RECOVERY_NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// `opts` that never follows a symbolic link at the last path component (unix: `O_NOFOLLOW`).
-fn no_follow(opts: &mut fs::OpenOptions) -> &mut fs::OpenOptions {
+/// Opens `path` with `opts` without following a link at the last path
+/// component. Unix: `O_NOFOLLOW`. Windows: `FILE_FLAG_OPEN_REPARSE_POINT`
+/// (a symlink or junction is opened itself, not its target), and a handle that
+/// turns out to be a reparse point (`FILE_ATTRIBUTE_REPARSE_POINT`) is refused.
+fn open_no_follow(opts: &mut fs::OpenOptions, path: &Path) -> std::io::Result<fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         opts.custom_flags(libc::O_NOFOLLOW);
+        opts.open(path)
     }
-    opts
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        opts.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        let file = opts.open(path)?;
+        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(link_refusal(path));
+        }
+        Ok(file)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        opts.open(path)
+    }
+}
+
+/// Whether an error from [`replace`] is worth another try: on Windows a reader
+/// (the plugin's Python, with the file open) makes the replace fail with
+/// access denied (5) or a sharing violation (32). Nothing is transient on Unix.
+fn is_transient_replace_error(err: &std::io::Error) -> bool {
+    cfg!(windows) && matches!(err.raw_os_error(), Some(5) | Some(32))
+}
+
+/// Runs `op` up to `tries` times, waiting `wait` between tries while the error
+/// `is_transient`. A non-transient error, or the error of the last try, is
+/// returned at once. Pure over its inputs, so it is tested on every OS.
+pub(crate) fn retry_replace<T>(
+    mut op: impl FnMut() -> std::io::Result<T>,
+    is_transient: impl Fn(&std::io::Error) -> bool,
+    tries: u32,
+    wait: Duration,
+    sleep: impl Fn(Duration),
+) -> std::io::Result<T> {
+    let mut attempt = 1;
+    loop {
+        match op() {
+            Err(err) if attempt < tries && is_transient(&err) => {
+                attempt += 1;
+                sleep(wait);
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Moves `tmp` over `dst`, replacing it. Unix: `rename`. Windows:
+/// `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`, which never leaves a moment
+/// with no file at all, retried 10 x 30 ms on a transient sharing error.
+pub(crate) fn replace(tmp: &Path, dst: &Path) -> std::io::Result<()> {
+    retry_replace(
+        || replace_once(tmp, dst),
+        is_transient_replace_error,
+        10,
+        Duration::from_millis(30),
+        std::thread::sleep,
+    )
+}
+
+#[cfg(not(windows))]
+fn replace_once(tmp: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::rename(tmp, dst)
+}
+
+#[cfg(windows)]
+fn replace_once(tmp: &Path, dst: &Path) -> std::io::Result<()> {
+    winfs::move_replace(tmp, dst)
+}
+
+#[cfg(windows)]
+mod winfs {
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32;
+    }
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    pub fn move_replace(from: &Path, to: &Path) -> io::Result<()> {
+        let (from, to) = (wide(from), wide(to));
+        // SAFETY: both buffers are NUL-terminated and live for the call.
+        let ok = unsafe {
+            MoveFileExW(
+                from.as_ptr(),
+                to.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if ok == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
 }
 
 fn is_link(path: &Path) -> bool {
@@ -48,7 +155,7 @@ pub(crate) fn write_new_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
     }
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create_new(true);
-    let mut file = no_follow(&mut opts).open(path)?;
+    let mut file = open_no_follow(&mut opts, path)?;
     file.write_all(data)?;
     file.sync_all()
 }
@@ -69,11 +176,7 @@ pub(crate) fn write_run_file(path: &Path, data: &[u8]) -> Result<(), String> {
         uuid::Uuid::new_v4().simple()
     ));
     write_new_file(&tmp, data).map_err(|e| format!("{}: {e}", file_name(path)))?;
-    #[cfg(windows)]
-    if path.exists() {
-        let _ = fs::remove_file(path);
-    }
-    fs::rename(&tmp, path).map_err(|e| {
+    replace(&tmp, path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         format!("{}: {e}", file_name(path))
     })
@@ -86,7 +189,7 @@ pub(crate) fn append_run_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
     }
     let mut opts = fs::OpenOptions::new();
     opts.append(true).create(true);
-    no_follow(&mut opts).open(path)?.write_all(data)
+    open_no_follow(&mut opts, path)?.write_all(data)
 }
 
 /// Create (truncate) a log file in a run folder; a link is refused.
@@ -96,7 +199,7 @@ pub(crate) fn create_run_log(path: &Path) -> std::io::Result<fs::File> {
     }
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
-    no_follow(&mut opts).open(path)
+    open_no_follow(&mut opts, path)
 }
 
 /// Why [`read_capped`] read nothing.
@@ -121,9 +224,7 @@ pub(crate) fn read_capped(path: &Path, cap: u64) -> Result<Vec<u8>, CappedError>
     }
     let mut opts = fs::OpenOptions::new();
     opts.read(true);
-    let file = no_follow(&mut opts)
-        .open(path)
-        .map_err(|e| CappedError::Io(e.to_string()))?;
+    let file = open_no_follow(&mut opts, path).map_err(|e| CappedError::Io(e.to_string()))?;
     let mut data = Vec::new();
     file.take(cap + 1)
         .read_to_end(&mut data)
@@ -157,13 +258,9 @@ pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Str
     }
     write_new_file(&tmp, &data).map_err(|e| e.to_string())?;
 
-    // Unix rename replaces the file atomically, so a crash never leaves no
-    // file at all. Windows keeps the old remove-then-rename.
-    #[cfg(windows)]
-    if path.exists() {
-        fs::remove_file(path).map_err(|e| e.to_string())?;
-    }
-    fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    // One atomic replace on every OS (a crash never leaves no file at all);
+    // Windows retries while a reader has the file open.
+    replace(&tmp, path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -189,9 +286,9 @@ pub fn read_json_or_recover_with<T: serde::de::DeserializeOwned + Serialize>(
     fallback: impl FnOnce() -> T,
 ) -> Result<T, String> {
     if !path.exists() {
-        // No file, but an intact copy beside it: a save interrupted between
-        // removing the old file and renaming the new one in (Windows), or a
-        // recovery from `.bak` that was never saved before the app quit.
+        // No file, but an intact copy beside it: a save interrupted before the
+        // new file was renamed in, or a recovery from `.bak` that was never
+        // saved before the app quit.
         return Ok(match intact_copy(path) {
             Some((value, source)) => {
                 restore(&source, path);
@@ -216,7 +313,7 @@ pub fn read_json_or_recover_with<T: serde::de::DeserializeOwned + Serialize>(
                 }
             }
             let corrupt = path.with_extension(format!("json.corrupt-{}", stamp()));
-            let moved = fs::rename(path, &corrupt).is_ok();
+            let moved = replace(path, &corrupt).is_ok();
             if moved {
                 touch(&corrupt);
             }
@@ -330,7 +427,7 @@ fn restore(source: &Path, path: &Path) {
         }
     }
     // Remove only our own copy: a `.tmp` source is the data itself.
-    if fs::rename(&tmp, path).is_err() && copied {
+    if replace(&tmp, path).is_err() && copied {
         let _ = fs::remove_file(&tmp);
     }
 }
@@ -388,6 +485,121 @@ fn intact_copy<T: serde::de::DeserializeOwned>(path: &Path) -> Option<(T, PathBu
 mod tests {
     use super::*;
     use crate::test_support::{names_in, TempDir};
+
+    fn transient(code: i32) -> std::io::Error {
+        std::io::Error::from_raw_os_error(code)
+    }
+
+    #[test]
+    fn retry_replace_succeeds_after_transient_errors() {
+        let calls = std::cell::Cell::new(0);
+        let slept = std::cell::Cell::new(0);
+        let result = retry_replace(
+            || {
+                calls.set(calls.get() + 1);
+                if calls.get() <= 3 {
+                    Err(transient(32))
+                } else {
+                    Ok(calls.get())
+                }
+            },
+            |e| e.raw_os_error() == Some(32),
+            10,
+            Duration::from_millis(30),
+            |d| {
+                assert_eq!(d, Duration::from_millis(30));
+                slept.set(slept.get() + 1);
+            },
+        );
+        assert_eq!(result.unwrap(), 4);
+        assert_eq!(slept.get(), 3);
+    }
+
+    #[test]
+    fn retry_replace_gives_up_after_ten_tries_with_the_last_error() {
+        let calls = std::cell::Cell::new(0);
+        let result: std::io::Result<()> = retry_replace(
+            || {
+                calls.set(calls.get() + 1);
+                Err(transient(calls.get() + 100))
+            },
+            |_| true,
+            10,
+            Duration::ZERO,
+            |_| {},
+        );
+        assert_eq!(calls.get(), 10);
+        assert_eq!(
+            result.unwrap_err().raw_os_error(),
+            Some(110),
+            "the last error"
+        );
+    }
+
+    #[test]
+    fn retry_replace_does_not_retry_a_non_transient_error() {
+        let calls = std::cell::Cell::new(0);
+        let result: std::io::Result<()> = retry_replace(
+            || {
+                calls.set(calls.get() + 1);
+                Err(transient(2))
+            },
+            |_| false,
+            10,
+            Duration::ZERO,
+            |_| panic!("no wait for a non-transient error"),
+        );
+        assert_eq!(calls.get(), 1);
+        assert!(result.is_err());
+        // Nothing is transient off Windows (behaviour unchanged there).
+        assert_eq!(is_transient_replace_error(&transient(5)), cfg!(windows));
+        assert!(!is_transient_replace_error(&transient(2)));
+    }
+
+    #[test]
+    fn replace_moves_over_an_existing_file() {
+        let dir = TempDir::new("io_replace");
+        let (from, to) = (dir.join("new"), dir.join("old"));
+        fs::write(&from, b"new").unwrap();
+        fs::write(&to, b"old").unwrap();
+        replace(&from, &to).unwrap();
+        assert_eq!(fs::read_to_string(&to).unwrap(), "new");
+        assert!(!from.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_replace_waits_for_a_reader_and_refuses_a_junction() {
+        let dir = TempDir::new("io_replace_windows");
+        let target = dir.join("status.json");
+        fs::write(&target, b"old").unwrap();
+        // A reader that has the file open (no share-delete) and lets go within the bound.
+        let reader = fs::File::open(&target).unwrap();
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(reader);
+        });
+        write_run_file(&target, b"new").unwrap();
+        closer.join().unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+        // A planted junction is refused.
+        let outside = dir.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let link = dir.join("link");
+        let made = crate::platform::quiet_command("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&outside)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if made {
+            assert!(create_run_log(&link).is_err());
+            assert!(write_run_file(&link, b"x").is_err());
+        } else {
+            eprintln!("skipped: could not create a junction");
+        }
+    }
 
     #[test]
     fn a_failed_restore_leaves_no_temp_copy() {

@@ -145,7 +145,7 @@ expect 0 "unparsable payload, no agent, nothing bound" '{"tool_input": {broken' 
 nopy="$d/nopy"; mkdir -p "$nopy"; for c in bash cat grep; do ln -s "$(command -v $c)" "$nopy/$c"; done
 expect 2 "no python3: implementer" "$(payload dcv2:implementer Write file_path "$WT/a.js")" PATH="$nopy"
 expect 0 "no python3: user session" "$(payload "" Write file_path "$R/a.js")" -u DCV2_RUN_DIR PATH="$nopy"
-badpy="$d/badpy"; mkdir -p "$badpy"; printf '#!/bin/sh\nexit 1\n' > "$badpy/python3"; chmod +x "$badpy/python3"
+badpy="$d/badpy"; mkdir -p "$badpy"; printf '#!/bin/sh\nexit 1\n' > "$badpy/python3"; cp "$badpy/python3" "$badpy/python"; cp "$badpy/python3" "$badpy/py"; chmod +x "$badpy"/py*
 expect 2 "broken python3: implementer" "$(payload dcv2:implementer Write file_path "$WT/a.js")" PATH="$badpy:$PATH"
 FM="$d/failmem"; mkdir -p "$FM/x"
 for pyenv in "PATH=$badpy:$PATH" "PATH=$nopy"; do
@@ -840,5 +840,60 @@ for c in "git -C $WT clean -fd" "git -C $WT reset --hard" "git -C $WT checkout -
   b 0 dcv2:implementer "$c" "$WT"                                     # the Implementer keeps them in its own worktree
 done
 b 2 dcv2:implementer "rm -rf $d/ws/r-worktrees/dcv2-r-x-pr2/build" "$WT"   # but not in another one
+
+echo "# Windows spellings and the Python picker (W2)"
+for who in "" dcv2:implementer; do                                    # py, *.exe and bash.exe are interpreters and shells too
+  b 2 "$who" "py -3 -c \"print(open('$RUN/status.json').read())\"" "$WT"
+  b 2 "$who" "python.exe -c \"print(open('$RUN/status.json').read())\"" "$WT"
+  b 2 "$who" "$(printf "py -3 - <<'EOF'\nopen('%s/status.json', 'w').write('x')\nEOF" "$RUN")" "$WT"
+  b 2 "$who" "bash.exe -c \"echo x > $RUN/status.json\"" "$WT"
+  b 2 "$who" "py -3 <(echo \"open('$RUN/status.json')\")" "$WT"
+  b 0 "$who" "py -3 -c \"print(1)\"" "$WT"                          # plain code that names nothing protected
+done
+if grep -n 'INTERPRETERS = ' "$GUARD" | grep -qv STDIN_; then echo "FAIL the unused INTERPRETERS tuple is back"; fails=1; else echo "ok   no INTERPRETERS tuple"; fi
+# The picker order python3 -> python -> py -3 and the Store stub (exits 9009), with stubs on a private PATH.
+. "$ROOT/plugin/scripts/lib/python.sh"
+real_py="$(command -v python3)"
+stubs() { # <dir> then pairs <name> <exit code or "real">
+  local dir="$1" name code c; shift; mkdir -p "$dir"
+  for c in bash cat grep; do ln -sf "$(command -v $c)" "$dir/$c"; done
+  while (( $# >= 2 )); do name="$1" code="$2"; shift 2
+    if [[ "$code" == real && "$name" == py ]]; then printf '#!/bin/sh\n[ "$1" = -3 ] || exit 2\nshift\nexec "%s" "$@"\n' "$real_py" > "$dir/$name"
+    elif [[ "$code" == real ]]; then printf '#!/bin/sh\nexec "%s" "$@"\n' "$real_py" > "$dir/$name"
+    else printf '#!/bin/sh\nexit %s\n' "$code" > "$dir/$name"; fi
+    chmod +x "$dir/$name"
+  done
+}
+picked() { # <dir> -> the picked interpreter words, or "none"
+  env PATH="$1" "$BASH" -c '. "$1"; if (( ${#DCV2_PY[@]} > 0 )); then echo "${DCV2_PY[*]}"; else echo none; fi' x "$ROOT/plugin/scripts/lib/python.sh"
+}
+pick_is() { # <label> <want> <dir>
+  local got; got="$(picked "$3")"
+  if [[ "$got" == "$2" ]]; then echo "ok   picker: $1 -> $got"; else echo "FAIL picker: $1 -> $got (want $2)"; fails=1; fi
+}
+stubs "$d/pk1" python3 real python real py real;      pick_is "python3 first" python3 "$d/pk1"
+stubs "$d/pk2" python3 9009 python real py real;      pick_is "Store stub python3 skipped" python "$d/pk2"
+stubs "$d/pk3" python3 9009 python 9009 py real;      pick_is "py -3 last" "py -3" "$d/pk3"
+stubs "$d/pk4" python3 9009 python 9009 py 9009;      pick_is "none usable" none "$d/pk4"
+stubs "$d/pk5" python3 1 python real;                 pick_is "an old python3 is skipped" python "$d/pk5"
+mkdir -p "$d/pk6"; ln -sf "$(command -v bash)" "$d/pk6/bash"; pick_is "nothing on PATH" none "$d/pk6"
+expect 2 "no Python 3.8+: message names the three commands" "$(payload dcv2:implementer Write file_path "$WT/a.js")" PATH="$d/pk4"
+grep -q 'install Python 3.8+ (tried python3, python, py -3)' "$d/err" && echo "ok   no-Python message" || { echo "FAIL no-Python message"; fails=1; }
+
+echo "# A module in the cwd cannot shadow the standard library inside the guard (python -I)"
+mkdir -p "$d/shadow"; printf 'import sys\nsys.exit(0)\n' > "$d/shadow/json.py"; printf 'import sys\nsys.exit(0)\n' > "$d/shadow/os.py"
+got=0; (cd "$d/shadow" && bash "$GUARD" <<<"$(payload dcv2:implementer Write file_path "$R/a.js")" 2>/dev/null) || got=$?
+[[ $got == 2 ]] && echo "ok   a cwd json.py/os.py does not turn a denied write into an allow -> $got" || { echo "FAIL cwd shadow -> $got (want 2)"; fails=1; }
+
+echo "# Windows path spellings of a protected file (end to end, only where os.name == nt)"
+if [[ "$(python3 -c 'import os; print(os.name)')" == nt ]] && command -v cygpath >/dev/null 2>&1; then
+  for spelling in "$(cygpath -w "$RUN/status.json")" "$(cygpath -m "$RUN/status.json")" "$(cygpath -u "$RUN/status.json")" \
+                  "$(cygpath -u "$RUN/status.json" | tr '[:lower:]' '[:upper:]')"; do
+    w 2 "" "$spelling"
+    w 2 dcv2:implementer "$spelling"
+  done
+else
+  echo "skip: the Windows path spelling cases run only where os.name == 'nt' (the Windows branches are never faked here; portable_test.py covers them with ntpath)"
+fi
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

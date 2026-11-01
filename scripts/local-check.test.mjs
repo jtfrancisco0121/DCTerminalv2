@@ -3,8 +3,11 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { GIT_BASH_NOT_FOUND, resolveGitBash } from "./git-bash.mjs";
 import {
   assertNoStrayHexColours,
+  CROSS_CLIPPY,
+  CROSS_CLIPPY_SKIP,
   envWithout,
   PLUGIN_SUITES,
   quoteCmdArg,
@@ -173,9 +176,37 @@ describe("check steps", () => {
     }
   });
 
-  it("skips the bash suites on Windows", () => {
-    expect(stepsFor("win32").some((step) => step.cmd === "bash")).toBe(false);
-    expect(stepsFor("win32").map((step) => step.name)).toContain("npm run build");
+  it("runs every plugin suite on Windows, under the Git Bash it was given", () => {
+    const bash = "C:\\Program Files\\Git\\bin\\bash.exe";
+    const win = stepsFor("win32", { bash });
+    const suites = win.filter((step) => step.name.startsWith("plugin suite"));
+    expect(suites.map((step) => step.name)).toEqual(PLUGIN_SUITES.map((name) => `plugin suite ${name}`));
+    for (const step of suites) {
+      expect(step.cmd).toBe(bash);
+      expect(step.removeEnvPrefix).toBe("DCV2_");
+    }
+    expect(win.map((step) => step.name)).toContain("npm run build");
+    expect(win.some((step) => step.name === CROSS_CLIPPY.name)).toBe(false);
+  });
+
+  it("adds the Windows cross-clippy step on darwin only when mingw is there, else a visible skip", () => {
+    const base = stepsFor("darwin").map((step) => step.name);
+    const withMingw = stepsFor("darwin", { mingw: true });
+    expect(withMingw.map((step) => step.name)).toEqual([
+      "cargo fmt",
+      "cargo clippy",
+      CROSS_CLIPPY.name,
+      ...base.slice(2),
+    ]);
+    const cross = withMingw.find((step) => step.name === CROSS_CLIPPY.name);
+    expect(cross.args).toContain("--target");
+    expect(cross.args).toContain("x86_64-pc-windows-gnu");
+    expect(cross.args.slice(-3)).toEqual(["--", "-D", "warnings"]);
+    const without = stepsFor("darwin", { mingw: false });
+    expect(without.filter((step) => step.note).map((step) => step.name)).toEqual([CROSS_CLIPPY_SKIP]);
+    expect(without.filter((step) => !step.note).map((step) => step.name)).toEqual(base);
+    expect(CROSS_CLIPPY_SKIP).toBe("skip: Windows cross-clippy (brew install mingw-w64)");
+    expect(stepsFor("linux", { mingw: true }).map((step) => step.name)).toEqual(base);
   });
 
   it("gives the suites an environment with no DCV2_ variable", () => {
@@ -264,5 +295,28 @@ describe("strayHexColours", () => {
     const file = path.join(dir, "App.css");
     writeFileSync(file, ".a {\n  color: #fff;\n}\n");
     expect(() => assertNoStrayHexColours(file)).toThrow(/App\.css:2: color: #fff;/);
+  });
+});
+
+describe("Git Bash resolver (AD-2)", () => {
+  const fixture = JSON.parse(
+    readFileSync(path.join(import.meta.dirname, "..", "fixtures", "platform", "git-bash-cases.json"), "utf8"),
+  );
+
+  it("agrees with the shared fixture on every case", () => {
+    expect(fixture.cases.length).toBeGreaterThanOrEqual(10);
+    for (const c of fixture.cases) {
+      const run = () =>
+        resolveGitBash(
+          (name) => c.env[name],
+          (file) => c.files.includes(file),
+          () => c.gitExecPath,
+        );
+      if (c.expect === null) {
+        expect(run, c.name).toThrow(GIT_BASH_NOT_FOUND);
+      } else {
+        expect(run(), c.name).toBe(c.expect);
+      }
+    }
   });
 });

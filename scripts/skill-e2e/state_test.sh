@@ -105,7 +105,7 @@ has "  the implementer cap, default 3 (R6)" "maxImplementers=3"
 has "  memory off without DCV2_MEMORY_DIR" "memory=none"
 expect 0 "preflight with a cap and memory" env DCV2_MAX_IMPLEMENTERS=2 DCV2_MEMORY_DIR="$d/mem" bash "$STATE" preflight "$RUN"
 has "  maxImplementers=2" "maxImplementers=2"; has "  memory root" "memory=$d/mem"
-badpy="$d/badpy"; mkdir -p "$badpy"; printf '#!/bin/sh\nexit 1\n' > "$badpy/python3"; chmod +x "$badpy/python3"
+badpy="$d/badpy"; mkdir -p "$badpy"; printf '#!/bin/sh\nexit 1\n' > "$badpy/python3"; cp "$badpy/python3" "$badpy/python"; cp "$badpy/python3" "$badpy/py"; chmod +x "$badpy"/py*
 expect 1 "preflight with a broken python3 fails" env PATH="$badpy:$PATH" bash "$STATE" preflight "$RUN"
 has "  says python3 does not run" "python3 is missing or does not run"
 cp "$RUN/request.md" "$d/req.bak"; printf 'folder: /etc\n' >> "$RUN/request.md"
@@ -348,6 +348,19 @@ WT1="$(dirname "$R")/r-worktrees/dcv2-r-t-pr1"
 has "  printed" "branch=dcv2/r-t-pr1 worktree=$WT1"
 is "  recorded in .guard.json" "$RUN/.guard.json" worktrees.PR1 "\"$WT1\""
 expect 0 "worktree reused" bash "$STATE" worktree "$RUN" "$R" PR1 "$BASE"
+# A repo in a mixed-case folder: the printed, stored and compared worktree path keeps its case (ident() only decides).
+MIX="$(dirname "$R")/RepoX/MyApp"; mkdir -p "$MIX"; git -C "$MIX" init -q -b main
+git -C "$MIX" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init; MIXBASE="$(git -C "$MIX" rev-parse HEAD)"
+python3 - "$RUN/status.json" "$MIX" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1])); pr = dict(st["prs"][0]); pr.update(id="PR7", repoPath=sys.argv[2], worktree=None, branch=None, commits=0)
+st["prs"].append(pr); json.dump(st, open(sys.argv[1], "w"))
+PY
+expect 0 "worktree of a mixed-case repo" bash "$STATE" worktree "$RUN" "$MIX" PR7 "$MIXBASE"
+has "  printed with its original case" "worktree=$(dirname "$R")/RepoX/MyApp-worktrees/dcv2-r-t-pr7"
+is "  .guard.json stores it with that case" "$RUN/.guard.json" worktrees.PR7 "\"$(dirname "$R")/RepoX/MyApp-worktrees/dcv2-r-t-pr7\""
+expect 0 "  and a second call recognises it" bash "$STATE" worktree "$RUN" "$MIX" PR7 "$MIXBASE"
+is "  the run's status keeps the repo path's case" "$RUN/status.json" prs.2.repoPath "\"$MIX\""
 rm -rf "$WT1"
 expect 0 "worktree re-made from its branch" bash "$STATE" worktree "$RUN" "$R" PR1 "$BASE"
 has "  remade" "remade=yes"
@@ -1178,5 +1191,13 @@ has "  needs the ship approval" "ship approval"
 expect 1 "normal: waves refused" bash "$STATE" waves "$B"
 expect 0 "normal: writeback is not skipped" bash "$STATE" writeback "$B"
 [[ -f "$B/writeback.json" ]] && ok "  writeback.json written in a normal run" || bad "  no writeback.json"
+
+echo "# no usable Python (W2)"
+nopy="$d/nopy"; mkdir -p "$nopy"; ln -sf "$(command -v bash)" "$nopy/bash"
+expect 1 "state.sh preflight with no Python 3.8+ says so" env PATH="$nopy" "$BASH" "$STATE" preflight "$RUN"
+has "  names the three commands" "tried python3, python, py -3"
+expect 1 "state.sh (any command but now|log) with no Python 3.8+ says so" env PATH="$nopy" "$BASH" "$STATE" now2 "$RUN"
+has "  names the three commands again" "tried python3, python, py -3"
+if grep -q "unbound variable" <<<"$out"; then bad "  unbound variable crash"; else ok "  no unbound variable crash"; fi
 
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

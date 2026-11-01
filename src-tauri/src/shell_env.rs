@@ -481,7 +481,7 @@ fn shell_path(
     slot: Option<&std::sync::Mutex<RefreshChild>>,
 ) -> Option<String> {
     use std::os::unix::process::CommandExt;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     extern "C" {
         fn setsid() -> i32;
@@ -503,7 +503,7 @@ fn shell_path(
     // `printenv` prints the exported, colon-joined PATH in every shell,
     // fish included; `;` separates commands in all of them.
     let script = format!("echo {START_MARKER}; /usr/bin/env printenv PATH; echo {END_MARKER}");
-    let mut command = Command::new(shell);
+    let mut command = crate::platform::quiet_command(shell);
     command
         .args(["-l", "-i", "-c", &script])
         .env("TERM", "dumb")

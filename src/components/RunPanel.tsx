@@ -52,6 +52,7 @@ import { Dialog } from "./Dialog";
 import { openPreview } from "../preview/bus";
 import { RunPanelShell } from "./RunPanelShell";
 import { ApprovalCard } from "./ApprovalCard";
+import { baseName } from "../paths";
 import { ObserveSection } from "./ObserveSection";
 import { errorText } from "./InlineNotice";
 import { reportError } from "../uiErrors";
@@ -340,8 +341,7 @@ const BMAD_DOCS_FROM = ["plan-approval", "building", "ship-approval", "shipping"
 
 /** A short title for a BMAD document path (`bmad/output/<id>/spec-x/spec-x.md`). */
 function bmadDocTitle(path: string): string {
-  const parts = path.split("/");
-  const file = parts[parts.length - 1] ?? path;
+  const file = baseName(path) || path;
   if (file === "DESIGN.md") return "UX design";
   if (file === "EXPERIENCE.md") return "UX experience";
   const kind = file.split("-")[0];

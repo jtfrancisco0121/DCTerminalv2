@@ -1,5 +1,7 @@
 import { useRef, useState, useSyncExternalStore } from "react";
 import type { ConfigDirInfo } from "../bridge";
+import { shortcutLabel } from "../keyTable";
+import { detectPlatform, type Platform } from "../terminal/keys";
 import { subscribeUiErrors, uiErrors } from "../uiErrors";
 import {
   formatReset,
@@ -16,7 +18,14 @@ import { usageTone } from "../run/words";
 import { ErrorsPopover } from "./ErrorsPopover";
 import { Meter } from "./Meter";
 
+/** `Name (hint)`; just `Name` when the key has no binding here. */
+function withHint(name: string, hint: string): string {
+  return hint ? `${name} (${hint})` : name;
+}
+
 type Props = {
+  /** The OS, for the shortcut hints in the tooltips. Default: this one. */
+  platform?: Platform;
   /** This window's Claude account. Null until the window context loads. */
   account: { name: string; config: ConfigDirInfo } | null;
   /** The active tab's folder. */
@@ -130,6 +139,7 @@ function StatusMeter({ window, history, now }: { window: RateWindow; history: Wi
  * active tab's folder, Claude usage, and the window and settings buttons.
  */
 export function StatusBar({
+  platform = detectPlatform(navigator.platform),
   account,
   folder = null,
   usage = null,
@@ -223,10 +233,10 @@ export function StatusBar({
       )}
       {errorsOpen && errors.length > 0 && <ErrorsPopover errors={errors} onClose={closeErrors} />}
       <span className="status-bar-spacer" />
-      <button type="button" className="status-bar-button" onClick={onNewWindow} title="New window (⌘⇧N)">
+      <button type="button" className="status-bar-button" onClick={onNewWindow} title={withHint("New window", shortcutLabel("new-window", platform))}>
         New window…
       </button>
-      <button type="button" className="status-bar-button" aria-label="Settings" title="Settings (⌘,)" onClick={onSettings}>
+      <button type="button" className="status-bar-button" aria-label="Settings" title={withHint("Settings", shortcutLabel("settings", platform))} onClick={onSettings}>
         ⚙
       </button>
     </footer>

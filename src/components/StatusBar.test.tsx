@@ -36,6 +36,17 @@ describe("StatusBar", () => {
     expect(onSettings).toHaveBeenCalledOnce();
   });
 
+  it("words the tooltips for the platform: glyphs on macOS, Ctrl+Shift elsewhere", () => {
+    const base = { account: { name: "Work", config: config() }, onNewWindow: () => {}, onSettings: () => {} };
+    const { unmount } = render(<StatusBar {...base} platform="mac" />);
+    expect(screen.getByRole("button", { name: "New window…" }).getAttribute("title")).toBe("New window (⌘⇧N)");
+    expect(screen.getByRole("button", { name: "Settings" }).getAttribute("title")).toBe("Settings (⌘,)");
+    unmount();
+    render(<StatusBar {...base} platform="windows" />);
+    expect(screen.getByRole("button", { name: "New window…" }).getAttribute("title")).toBe("New window (Ctrl+Shift+N)");
+    expect(screen.getByRole("button", { name: "Settings" }).getAttribute("title")).toBe("Settings (Ctrl+Shift+,)");
+  });
+
   describe("usage meters", () => {
     const future = Math.floor(Date.now() / 1000) + 3600;
     const win = (over: Partial<RateWindow> = {}): RateWindow => ({

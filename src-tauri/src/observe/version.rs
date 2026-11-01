@@ -220,7 +220,7 @@ pub fn run_selftest(
     let Ok(out_file) = std::fs::File::create(&out_path) else {
         return fail("Could not write the self-test output.".into());
     };
-    let mut command = std::process::Command::new(program);
+    let mut command = crate::platform::quiet_command(program);
     #[cfg(unix)]
     {
         // Its own process group, so a timeout stops Claude's children too.

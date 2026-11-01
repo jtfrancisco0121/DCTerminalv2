@@ -119,8 +119,17 @@ rev = open(root + "/fixtures/reviews/plan-contradicts-decision.md").read()
 assert re.search(r"^1\. \[MEDIUM\] .*No hosted CI", rev, re.M) and "REQUIRES REVISION" in rev
 PY
 
+echo "# portable helpers (lib/dcv2_portable.py) and no bytecode in the plugin"
+if out="$(python3 -B "$ROOT/scripts/skill-e2e/portable_test.py" 2>&1)"; then
+  ok "portable_test.py: $(grep -E '^(Ran|OK)' <<<"$out" | tr '\n' ' ')"
+  grep '^skip:' <<<"$out" | sed 's/^/     /' || true
+else
+  bad "portable_test.py failed"; echo "$out" | tail -20
+fi
+[[ -z "$(find "$P" -name __pycache__ -o -name '*.pyc' | head -1)" ]] && ok "plugin/ holds no __pycache__ or .pyc" || bad "bytecode under plugin/: $(find "$P" -name __pycache__ -o -name '*.pyc' | head -3)"
+
 echo "# scripts parse"
-for f in "$P"/scripts/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do
+for f in "$P"/scripts/*.sh "$P"/scripts/lib/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do
   bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"
 done
 

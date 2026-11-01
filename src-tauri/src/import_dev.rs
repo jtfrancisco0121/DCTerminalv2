@@ -486,20 +486,94 @@ pub fn lock_held(dir: &Path) -> bool {
     )
 }
 
-/// Every process as `pid ppid command` (`ps`), or empty when ps fails.
-pub fn process_lines() -> String {
-    std::process::Command::new("ps")
-        .args(["-axww", "-o", "pid=,ppid=,command="])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default()
+/// The process list, as `pid ppid command` lines. `Unknown` when it cannot be
+/// read (ps failed, the Windows list has no command lines): the callers then
+/// treat a session as in use and the dev app as live (fail closed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcList {
+    Known(Vec<String>),
+    Unknown,
+}
+
+impl From<&str> for ProcList {
+    fn from(text: &str) -> Self {
+        ProcList::Known(text.lines().map(str::to_string).collect())
+    }
+}
+
+impl From<&String> for ProcList {
+    fn from(text: &String) -> Self {
+        ProcList::from(text.as_str())
+    }
+}
+
+impl From<&ProcList> for ProcList {
+    fn from(list: &ProcList) -> Self {
+        list.clone()
+    }
+}
+
+/// `(pid, ppid, command words)` of each process to `pid ppid command` lines.
+/// A list with no process, or where every command line is empty, is
+/// `Unknown`: the platform returned no command lines, so nothing could be
+/// matched against them (the Windows list comes from `sysinfo`).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn lines_from_processes(procs: impl IntoIterator<Item = (u32, u32, Vec<String>)>) -> ProcList {
+    let mut lines = Vec::new();
+    let mut any_command = false;
+    for (pid, ppid, words) in procs {
+        any_command |= words.iter().any(|w| !w.is_empty());
+        lines.push(format!("{pid} {ppid} {}", words.join(" ")));
+    }
+    if any_command {
+        ProcList::Known(lines)
+    } else {
+        ProcList::Unknown
+    }
+}
+
+/// Every process as `pid ppid command`: `ps` on Unix, `sysinfo` on Windows.
+pub fn process_lines() -> ProcList {
+    #[cfg(windows)]
+    {
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+        let Ok(mut system) = System::new() else {
+            return ProcList::Unknown;
+        };
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+        );
+        lines_from_processes(system.processes().values().map(|process| {
+            let words = process
+                .cmd()
+                .iter()
+                .map(|w| w.to_string_lossy().into_owned())
+                .collect();
+            (
+                process.pid().as_u32(),
+                process.parent().map_or(0, |p| p.as_u32()),
+                words,
+            )
+        }))
+    }
+    #[cfg(not(windows))]
+    {
+        crate::platform::quiet_command("ps")
+            .args(["-axww", "-o", "pid=,ppid=,command="])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map_or(ProcList::Unknown, |o| {
+                ProcList::from(String::from_utf8_lossy(&o.stdout).as_ref())
+            })
+    }
 }
 
 /// `pid ppid command` lines.
-fn parse_ps(ps: &str) -> Vec<(u32, u32, &str)> {
-    ps.lines()
+fn parse_ps(ps: &[String]) -> Vec<(u32, u32, &str)> {
+    ps.iter()
         .filter_map(|line| {
             let line = line.trim_start();
             let (pid, rest) = line.split_once(char::is_whitespace)?;
@@ -513,12 +587,17 @@ fn parse_ps(ps: &str) -> Vec<(u32, u32, &str)> {
 /// A `claude` process outside `own_pid`'s process tree runs session `id`
 /// (`--resume <id>` / `--session-id <id>`). This app's own terminals (its
 /// children) never count.
-pub fn session_in_use(ps: &str, id: &str, own_pid: u32) -> bool {
+/// An unreadable process list counts as in use (fail closed).
+pub fn session_in_use(ps: impl Into<ProcList>, id: &str, own_pid: u32) -> bool {
     let id = id.trim();
     if id.is_empty() {
         return false;
     }
-    let procs = parse_ps(ps);
+    let lines = match ps.into() {
+        ProcList::Known(lines) => lines,
+        ProcList::Unknown => return true,
+    };
+    let procs = parse_ps(&lines);
     let parent: HashMap<u32, u32> = procs.iter().map(|(p, pp, _)| (*p, *pp)).collect();
     let ours = |mut pid: u32| {
         for _ in 0..64 {
@@ -545,7 +624,13 @@ pub fn session_in_use(ps: &str, id: &str, own_pid: u32) -> bool {
 
 /// Why the dev app looks live, if it does: its app lock is held, or a tab's
 /// session log was written in the last 2 min, or a `claude` runs its session.
-pub fn dev_live_reason(dev: &Path, ps: &str, now: std::time::SystemTime) -> Option<String> {
+/// An unreadable process list counts as live (fail closed).
+pub fn dev_live_reason(
+    dev: &Path,
+    ps: impl Into<ProcList>,
+    now: std::time::SystemTime,
+) -> Option<String> {
+    let ps: ProcList = ps.into();
     if lock_held(dev) {
         return Some(format!("{QUIT_DEV_FIRST}: it is running."));
     }
@@ -554,7 +639,7 @@ pub fn dev_live_reason(dev: &Path, ps: &str, now: std::time::SystemTime) -> Opti
         let Some(id) = tab.claude_session_id.as_deref() else {
             continue;
         };
-        if session_in_use(ps, id, std::process::id()) {
+        if session_in_use(&ps, id, std::process::id()) {
             return Some(format!(
                 "{QUIT_DEV_FIRST}: a Claude session of tab \"{}\" is still running.",
                 tab.label
@@ -580,7 +665,7 @@ pub fn dev_live_reason(dev: &Path, ps: &str, now: std::time::SystemTime) -> Opti
 /// Before resuming an adopted run's tab: refused while another process runs
 /// that session (the dev app still has it open).
 pub fn refuse_live_session(session_id: &str) -> Result<(), String> {
-    if session_in_use(&process_lines(), session_id, std::process::id()) {
+    if session_in_use(process_lines(), session_id, std::process::id()) {
         return Err("Another Claude process is using this conversation (is the dev app still running it?). Quit it first, then reopen the tab.".into());
     }
     Ok(())
@@ -642,8 +727,7 @@ pub async fn import_from_dev_app(app: tauri::AppHandle) -> Result<ImportSummary,
         if !available(&dev) {
             return Err(format!("No dev app data at {}.", dev.display()));
         }
-        if let Some(reason) = dev_live_reason(&dev, &process_lines(), std::time::SystemTime::now())
-        {
+        if let Some(reason) = dev_live_reason(&dev, process_lines(), std::time::SystemTime::now()) {
             return Err(reason);
         }
         let plugin = crate::run::plugin_dir_for(&app)
@@ -1169,6 +1253,53 @@ mod tests {
         assert!(!lock_held(&dev), "no lock file in an old dev build");
         assert_eq!(snapshot(&dev), before);
         let _ = config;
+    }
+
+    #[test]
+    fn an_unreadable_process_list_counts_as_in_use_and_live() {
+        assert!(session_in_use(&ProcList::Unknown, "any-session-id", 1));
+        assert!(
+            !session_in_use(&ProcList::Unknown, "  ", 1),
+            "no session id: nothing to be in use"
+        );
+        assert!(
+            !session_in_use("", "any-session-id", 1),
+            "a known empty list"
+        );
+        // dev_live_reason: the lock is free and the logs are old, but a tab names a session.
+        let root = TempDir::new("import_unknown_procs");
+        let (dev, _run, _config, _ws) = fixture(root.path());
+        let now = std::time::SystemTime::now() + std::time::Duration::from_secs(600);
+        let reason = dev_live_reason(&dev, &ProcList::Unknown, now)
+            .expect("an unreadable process list must read as live");
+        assert!(reason.contains("still running"), "{reason}");
+        assert_eq!(dev_live_reason(&dev, "", now), None);
+    }
+
+    #[test]
+    fn the_windows_process_mapper_fails_closed_without_command_lines() {
+        assert_eq!(lines_from_processes(vec![]), ProcList::Unknown);
+        let empty = vec![(10, 1, vec![]), (11, 10, vec![String::new()])];
+        assert_eq!(lines_from_processes(empty), ProcList::Unknown);
+        let some = vec![
+            (
+                10,
+                1,
+                vec![
+                    "claude.exe".to_string(),
+                    "--resume".to_string(),
+                    "abc".to_string(),
+                ],
+            ),
+            (11, 10, vec![]),
+        ];
+        assert_eq!(
+            lines_from_processes(some),
+            ProcList::Known(vec![
+                "10 1 claude.exe --resume abc".to_string(),
+                "11 10 ".to_string()
+            ])
+        );
     }
 
     #[test]

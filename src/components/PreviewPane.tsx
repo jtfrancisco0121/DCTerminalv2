@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import { previewFile, previewStat, type Preview } from "../preview/api";
 import { PREVIEW_EVENT, resolveRelative, slug, type PreviewTarget } from "../preview/bus";
 import { MermaidBlock } from "./MermaidBlock";
+import { baseName } from "../paths";
 import { errorText } from "./InlineNotice";
 import { reportError } from "../uiErrors";
 
@@ -146,7 +147,7 @@ export function PreviewPane({ target, onClose }: { target: PreviewTarget; onClos
     return () => window.clearInterval(timer);
   }, [path, load]);
 
-  const name = path.split("/").pop() ?? path;
+  const name = baseName(path) || path;
   return (
     <aside className="preview-pane" aria-label={`Preview: ${title}`} data-testid="preview-pane">
       <header className="preview-head">

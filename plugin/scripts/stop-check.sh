@@ -20,10 +20,20 @@
 input="$(cat)"
 [[ "${DCV2_STOP_HOOKS:-on}" == "off" ]] && exit 0
 [[ -n "${DCV2_RUN_DIR:-}" ]] || exit 0
-command -v python3 >/dev/null 2>&1 || exit 0
+# The one Python picker (lib/python.sh, next to this script); no Python 3.8+ means no check, as before.
+_cdir="${BASH_SOURCE[0]%/*}"; [[ "$_cdir" != "${BASH_SOURCE[0]}" ]] || _cdir="."
+. "$_cdir/lib/python.sh" 2>/dev/null || exit 0
+(( ${#DCV2_PY[@]} > 0 )) || exit 0
+_clib="$(cd "$_cdir/lib" 2>/dev/null && pwd -P)" || exit 0
+# The absolute path of this bash for the check (never a bare `bash` on Windows): cygpath -w there, as is elsewhere.
+_cbash="$BASH"; if command -v cygpath >/dev/null 2>&1; then _cbash="$(cygpath -w "$BASH" 2>/dev/null || echo "$BASH")"; fi
 
 IFS= read -r -d '' PY <<'PY' || true
-import json, os, re, signal, subprocess, sys, tempfile, time
+import json, os, re, subprocess, sys, tempfile, time
+
+sys.dont_write_bytecode = True  # no __pycache__ inside the plugin folder (the installed app bundle is sealed)
+sys.path.insert(0, os.environ["DCV2_LIB_DIR"])  # set by stop-check.sh itself, from its own path
+import dcv2_portable as portable
 
 try:
     data = json.loads(sys.stdin.read())
@@ -34,7 +44,7 @@ if not isinstance(data, dict) or data.get("stop_hook_active"):
 agent = str(data.get("agent_type") or "")
 if (agent[5:] if agent.startswith("dcv2:") else agent) != "implementer":
     sys.exit(0)
-run = os.path.realpath(os.environ["DCV2_RUN_DIR"])
+run = portable.real_path(os.environ["DCV2_RUN_DIR"])
 try:
     st = json.load(open(os.path.join(run, "status.json")))
 except Exception:
@@ -72,18 +82,19 @@ pr = by_id.get(pid)
 if not pr or pr.get("state") not in ("building", "fixing"):
     sys.exit(0)
 try:
-    repo = os.path.realpath(str(pr.get("repoPath") or ""))
+    repo = portable.real_path(str(pr.get("repoPath") or ""))
     if not pr.get("repoPath") or not os.path.isabs(pr["repoPath"]):
         sys.exit(0)
     wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-worktrees",
                       f"dcv2-{os.path.basename(run)}-{str(pid).lower()}")
     guard = json.load(open(os.path.join(run, ".guard.json")))
-    if os.path.realpath(str(guard.get("runDir") or "")) != run or \
-            os.path.realpath(str((guard.get("worktrees") or {}).get(pid) or "")) != wt or \
-            os.path.realpath(str(pr.get("worktree") or "")) != wt or not os.path.isdir(wt):
+    if portable.ident(str(guard.get("runDir") or "")) != portable.ident(run) or \
+            portable.ident(str((guard.get("worktrees") or {}).get(pid) or "")) != portable.ident(wt) or \
+            portable.ident(str(pr.get("worktree") or "")) != portable.ident(wt) or not os.path.isdir(wt):
         sys.exit(0)
-    cwd = os.path.realpath(wt)
-    if not (cwd == wt or cwd.startswith(wt + os.sep)):
+    cwd = portable.real_path(wt)  # a value: the folder the check runs in
+    # The resolved folder must still be wt itself (a symlink to elsewhere is skipped): compared as written, so not through ident().
+    if not (os.path.normcase(cwd) == os.path.normcase(wt) or os.path.normcase(cwd).startswith(os.path.normcase(wt) + os.sep)):
         sys.exit(0)
 except SystemExit:
     raise
@@ -94,7 +105,7 @@ cmd = None
 try:
     entries = json.load(open(os.path.join(run, "repos.json"))).get("repos") or []
     entry = next((e for e in entries if isinstance(e, dict) and isinstance(e.get("path"), str)
-                  and os.path.isabs(e["path"]) and os.path.realpath(e["path"]) == repo), None)
+                  and os.path.isabs(e["path"]) and portable.ident(e["path"]) == portable.ident(repo)), None)
     c = entry.get("check") if entry else None
     cmd = c if isinstance(c, str) and c.strip() else None
 except Exception:
@@ -114,7 +125,7 @@ def save_cache():
     fd, tmp = tempfile.mkstemp(prefix=".stop-check.json.", suffix=".tmp", dir=logs)
     with os.fdopen(fd, "w") as f:
         json.dump(cache, f)
-    os.replace(tmp, cache_path)
+    portable.replace(tmp, cache_path)
 
 
 # ---- slop: the lines this PR added that match slop-patterns.tsv ---------------------------------
@@ -226,23 +237,25 @@ if cmd:
         outcome = "slow"
     else:
         start = time.time()
-        proc = subprocess.Popen(["bash", "-c", cmd], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, start_new_session=True)
         try:
-            out, _ = proc.communicate(timeout=limit)
-            outcome = "pass" if proc.returncode == 0 else "fail"
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except OSError:
-                pass
-            proc.communicate()
-            cache[pid] = {"slow": True, "command": cmd, "seconds": limit}
-            save_cache()
+            proc = portable.spawn_group(portable.check_argv(cmd), cwd=cwd, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        except OSError:  # no usable bash (Windows without DCV2_BASH_EXE): the check is not run, never a bare bash
+            proc = None
             outcome = "slow"
-        if outcome != "slow":
-            cache[pid] = {"slow": False, "command": cmd, "seconds": round(time.time() - start, 1)}
-            save_cache()
+        if proc is not None:
+            try:
+                out, _ = proc.communicate(timeout=limit)
+                outcome = "pass" if proc.returncode == 0 else "fail"
+            except subprocess.TimeoutExpired:
+                portable.kill_group(proc)
+                proc.communicate()
+                cache[pid] = {"slow": True, "command": cmd, "seconds": limit}
+                save_cache()
+                outcome = "slow"
+            if outcome != "slow":
+                cache[pid] = {"slow": False, "command": cmd, "seconds": round(time.time() - start, 1)}
+                save_cache()
 
 if outcome != "fail":
     if slop_on:
@@ -285,7 +298,7 @@ print(f"dcv2 stop check: the {pid} check `{cmd}` fails in {cwd} (exit {proc.retu
 sys.exit(2)
 PY
 
-python3 -c "$PY" "$0" <<<"$input"
+DCV2_LIB_DIR="$_clib" DCV2_BASH_EXE="$_cbash" "${DCV2_PY[@]}" -c "$PY" "$0" <<<"$input"
 rc=$?
 [[ $rc == 2 ]] && exit 2
 exit 0

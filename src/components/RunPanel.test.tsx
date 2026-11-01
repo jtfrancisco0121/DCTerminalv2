@@ -559,6 +559,17 @@ describe("RunPanelView", () => {
     expect(checkSignature(view)).toContain("PR1@-");
   });
 
+  it("shows the Windows shell fallback note first in the tooltip and keeps the pass tone", () => {
+    const note = "ran with cmd /C (Git Bash not found)";
+    const prs = view.prs.map((pr) =>
+      pr.id === "PR1" ? { ...pr, appCheck: { ...(pr.appCheck ?? ({} as never)), result: "pass", detail: note } } : pr,
+    );
+    renderPanel({ prs });
+    const pill = within(screen.getByTestId("pr-PR1")).getByText(/check \(app\): .* pass/);
+    expect(pill.getAttribute("title")).toBe(note);
+    expect(pill.className).toContain("tone-success");
+  });
+
   it("marks a check that went stale", () => {
     const prs = view.prs.map((pr) => (pr.id === "PR1" ? { ...pr, appCheckStale: true } : pr));
     renderPanel({ prs });

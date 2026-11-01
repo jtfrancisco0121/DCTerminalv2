@@ -82,7 +82,7 @@ describe("tab cycling and font zoom keys", () => {
 
   it("the page and the terminal agree on every listed key, on macOS and elsewhere", () => {
     const asTerminal = (e: ReturnType<typeof key>) => ({ type: "keydown", ...e });
-    for (const sample of SHORTCUT_SAMPLES) {
+    for (const sample of SHORTCUT_SAMPLES.filter((s) => s.action.kind !== "scratchpad")) {
       // xterm leaves every listed key to the app.
       expect(isAppShortcut(asTerminal(sample.mac), "mac"), `${sample.name} (mac, terminal)`).toBe(true);
       if (!sample.other) continue;

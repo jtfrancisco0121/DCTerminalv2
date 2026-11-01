@@ -48,6 +48,13 @@ export function isScratchpadShortcut(event: TerminalKeyEvent, platform: Platform
 /** The palette's "Toggle prompt scratchpad" asks the active pane through this window event. */
 export const SCRATCHPAD_EVENT = "dcv2:toggle-scratchpad";
 
+/** What the file-link "reveal" option is called here (the stored setting id stays `finder`). */
+export function revealLabel(platform: Platform): string {
+  if (platform === "mac") return "Finder (reveal)";
+  if (platform === "windows") return "Explorer (reveal)";
+  return "File manager (reveal)";
+}
+
 export function detectPlatform(uaPlatform?: string): Platform {
   const value = (uaPlatform ?? "").toLowerCase();
   if (value.includes("mac")) return "mac";
