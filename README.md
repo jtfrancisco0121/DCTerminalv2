@@ -1,6 +1,6 @@
 # DCTerminalv2
 
-A macOS terminal app for [Claude Code](https://docs.claude.com/en/docs/claude-code). Open Claude in tabs, one Claude account per window, and let **Eagle-Eye** plan, build, review and ship a change for you, asking before anything leaves your machine.
+A macOS and Windows terminal app for [Claude Code](https://docs.claude.com/en/docs/claude-code). Open Claude in tabs, one Claude account per window, and let **Eagle-Eye** plan, build, review and ship a change for you, asking before anything leaves your machine.
 
 Built with Tauri 2 (Rust in `src-tauri/`, React + xterm.js in `src/`) and the bundled `dcv2` Claude Code plugin (`plugin/`).
 
@@ -12,19 +12,24 @@ Built with Tauri 2 (Rust in `src-tauri/`, React + xterm.js in `src/`) and the bu
 | **Eagle-Eye runs** | Plan → you approve → parallel builds in git worktrees → review → you approve → PRs opened |
 | **Run panel** | Stage, per-PR progress, checks, review gates, cost and time, timeline, rendered plan and reviews |
 | **ClickUp** | Paste ticket or epic links to start a run; post comments back with one click |
-| **Notifications** | Per-tab "needs you" state, macOS notifications, dock badge, phone push (ntfy, Pushover, webhook) |
+| **Notifications** | Per-tab "needs you" state, desktop notifications, dock badge (macOS), phone push (ntfy, Pushover, webhook) |
 | **Role skills** | `/dcv2:planner`, `/dcv2:developer`, `/dcv2:pr-reviewer`, `/dcv2:codebase-audit` and more, each usable on its own |
 | **Safety** | A guard keeps agents inside their worktree, nothing is pushed before your approval, secrets stay in the keychain |
 
 ## Requirements
 
-- **macOS** 10.15 or later (`install.sh` refuses other systems)
-- **Claude Code CLI** (`claude`)
-- **git**
-- **Node.js and npm** (Node 18+ for BMAD planning)
+**macOS**
+- macOS 10.15 or later (`install.sh` refuses other systems)
+- **Claude Code CLI** (`claude`), **git**, **Node.js and npm** (Node 18+ for BMAD planning)
 - **Rust** stable, with `clippy` and `rustfmt` (pinned in `rust-toolchain.toml`)
 - **python3** 3.9+ (the macOS system one is fine)
-- **GitHub CLI `gh`**, optional: for opening PRs, GitHub review mode, CI status and merged-run cleanup
+
+**Windows 10 / 11**
+- **Git for Windows** (the app and the plugin run their scripts with its Git Bash)
+- **Python 3.8+** (`python3`, `python` or `py -3` on the PATH; the Microsoft Store stub does not count)
+- **Claude Code CLI** (`claude`), **Node.js and npm**, and **Rust** stable with the MSVC or GNU target to build from source
+
+**Both:** the **GitHub CLI `gh`** is optional, for opening PRs, GitHub review mode, CI status and merged-run cleanup.
 
 ## Install
 
@@ -44,6 +49,18 @@ What `install.sh` does:
 5. Removes the quarantine flag (local install, not notarized).
 
 For a DMG, run `npm run release:mac`.
+
+### Windows
+
+```powershell
+git clone https://github.com/jtfrancisco0121/DCTerminalv2.git
+cd DCTerminalv2
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+`install.ps1` refuses non-Windows systems and refuses while DCTerminalv2 is running, runs `npm ci` and `npm run release:win` (an NSIS installer that also carries `dcv2-hook.exe`), then runs the installer silently for the current user. The installer is **unsigned**: Windows SmartScreen may say "Windows protected your PC". Choose **More info**, then **Run anyway**.
+
+Known limits on Windows: no dock badge and no native menu bar (the shortcuts are `Ctrl+Shift+<key>`), and the installer is unsigned.
 
 ## Using it
 
@@ -93,7 +110,8 @@ npm run dev:app                                      # tauri dev
 | `src/` | React UI |
 | `src-tauri/src/` | Rust backend: terminals, runs, observation, ClickUp, storage |
 | `plugin/` | The `dcv2` plugin: skills, agents, roles, scripts, hooks, vendored BMAD |
-| `scripts/` | `local-check.mjs` (the gate) and plugin tests |
+| `scripts/` | `local-check.mjs` (the gate), plugin tests, `verify-win-bundle.mjs` |
+| `install.sh`, `install.ps1` | The macOS and Windows installers |
 | `docs/` | App ↔ plugin contracts and dated plans |
 
 ## Docs
