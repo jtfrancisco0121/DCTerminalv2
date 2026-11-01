@@ -56,6 +56,11 @@ objc2 = "0.6"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# The process list on Windows (src/import_dev.rs `process_lines`): command lines of every process, to tell whether a
+# Claude session is running elsewhere. The one dependency added for Windows support (AD-11).
+[target.'cfg(windows)'.dependencies]
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
+
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1
