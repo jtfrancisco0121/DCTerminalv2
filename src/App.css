@@ -2823,6 +2823,121 @@ body,
   word-break: break-word;
 }
 
+/* The run folder's own lane: raised rows, a "run" chip, the lane filter, PR pills and guard rule ids. */
+.trace-row-run {
+  background: var(--bg-elev);
+}
+
+.trace-lane-chip {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
+
+.trace-lanes {
+  display: inline-flex;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+}
+
+.trace-lane-choice {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  background: none;
+  color: var(--fg-soft);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.trace-lane-choice[aria-checked="true"] {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.trace-lane-choice:focus-visible,
+.pill-heuristic:focus-visible,
+.trace-pr-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.trace-rule {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.trace-pr-button {
+  color: var(--fg-soft);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.trace-pr-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+/* "PR2 · heuristic": dashed, with a tooltip on hover and focus. */
+.pill-heuristic {
+  position: relative;
+  border-style: dashed;
+  background: transparent;
+  cursor: help;
+}
+
+.pill-heuristic:hover::after,
+.pill-heuristic:focus::after {
+  content: attr(data-tip);
+  position: absolute;
+  z-index: 2;
+  top: 100%;
+  left: 0;
+  width: max-content;
+  max-width: 18rem;
+  margin-top: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-elev);
+  color: var(--fg-soft);
+  font-size: var(--text-xs);
+}
+
+.trace-pre-run {
+  max-height: calc(24 * 1.45em);
+}
+
+.trace-fields {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+.trace-fields dt,
+.trace-fields dd {
+  display: inline;
+  margin: 0;
+}
+
+.trace-fields dt::after {
+  content: ": ";
+}
+
+.trace-fields dd::after {
+  content: "";
+  display: block;
+}
+
+.trace-field {
+  display: block;
+}
+
 .trace-skeleton-row {
   height: 1.5rem;
   margin-bottom: var(--space-2);

@@ -261,4 +261,196 @@ describe("TracePanel", () => {
     fireEvent.keyDown(listbox, { key: "Escape" });
     expect(screen.queryByTestId("trace-content")).toBeNull();
   });
+
+  describe("the run's own lane", () => {
+    const RUN_FILE = "/runs/r-1/log.md";
+    function run(
+      id: string,
+      kind: string,
+      at: string,
+      attrs: Record<string, unknown> = {},
+      extra: Partial<FlightEvent> = {},
+    ): FlightEvent {
+      return ev(
+        id,
+        kind,
+        at,
+        {
+          provider: { name: "dcv2", version: null, native: "log.md" },
+          attrs,
+          content: { ref: { file: RUN_FILE, offset: 0, len: 10, sha256: `sha-${id}` }, policy: "full", redactions: 0 },
+          ...extra,
+        },
+        { id: "orchestration", kind: "orchestration", parent: null },
+      );
+    }
+
+    const mixed: FlightEvent[] = [
+      run("o1", "stage.change", "2026-11-05T10:07:00.000Z", { to: "building" }, { name: "building" }),
+      run("o2", "approval.wait", "2026-11-05T10:08:00.000Z", {}, { name: "plan" }),
+      run("o3", "approval.decision", "2026-11-05T10:09:00.000Z", {}, { name: "plan", status: "ok" }),
+      run("o4", "review.round", "2026-11-05T10:10:00.000Z", { pr: "PR2", round: 1, verdict: "FAIL" }, { name: "PR2-round1" }),
+      run("o5", "check.end", "2026-11-05T10:11:00.000Z", { source: "app", pr: "PR2" }, { name: "cargo test", status: "fail" }),
+      run("o6", "check.end", "2026-11-05T10:12:00.000Z", { source: "stop-check", pr: "PR2" }, { name: "cargo test", status: "fail" }),
+      run("o7", "x.dcv2.pr-state", "2026-11-05T10:13:00.000Z", { pr: "PR2", from: "reviewing", to: "fixing" }, { name: "fixing" }),
+      ev("t1", "tool.blocked", "2026-11-05T10:14:00.000Z", { span: "t9", name: "Bash", status: "blocked", attrs: { rule: "run-file-write" } }, { id: "a1", role: "implementer", pr: "PR2" }),
+      ev("t2", "tool.start", "2026-11-05T10:15:00.000Z", { name: "Edit" }, { id: "a1", role: "implementer", pr: "PR2" }),
+      ev("t3", "tool.start", "2026-11-05T10:16:00.000Z", { name: "Read" }, { id: "main" }),
+    ];
+    const withLane = (over: Partial<SessionView> = {}) =>
+      sessionView({
+        page: { events: mixed, nextCursor: null },
+        failures: [
+          failure("o5", "2026-11-05T10:11:00.000Z", "exact:check-fail", ["o4"], { name: "cargo test", kind: "check.end", agent: "orchestration" }),
+          failure("t1", "2026-11-05T10:14:00.000Z", "exact:hook-denial:dcv2-guard", [], { kind: "tool.blocked", agent: "a1", rule: "run-file-write" }),
+        ],
+        agents: [
+          {
+            id: "main", session: "s1", kind: "main", type: null, role: null, pr: null, prDerived: null, description: null, spawnSpan: null, files: [],
+            derived: { label: "exact:session-root", evidence: ["t3"] },
+            children: [
+              { id: "a1", session: "s1", kind: "subagent", type: "dcv2:implementer", role: "implementer", pr: "PR2", prDerived: { label: "exact:pr-description", evidence: ["t2"] }, description: "PR2 implement", spawnSpan: "t8", files: [], children: [], derived: { label: "exact:tool_use_id", evidence: ["t2"] } },
+              { id: "a2", session: "s1", kind: "subagent", type: "dcv2:pr-reviewer", role: "pr-reviewer", pr: "PR3", prDerived: { label: "heuristic:description-prefix", evidence: ["t2"] }, description: "PR3 review", spawnSpan: "t7", files: [], children: [], derived: { label: "exact:tool_use_id", evidence: ["t2"] } },
+            ],
+          },
+        ],
+        ...over,
+      });
+
+    const openRun = async (view = withLane()) => {
+      flightSession.mockResolvedValue(view);
+      await open();
+    };
+
+    it("shows the orchestration rows in the app's words beside the agent rows", async () => {
+      await openRun();
+      const list = screen.getByRole("listbox", { name: "Events" });
+      const text = list.textContent ?? "";
+      for (const words of [
+        "Stage: building",
+        "Waiting for plan approval",
+        "Plan approved",
+        "PR2 review round 1",
+        "Check (app) PR2 failed",
+        "stop-check PR2 failed",
+        "pr PR2 reviewing → fixing",
+        "Tool blocked: Bash",
+      ]) {
+        expect(text, words).toContain(words);
+      }
+      expect(within(list).getAllByText("run").length).toBe(7);
+      expect(document.getElementById("trace-row-o1")?.className).toContain("trace-row-run");
+      expect(document.getElementById("trace-row-t2")?.className).not.toContain("trace-row-run");
+    });
+
+    it("has a lane filter with arrow keys for a run, and none for a session", async () => {
+      await openRun();
+      const group = screen.getByRole("radiogroup", { name: "Lanes" });
+      const radios = within(group).getAllByRole("radio");
+      expect(radios.map((r) => r.textContent)).toEqual(["Agents", "Orchestration", "Both"]);
+      expect(radios[2]!.getAttribute("aria-checked")).toBe("true");
+      const count = () => screen.getAllByRole("option").length;
+      expect(count()).toBe(10);
+      fireEvent.click(radios[0]!);
+      expect(count()).toBe(3);
+      expect(screen.queryByText(/Stage: building/)).toBeNull();
+      fireEvent.click(radios[1]!);
+      expect(count()).toBe(7);
+      expect(screen.queryByText(/Tool blocked: Bash/)).toBeNull();
+      fireEvent.keyDown(group, { key: "ArrowRight" });
+      expect(screen.getByRole("radio", { name: "Both" }).getAttribute("aria-checked")).toBe("true");
+      expect(count()).toBe(10);
+      fireEvent.keyDown(group, { key: "ArrowLeft" });
+      fireEvent.keyDown(group, { key: "ArrowLeft" });
+      expect(screen.getByRole("radio", { name: "Agents" }).getAttribute("aria-checked")).toBe("true");
+      cleanup();
+      flightSession.mockResolvedValue(withLane());
+      render(<TracePanel target={{ configDir: "/c", sessionId: "s1" }} onClose={() => {}} />);
+      await screen.findByRole("listbox", { name: "Events" });
+      expect(screen.queryByRole("radiogroup", { name: "Lanes" })).toBeNull();
+    });
+
+    it("draws an exact PR pill solid and a heuristic one dashed, saying heuristic, with a tooltip", async () => {
+      await openRun();
+      const rail = screen.getByLabelText("Failures and agents");
+      const exact = within(rail).getByText("PR2");
+      expect(exact.className).toContain("pill");
+      expect(exact.className).not.toContain("pill-heuristic");
+      const guess = within(rail).getByText("PR3 · heuristic");
+      expect(guess.className).toContain("pill-heuristic");
+      expect(guess.getAttribute("tabindex")).toBe("0");
+      expect(guess.getAttribute("data-tip")).toMatch(/Guessed/);
+    });
+
+    it("shows the guard rule id on the failure entry and on the block row", async () => {
+      await openRun();
+      const rail = screen.getByLabelText("Failures and agents");
+      const rule = within(rail).getByText("run-file-write");
+      expect(rule.tagName).toBe("CODE");
+      expect(rule.className).toContain("tone-warn");
+      const row = document.getElementById("trace-row-t1")!;
+      expect(within(row).getByText("run-file-write").className).toContain("trace-rule");
+    });
+
+    it("] reaches a failed check of the run's lane", async () => {
+      await openRun();
+      const listbox = screen.getByRole("listbox", { name: "Events" });
+      fireEvent.keyDown(listbox, { key: "]" });
+      await waitFor(() => expect(listbox.getAttribute("aria-activedescendant")).toBe("trace-row-o5"));
+      fireEvent.keyDown(listbox, { key: "]" });
+      await waitFor(() => expect(listbox.getAttribute("aria-activedescendant")).toBe("trace-row-t1"));
+    });
+
+    it("filters to a PR from a row, and a failure that the filter hides brings everything back", async () => {
+      await openRun();
+      fireEvent.click(within(document.getElementById("trace-row-o4")!).getByRole("button", { name: "Show only PR2" }));
+      expect(screen.getByTestId("trace-pr-filter").textContent).toContain("PR2");
+      // PR2's rows and PR2's agent; not the stage change, the main session or other PRs.
+      expect(screen.getAllByRole("option").map((o) => o.id)).toEqual([
+        "trace-row-o4", "trace-row-o5", "trace-row-o6", "trace-row-o7", "trace-row-t1", "trace-row-t2",
+      ]);
+      fireEvent.click(screen.getByRole("button", { name: "Show all PRs" }));
+      expect(screen.getAllByRole("option")).toHaveLength(10);
+    });
+
+    it("reads a row's content as plain text with its fields and its phase", async () => {
+      flightContent.mockResolvedValue({ text: "line one\n<b>two</b>", redactions: 0, policy: "full" });
+      await openRun(withLane({ phases: { o5: { stage: "building", prState: "reviewing", label: "exact:log-line" } } }));
+      fireEvent.click(document.getElementById("trace-row-o5")!);
+      const box = await screen.findByTestId("trace-content");
+      await waitFor(() => expect(box.querySelector("pre")).toBeTruthy());
+      expect(box.querySelector("pre")!.textContent).toBe("line one\n<b>two</b>");
+      expect(box.querySelector("pre")!.className).toContain("trace-pre-run");
+      const fields = within(box).getByTestId("trace-fields").textContent ?? "";
+      expect(fields).toContain("source");
+      expect(fields).toContain("app");
+      expect(fields).toContain("stage building · PR reviewing");
+      expect(flightContent.mock.calls[0]![1]).toEqual(mixed.find((e) => e.id === "o5")!.content.ref);
+    });
+
+    it("shows a malformed-file notice inline", async () => {
+      await openRun(withLane({ notices: ["status.json: malformed JSON, its events are left out"] }));
+      expect(screen.getByTestId("trace-notice").textContent).toContain("status.json");
+    });
+
+    it("opens on the page of a focused event and selects it once", async () => {
+      flightSession.mockResolvedValue(withLane());
+      render(<TracePanel target={{ runDir: "/runs/r-1" }} focus="o5" onClose={() => {}} />);
+      const listbox = await screen.findByRole("listbox", { name: "Events" });
+      expect(flightSession.mock.calls[0]![0].focus).toBe("o5");
+      await waitFor(() => expect(listbox.getAttribute("aria-activedescendant")).toBe("trace-row-o5"));
+      fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+      await waitFor(() => expect(flightSession).toHaveBeenCalledTimes(2));
+      expect(flightSession.mock.calls[1]![0].focus).toBeUndefined();
+    });
+
+    it("has a Search button when it can open the search page", async () => {
+      const onSearch = vi.fn();
+      flightSession.mockResolvedValue(withLane());
+      render(<TracePanel target={{ runDir: "/runs/r-1" }} onClose={() => {}} onSearch={onSearch} />);
+      await screen.findByRole("listbox", { name: "Events" });
+      fireEvent.click(screen.getByRole("button", { name: "Search" }));
+      expect(onSearch).toHaveBeenCalledTimes(1);
+    });
+  });
 });

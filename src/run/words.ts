@@ -1,5 +1,6 @@
 /** Plain words for the run panel: stages, PR states, check results. */
 
+import { KIND, STATUS } from "../flight/types";
 import type { UsageTone } from "../usage/limits";
 import type { LogLine, PrView, RunView } from "./api";
 
@@ -528,4 +529,89 @@ export function flightKindText(kind: string): string {
 /** "exact:is_error" is a fact; "heuristic:…" is a guess and is labelled so. */
 export function flightDerivedText(label: string): string {
   return label.startsWith("heuristic:") ? "heuristic" : "exact";
+}
+
+/** What the orchestration words need of an event. */
+export interface OrchestrationEvent {
+  kind: string;
+  name: string | null;
+  status: string | null;
+  attrs: Record<string, unknown>;
+}
+
+/**
+ * The tone of an event of the run folder's own lane: danger for a failed check, stop-check or CI; warn for a guard
+ * block, a retry and a declined approval; success for a pass, an approval and a passing CI; running for a stage; you for
+ * an approval wait; muted for the plugin's own `x.dcv2.*` rows and a skipped check.
+ */
+export function orchestrationTone(kind: string, status: string | null | undefined): Tone {
+  switch (kind) {
+    case KIND.CHECK_END:
+      return status === STATUS.PASS ? "success" : status === STATUS.FAIL || status === "error" ? "danger" : "muted";
+    case KIND.CI_STATE:
+      return status === STATUS.PASS ? "success" : status === STATUS.FAIL ? "danger" : "muted";
+    case KIND.TOOL_BLOCKED:
+    case KIND.RETRY:
+    case KIND.ATTENTION:
+      return "warn";
+    case KIND.STAGE_CHANGE:
+      return "running";
+    case KIND.APPROVAL_WAIT:
+      return "you";
+    case KIND.APPROVAL_DECISION:
+      return status === STATUS.OK ? "success" : "warn";
+    default:
+      return "muted";
+  }
+}
+
+const str = (v: unknown): string => (typeof v === "string" ? v : "");
+const capital = (s: string) => (s ? s[0]!.toUpperCase() + s.slice(1) : s);
+const CHECK_WORD: Record<string, string> = { pass: "passed", fail: "failed", skip: "skipped", error: "could not run" };
+
+/** The words of a row of the run's own lane. No log text: the text is read on demand, redacted. */
+export function orchestrationText(e: OrchestrationEvent): string {
+  const pr = str(e.attrs.pr);
+  switch (e.kind) {
+    case KIND.STAGE_CHANGE:
+      return `Stage: ${e.name ?? "?"}`;
+    case KIND.APPROVAL_WAIT:
+      return `Waiting for ${e.name ?? ""} approval`.replace("  ", " ");
+    case KIND.APPROVAL_DECISION:
+      return `${capital(e.name ?? "")} ${e.status === STATUS.OK ? "approved" : "declined"}`.trim();
+    case KIND.REVIEW_ROUND: {
+      const who = pr || capital((e.name ?? "").split("-round")[0] ?? "");
+      return `${who} review round ${String(e.attrs.round ?? "?")}`.trim();
+    }
+    case KIND.CHECK_END: {
+      const word = CHECK_WORD[e.status ?? ""] ?? "finished";
+      const source = str(e.attrs.source);
+      if (source === "stop-check") return `stop-check ${pr ? `${pr} ` : ""}${word}`;
+      return `Check (${source || "run"}) ${pr ? `${pr} ` : ""}${word}`;
+    }
+    case KIND.CI_STATE:
+      return `CI ${pr ? `${pr} ` : ""}${CHECK_WORD[str(e.attrs.ci)] ?? (str(e.attrs.ci) || "unknown")}`;
+    case KIND.PR_STATE:
+      return `pr ${pr} ${str(e.attrs.from) || "-"} → ${str(e.attrs.to) || e.name || "?"}`;
+    case KIND.RETRY:
+      return `Retry${pr ? ` ${pr}` : ""}`;
+    case KIND.ATTENTION:
+      return e.name ? `Needs attention: ${e.name}` : "Needs attention";
+    case KIND.LOG:
+      return "Log line";
+    case KIND.REQUEST:
+      return `Request: ${e.name ?? "?"}${str(e.attrs.result) ? ` ${str(e.attrs.result)}` : ""}`;
+    case KIND.TOOL_BLOCKED:
+      return `Guard blocked ${e.name ?? "a tool"}`;
+    default:
+      return e.kind;
+  }
+}
+
+/** The word on an orchestration row's pill. */
+export function orchestrationStatusText(e: OrchestrationEvent): string | null {
+  if (e.kind === KIND.TOOL_BLOCKED) return "blocked";
+  if (e.kind === KIND.APPROVAL_DECISION) return e.status === STATUS.OK ? "approved" : "declined";
+  if (e.kind === KIND.CHECK_END || e.kind === KIND.CI_STATE) return CHECK_WORD[e.status ?? ""] ?? null;
+  return null;
 }
