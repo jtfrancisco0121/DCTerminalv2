@@ -4,7 +4,7 @@
 //! a run or session, and reads a line's content (always redacted) on request.
 
 use super::adapters::{AgentMeta, SubagentFile};
-use super::redact::redact;
+use super::redact::{first_hit, redact};
 use super::schema::{sha256_hex, CapturePolicy, SourceRef};
 use super::session::{self, PageRequest, Parsed, SessionView};
 use crate::provider::claude::same_config_dir;
@@ -318,7 +318,18 @@ fn render_value(key: &str, value: &Value, depth: usize, redactions: &mut u32, ou
     let pad = " ".repeat(depth * 2);
     match value {
         Value::String(text) => {
-            let (clean, n) = redact(text);
+            let (mut clean, mut n) = redact(text);
+            // A secret named only by its key (`password: <value>`) has no
+            // signal in the bare value: scan the first line as the rendered
+            // `key: value` line too.
+            let first = text.split(['\n', '\r']).next().unwrap_or("");
+            if !clean.starts_with("[redacted: ") {
+                if let Some(kind) = first_hit(&format!("{key}: {first}")) {
+                    let rest = &clean[first.len().min(clean.len())..];
+                    clean = format!("[redacted: {kind}]{rest}");
+                    n += 1;
+                }
+            }
             *redactions += n as u32;
             if clean.contains('\n') || clean.contains('\r') {
                 out.push_str(&format!("{pad}{key}:\n{}\n", indent(&clean, depth * 2 + 2)));
@@ -529,6 +540,25 @@ mod tests {
         assert_eq!(ids, ["a1", "b2"]);
         assert!(got[0].2.ends_with("agent-a1.meta.json"));
         assert!(subagent_files(&dir.join("none.jsonl")).is_empty());
+    }
+
+    #[test]
+    fn a_secret_named_only_by_its_key_is_redacted_in_a_tool_input() {
+        let mut out = String::new();
+        let mut n = 0u32;
+        let input = json!({"api_key": "Zx8Kq2Lm9Pw4Rt7Yb1Nc6Vd3", "note": "plain"});
+        for (k, v) in input.as_object().unwrap() {
+            render_value(k, v, 0, &mut n, &mut out);
+        }
+        assert_eq!(n, 1, "{out}");
+        assert!(out.contains("[redacted: "), "{out}");
+        assert!(!out.contains("Zx8Kq2"), "{out}");
+        assert!(out.contains("note: plain"), "{out}");
+        let mut out = String::new();
+        let mut n = 0u32;
+        render_value("password", &json!("abcd1234efgh"), 0, &mut n, &mut out);
+        assert_eq!(n, 1, "{out}");
+        assert!(!out.contains("abcd1234"), "{out}");
     }
 
     #[test]

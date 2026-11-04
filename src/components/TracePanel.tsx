@@ -201,26 +201,32 @@ export function TracePanel({ target, agent: initialAgent, onClose }: Props) {
   };
 
   const jumpToFailure = async (target_: Failure) => {
+    if (phase !== null) return;
     setFailureId(target_.id);
     setContent(null);
     let known = events.some((e) => e.id === target_.id);
     let cursor = next;
     let pages = 0;
-    // Bring the failing event into the list: fetch later pages until it is there.
-    while (!known && cursor && pages < MAX_JUMP_PAGES) {
-      const mine = serial.current;
-      try {
-        const v = await flightSession({ ...target, agent, cursor });
-        if (mine !== serial.current) return;
-        setEvents((all) => [...all, ...v.page.events]);
-        setNext(v.page.nextCursor);
-        cursor = v.page.nextCursor;
-        known = v.page.events.some((e) => e.id === target_.id);
-      } catch (err) {
-        setError(errorText(err));
-        return;
+    if (!known && cursor) setPhase("more");
+    try {
+      // Bring the failing event into the list: fetch later pages until it is there.
+      while (!known && cursor && pages < MAX_JUMP_PAGES) {
+        const mine = serial.current;
+        try {
+          const v = await flightSession({ ...target, agent, cursor });
+          if (mine !== serial.current) return;
+          setEvents((all) => [...all, ...v.page.events]);
+          setNext(v.page.nextCursor);
+          cursor = v.page.nextCursor;
+          known = v.page.events.some((e) => e.id === target_.id);
+        } catch (err) {
+          setError(errorText(err));
+          return;
+        }
+        pages += 1;
       }
-      pages += 1;
+    } finally {
+      setPhase((p) => (p === "more" ? null : p));
     }
     if (known) select(target_.id);
   };

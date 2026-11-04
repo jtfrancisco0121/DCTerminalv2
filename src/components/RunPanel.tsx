@@ -759,7 +759,7 @@ export function RunPanel({
         session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} onOpenTrace={onOpenTrace ? () => onOpenTrace() : undefined} /> : undefined}
         extra={
           <>
-            <FleetTimeline runDir={runDir} live={!runFinished(view)} onOpenLane={onOpenTrace ? (lane) => onOpenTrace(lane.agentId ?? "main") : undefined} />
+            <FleetTimeline runDir={runDir} live={!runFinished(view)} onOpenLane={onOpenTrace ? (lane) => onOpenTrace(lane.agentId ?? (lane.id.startsWith("session-") ? "main" : undefined)) : undefined} />
             <ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} mergeKey={mergeKey(view)} />
           </>
         }

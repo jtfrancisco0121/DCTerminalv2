@@ -403,9 +403,14 @@ fn map_line(
                     let event = tool_result(v, block, ctx, facts);
                     out.push(event);
                 }
+                let has_text = blocks.iter().any(|b| b["type"] == "text");
                 if !any {
                     out.push(ctx.event(
-                        kind::UNKNOWN,
+                        if has_text {
+                            kind::TURN_START
+                        } else {
+                            kind::UNKNOWN
+                        },
                         "user.text",
                         None,
                         None,
@@ -820,6 +825,19 @@ mod tests {
             ]
         );
         assert!(events.iter().all(|e| !e.content.source.sha256.is_empty()));
+    }
+
+    #[test]
+    fn a_prompt_written_as_text_blocks_is_a_turn_start() {
+        let dir = TempDir::new("flight_claude_text_prompt");
+        let main = write(
+            &dir,
+            "s.jsonl",
+            "{\"type\":\"user\",\"timestamp\":\"2026-10-22T10:00:00Z\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}\n",
+        );
+        let events = events_for(&main, &[]);
+        assert!(events.iter().any(|e| e.kind == "turn.start"));
+        assert!(events.iter().all(|e| e.kind != "x.claude.unknown"));
     }
 
     #[test]
