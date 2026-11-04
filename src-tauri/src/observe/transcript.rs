@@ -677,4 +677,158 @@ mod tests {
             "a sidechain line is not the session"
         );
     }
+
+    const FAILING: &str = "projects/-work-toy/5b0d6e0e-3a52-4c61-9d1f-7a2c4e8b9f10.jsonl";
+
+    #[test]
+    fn the_failing_session_fixture_parses_and_counts_its_usage() {
+        let mut tracker = SessionTracker::for_file(fixture_root().join(FAILING));
+        tracker.poll();
+        let summary = tracker.summary(&[], "build");
+        assert_eq!(summary.messages, 4, "four assistant messages");
+        assert!(summary.total_cost_usd.is_some());
+        assert!(tracker.context().unwrap().used > 0);
+        assert!(tracker.subagents().is_empty());
+    }
+
+    /// Every fixture file under `claude-2.1.287/` (hooks, session logs, meta
+    /// files and the self-test stream, today's and later ones) must be free of
+    /// the recorder's identity, secrets and absolute paths outside the toy
+    /// folder, because the repository is public.
+    fn fixture_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                fixture_files(&path, out);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+
+    fn string_values(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::String(s) => out.push(s.clone()),
+            Value::Array(items) => items.iter().for_each(|v| string_values(v, out)),
+            Value::Object(map) => {
+                for (key, v) in map {
+                    out.push(key.clone());
+                    string_values(v, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The rule names a text breaks (empty when it is clean).
+    fn fixture_problems(text: &str) -> Vec<String> {
+        use regex::Regex;
+        let mut found = Vec::new();
+        if let Some((_, kind)) = crate::clickup::secret_scan::secret_hits(text).first() {
+            found.push(format!("secret_hits: {kind}"));
+        }
+        for bad in [
+            "jtfrancisco",
+            "-Users-",
+            "/Users/",
+            "/private/",
+            "claude-501",
+            ".claude-account",
+            "/home/",
+            "C:\\",
+        ] {
+            if text.contains(bad) {
+                found.push(format!("forbidden string {bad:?}"));
+            }
+        }
+        let email = Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap();
+        if let Some(m) = email.find(text) {
+            found.push(format!("email shape {:?}", m.as_str()));
+        }
+        // A `/`-path: at the start of a text or after a space, quote, bracket,
+        // `=` or `:` (so `</tag>` and `a/b` do not count).
+        let path = Regex::new(r#"(?:^|[\s"'(\[=:])(/[A-Za-z0-9._-][A-Za-z0-9._/-]*)"#).unwrap();
+        for cap in path.captures_iter(text) {
+            let p = &cap[1];
+            let ok = ["/work/toy", "/config", "/app/plugin"]
+                .iter()
+                .any(|root| p == *root || p.starts_with(&format!("{root}/")));
+            // The recorded self-test stream names this one scratch folder.
+            if !ok && p != "/tmp/scratch" {
+                found.push(format!(
+                    "absolute path {p:?} outside /work/toy, /config, /app/plugin"
+                ));
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn the_sanitizer_flags_identity_secrets_and_foreign_paths() {
+        assert!(fixture_problems("cwd /work/toy/src and /config/x and \"/app/plugin\"").is_empty());
+        for bad in [
+            "see /Users/me/x",
+            "dir -Users-me-proj",
+            "mail me@example.com",
+            "path /var/log/x",
+            "at /private/tmp/x",
+            "C:\\Users\\me",
+            "API_KEY=abcdefghijklmnopqrstuvwxyz0123456789",
+        ] {
+            assert!(!fixture_problems(bad).is_empty(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn no_claude_fixture_file_holds_an_identity_a_secret_or_a_foreign_path() {
+        let mut files = Vec::new();
+        fixture_files(&fixture_root(), &mut files);
+        assert!(files.len() >= 12, "fixtures found: {}", files.len());
+        let mut failures = Vec::new();
+        for file in files {
+            let name = file
+                .strip_prefix(fixture_root())
+                .unwrap()
+                .display()
+                .to_string();
+            let raw = std::fs::read_to_string(&file).unwrap();
+            let whole = serde_json::from_str::<Value>(&raw).ok();
+            // One JSON document, or one per line (jsonl); a line that is not
+            // JSON is checked as text.
+            let units: Vec<(usize, Vec<String>)> = match whole {
+                Some(v) => {
+                    let mut strings = Vec::new();
+                    string_values(&v, &mut strings);
+                    vec![(1, strings)]
+                }
+                None => raw
+                    .lines()
+                    .enumerate()
+                    .map(|(i, line)| {
+                        let mut strings = Vec::new();
+                        match serde_json::from_str::<Value>(line) {
+                            Ok(v) => string_values(&v, &mut strings),
+                            Err(_) => strings.push(line.to_string()),
+                        }
+                        (i + 1, strings)
+                    })
+                    .collect(),
+            };
+            for (line, strings) in units {
+                for text in strings {
+                    for rule in fixture_problems(&text) {
+                        failures.push(format!("{name}:{line}: {rule}"));
+                    }
+                }
+            }
+            for rule in fixture_problems(&raw.replace("\\n", " ")) {
+                if rule.starts_with("forbidden string") || rule.starts_with("email") {
+                    failures.push(format!("{name}: raw text: {rule}"));
+                }
+            }
+        }
+        failures.sort();
+        failures.dedup();
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
 }
