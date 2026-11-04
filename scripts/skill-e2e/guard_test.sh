@@ -561,6 +561,7 @@ for c in "git -C $R worktree remove $WT" "git -C $R worktree remove --force $WT"
 done
 b 0 "" "git -C $R worktree list && git -C $R branch --list 'dcv2/*' && git -C $WT branch --show-current"
 b 0 "" "bash $STATE cleanup $RUN"
+b 0 "" "bash $STATE base $R $RUN"                                            # an eval run asks for its source run's base (0.8.0)
 b 0 "" "bash $STATE request $RUN recheck && bash $STATE request-wait $RUN 20261027T100000Z-recheck"
 for who in dcv2:implementer dcv2:pr-reviewer dcv2:planner dcv2:plan-reviewer dcv2:risk-reviewer; do
   b 2 "$who" "bash $STATE cleanup $RUN"
