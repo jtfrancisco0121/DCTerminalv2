@@ -1,12 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { flightContent, flightSession } from "../flight/api";
 import { ORCHESTRATION } from "../flight/types";
-import type { AgentNode, ContentOut, Failure, FlightEvent, Phase, SessionView, TraceTarget } from "../flight/types";
+import type {
+  AgentNode,
+  ContentOut,
+  Failure,
+  FlightEvent,
+  Phase,
+  SessionView,
+  SnapshotInfo,
+  TraceTarget,
+} from "../flight/types";
 import {
   flightDerivedText,
   flightKindText,
   flightStatusText,
   flightStatusTone,
+  localTime,
   orchestrationStatusText,
   orchestrationText,
   orchestrationTone,
@@ -48,6 +58,25 @@ function prsOf(nodes: AgentNode[], out = new Map<string, string>()): Map<string,
 }
 
 /** "PR2": solid when the tie is exact; dashed "PR2 · heuristic" with a tooltip (hover and focus) when it was guessed. */
+/** The host's refusal for a gone transcript whose snapshot kept no content for the line. */
+const CONTENT_NOT_KEPT = "content not kept";
+
+/** Says the Events of a gone session came from the run's snapshot; the tooltip has its time and whether content was kept. */
+function SnapshotPill({ info }: { info: SnapshotInfo }) {
+  const when = localTime(info.createdAt);
+  const kept = info.contentKept ? "content kept" : "content not kept";
+  return (
+    <Pill
+      tone="muted"
+      className="pill-snapshot"
+      testId="trace-snapshot"
+      title={`Snapshot of ${when?.title ?? info.createdAt} (policy ${info.policy}, ${kept})`}
+    >
+      Snapshot
+    </Pill>
+  );
+}
+
 function PrPill({ pr, label }: { pr: string; label: string | undefined }) {
   if (label?.startsWith("exact:")) {
     return (
@@ -411,6 +440,7 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
         <h2>Trace</h2>
         <span className="trace-actions">
           {view && !off && <span className="hint">{view.trace}</span>}
+          {view?.snapshot && !off && <SnapshotPill info={view.snapshot} />}
           {onSearch && (
             <button type="button" className="secondary-button" onClick={onSearch}>
               Search
@@ -679,7 +709,13 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
               {content && (
                 <div className="trace-content" data-testid="trace-content">
                   {content.state === "loading" && <p className="hint">Reading the line…</p>}
-                  {content.state === "error" && <p className="error">{content.message}</p>}
+                  {content.state === "error" && (
+                    <p className="error">
+                      {content.message === CONTENT_NOT_KEPT
+                        ? `Content not kept (policy ${view?.snapshot?.policy ?? view?.policy ?? "metadata"})`
+                        : content.message}
+                    </p>
+                  )}
                   {content.state === "ready" && (
                     <>
                       {shown && <EventFields event={shown} phase={view?.phases?.[shown.id]} />}

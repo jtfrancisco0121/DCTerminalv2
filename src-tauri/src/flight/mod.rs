@@ -91,7 +91,7 @@ pub mod testkit {
             let target = to.join(target_name);
             if entry.path().is_dir() {
                 copy_tree(&entry.path(), &target, false, config);
-            } else if name == "meta.json" || name == "app-usage.json" {
+            } else if name.ends_with(".json") || name.ends_with(".jsonl") {
                 let text = std::fs::read_to_string(entry.path()).unwrap();
                 std::fs::write(target, text.replace("@CONFIG@", config)).unwrap();
             } else {
@@ -113,6 +113,24 @@ pub mod testkit {
             false,
             &config_text,
         );
+        (run, config)
+    }
+
+    /// The checked-in run of wave 2: finished, with a `flight/` snapshot and no transcript (the account folder
+    /// holds nothing). `fixtures/run/flight-wave2-snapshot/` is made by the ignored host test
+    /// `regenerate_the_wave2_snapshot_fixture` from the wave 1 run.
+    pub fn wave2_snapshot_fixture() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/run/flight-wave2-snapshot")
+    }
+
+    /// The wave 2 fixture copied into `dir`, with `@CONFIG@` replaced by the (empty) account folder `config`
+    /// next to it. Returns `(run folder, account folder)`.
+    pub fn wave2_snapshot_run(dir: &TempDir) -> (PathBuf, PathBuf) {
+        let config = dir.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        let run = dir.join("r-20261105-100000-fa17");
+        let config_text = config.display().to_string().replace('\\', "/");
+        copy_tree(&wave2_snapshot_fixture(), &run, false, &config_text);
         (run, config)
     }
 

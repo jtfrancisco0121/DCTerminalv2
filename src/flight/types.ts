@@ -193,6 +193,17 @@ export interface SessionView {
   notices: string[];
   /** Phase of each event of the page, by event id. */
   phases?: Record<string, Phase>;
+  /** Set when a session whose transcript is gone was read from the run's snapshot. */
+  snapshot?: SnapshotInfo | null;
+}
+
+/** The run snapshot a gone session was read from (snapshot.rs `Manifest`, host.rs `session_view`). */
+export interface SnapshotInfo {
+  createdAt: string;
+  /** The capture policy the snapshot was made under. */
+  policy: CapturePolicy;
+  /** The snapshot holds redacted content (`content.jsonl`). */
+  contentKept: boolean;
 }
 
 /** What `flight_content` returns: redacted text and how many lines were redacted. */

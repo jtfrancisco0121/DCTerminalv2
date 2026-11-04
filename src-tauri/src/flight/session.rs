@@ -127,6 +127,18 @@ pub struct SessionView {
     pub notices: Vec<String>,
     /// The phase (stage and PR state) of each event of the page, by event id.
     pub phases: BTreeMap<String, Phase>,
+    /// Set when a session's Events came from the run's snapshot (its transcript is gone).
+    pub snapshot: Option<SnapshotInfo>,
+}
+
+/// What the Trace shows about the snapshot it read a gone session from.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotInfo {
+    pub created_at: String,
+    pub policy: CapturePolicy,
+    /// The snapshot holds redacted content (`content.jsonl`).
+    pub content_kept: bool,
 }
 
 impl SessionView {
@@ -144,6 +156,7 @@ impl SessionView {
             },
             notices: Vec::new(),
             phases: BTreeMap::new(),
+            snapshot: None,
         }
     }
 }
@@ -329,6 +342,7 @@ pub fn view(
         },
         notices,
         phases,
+        snapshot: None,
     })
 }
 

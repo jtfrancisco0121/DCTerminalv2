@@ -376,9 +376,15 @@ fn rebuild(
         let gone = s.stamps.is_empty();
         if gone || reusable {
             let events = stored_session_events(conn, &run.run_id, &s.id)?;
-            if !events.is_empty() || gone {
-                if !events.is_empty() {
-                    parsed.push(Arc::new(Parsed::from_events(events)));
+            if !events.is_empty() {
+                parsed.push(Arc::new(Parsed::from_events(events)));
+                continue;
+            }
+            if gone {
+                // Nothing stored (a rebuilt flight.db): the loader may know the session from a snapshot.
+                let fallback = run.loader.session(i);
+                if !fallback.events.is_empty() {
+                    parsed.push(fallback);
                 }
                 continue;
             }

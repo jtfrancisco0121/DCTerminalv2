@@ -129,6 +129,36 @@ const open = async () => {
   await screen.findByRole("listbox", { name: "Events" });
 };
 
+describe("TracePanel snapshot", () => {
+  it("shows the Snapshot pill with its time and whether content was kept", async () => {
+    flightSession.mockResolvedValue(
+      sessionView({ snapshot: { createdAt: "2026-11-05T11:00:00Z", policy: "full", contentKept: true } }),
+    );
+    await open();
+    const pill = screen.getByTestId("trace-snapshot");
+    expect(pill.textContent).toBe("Snapshot");
+    expect(pill.getAttribute("title")).toContain("content kept");
+    expect(pill.getAttribute("title")).toContain("policy full");
+  });
+
+  it("has no pill for a live trace, and says 'Content not kept (policy metadata)' for a line the snapshot did not keep", async () => {
+    await open();
+    expect(screen.queryByTestId("trace-snapshot")).toBeNull();
+    cleanup();
+    flightSession.mockResolvedValue(
+      sessionView({ snapshot: { createdAt: "2026-11-05T11:00:00Z", policy: "metadata", contentKept: false } }),
+    );
+    flightContent.mockRejectedValue("content not kept");
+    await open();
+    expect(screen.getByTestId("trace-snapshot").getAttribute("title")).toContain("content not kept");
+    const listbox = screen.getByRole("listbox", { name: "Events" });
+    fireEvent.keyDown(listbox, { key: "]" });
+    await waitFor(() => expect(listbox.getAttribute("aria-activedescendant")).toBe("trace-row-e5"));
+    fireEvent.keyDown(listbox, { key: "Enter" });
+    expect(await screen.findByText("Content not kept (policy metadata)")).toBeTruthy();
+  });
+});
+
 describe("TracePanel", () => {
   it("shows six placeholder rows while the first page loads", async () => {
     flightSession.mockReturnValue(new Promise(() => {}));
