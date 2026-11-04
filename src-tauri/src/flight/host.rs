@@ -1436,6 +1436,19 @@ fn indexed_events(
         .map_err(|e| format!("index: {e}"))
 }
 
+/// A read-only connection to `flight.db`, only when it exists with the schema this build reads (an older one is
+/// rebuilt by the index thread, and until then nothing is indexed).
+fn index_reader(data: &Path) -> Option<rusqlite::Connection> {
+    let db = data.join(INDEX_FILE);
+    if !db.is_file() {
+        return None;
+    }
+    index::open_reader(&db).ok().filter(|c| {
+        c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .is_ok_and(|v| v == index::SCHEMA_VERSION)
+    })
+}
+
 /// `flight_compare`: two run folders, each already through `checked_run_dir`. Reads the trace index through a
 /// read-only connection and each run's record; it never writes `flight.db` and never indexes on demand. The
 /// same folder twice is refused.
@@ -1449,15 +1462,7 @@ pub fn compare_runs(
     if ident(a) == ident(b) {
         return Err("Pick two different runs.".into());
     }
-    let db = data.join(INDEX_FILE);
-    let conn = if db.is_file() {
-        index::open_reader(&db).ok().filter(|c| {
-            c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
-                .is_ok_and(|v| v == index::SCHEMA_VERSION)
-        })
-    } else {
-        None
-    };
+    let conn = index_reader(data);
     let mut sides = Vec::new();
     for dir in [a, b] {
         let run_id = dir
@@ -1548,6 +1553,263 @@ pub fn compare_runs(
         rows: rows.rows,
         divergence: rows.divergence,
         progress,
+    })
+}
+
+// ---- eval results (CAP-15, AD-48) ------------------------------------------------------
+
+/// min / median / max of one measure over the finished runs that have it; all `None` when none has.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Dist {
+    pub min: Option<f64>,
+    pub median: Option<f64>,
+    pub max: Option<f64>,
+    /// How many runs the figures are over.
+    pub of: usize,
+}
+
+impl Dist {
+    pub fn of_values(mut values: Vec<f64>) -> Self {
+        values.retain(|v| v.is_finite());
+        if values.is_empty() {
+            return Dist::default();
+        }
+        values.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        let mid = values.len() / 2;
+        let median = if values.len() % 2 == 1 {
+            values[mid]
+        } else {
+            (values[mid - 1] + values[mid]) / 2.0
+        };
+        Dist {
+            min: values.first().copied(),
+            median: Some(median),
+            max: values.last().copied(),
+            of: values.len(),
+        }
+    }
+}
+
+/// One run of an eval group.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalRunResult {
+    pub index: u32,
+    pub label: String,
+    pub run_id: Option<String>,
+    pub run_dir: Option<String>,
+    /// `finished` (eval-done), `failed`, `running` or `queued`.
+    pub status: String,
+    /// `eval-done` and every PR `reviewed` with a recorded check of `pass` or `none`; null for a run still going.
+    pub completed: Option<bool>,
+    /// PRs whose app check passed over PRs with an app check; null when the run has none ("not checked").
+    pub check_pass_rate: Option<f64>,
+    /// `checked`, `checking` or `not checked`.
+    pub check_state: String,
+    pub retries: Option<u32>,
+    pub tool_failures: Option<u32>,
+    pub tokens: Option<u64>,
+    pub active_minutes: Option<f64>,
+    /// Branches left after the worktrees were removed, with their unmerged commit count.
+    pub kept_branches: Vec<crate::run::janitor::KeptBranch>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalDistributions {
+    /// 1 for a completed run, 0 for one that is not.
+    pub completed: Dist,
+    pub check_pass_rate: Dist,
+    pub retries: Dist,
+    pub tool_failures: Dist,
+    pub tokens: Dist,
+    pub active_minutes: Dist,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalResults {
+    pub group: String,
+    pub source: String,
+    pub n: u32,
+    pub runs: Vec<EvalRunResult>,
+    pub distributions: EvalDistributions,
+    pub finished: usize,
+    pub running: usize,
+    pub failed: usize,
+}
+
+/// Retries and tool Failures of one indexed run, or `None` when the run is not in the index (or its account is
+/// `off`).
+fn indexed_counts(conn: &rusqlite::Connection, run_id: &str) -> Option<(u32, u32)> {
+    conn.query_row(
+        "SELECT 1 FROM runs WHERE run_id = ?1 AND excluded_off = 0",
+        [run_id],
+        |_| Ok(()),
+    )
+    .ok()?;
+    let count = |sql: &str| {
+        conn.query_row(sql, [run_id], |r| r.get::<_, i64>(0))
+            .ok()
+            .map(|n| n as u32)
+    };
+    Some((
+        count("SELECT COUNT(*) FROM events WHERE run_id = ?1 AND kind = 'retry'")?,
+        count(
+            "SELECT COUNT(*) FROM events WHERE run_id = ?1 AND failure IS NOT NULL
+               AND kind IN ('tool.end', 'tool.blocked')",
+        )?,
+    ))
+}
+
+/// `completed` by record-formats.md: `eval-done`, and every PR `reviewed` with a recorded check of `pass` or
+/// `none` (the skill's own result in status.json, so it never depends on an app check).
+fn eval_completed(run_dir: &Path, outcome: Option<&str>) -> bool {
+    if outcome != Some("eval-done") {
+        return false;
+    }
+    let Some(status) = crate::run::folder::read_json_value(&run_dir.join("status.json")) else {
+        return false;
+    };
+    let prs = status["prs"].as_array().cloned().unwrap_or_default();
+    !prs.is_empty()
+        && prs.iter().all(|pr| {
+            pr["state"].as_str() == Some("reviewed")
+                && matches!(pr["check"]["result"].as_str(), Some("pass" | "none"))
+        })
+}
+
+/// PRs whose app check passed over PRs whose app check ran; `None` with no app-checks.json or no real result.
+fn app_check_rate(run_dir: &Path) -> Option<f64> {
+    if !run_dir.join("app-checks.json").is_file() {
+        return None;
+    }
+    let results: Vec<String> = crate::run::status::read_app_checks(run_dir)
+        .into_values()
+        .map(|c| c.result)
+        .filter(|r| matches!(r.as_str(), "pass" | "fail" | "timeout" | "error"))
+        .collect();
+    if results.is_empty() {
+        return None;
+    }
+    Some(results.iter().filter(|r| r.as_str() == "pass").count() as f64 / results.len() as f64)
+}
+
+/// `flight_eval_results`: the runs of one eval group with their measures and the min / median / max over the
+/// finished ones, read-only. A measure that is not known is `None`, never 0. `checking` says whether an app
+/// check is running for a run folder now.
+pub fn eval_results(
+    data: &Path,
+    group: &str,
+    checking: &dyn Fn(&Path) -> bool,
+) -> Result<EvalResults, String> {
+    let batch = crate::run::dispatch::load(data)
+        .batches
+        .into_iter()
+        .find(|b| b.id == group && crate::run::dispatch::is_eval_batch(b))
+        .ok_or("No such eval group.")?;
+    let conn = index_reader(data);
+    let mut runs = Vec::new();
+    for (i, member) in batch.runs.iter().filter(|r| !r.removed).enumerate() {
+        let index = i as u32 + 1;
+        let dir = member
+            .run_dir
+            .as_deref()
+            .and_then(|d| crate::run::checked_run_dir(data, d).ok());
+        let Some(dir) = dir else {
+            runs.push(EvalRunResult {
+                index,
+                label: member.label.clone(),
+                run_id: None,
+                run_dir: None,
+                status: "queued".into(),
+                completed: None,
+                check_pass_rate: None,
+                check_state: "not checked".into(),
+                retries: None,
+                tool_failures: None,
+                tokens: None,
+                active_minutes: None,
+                kept_branches: Vec::new(),
+            });
+            continue;
+        };
+        let run_id = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let stage = crate::run::folder::read_json_value(&dir.join("status.json"))
+            .and_then(|v| v["stage"].as_str().map(str::to_string));
+        let record = crate::run::record::read_record(&dir);
+        let outcome = record.as_ref().and_then(|r| r.outcome.clone());
+        let eval = crate::run::folder::eval_of(&dir);
+        let status = if crate::run::folder::finished_eval(eval.as_ref(), stage.as_deref()) {
+            "finished"
+        } else if stage.as_deref() == Some("failed") {
+            "failed"
+        } else {
+            "running"
+        };
+        let ended = status != "running";
+        let counts = if ended {
+            conn.as_ref().and_then(|c| indexed_counts(c, &run_id))
+        } else {
+            None
+        };
+        let check_state = if checking(&dir) {
+            "checking"
+        } else if dir.join("app-checks.json").is_file() {
+            "checked"
+        } else {
+            "not checked"
+        };
+        runs.push(EvalRunResult {
+            index,
+            label: member.label.clone(),
+            run_id: Some(run_id),
+            run_dir: Some(dir.display().to_string()),
+            status: status.into(),
+            completed: ended.then(|| eval_completed(&dir, outcome.as_deref())),
+            check_pass_rate: if ended { app_check_rate(&dir) } else { None },
+            check_state: check_state.into(),
+            retries: counts.map(|c| c.0),
+            tool_failures: counts.map(|c| c.1),
+            tokens: record
+                .as_ref()
+                .filter(|_| ended)
+                .map(|r| r.tokens.input + r.tokens.output),
+            active_minutes: record
+                .as_ref()
+                .filter(|_| ended)
+                .map(|r| r.active_minutes_by_stage.values().sum()),
+            kept_branches: crate::run::janitor::kept_branches(&dir),
+        });
+    }
+    let finished: Vec<&EvalRunResult> = runs.iter().filter(|r| r.status == "finished").collect();
+    let over = |f: &dyn Fn(&EvalRunResult) -> Option<f64>| {
+        Dist::of_values(finished.iter().filter_map(|r| f(r)).collect())
+    };
+    let distributions = EvalDistributions {
+        completed: over(&|r| r.completed.map(|c| if c { 1.0 } else { 0.0 })),
+        check_pass_rate: over(&|r| r.check_pass_rate),
+        retries: over(&|r| r.retries.map(f64::from)),
+        tool_failures: over(&|r| r.tool_failures.map(f64::from)),
+        tokens: over(&|r| r.tokens.map(|t| t as f64)),
+        active_minutes: over(&|r| r.active_minutes),
+    };
+    Ok(EvalResults {
+        group: batch.id.clone(),
+        source: batch.source.clone().unwrap_or_default(),
+        n: batch.n.unwrap_or(runs.len() as u32),
+        distributions,
+        finished: finished.len(),
+        running: runs
+            .iter()
+            .filter(|r| matches!(r.status.as_str(), "running" | "queued"))
+            .count(),
+        failed: runs.iter().filter(|r| r.status == "failed").count(),
+        runs,
     })
 }
 
@@ -4272,6 +4534,173 @@ mod tests {
         assert!(
             !empty.join(INDEX_FILE).exists(),
             "compare never indexes on demand"
+        );
+    }
+
+    // ---- eval results ----
+
+    /// A run folder made into an eval run of group `b-eval` at stage `stage`, with the record outcome `outcome`.
+    fn make_eval(run: &Path, stage: &str, outcome: Option<&str>, reviewed: bool) {
+        let read = |name: &str| -> Value {
+            serde_json::from_str(&std::fs::read_to_string(run.join(name)).unwrap_or("{}".into()))
+                .unwrap_or(json!({}))
+        };
+        let mut meta = read("meta.json");
+        meta["eval"] = json!({"group": "b-eval", "index": 1, "of": 4, "source": "r-0"});
+        std::fs::write(run.join("meta.json"), meta.to_string()).unwrap();
+        let mut status = read("status.json");
+        status["stage"] = json!(stage);
+        status["waitingFor"] = Value::Null;
+        if reviewed {
+            status["prs"][0]["state"] = json!("reviewed");
+        }
+        std::fs::write(run.join("status.json"), status.to_string()).unwrap();
+        let mut usage = read("app-usage.json");
+        usage["outcome"] = json!(outcome);
+        std::fs::write(run.join("app-usage.json"), usage.to_string()).unwrap();
+    }
+
+    #[test]
+    fn eval_results_give_distributions_over_the_finished_runs_only() {
+        let dir = TempDir::new("flight_eval_results");
+        let (pass, fail, claude) = compare_setup(&dir);
+        // A: finished and completed, with an app check that failed. B: finished, not completed, never checked.
+        make_eval(&pass, "ship-approval", Some("eval-done"), true);
+        make_eval(&fail, "ship-approval", Some("eval-done"), false);
+        std::fs::remove_file(fail.join("app-checks.json")).unwrap();
+        // C is still running, D failed.
+        let running = dir.join("r-20261105-100000-c");
+        let failed = dir.join("r-20261105-100000-d");
+        for (run, stage) in [(&running, "building"), (&failed, "failed")] {
+            std::fs::create_dir_all(run).unwrap();
+            std::fs::write(
+                run.join("status.json"),
+                json!({"schema": 1, "stage": stage, "prs": []}).to_string(),
+            )
+            .unwrap();
+            make_eval(run, stage, None, false);
+        }
+        // Index A and B after the edits (the index holds their Retries and Failures).
+        let mut conn = index::open_writer(&dir.join(INDEX_FILE)).unwrap();
+        index_pass(
+            &mut conn,
+            &claude,
+            &[pass.clone(), fail.clone()],
+            &Limits::default(),
+        )
+        .unwrap();
+        let dirs: Vec<PathBuf> = [&pass, &fail, &running, &failed]
+            .iter()
+            .map(|p| p.canonicalize().unwrap())
+            .collect();
+        crate::run::folder::adopt_runs(dir.path(), &dirs).unwrap();
+        crate::run::dispatch::with(dir.path(), |d| {
+            d.batches.push(crate::run::dispatch::Batch {
+                id: "b-eval".into(),
+                created_at: "t".into(),
+                runs: dirs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| crate::run::dispatch::BatchRun {
+                        entry_id: format!("q-{i}"),
+                        ticket_ids: vec![],
+                        label: format!("Eval run {} of 4", i + 1),
+                        run_dir: Some(p.display().to_string()),
+                        removed: false,
+                    })
+                    .collect(),
+                notified: vec![],
+                kind: Some("eval".into()),
+                source: Some("r-0".into()),
+                n: Some(4),
+                extra: Default::default(),
+            })
+        })
+        .unwrap();
+
+        let checking = |p: &Path| p.ends_with("r-20261105-100000-fail");
+        let out = eval_results(dir.path(), "b-eval", &checking).unwrap();
+        assert_eq!((out.finished, out.running, out.failed, out.n), (2, 1, 1, 4));
+        let by = |i: usize| &out.runs[i];
+        assert_eq!(by(0).status, "finished");
+        assert_eq!(
+            by(0).completed,
+            Some(true),
+            "eval-done, reviewed, recorded check pass"
+        );
+        assert_eq!(by(1).completed, Some(false), "a PR still fixing");
+        assert_eq!(by(2).status, "running");
+        assert_eq!(by(2).completed, None);
+        assert_eq!(by(3).status, "failed");
+        assert_eq!(
+            by(3).completed,
+            Some(false),
+            "a failed run counts as not completed"
+        );
+        // The check pass rate comes from app-checks.json only; none reads null, never 0.
+        assert_eq!(by(0).check_pass_rate, Some(0.0));
+        assert_eq!(by(0).check_state, "checked");
+        assert_eq!(by(1).check_pass_rate, None);
+        assert_eq!(
+            by(1).check_state,
+            "checking",
+            "the slot is held for this run"
+        );
+        // Measures of a run still going are null.
+        assert_eq!(
+            (by(2).tokens, by(2).retries, by(2).active_minutes),
+            (None, None, None)
+        );
+        // Retries and tool Failures come from the index; tokens and minutes from the record.
+        assert_eq!((by(0).retries, by(0).tool_failures), (Some(2), Some(0)));
+        assert_eq!((by(1).retries, by(1).tool_failures), (Some(2), Some(1)));
+        assert_eq!(by(0).tokens, Some(1540));
+        assert_eq!(by(0).active_minutes, Some(50.0));
+        // The distributions cover the two finished runs.
+        let d = &out.distributions;
+        assert_eq!(
+            (
+                d.completed.min,
+                d.completed.median,
+                d.completed.max,
+                d.completed.of
+            ),
+            (Some(0.0), Some(0.5), Some(1.0), 2)
+        );
+        assert_eq!(
+            (
+                d.tool_failures.min,
+                d.tool_failures.median,
+                d.tool_failures.max
+            ),
+            (Some(0.0), Some(0.5), Some(1.0))
+        );
+        assert_eq!(
+            (d.retries.min, d.retries.max, d.retries.of),
+            (Some(2.0), Some(2.0), 2)
+        );
+        assert_eq!(
+            d.check_pass_rate,
+            Dist {
+                min: Some(0.0),
+                median: Some(0.0),
+                max: Some(0.0),
+                of: 1
+            },
+            "over the one run that has it"
+        );
+        assert_eq!(d.tokens.median, Some(1540.0));
+        assert!(eval_results(dir.path(), "b-nope", &checking).is_err());
+    }
+
+    #[test]
+    fn a_distribution_of_nothing_is_empty_not_zero() {
+        assert_eq!(Dist::of_values(vec![]), Dist::default());
+        assert_eq!(Dist::of_values(vec![f64::NAN]), Dist::default());
+        let d = Dist::of_values(vec![3.0, 1.0, 2.0, 10.0]);
+        assert_eq!(
+            (d.min, d.median, d.max, d.of),
+            (Some(1.0), Some(2.5), Some(10.0), 4)
         );
     }
 }

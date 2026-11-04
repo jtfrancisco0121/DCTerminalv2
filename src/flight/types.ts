@@ -301,3 +301,61 @@ export interface CompareOut {
   progress: { current: number; total: number };
 }
 
+
+/** min / median / max of one measure over the finished runs that have it (host.rs `Dist`). */
+export interface Dist {
+  min: number | null;
+  median: number | null;
+  max: number | null;
+  /** How many runs the figures are over. */
+  of: number;
+}
+
+/** A branch a finished eval run left behind (janitor.rs `KeptBranch`). */
+export interface KeptBranch {
+  prId: string;
+  branch: string;
+  repoPath: string;
+  /** Commits past the run's base commit; null when they could not be counted. */
+  unmergedCommits: number | null;
+}
+
+/** One run of an eval group (host.rs `EvalRunResult`). A measure that is not known is null, never 0. */
+export interface EvalRunResult {
+  index: number;
+  label: string;
+  runId: string | null;
+  runDir: string | null;
+  /** `finished` (eval-done), `failed`, `running` or `queued`. */
+  status: "finished" | "failed" | "running" | "queued" | string;
+  completed: boolean | null;
+  checkPassRate: number | null;
+  /** `checked`, `checking` or `not checked`. */
+  checkState: "checked" | "checking" | "not checked" | string;
+  retries: number | null;
+  toolFailures: number | null;
+  tokens: number | null;
+  activeMinutes: number | null;
+  keptBranches: KeptBranch[];
+}
+
+export interface EvalDistributions {
+  completed: Dist;
+  checkPassRate: Dist;
+  retries: Dist;
+  toolFailures: Dist;
+  tokens: Dist;
+  activeMinutes: Dist;
+}
+
+/** What `flight_eval_results` returns. */
+export interface EvalResults {
+  group: string;
+  source: string;
+  n: number;
+  runs: EvalRunResult[];
+  distributions: EvalDistributions;
+  finished: number;
+  running: number;
+  failed: number;
+}

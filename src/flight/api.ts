@@ -1,6 +1,15 @@
 /** The only invoke wrappers of the Session Inspector. */
 import { invoke } from "@tauri-apps/api/core";
-import type { CompareOut, ContentOut, SearchFilter, SearchOut, SessionView, SourceRef, TraceTarget } from "./types";
+import type {
+  CompareOut,
+  ContentOut,
+  EvalResults,
+  SearchFilter,
+  SearchOut,
+  SessionView,
+  SourceRef,
+  TraceTarget,
+} from "./types";
 
 /** `focus`: an event id; with no cursor the first page is the one holding it. */
 export type SessionRequest = TraceTarget & { agent?: string; cursor?: string; pageSize?: number; focus?: string };
@@ -15,3 +24,6 @@ export const flightSearch = (filter: SearchFilter) => invoke<SearchOut>("flight_
 
 /** Two runs side by side: the rows in a fixed order and the first difference. Read-only; never indexes. */
 export const flightCompare = (a: string, b: string) => invoke<CompareOut>("flight_compare", { request: { a, b } });
+
+/** The runs of one eval group with their measures and min / median / max over the finished ones (read-only). */
+export const flightEvalResults = (group: string) => invoke<EvalResults>("flight_eval_results", { group });

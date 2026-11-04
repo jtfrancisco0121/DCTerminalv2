@@ -160,3 +160,18 @@ pub async fn flight_compare(
     .await
     .map_err(|e| e.to_string())?
 }
+
+/// The runs of one eval group with their measures and the min / median / max over the finished ones. Read-only,
+/// on a worker thread, outside the store locks.
+#[tauri::command]
+pub async fn flight_eval_results(
+    app: AppHandle,
+    group: String,
+) -> Result<host::EvalResults, String> {
+    let data = crate::data_dir::app_data_dir(&app).path;
+    tauri::async_runtime::spawn_blocking(move || {
+        host::eval_results(&data, &group, &crate::run::checks_running)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

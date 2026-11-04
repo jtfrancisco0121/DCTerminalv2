@@ -750,6 +750,14 @@ pub async fn read_run(app: AppHandle, run_dir: String) -> Result<status::RunView
 
 static CHECKS_RUNNING: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 
+/// Whether R1 is running for this run folder right now (a check, or a cleanup holding the slot).
+pub fn checks_running(dir: &Path) -> bool {
+    CHECKS_RUNNING
+        .lock()
+        .map(|set| set.as_ref().is_some_and(|set| set.contains(dir)))
+        .unwrap_or(false)
+}
+
 /// Takes the run's R1 slot (an atomic test-and-set), or says the checks are already running.
 fn take_checks_slot(dir: &Path) -> Result<(), String> {
     let mut running = CHECKS_RUNNING.lock().map_err(|e| e.to_string())?;

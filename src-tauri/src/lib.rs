@@ -260,6 +260,7 @@ pub fn run() {
             commands::flight::flight_session,
             commands::flight::flight_search,
             commands::flight::flight_compare,
+            commands::flight::flight_eval_results,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

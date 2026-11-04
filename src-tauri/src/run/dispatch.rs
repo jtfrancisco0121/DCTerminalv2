@@ -498,6 +498,7 @@ pub fn on_tick(app: &AppHandle, tab_run_dirs: &HashSet<String>) {
     }
     super::epics::auto_start(app);
     let state = load(&data);
+    eval_check_tick(app, &state);
     if state.queue.is_empty() {
         return;
     }
@@ -700,6 +701,122 @@ pub fn finish(state: &mut Dispatch, id: &str, outcome: Result<Option<String>, St
                 e.reason = Some(why);
             }
         }
+    }
+}
+
+// ---- the app check of finished eval runs (AD-48) ---------------------------------------------
+
+/// What the selector needs to know of one run of an eval batch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvalCheckFacts {
+    pub run_dir: String,
+    /// `finished_eval`: an eval run that ended at `ship-approval`.
+    pub finished_eval: bool,
+    pub has_app_checks: bool,
+    /// At least one of its worktrees still exists.
+    pub has_worktree: bool,
+}
+
+/// The one finished eval run to give an app check (R1) next, or `None`: it belongs to an eval batch, is a
+/// finished eval run, has no app-checks.json, still has a worktree, and was not tried in this app session. At
+/// most one; a normal batch's runs are never picked.
+pub fn eval_run_to_check(
+    batches: &[Batch],
+    facts: &[EvalCheckFacts],
+    tried: &HashSet<String>,
+) -> Option<String> {
+    batches
+        .iter()
+        .filter(|b| is_eval_batch(b))
+        .flat_map(|b| b.runs.iter().filter(|r| !r.removed))
+        .filter_map(|r| r.run_dir.as_deref())
+        .find(|dir| {
+            !tried.contains(*dir)
+                && facts.iter().any(|f| {
+                    f.run_dir == *dir && f.finished_eval && !f.has_app_checks && f.has_worktree
+                })
+        })
+        .map(str::to_string)
+}
+
+/// The facts of every started run of the eval batches, read cheaply (files only, no git).
+pub fn eval_check_facts(batches: &[Batch]) -> Vec<EvalCheckFacts> {
+    batches
+        .iter()
+        .filter(|b| is_eval_batch(b))
+        .flat_map(|b| b.runs.iter().filter(|r| !r.removed))
+        .filter_map(|r| r.run_dir.as_deref())
+        .map(|dir| {
+            let path = Path::new(dir);
+            let status = super::folder::read_json_value(&path.join("status.json"));
+            let stage = status
+                .as_ref()
+                .and_then(|v| v["stage"].as_str().map(String::from));
+            let has_worktree = status
+                .as_ref()
+                .and_then(|v| v["prs"].as_array())
+                .is_some_and(|prs| {
+                    prs.iter()
+                        .filter_map(|pr| pr["worktree"].as_str())
+                        .any(|wt| !wt.is_empty() && Path::new(wt).is_dir())
+                });
+            EvalCheckFacts {
+                run_dir: dir.to_string(),
+                finished_eval: super::folder::finished_eval(
+                    super::folder::eval_of(path).as_ref(),
+                    stage.as_deref(),
+                ),
+                has_app_checks: path.join("app-checks.json").is_file(),
+                has_worktree,
+            }
+        })
+        .collect()
+}
+
+/// One eval check at a time, app-wide.
+static EVAL_CHECK_RUNNING: AtomicBool = AtomicBool::new(false);
+/// Runs given a check in this app session: a failed check is not retried, and neither is a run whose slot a
+/// cleanup holds.
+static EVAL_CHECK_TRIED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+/// Gives the next finished eval run its app check (R1: the repo's own check commands in its worktrees, no Claude
+/// usage), on a thread of its own, never on the tick, and never twice in a session for the same run.
+fn eval_check_tick(app: &AppHandle, state: &Dispatch) {
+    if state.batches.is_empty() || EVAL_CHECK_RUNNING.load(Ordering::SeqCst) {
+        return;
+    }
+    let facts = eval_check_facts(&state.batches);
+    let Some(dir) = ({
+        let Ok(mut tried) = EVAL_CHECK_TRIED.lock() else {
+            return;
+        };
+        let tried = tried.get_or_insert_with(HashSet::new);
+        let picked = eval_run_to_check(&state.batches, &facts, tried);
+        if let Some(dir) = &picked {
+            tried.insert(dir.clone());
+        }
+        picked
+    }) else {
+        return;
+    };
+    if EVAL_CHECK_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    let data = data_dir(app);
+    let spawned = std::thread::Builder::new()
+        .name("dcv2-eval-check".into())
+        .spawn(move || {
+            // The same checked folder the R1 slot is keyed by; a refusal (a cleanup holds it) is not retried.
+            if let Ok(run_dir) = super::checked_run_dir(&data, &dir) {
+                let _ = super::rerun_checks_once(&run_dir);
+            }
+            EVAL_CHECK_RUNNING.store(false, Ordering::SeqCst);
+        });
+    if spawned.is_err() {
+        EVAL_CHECK_RUNNING.store(false, Ordering::SeqCst);
     }
 }
 
@@ -2263,6 +2380,67 @@ mod tests {
         let eval = view.eval.as_ref().expect("an eval group");
         assert_eq!((eval.n, eval.source.as_str(), eval.finished), (2, "r-0", 0));
         assert_eq!(view.waiting_for_you, 0);
+    }
+
+    fn member(dir: &str) -> BatchRun {
+        BatchRun {
+            entry_id: format!("q-{dir}"),
+            ticket_ids: vec![],
+            label: dir.into(),
+            run_dir: Some(format!("/runs/{dir}")),
+            removed: false,
+        }
+    }
+
+    fn fact(dir: &str, finished: bool, checks: bool, worktree: bool) -> EvalCheckFacts {
+        EvalCheckFacts {
+            run_dir: format!("/runs/{dir}"),
+            finished_eval: finished,
+            has_app_checks: checks,
+            has_worktree: worktree,
+        }
+    }
+
+    #[test]
+    fn the_eval_check_selector_picks_one_finished_unchecked_run_with_a_worktree_not_tried_yet() {
+        let (mut eval, _) = plan_batch(&params("x"), &[group("t1")], "a", "b-eval");
+        eval.kind = Some("eval".into());
+        eval.runs = vec![
+            member("e1"),
+            member("e2"),
+            member("e3"),
+            member("e4"),
+            member("e5"),
+        ];
+        eval.runs[4].removed = true;
+        let (normal, _) = plan_batch(&params("x"), &[group("t2")], "a", "b-normal");
+        let mut normal = normal;
+        normal.runs = vec![member("n1")];
+        let batches = vec![normal, eval];
+        let facts = vec![
+            fact("n1", true, false, true),  // a normal batch's run: never
+            fact("e1", true, true, true),   // already has app-checks.json
+            fact("e2", false, false, true), // not finished
+            fact("e3", true, false, false), // no worktree left
+            fact("e4", true, false, true),  // the one
+            fact("e5", true, false, true),  // removed from the batch
+        ];
+        let mut tried = HashSet::new();
+        assert_eq!(
+            eval_run_to_check(&batches, &facts, &tried).as_deref(),
+            Some("/runs/e4")
+        );
+        // Tried in this app session: not again, and nothing else qualifies.
+        tried.insert("/runs/e4".to_string());
+        assert_eq!(eval_run_to_check(&batches, &facts, &tried), None);
+        // At most one at a time: two candidates give the first only.
+        let two = vec![fact("e4", true, false, true), fact("e2", true, false, true)];
+        assert_eq!(
+            eval_run_to_check(&batches, &two, &HashSet::new()).as_deref(),
+            Some("/runs/e2"),
+            "the batch's run order decides: e2 comes before e4"
+        );
+        assert!(eval_run_to_check(&[], &facts, &HashSet::new()).is_none());
     }
 
     #[test]
