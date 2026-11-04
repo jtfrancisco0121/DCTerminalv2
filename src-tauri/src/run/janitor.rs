@@ -388,6 +388,116 @@ pub fn remove_clean(run_dir: &Path, pr_ids: &[String]) -> Vec<RemoveResult> {
         .collect()
 }
 
+/// A branch a finished eval run left behind after its worktree was removed: `git branch -d` keeps it
+/// because its Implementer commits are not merged anywhere. Listed in the eval results with a delete the
+/// user confirms (`eval_delete_branch`).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KeptBranch {
+    pub pr_id: String,
+    pub branch: String,
+    pub repo_path: String,
+    /// Commits on the branch past the run's base commit (`git rev-list --count <baseCommit>..<branch>`);
+    /// `None` when it could not be counted.
+    pub unmerged_commits: Option<u32>,
+}
+
+/// The repo a status.json `repoPath` names, only when it is a git repo top that is one of the run's repos
+/// (listed in repos.json, or inside the start folder): the file is written by an LLM-driven skill.
+fn verified_repo(run_dir: &Path, repo: &str) -> Option<PathBuf> {
+    let repo = canonical(Path::new(repo));
+    if !super::git::is_repo_top(&repo) {
+        return None;
+    }
+    let listed = read_json_value(&run_dir.join("repos.json"))
+        .and_then(|v| v.get("repos").and_then(|r| r.as_array().cloned()))
+        .is_some_and(|repos| {
+            repos.iter().any(|r| {
+                r.get("path")
+                    .and_then(|p| p.as_str())
+                    .is_some_and(|p| canonical(Path::new(p)) == repo)
+            })
+        });
+    let inside = super::folder::run_folder_of(run_dir)
+        .map(|f| canonical(Path::new(&f)))
+        .is_some_and(|folder| repo.starts_with(folder));
+    (listed || inside).then_some(repo)
+}
+
+/// Whether some worktree of `repo` has `branch` checked out.
+fn branch_has_worktree(repo: &Path, branch: &str) -> bool {
+    let want = format!("branch refs/heads/{branch}");
+    git(repo, &["worktree", "list", "--porcelain"])
+        .map(|out| out.lines().any(|line| line == want))
+        .unwrap_or(true) // when in doubt, a worktree is on it
+}
+
+/// Each PR's `expected_branch` that exists in its verified repo with no worktree on it.
+pub fn kept_branches(run_dir: &Path) -> Vec<KeptBranch> {
+    let run_id = run_id_of(run_dir);
+    let Some(status) = read_json_value(&run_dir.join("status.json")) else {
+        return Vec::new();
+    };
+    let prs = status
+        .get("prs")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for pr in &prs {
+        let Some(id) = pr.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(repo) = pr
+            .get("repoPath")
+            .and_then(|v| v.as_str())
+            .and_then(|p| verified_repo(run_dir, p))
+        else {
+            continue;
+        };
+        if !super::status::valid_pr_id(id) || out.iter().any(|b: &KeptBranch| b.pr_id == id) {
+            continue;
+        }
+        let branch = expected_branch(&run_id, id);
+        let exists = git(
+            &repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
+        )
+        .is_ok();
+        if !exists || branch_has_worktree(&repo, &branch) {
+            continue;
+        }
+        let base = pr
+            .get("baseCommit")
+            .and_then(|v| v.as_str())
+            .filter(|c| !c.is_empty() && c.chars().all(|ch| ch.is_ascii_hexdigit()));
+        let unmerged_commits = base.and_then(|base| {
+            git(
+                &repo,
+                &[
+                    "rev-list",
+                    "--count",
+                    &format!("{base}..refs/heads/{branch}"),
+                ],
+            )
+            .ok()
+            .and_then(|n| n.parse().ok())
+        });
+        out.push(KeptBranch {
+            pr_id: id.to_string(),
+            branch,
+            repo_path: repo.display().to_string(),
+            unmerged_commits,
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,5 +723,34 @@ mod tests {
         run(&work, &["add", "."]);
         run(&work, &["commit", "-q", "-m", "init"]);
         own_worktree_ok(&work);
+    }
+
+    #[test]
+    fn kept_branches_lists_the_expected_branch_with_its_unmerged_commit_count() {
+        use crate::run::git::testing::eval_run;
+        let dir = TempDir::new("janitor_kept");
+        let ev = eval_run(dir.path(), "ship-approval", true);
+        assert!(
+            kept_branches(&ev.run_dir).is_empty(),
+            "a worktree is on the branch"
+        );
+        let results = remove_clean(&ev.run_dir, &["PR1".to_string()]);
+        assert!(results[0].removed && !results[0].branch_deleted);
+        let kept = kept_branches(&ev.run_dir);
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(kept[0].branch, ev.branch);
+        assert_eq!(kept[0].unmerged_commits, Some(1));
+        assert_eq!(kept[0].repo_path, canonical(&ev.repo).display().to_string());
+
+        // A repo the run does not own is never listed.
+        let status = std::fs::read_to_string(ev.run_dir.join("status.json")).unwrap();
+        let foreign = dir.join("elsewhere");
+        repo_at(&foreign);
+        let moved = status.replace(
+            &ev.repo.display().to_string(),
+            &foreign.display().to_string(),
+        );
+        std::fs::write(ev.run_dir.join("status.json"), moved).unwrap();
+        assert!(kept_branches(&ev.run_dir).is_empty());
     }
 }

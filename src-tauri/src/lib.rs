@@ -211,6 +211,8 @@ pub fn run() {
             run::dispatch::dispatch_enqueue,
             run::dispatch::dispatch_runs,
             run::dispatch::dispatch_eval_start,
+            run::eval_clean_up,
+            run::eval_delete_branch,
             run::dispatch::batch_overview,
             run::dispatch::batch_remove_run,
             run::epics::epics_overview,

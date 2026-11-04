@@ -233,6 +233,14 @@ export type WorktreeItem = {
 
 export type RemoveResult = { prId: string; removed: boolean; branchDeleted: boolean; message: string };
 
+/** One run of an eval group cleaned up: the result lines (one per worktree) and the run's folder. */
+export type EvalCleanLine = { index: number; runDir: string | null; lines: string[] };
+/** Clean up every finished run of an eval group (clean worktrees go, unmerged branches stay). */
+export const evalCleanUp = (group: string) => invoke<EvalCleanLine[]>("eval_clean_up", { group });
+/** Force-delete a finished eval run's own kept branch, after the user confirmed (the app's only `git branch -D`). */
+export const evalDeleteBranch = (runDir: string, prId: string) =>
+  invoke<string>("eval_delete_branch", { runDir, prId });
+
 export type MemoryTopic = { name: string; checkedAt?: string | null; stale?: boolean };
 export type MemoryRepo = {
   name?: string;
