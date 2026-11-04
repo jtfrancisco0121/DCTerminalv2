@@ -2,6 +2,7 @@
 //! gets its files from the host and only reads them through `flight::tail`.
 
 pub mod claude;
+pub mod dcv2_run;
 
 // The sibling modules, reachable as `super::schema` / `super::tail` from the
 // adapters (the flight boundary scan bans `crate::` and `super::super`).

@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "runId": "r-20261105-100000-fa17",
+  "pluginVersion": "0.7.0",
+  "account": {
+    "id": "a",
+    "name": "A",
+    "configDir": "@CONFIG@"
+  }
+}

@@ -1,0 +1,592 @@
+[
+  {
+    "agent": {
+      "id": "orchestration",
+      "kind": "orchestration",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-11-05T10:07:00.000Z",
+    "attrs": {
+      "from": "plan-approval",
+      "to": "building"
+    },
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/runs/r-20261105-100000-fa17/log.md",
+        "len": 6,
+        "offset": 100,
+        "sha256": "e828aac8d50387550b6855e9f2eed26e771a32c563635ae0a1cf273b45be4b6a"
+      }
+    },
+    "derived": null,
+    "id": "ev_13ef7901e8df29b1",
+    "kind": "stage.change",
+    "name": "building",
+    "provider": {
+      "name": "dcv2",
+      "native": "log.md",
+      "version": null
+    },
+    "schema": 1,
+    "session": "r-20261105-100000-fa17",
+    "span": null,
+    "status": null,
+    "trace": "r-20261105-100000-fa17",
+    "usage": null
+  },
+  {
+    "agent": {
+      "id": "orchestration",
+      "kind": "orchestration",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-11-05T10:03:00.000Z",
+    "attrs": {},
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/runs/r-20261105-100000-fa17/log.md",
+        "len": 6,
+        "offset": 200,
+        "sha256": "16317305c684c75328ba1b1ee6a3509d7e21a8207e8d1d6e8b2faa9a7bfe6d0c"
+      }
+    },
+    "derived": null,
+    "id": "ev_494637608db93f4a",
+    "kind": "approval.wait",
+    "name": "plan",
+    "provider": {
+      "name": "dcv2",
+      "native": "log.md",
+      "version": null
+    },
+    "schema": 1,
+    "session": "r-20261105-100000-fa17",
+    "span": null,
+    "status": null,
+    "trace": "r-20261105-100000-fa17",
+    "usage": null
+  },
+  {
+    "agent": {
+      "id": "orchestration",
+      "kind": "orchestration",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-11-05T10:06:00.000Z",
+    "attrs": {},
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/runs/r-20261105-100000-fa17/log.md",
+        "len": 6,
+        "offset": 300,
+        "sha256": "b10478af3af475a7c0d413b421ce3a03d1159034fc16c183d67a49ae8e98a07c"
+      }
+    },
+    "derived": null,
+    "id": "ev_30f412a81e46b5cd",
+    "kind": "approval.decision",
+    "name": "plan",
+    "provider": {
+      "name": "dcv2",
+      "native": "log.md",
+      "version": null
+    },
+    "schema": 1,
+    "session": "r-20261105-100000-fa17",
+    "span": null,
+    "status": "ok",
+    "trace": "r-20261105-100000-fa17",
+    "usage": null
+  },
+  {
+    "agent": {
+      "id": "orchestration",
+      "kind": "orchestration",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-11-05T10:56:00.000Z",
+    "attrs": {},
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/runs/r-20261105-100000-fa17/log.md",
+        "len": 6,
+        "offset": 400,
+        "sha256": "6e9a75dfb23475397e1c75502bed8a7d3623d2bae46ec344270b211809968bf3"
+      }
+    },
+    "derived": null,
+    "id": "ev_e12edc3a632e3748",
+    "kind": "approval.decision",
+    "name": "ship",
+    "provider": {
+      "name": "dcv2",
+      "native": "log.md",
+      "version": null
+    },
+    "schema": 1,
+    "session": "r-20261105-100000-fa17",
+    "span": null,
+    "status": "declined",
+    "trace": "r-20261105-100000-fa17",
+    "usage": null
+  },
+  {
+    "agent": {
+      "id": "orchestration",
+      "kind": "orchestration",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-11-05T10:22:00.000Z",
+    "attrs": {
+      "exitCode": 101,
+      "head": "abc1234",
+      "pr": "PR2",
+      "source": "app"
+    },
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/runs/r-20261105-100000-fa17/log.md",
+        "len": 6,
+        "offset": 500,
+        "sha256": "a3634e0a10adb332d665e63dd9615107565c3b54f5e6e05d5d6819a97073284b"
+      }
+    },
+    "derived": null,
+    "id": "ev_374e2225a2ee4851",
+    "kind": "check.end",
+    "name": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "provider": {
+      "name": "dcv2",
+      "native": "log.md",
+      "version": null
+    },
+    "schema": 1,
+    "session": "r-20261105-100000-fa17",
+    "span": null,
+    "status": "fail",
+    "trace": "r-20261105-100000-fa17",
+    "usage": null
+  },
+  {
+    "agent": {
+      "id": "orchestration",
+      "kind": "orchestration",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-11-05T10:21:00.000Z",
+    "attrs": {
+      "pr": "PR2",
+      "source": "skill"
+    },
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/runs/r-20261105-100000-fa17/log.md",
+        "len": 6,
+        "offset": 600,
+        "sha256": "564dbe553878998f449a91198ca574b10616bac1d854bead39f032db646cd604"
+      }
+    },
+    "derived": null,
+    "id": "ev_116b4ee2ae9cd47a",
+    "kind": "check.end",
+    "name": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "provider": {
+      "name": "dcv2",
+      "native": "log.md",
+      "version": null
+    },
+    "schema": 1,
+    "session": "r-20261105-100000-fa17",
+    "span": null,
+    "status": "pass",
+    "trace": "r-20261105-100000-fa17",
+    "usage": null
+  },
+  {
+    "agent": {
+      "id": "orchestration",
+      "kind": "orchestration",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-11-05T10:50:00.000Z",
+    "attrs": {
+      "source": "stop-check"
+    },
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/runs/r-20261105-100000-fa17/log.md",
+        "len": 6,
+        "offset": 700,
+        "sha256": "5d705f9b94666f3d5be7bc07489a8a847343ede4aa4bd55b24f9e8f0466c599f"
+      }
+    },
+    "derived": null,
+    "id": "ev_9b0717cf8e1601a7",
+    "kind": "check.end",
+    "name": "stop-check",
+    "provider": {
+      "name": "dcv2",
+      "native": "log.md",
+      "version": null
+    },
+    "schema": 1,
+    "session": "r-20261105-100000-fa17",
+    "span": null,
+    "status": "skip",
+    "trace": "r-20261105-100000-fa17",
+    "usage": null
+  },
+  {
+    "agent": {
+      "id": "orchestration",
+      "kind": "orchestration",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-11-05T10:25:30.000Z",
+    "attrs": {
+      "pr": "PR2",
+      "round": 1,
+      "verdict": "FAIL"
+    },
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/runs/r-20261105-100000-fa17/log.md",
+        "len": 6,
+        "offset": 800,
+        "sha256": "332f12fbbd00fe7995a1545d1318c85cdf878a7b8eac2af3ebf919898e3b65ff"
+      }
+    },
+    "derived": null,
+    "id": "ev_6e58a9bc496ae412",
+    "kind": "review.round",
+    "name": "PR2-round1",
+    "provider": {
+      "name": "dcv2",
+      "native": "log.md",
+      "version": null
+    },
+    "schema": 1,
+    "session": "r-20261105-100000-fa17",
+    "span": null,
+    "status": null,
+    "trace": "r-20261105-100000-fa17",
+    "usage": null
+  },
+  {
+    "agent": {
+      "id": "orchestration",
+      "kind": "orchestration",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-11-05T10:40:00.000Z",
+    "attrs": {
+      "ci": "fail",
+      "pr": "PR2",
+      "prState": "OPEN"
+    },
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/runs/r-20261105-100000-fa17/log.md",
+        "len": 6,
+        "offset": 900,
+        "sha256": "4c0bb22ebf0f1e84d0a94de19880c1eadd3a47739c18e852d7f11df9e92d5f49"
+      }
+    },
+    "derived": null,
+    "id": "ev_f96faeda10f1f42b",
+    "kind": "ci.state",
+    "name": "fail",
+    "provider": {
+      "name": "dcv2",
+      "native": "log.md",
+      "version": null
+    },
+    "schema": 1,
+    "session": "r-20261105-100000-fa17",
+    "span": null,
+    "status": "fail",
+    "trace": "r-20261105-100000-fa17",
+    "usage": null
+  },
+  {
+    "agent": {
+      "id": "orchestration",
+      "kind": "orchestration",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-11-05T10:30:00.000Z",
+    "attrs": {
+      "pr": "PR2"
+    },
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/runs/r-20261105-100000-fa17/log.md",
+        "len": 7,
+        "offset": 1000,
+        "sha256": "91d75b1f9a59f5d3389fba1d491bf6617511fa9b3bbf47413f2270f285bd2458"
+      }
+    },
+    "derived": "exact:log-line",
+    "id": "ev_6cf06119cc7dcd2c",
+    "kind": "retry",
+    "name": "PR2",
+    "provider": {
+      "name": "dcv2",
+      "native": "log.md",
+      "version": null
+    },
+    "schema": 1,
+    "session": "r-20261105-100000-fa17",
+    "span": null,
+    "status": null,
+    "trace": "r-20261105-100000-fa17",
+    "usage": null
+  },
+  {
+    "agent": {
+      "id": "orchestration",
+      "kind": "orchestration",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-11-05T10:26:00.000Z",
+    "attrs": {},
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/runs/r-20261105-100000-fa17/log.md",
+        "len": 7,
+        "offset": 1100,
+        "sha256": "8e40a188bbae44d4e7e96b356849a483fd99d74675e8fa5f9dcdf5f402f49f9b"
+      }
+    },
+    "derived": null,
+    "id": "ev_169e712546fba889",
+    "kind": "attention",
+    "name": "approval-wait",
+    "provider": {
+      "name": "dcv2",
+      "native": "log.md",
+      "version": null
+    },
+    "schema": 1,
+    "session": "r-20261105-100000-fa17",
+    "span": null,
+    "status": null,
+    "trace": "r-20261105-100000-fa17",
+    "usage": null
+  },
+  {
+    "agent": {
+      "id": "orchestration",
+      "kind": "orchestration",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-11-05T10:30:00.000Z",
+    "attrs": {
+      "from": "reviewing",
+      "pr": "PR2",
+      "to": "fixing"
+    },
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/runs/r-20261105-100000-fa17/log.md",
+        "len": 7,
+        "offset": 1200,
+        "sha256": "75aebdf960061e4764e89d8dc4ab81fed7f282bc9517095878ceb91751f30e86"
+      }
+    },
+    "derived": null,
+    "id": "ev_fe9c59d074eb98df",
+    "kind": "x.dcv2.pr-state",
+    "name": "fixing",
+    "provider": {
+      "name": "dcv2",
+      "native": "log.md",
+      "version": null
+    },
+    "schema": 1,
+    "session": "r-20261105-100000-fa17",
+    "span": null,
+    "status": null,
+    "trace": "r-20261105-100000-fa17",
+    "usage": null
+  },
+  {
+    "agent": {
+      "id": "orchestration",
+      "kind": "orchestration",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-11-05T10:08:00.000Z",
+    "attrs": {},
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/runs/r-20261105-100000-fa17/log.md",
+        "len": 7,
+        "offset": 1300,
+        "sha256": "aed781d8d3ee7e566759e263e433a850ffc7520baf2341b2c8298e5726b855b3"
+      }
+    },
+    "derived": null,
+    "id": "ev_46ad42dfd1263f7f",
+    "kind": "x.dcv2.log",
+    "name": null,
+    "provider": {
+      "name": "dcv2",
+      "native": "log.md",
+      "version": null
+    },
+    "schema": 1,
+    "session": "r-20261105-100000-fa17",
+    "span": null,
+    "status": null,
+    "trace": "r-20261105-100000-fa17",
+    "usage": null
+  },
+  {
+    "agent": {
+      "id": "orchestration",
+      "kind": "orchestration",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-11-05T10:45:05.000Z",
+    "attrs": {
+      "requestKind": "recheck",
+      "result": "done"
+    },
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/runs/r-20261105-100000-fa17/log.md",
+        "len": 7,
+        "offset": 1400,
+        "sha256": "c483f984edf0a1354877722ba5dfe96404e7d554beb9ae1bd694e24b19fefeca"
+      }
+    },
+    "derived": null,
+    "id": "ev_9948b249a5ed4c8e",
+    "kind": "x.dcv2.request",
+    "name": "recheck",
+    "provider": {
+      "name": "dcv2",
+      "native": "log.md",
+      "version": null
+    },
+    "schema": 1,
+    "session": "r-20261105-100000-fa17",
+    "span": null,
+    "status": "ok",
+    "trace": "r-20261105-100000-fa17",
+    "usage": null
+  },
+  {
+    "agent": {
+      "id": "orchestration",
+      "kind": "orchestration",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-11-05T10:12:00.000Z",
+    "attrs": {
+      "agent": "main",
+      "rule": "run-file-write",
+      "source": "guard.log",
+      "tool": "Bash"
+    },
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/runs/r-20261105-100000-fa17/log.md",
+        "len": 7,
+        "offset": 1500,
+        "sha256": "0da56d42f1612b476ea2fbeba80736dd3978cfc556c1eec8065861833636e8fa"
+      }
+    },
+    "derived": null,
+    "id": "ev_389840cccaef403c",
+    "kind": "tool.blocked",
+    "name": "Bash",
+    "provider": {
+      "name": "dcv2",
+      "native": "log.md",
+      "version": null
+    },
+    "schema": 1,
+    "session": "r-20261105-100000-fa17",
+    "span": "toolu_guard01",
+    "status": "blocked",
+    "trace": "r-20261105-100000-fa17",
+    "usage": null
+  }
+]

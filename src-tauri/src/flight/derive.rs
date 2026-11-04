@@ -93,6 +93,7 @@ pub fn failures(events: &[Event]) -> Vec<Failure> {
             before: before(events, at, BEFORE),
             repeat_of: None,
             repeats: Vec::new(),
+            rule: None,
         });
     }
     out

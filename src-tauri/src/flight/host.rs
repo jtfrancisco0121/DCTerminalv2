@@ -3,6 +3,7 @@
 //! account and capture policy before any file is opened, resolves the files of
 //! a run or session, and reads a line's content (always redacted) on request.
 
+use super::adapters::dcv2_run::{self, ApprovalIn, RunInputs};
 use super::adapters::{AgentMeta, SubagentFile};
 use super::redact::{first_hit, redact};
 use super::schema::{sha256_hex, CapturePolicy, SourceRef};
@@ -231,6 +232,107 @@ impl SessionSet {
         self.sessions.iter().any(|s| {
             ident(&s.main) == wanted || s.subagents.iter().any(|a| ident(&a.path) == wanted)
         })
+    }
+}
+
+/// A run folder's own files the adapter may read: a fixed set of names, never a link.
+const RUN_FILES: [&str; 5] = [
+    "log.md",
+    "status.json",
+    "app-checks.json",
+    "app-github.json",
+    "logs/guard.log",
+];
+/// At most this many files of one run folder are listed.
+const MAX_RUN_FILES: usize = 600;
+
+fn regular_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
+}
+
+/// The names (relative to the run folder) and paths of the files the run adapter reads:
+/// the record files above, `reviews/*.md`, `gates/*.yml`, `requests/*.json` and the check logs
+/// `logs/*-check.txt`, `*-app-check.txt` and `*-stop-check.txt`. Links and folders are skipped.
+pub fn run_file_list(run_dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut out: Vec<(String, PathBuf)> = RUN_FILES
+        .iter()
+        .map(|n| (n.to_string(), run_dir.join(n)))
+        .filter(|(_, p)| regular_file(p))
+        .collect();
+    let dirs: [(&str, fn(&str) -> bool); 4] = [
+        ("reviews", |n| n.ends_with(".md")),
+        ("gates", |n| n.ends_with(".yml")),
+        ("requests", |n| n.ends_with(".json")),
+        ("logs", |n| n.ends_with("-check.txt")),
+    ];
+    for (dir, wanted) in dirs {
+        let mut names: Vec<String> = std::fs::read_dir(run_dir.join(dir))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            .filter(|n| wanted(n) && !n.starts_with('.'))
+            .collect();
+        names.sort();
+        for name in names {
+            let path = run_dir.join(dir).join(&name);
+            if regular_file(&path) && out.len() < MAX_RUN_FILES {
+                out.push((format!("{dir}/{name}"), path));
+            }
+        }
+    }
+    out
+}
+
+/// What the run adapter gets for `run_dir`: the file list, the approval stops from
+/// `run::timeline` (the one place that parses approval text) and each repo's check from repos.json.
+pub fn run_inputs(run_dir: &Path) -> RunInputs {
+    let files = run_file_list(run_dir);
+    let approvals = files
+        .iter()
+        .find(|(n, _)| n == "log.md")
+        .and_then(|(_, p)| {
+            let meta = std::fs::metadata(p).ok()?;
+            if meta.len() > dcv2_run::MAX_FILE {
+                return None;
+            }
+            std::fs::read_to_string(p).ok()
+        })
+        .map(|log| {
+            crate::run::timeline::approval_bands(&log)
+                .into_iter()
+                .map(|b| ApprovalIn {
+                    kind: b.kind,
+                    start_ms: b.start_ms,
+                    end_ms: b.end_ms,
+                    open_offset: b.open_offset,
+                    close_offset: b.close_offset,
+                    outcome: b.outcome,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let repo_checks = crate::run::folder::read_json_value(&run_dir.join("repos.json"))
+        .and_then(|v| {
+            Some(
+                v["repos"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|r| {
+                        Some((
+                            r["path"].as_str()?.to_string(),
+                            r["check"].as_str()?.to_string(),
+                        ))
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_default();
+    RunInputs {
+        run_dir: run_dir.to_path_buf(),
+        files,
+        approvals,
+        repo_checks,
     }
 }
 

@@ -1,0 +1,3 @@
+running 3 tests
+test add ... FAILED
+test result: FAILED. 2 passed; 1 failed

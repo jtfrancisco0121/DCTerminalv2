@@ -1,0 +1,5 @@
+gate: FAIL
+reason: "1 MEDIUM open: add() subtracts"
+updated: 2026-11-05T10:25:30Z
+review: "reviews/PR2-round1.md"
+round: 1

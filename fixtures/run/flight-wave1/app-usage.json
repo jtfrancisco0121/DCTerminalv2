@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "sessions": [
+    {
+      "sessionId": "aaaa1111-2222-4333-8444-555555555555",
+      "configDir": "@CONFIG@"
+    }
+  ]
+}
