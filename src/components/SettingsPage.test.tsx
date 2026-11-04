@@ -70,6 +70,25 @@ describe("SettingsPage editor", () => {
   });
 });
 
+describe("SettingsPage capture policy", () => {
+  it("marks a policy-only change unsaved, enables Save and sends the new policy", async () => {
+    setClaudeSettings.mockClear();
+    render(<SettingsPage view={view()} onSaved={() => {}} onClose={() => {}} />);
+    const save = screen.getByRole("button", { name: "Save capture policy" }) as HTMLButtonElement;
+    const select = screen.getByRole("combobox", { name: "Capture policy of Personal" }) as HTMLSelectElement;
+    expect(select.value).toBe("metadata");
+    expect(save.disabled).toBe(true);
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
+    fireEvent.change(select, { target: { value: "off" } });
+    expect(screen.getAllByText("Unsaved changes").length).toBeGreaterThan(0);
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() => expect(setClaudeSettings).toHaveBeenCalled());
+    const sent = setClaudeSettings.mock.calls[0]![0];
+    expect(sent.accounts[0]!.capturePolicy).toBe("off");
+  });
+});
+
 describe("SettingsPage file links", () => {
   it("names the reveal option and the click modifier for the platform, and keeps the stored id", () => {
     const { unmount } = render(<SettingsPage view={view()} onSaved={() => {}} onClose={() => {}} platform="mac" />);

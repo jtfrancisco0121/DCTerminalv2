@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Timeline } from "../run/timeline";
 import { FleetTimelineView } from "./FleetTimeline";
 
@@ -19,6 +19,23 @@ const timeline: Timeline = {
   startedMs: 0,
   endedMs: 600000,
 };
+
+describe("FleetTimelineView lane click", () => {
+  it("opens the trace on the clicked lane, and draws plain labels when nothing listens", () => {
+    const withIds: Timeline = {
+      ...timeline,
+      lanes: timeline.lanes.map((lane, i) => ({ ...lane, session: 0, agentId: i === 0 ? null : `agent-${i}` })),
+    };
+    const onOpenLane = vi.fn();
+    render(<FleetTimelineView timeline={withIds} onOpenLane={onOpenLane} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open trace for plan-reviewer" }));
+    expect(onOpenLane).toHaveBeenCalledTimes(1);
+    expect(onOpenLane.mock.calls[0]![0]).toMatchObject({ label: "plan-reviewer", agentId: "agent-1" });
+    cleanup();
+    render(<FleetTimelineView timeline={withIds} />);
+    expect(screen.queryByRole("button", { name: /Open trace/ })).toBeNull();
+  });
+});
 
 describe("FleetTimelineView", () => {
   it("shows work time and waiting time separately with the cost", () => {

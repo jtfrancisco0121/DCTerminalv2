@@ -33,7 +33,7 @@ pub mod commands;
 pub mod intake;
 pub mod merged;
 pub mod secret;
-pub mod secret_scan;
+pub use crate::flight::redact as secret_scan;
 pub mod transport;
 pub mod trust;
 pub mod types;

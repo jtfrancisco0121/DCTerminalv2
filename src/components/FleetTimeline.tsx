@@ -13,7 +13,14 @@ function laneTotal(lane: Timeline["lanes"][number], hiMs: number): string {
 }
 
 /** The run panel's "Agents" section: one lane per agent, approval waits shaded, totals for work, waiting and cost. */
-export function FleetTimelineView({ timeline }: { timeline: Timeline }) {
+export function FleetTimelineView({
+  timeline,
+  onOpenLane,
+}: {
+  timeline: Timeline;
+  /** A click on a lane's name opens the trace on that agent. */
+  onOpenLane?: (lane: Timeline["lanes"][number]) => void;
+}) {
   const layout = layoutTimeline(timeline);
   if (timeline.lanes.length === 0) return <p className="hint">No agents were recorded for this run yet.</p>;
   return (
@@ -38,7 +45,18 @@ export function FleetTimelineView({ timeline }: { timeline: Timeline }) {
       <ol className="fleet-lanes">
         {layout.bars.map(({ lane, left, width, open, name }) => (
           <li key={lane.id} className="fleet-lane">
-            <span className="fleet-label">{lane.label}</span>
+            {onOpenLane ? (
+              <button
+                type="button"
+                className="fleet-label link-button"
+                aria-label={`Open trace for ${lane.label}`}
+                onClick={() => onOpenLane(lane)}
+              >
+                {lane.label}
+              </button>
+            ) : (
+              <span className="fleet-label">{lane.label}</span>
+            )}
             <span className="fleet-track">
               {layout.waits.map((w, i) => (
                 <span key={i} className="fleet-wait" aria-hidden="true" title={w.name} style={{ left: `${w.left}%`, width: `${w.width}%` }} />
@@ -71,7 +89,15 @@ export function FleetTimelineView({ timeline }: { timeline: Timeline }) {
 }
 
 /** Reads the timeline now and again every few seconds while the run is not finished. */
-export function FleetTimeline({ runDir, live }: { runDir: string; live: boolean }) {
+export function FleetTimeline({
+  runDir,
+  live,
+  onOpenLane,
+}: {
+  runDir: string;
+  live: boolean;
+  onOpenLane?: (lane: Timeline["lanes"][number]) => void;
+}) {
   const [timeline, setTimeline] = useState<Timeline | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   useEffect(() => {
@@ -93,7 +119,7 @@ export function FleetTimeline({ runDir, live }: { runDir: string; live: boolean 
       <h3>Agents</h3>
       {problem && <p className="hint warn">{problem}</p>}
       {!timeline && !problem && <p className="hint">Reading the agents…</p>}
-      {timeline && <FleetTimelineView timeline={timeline} />}
+      {timeline && <FleetTimelineView timeline={timeline} onOpenLane={onOpenLane} />}
     </section>
   );
 }

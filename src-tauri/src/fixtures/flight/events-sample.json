@@ -1,0 +1,88 @@
+[
+  {
+    "agent": {
+      "id": "main",
+      "kind": "main",
+      "parent": null,
+      "pr": null,
+      "role": null,
+      "type": null
+    },
+    "at": "2026-10-22T15:32:16.271Z",
+    "attrs": {},
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/config/projects/-work-toy/s1.jsonl",
+        "len": 15,
+        "offset": 0,
+        "sha256": "7ee087eced9da588b788e9f75d9324537b106cd6936d57238ec90d03dfe639d1"
+      }
+    },
+    "derived": null,
+    "id": "ev_7a090776be78c26f",
+    "kind": "turn.start",
+    "name": null,
+    "provider": {
+      "name": "claude-code",
+      "native": "user.text",
+      "version": "2.1.287"
+    },
+    "schema": 1,
+    "session": "s1",
+    "span": null,
+    "status": null,
+    "trace": "session:s1",
+    "usage": null
+  },
+  {
+    "agent": {
+      "id": "a1",
+      "kind": "subagent",
+      "parent": "main",
+      "pr": "PR1",
+      "role": "implementer",
+      "type": "dcv2:implementer"
+    },
+    "at": "2026-10-22T15:32:41.758Z",
+    "attrs": {
+      "files": [
+        "/work/toy/src/add.js"
+      ]
+    },
+    "content": {
+      "policy": "metadata",
+      "redactions": 0,
+      "ref": {
+        "file": "/config/projects/-work-toy/s1.jsonl",
+        "len": 20,
+        "offset": 16,
+        "sha256": "7dbe68c79cc46bbda32947fd86d2a531794047e28f78bf4c80605dd06596a601"
+      }
+    },
+    "derived": null,
+    "id": "ev_934b9e4de326396f",
+    "kind": "tool.start",
+    "name": "Edit",
+    "provider": {
+      "name": "claude-code",
+      "native": "assistant.tool_use",
+      "version": "2.1.287"
+    },
+    "schema": 1,
+    "session": "s1",
+    "span": "toolu_01",
+    "status": null,
+    "trace": "session:s1",
+    "usage": {
+      "cacheRead": 31611,
+      "cacheWrite1h": 290,
+      "cacheWrite5m": 0,
+      "input": 8,
+      "model": "claude-haiku-4-5-20251001",
+      "output": 408,
+      "usd": null
+    }
+  }
+]

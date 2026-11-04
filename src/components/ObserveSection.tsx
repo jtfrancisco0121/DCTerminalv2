@@ -20,10 +20,12 @@ type ViewProps = {
   nudging: boolean;
   onNudge: () => void;
   onResume: () => void;
+  /** Opens the Session Inspector on this run. */
+  onOpenTrace?: () => void;
 };
 
 /** P3b in the run panel: tab state, watchdog, context meter, sub-agents, cost/time. */
-export function ObserveView({ seen, nudging, onNudge, onResume }: ViewProps) {
+export function ObserveView({ seen, nudging, onNudge, onResume, onOpenTrace }: ViewProps) {
   const [confirming, setConfirming] = useState(false);
   const activity = activityText(seen.hook?.activity);
   // Never type into a tab that may show a permission menu.
@@ -40,6 +42,13 @@ export function ObserveView({ seen, nudging, onNudge, onResume }: ViewProps) {
   const subs = seen.subagents.slice(-8).reverse();
   return (
     <section className="run-observe" aria-label="Session">
+      {onOpenTrace && (
+        <p className="hint">
+          <button type="button" className="link-button" onClick={onOpenTrace}>
+            Open trace
+          </button>
+        </p>
+      )}
       {activity && (
         <p className={`run-activity run-activity-${seen.hook?.activity}`} data-testid="tab-activity">
           Claude: {activity}
@@ -165,7 +174,7 @@ export function ObserveView({ seen, nudging, onNudge, onResume }: ViewProps) {
 }
 
 /** Polls the tab's session and shows [`ObserveView`]. */
-export function ObserveSection({ tabId, onResume }: { tabId: string; onResume: () => void }) {
+export function ObserveSection({ tabId, onResume, onOpenTrace }: { tabId: string; onResume: () => void; onOpenTrace?: () => void }) {
   const [seen, setSeen] = useState<TabObservation | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [nudging, setNudging] = useState(false);
@@ -192,7 +201,7 @@ export function ObserveSection({ tabId, onResume }: { tabId: string; onResume: (
 
   return (
     <>
-      {seen && <ObserveView seen={seen} nudging={nudging} onNudge={nudge} onResume={onResume} />}
+      {seen && <ObserveView seen={seen} nudging={nudging} onNudge={nudge} onResume={onResume} onOpenTrace={onOpenTrace} />}
       {problem && <p className="hint warn">{problem}</p>}
     </>
   );

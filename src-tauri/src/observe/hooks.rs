@@ -521,6 +521,44 @@ mod tests {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
 
+    /// The backticked names of the doc bullet that starts with `lead`.
+    fn doc_list(lead: &str) -> Vec<String> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/launch.md");
+        let doc = std::fs::read_to_string(path).unwrap();
+        let line = doc
+            .lines()
+            .find(|l| l.trim_start().starts_with(&format!("- {lead}")))
+            .unwrap_or_else(|| panic!("docs/launch.md has no list starting `{lead}`"));
+        let after = &line[line.find(lead).unwrap() + lead.len()..];
+        let list = after.split('`').enumerate();
+        list.filter(|(i, _)| i % 2 == 1)
+            .map(|(_, name)| name.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn launch_doc_lists_exactly_the_registered_events_and_kept_fields() {
+        let mut events = doc_list("The app registers hooks for:");
+        assert_eq!(events.len(), EVENTS.len(), "event count: {events:?}");
+        events.sort();
+        let mut code: Vec<String> = EVENTS.iter().map(|e| e.to_string()).collect();
+        code.sort();
+        assert_eq!(events, code, "docs/launch.md events differ from EVENTS");
+
+        // The bullet ends with the background count: `background_tasks` (`background_running`).
+        let mut fields = doc_list("The forwarder keeps only:");
+        assert_eq!(fields.pop().as_deref(), Some("background_running"));
+        assert_eq!(fields.pop().as_deref(), Some("background_tasks"));
+        assert_eq!(fields.len(), forward::KEPT_FIELDS.len(), "{fields:?}");
+        fields.sort();
+        let mut code: Vec<String> = forward::KEPT_FIELDS.iter().map(|e| e.to_string()).collect();
+        code.sort();
+        assert_eq!(
+            fields, code,
+            "docs/launch.md fields differ from KEPT_FIELDS"
+        );
+    }
+
     #[test]
     fn recorded_hook_payloads_still_have_the_fields_the_app_reads() {
         for (file, event) in [

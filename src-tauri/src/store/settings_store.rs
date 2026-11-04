@@ -74,6 +74,10 @@ pub struct ClaudeAccount {
     /// Empty: `~/.claude`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_dir: Option<String>,
+    /// What AgentFlight may read and show from this account's session logs.
+    /// An old settings file has none: `metadata`.
+    #[serde(default)]
+    pub capture_policy: crate::flight::schema::CapturePolicy,
 }
 
 /// Claude Code: where `claude` is (empty: looked up) and the accounts.
@@ -140,6 +144,7 @@ pub fn normalize_claude_accounts(claude: &mut ClaudeSettings) -> Result<(), Stri
             id: DEFAULT_ACCOUNT_ID.to_string(),
             name: "Claude".to_string(),
             config_dir: None,
+            capture_policy: Default::default(),
         });
     }
     Ok(())
@@ -877,7 +882,33 @@ mod tests {
             id: id.into(),
             name: name.into(),
             config_dir: dir.map(str::to_string),
+            capture_policy: Default::default(),
         }
+    }
+
+    #[test]
+    fn an_account_saved_before_capture_policy_existed_loads_as_metadata() {
+        use crate::flight::schema::CapturePolicy;
+        let old: ClaudeAccount =
+            serde_json::from_str(r#"{"id":"work","name":"Work","configDir":"/c"}"#).unwrap();
+        assert_eq!(old.capture_policy, CapturePolicy::Metadata);
+        let set: ClaudeAccount =
+            serde_json::from_str(r#"{"id":"work","name":"Work","capturePolicy":"off"}"#).unwrap();
+        assert_eq!(set.capture_policy, CapturePolicy::Off);
+        let json = serde_json::to_value(&set).unwrap();
+        assert_eq!(json["capturePolicy"], "off");
+        // The whole file, as the store loads it.
+        let dir = TempDir::new("settings_old_policy");
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"claude":{"accounts":[{"id":"default","name":"Claude"}]}}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(
+            store.claude().accounts[0].capture_policy,
+            CapturePolicy::Metadata
+        );
     }
 
     #[test]

@@ -24,7 +24,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 pub const RECORD_FILE: &str = "app-usage.json";
-/// A gap between two log lines longer than this counts as this long (idle).
+/// A gap between two `log.md` lines longer than this counts as this long
+/// (clamped, not dropped): an agent can work 20 min between orchestrator
+/// lines. Transcript events use `observe::transcript::ACTIVE_GAP_MS` (5 min,
+/// excluded) instead.
 pub const IDLE_CAP_MS: i64 = 30 * 60 * 1000;
 /// log.md is read up to this size.
 const MAX_LOG_BYTES: u64 = 8 * 1024 * 1024;

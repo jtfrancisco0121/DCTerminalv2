@@ -274,6 +274,7 @@ mod tests {
                         id: id.to_string(),
                         name: id.to_string(),
                         config_dir: Some(config.display().to_string()),
+                        capture_policy: Default::default(),
                     }
                 })
                 .collect(),

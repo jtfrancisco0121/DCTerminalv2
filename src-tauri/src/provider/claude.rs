@@ -348,11 +348,13 @@ mod tests {
                     id: "default".into(),
                     name: "Personal".into(),
                     config_dir: Some(folder("personal")),
+                    capture_policy: Default::default(),
                 },
                 ClaudeAccount {
                     id: "work".into(),
                     name: "Work".into(),
                     config_dir: Some(folder("work")),
+                    capture_policy: Default::default(),
                 },
             ],
         };

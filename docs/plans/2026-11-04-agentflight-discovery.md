@@ -329,7 +329,7 @@ The UI must label these "recorded", "re-run" and "new execution", never "reprodu
 **M1: Session Inspector (smallest useful milestone).**
 - A Claude adapter turns the main and sub-agent transcripts into schema-1 events. Correlation pairs tool spans and builds the agent tree.
 - Derived facts:
-  - failures (`is_error` tool results, PostToolUseFailure-equivalents, StopFailure, guard blocks seen as hook errors in the transcript);
+  - failures (`is_error` tool results, PostToolUseFailure-equivalents, StopFailure, guard blocks seen as hook errors in the transcript: on 2.1.287 a `type: "user"` line whose `tool_result` has `is_error: true` and content `PreToolUse:Bash hook error: [bash "<guard.sh>"]: Blocked by the dcv2 guard: <reason>`, with a top-level `toolDenialKind: "permission-rule"`; a plain failing command is `is_error: true` with `Exit code N` and no `toolDenialKind`; a failed API turn is an `assistant` line with `isApiErrorMessage: true`, an `error` kind and an optional `apiErrorStatus`);
   - "last N events before failure";
   - files touched (paths from Edit/Write/MultiEdit/NotebookEdit inputs);
   - repeated failures (same tool + normalized input, labelled heuristic).
