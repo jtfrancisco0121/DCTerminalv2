@@ -3,8 +3,9 @@
 //! capture policy before any file is opened, and hold no store lock while
 //! they read.
 
-use crate::flight::host::{self, ContentOut, Opens, Query};
+use crate::flight::host::{self, ContentOut, FlightCache, Opens, Query};
 use crate::flight::schema::SourceRef;
+use crate::flight::session::{PageRequest, SessionView};
 use crate::store::SettingsStore;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -61,6 +62,40 @@ pub async fn flight_content(
     let query = query_for(&app, &request.target)?;
     tauri::async_runtime::spawn_blocking(move || {
         host::read_content(&claude, &query, &request.source, &Opens::default())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRequest {
+    #[serde(flatten)]
+    pub target: Target,
+    pub agent: Option<String>,
+    pub cursor: Option<String>,
+    pub page_size: Option<usize>,
+}
+
+/// One run's (or one session's) trace: the agent tree, the failures and one
+/// page of events. Parses on a worker thread through the cache.
+#[tauri::command]
+pub async fn flight_session(
+    app: AppHandle,
+    settings: State<'_, Mutex<SettingsStore>>,
+    cache: State<'_, FlightCache>,
+    request: SessionRequest,
+) -> Result<SessionView, String> {
+    let claude = settings.lock().map_err(|e| e.to_string())?.claude().clone();
+    let query = query_for(&app, &request.target)?;
+    let cache = cache.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let page = PageRequest {
+            agent: request.agent,
+            cursor: request.cursor,
+            page_size: request.page_size,
+        };
+        host::session_view(&claude, &query, &page, &cache, &Opens::default())
     })
     .await
     .map_err(|e| e.to_string())?

@@ -20,6 +20,7 @@ pub mod derive;
 pub mod host;
 pub mod redact;
 pub mod schema;
+pub mod session;
 pub mod tail;
 
 /// Builders shared by the tests of the adapter, correlation and host.
@@ -123,6 +124,27 @@ mod tests {
         assert_eq!(boundary_problems("fn f() { tauri::x(); }"), ["tauri"]);
         let test_only = "fn live() {}\n#[cfg(test)]\nmod tests {\n    use crate::a;\n}\n";
         assert!(boundary_problems(test_only).is_empty());
+    }
+
+    /// The run list and the sweeps never reach the inspector: no flight call
+    /// from `run/` or the attention passes (AD-8).
+    #[test]
+    fn nothing_on_the_run_list_or_sweep_path_names_the_inspector() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rust_files(&src.join("run"), &mut files);
+        files.push(src.join("observe/attention.rs"));
+        assert!(files.len() > 10, "{}", files.len());
+        for file in files {
+            let text = std::fs::read_to_string(&file).unwrap();
+            for name in ["flight_session", "FlightCache", "flight::"] {
+                assert!(
+                    !text.contains(name),
+                    "{} names {name}: the run list and the sweeps must not call AgentFlight",
+                    file.display()
+                );
+            }
+        }
     }
 
     #[test]

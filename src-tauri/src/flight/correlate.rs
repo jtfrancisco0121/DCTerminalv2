@@ -79,6 +79,10 @@ pub fn agent_tree(events: &[Event], metas: &BTreeMap<String, AgentMeta>) -> Agen
         .filter_map(|e| Some((e.attrs.get("agentId")?.as_str()?, e)))
         .collect();
 
+    let session = events
+        .first()
+        .map(|e| e.session.clone())
+        .unwrap_or_default();
     let mut ids: Vec<&str> = first.keys().copied().filter(|id| *id != "main").collect();
     for id in metas.keys() {
         if !ids.contains(&id.as_str()) {
@@ -127,6 +131,7 @@ pub fn agent_tree(events: &[Event], metas: &BTreeMap<String, AgentMeta>) -> Agen
                 parent,
                 AgentNode {
                     id: id.to_string(),
+                    session: session.clone(),
                     kind: "subagent".into(),
                     role: agent_type
                         .as_deref()
@@ -182,6 +187,7 @@ pub fn agent_tree(events: &[Event], metas: &BTreeMap<String, AgentMeta>) -> Agen
     }
     AgentNode {
         id: "main".into(),
+        session,
         kind: "main".into(),
         agent_type: None,
         role: None,

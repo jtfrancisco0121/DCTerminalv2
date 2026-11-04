@@ -82,6 +82,7 @@ export interface FlightSpan {
 
 export interface AgentNode {
   id: string;
+  session: string;
   /** `main` or `subagent`. */
   kind: string;
   type: string | null;

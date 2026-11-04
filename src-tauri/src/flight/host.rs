@@ -6,6 +6,7 @@
 use super::adapters::{AgentMeta, SubagentFile};
 use super::redact::redact;
 use super::schema::{sha256_hex, CapturePolicy, SourceRef};
+use super::session::{self, PageRequest, Parsed, SessionView};
 use crate::provider::claude::same_config_dir;
 use crate::store::settings_store::{resolved_account_config, ClaudeAccount, ClaudeSettings};
 use serde::Serialize;
@@ -13,6 +14,8 @@ use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 /// Shown when a folder belongs to no configured account.
 pub const UNKNOWN_FOLDER: &str = "unknown account folder";
@@ -211,6 +214,88 @@ impl SessionSet {
             ident(&s.main) == wanted || s.subagents.iter().any(|a| ident(&a.path) == wanted)
         })
     }
+}
+
+/// How many parsed sessions the cache keeps.
+const CACHE_SESSIONS: usize = 8;
+
+/// A file's identity for the cache: its real path, size and mtime.
+type Stamp = (String, u64, Option<SystemTime>);
+
+fn stamp(path: &Path) -> Stamp {
+    let meta = std::fs::metadata(path).ok();
+    (
+        ident(path),
+        meta.as_ref().map(|m| m.len()).unwrap_or(0),
+        meta.and_then(|m| m.modified().ok()),
+    )
+}
+
+#[derive(Debug, Default)]
+struct CacheInner {
+    /// Oldest first; a session is keyed by the stamps of all its files.
+    entries: Mutex<Vec<(Vec<Stamp>, Arc<Parsed>)>>,
+    hits: AtomicUsize,
+    misses: AtomicUsize,
+}
+
+/// Parsed sessions, so paging does not parse again. Separate from the stores:
+/// the app keeps it as its own managed state, and no lock is held while a
+/// file is parsed.
+#[derive(Debug, Clone, Default)]
+pub struct FlightCache(Arc<CacheInner>);
+
+impl FlightCache {
+    pub fn hits(&self) -> usize {
+        self.0.hits.load(Ordering::SeqCst)
+    }
+    pub fn misses(&self) -> usize {
+        self.0.misses.load(Ordering::SeqCst)
+    }
+
+    fn parsed(&self, files: &SessionFiles) -> Arc<Parsed> {
+        let mut key = vec![stamp(&files.main)];
+        key.extend(files.subagents.iter().map(|s| stamp(&s.path)));
+        if let Ok(entries) = self.0.entries.lock() {
+            if let Some((_, hit)) = entries.iter().find(|(k, _)| *k == key) {
+                self.0.hits.fetch_add(1, Ordering::SeqCst);
+                return hit.clone();
+            }
+        }
+        self.0.misses.fetch_add(1, Ordering::SeqCst);
+        let parsed = Arc::new(session::parse(&files.main, &files.subagents));
+        if let Ok(mut entries) = self.0.entries.lock() {
+            // The file grew: drop the older parse of the same main file.
+            entries.retain(|(k, _)| k.first().map(|f| &f.0) != key.first().map(|f| &f.0));
+            entries.push((key, parsed.clone()));
+            while entries.len() > CACHE_SESSIONS {
+                entries.remove(0);
+            }
+        }
+        parsed
+    }
+}
+
+/// `flight_session`: the policy first, then the files, then one page.
+pub fn session_view(
+    claude: &ClaudeSettings,
+    query: &Query,
+    request: &PageRequest,
+    cache: &FlightCache,
+    opens: &Opens,
+) -> Result<SessionView, String> {
+    let trace = query
+        .run_dir
+        .as_ref()
+        .and_then(|d| d.file_name())
+        .map(|n| n.to_string_lossy().to_string());
+    let set = match resolve(claude, query, opens) {
+        Access::Refused(why) => return Err(why),
+        Access::Off => return Ok(SessionView::off(trace.as_deref().unwrap_or(""))),
+        Access::Ready(set) => set,
+    };
+    let parsed: Vec<Arc<Parsed>> = set.sessions.iter().map(|s| cache.parsed(s)).collect();
+    session::view(&parsed, trace.as_deref(), set.policy, request, set.notices)
 }
 
 /// What `flight_content` returns.
@@ -672,6 +757,376 @@ mod tests {
             read_content(&claude, &q, &before, &opens).unwrap_err(),
             "source changed"
         );
+    }
+
+    const SELFTEST: &str = "de6a6329-de0f-49da-960b-f50fed9236e4";
+    const FAILING: &str = "5b0d6e0e-3a52-4c61-9d1f-7a2c4e8b9f10";
+
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap().flatten() {
+            let target = to.join(entry.file_name());
+            if entry.path().is_dir() {
+                copy(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    /// An account folder `a` holding the recorded fixtures, and its settings.
+    fn recorded_account(dir: &TempDir) -> (PathBuf, ClaudeSettings) {
+        let config = dir.join("a");
+        copy(&toy(), &config.join("projects/-work-toy"));
+        let claude = settings(vec![account("a", &config, CapturePolicy::Metadata)]);
+        (config, claude)
+    }
+
+    fn page(
+        claude: &ClaudeSettings,
+        config: &Path,
+        sid: &str,
+        req: &PageRequest,
+        cache: &FlightCache,
+    ) -> SessionView {
+        session_view(
+            claude,
+            &by_session(config, sid),
+            req,
+            cache,
+            &Opens::default(),
+        )
+        .unwrap()
+    }
+
+    fn ids(view: &SessionView) -> Vec<String> {
+        view.page.events.iter().map(|e| e.id.clone()).collect()
+    }
+
+    #[test]
+    fn paging_returns_every_event_once_in_time_file_offset_order() {
+        let dir = TempDir::new("flight_paging");
+        let (config, claude) = recorded_account(&dir);
+        let cache = FlightCache::default();
+        let all = page(
+            &claude,
+            &config,
+            SELFTEST,
+            &PageRequest {
+                page_size: Some(1000),
+                ..Default::default()
+            },
+            &cache,
+        );
+        assert!(all.page.next_cursor.is_none());
+        let everything = ids(&all);
+        assert!(everything.len() > 10);
+        let mut paged = Vec::new();
+        let mut cursor = None;
+        let mut pages = 0;
+        loop {
+            let v = page(
+                &claude,
+                &config,
+                SELFTEST,
+                &PageRequest {
+                    page_size: Some(4),
+                    cursor: cursor.clone(),
+                    ..Default::default()
+                },
+                &cache,
+            );
+            assert!(v.page.events.len() <= 4);
+            paged.extend(ids(&v));
+            pages += 1;
+            cursor = v.page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(pages >= 3);
+        assert_eq!(paged, everything, "each event once, same order");
+        let keys: Vec<_> = all
+            .page
+            .events
+            .iter()
+            .map(|e| {
+                (
+                    e.at.clone(),
+                    e.content.source.file.clone(),
+                    e.content.source.offset,
+                )
+            })
+            .collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted);
+        assert_eq!(all.status, "ok");
+        assert_eq!(all.agents.len(), 1);
+        assert_eq!(all.page.events[0].content.policy, CapturePolicy::Metadata);
+        assert!(session_view(
+            &claude,
+            &by_session(&config, SELFTEST),
+            &PageRequest {
+                cursor: Some("not a cursor".into()),
+                ..Default::default()
+            },
+            &cache,
+            &Opens::default()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn lines_appended_between_pages_never_repeat_or_skip_an_event() {
+        let dir = TempDir::new("flight_paging_append");
+        let (config, claude) = recorded_account(&dir);
+        let cache = FlightCache::default();
+        let req = |cursor: Option<String>| PageRequest {
+            page_size: Some(5),
+            cursor,
+            ..Default::default()
+        };
+        let first = page(&claude, &config, SELFTEST, &req(None), &cache);
+        let before_all = {
+            let v = page(
+                &claude,
+                &config,
+                SELFTEST,
+                &PageRequest {
+                    page_size: Some(1000),
+                    ..Default::default()
+                },
+                &cache,
+            );
+            ids(&v)
+        };
+        let cursor = first.page.next_cursor.clone().expect("more pages");
+        // A main line and a sub-agent line arrive after the first page.
+        let main = toy_in(&config, &format!("{SELFTEST}.jsonl"));
+        let sub = toy_in(
+            &config,
+            &format!("{SELFTEST}/subagents/agent-a2f2a89910f21f43e.jsonl"),
+        );
+        let append = |path: &Path, line: Value| {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+            writeln!(f, "{line}").unwrap();
+        };
+        append(
+            &main,
+            tool_use(
+                "2030-01-01T00:00:00Z",
+                "mnew",
+                "tnew",
+                "Bash",
+                json!({"command": "ls"}),
+            ),
+        );
+        append(
+            &sub,
+            tool_use(
+                "2030-01-01T00:00:01Z",
+                "snew",
+                "snew1",
+                "Bash",
+                json!({"command": "pwd"}),
+            ),
+        );
+        let mut rest = Vec::new();
+        let mut cursor = Some(cursor);
+        while let Some(c) = cursor {
+            let v = page(&claude, &config, SELFTEST, &req(Some(c)), &cache);
+            rest.extend(ids(&v));
+            cursor = v.page.next_cursor;
+        }
+        let mut seen = ids(&first);
+        seen.extend(rest);
+        let mut unique = seen.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), seen.len(), "no event twice");
+        for id in &before_all {
+            assert!(seen.contains(id), "{id} was skipped");
+        }
+        assert!(
+            seen.len() >= before_all.len() + 4,
+            "the new lines show up: {}",
+            seen.len() - before_all.len()
+        );
+    }
+
+    fn toy_in(config: &Path, rel: &str) -> PathBuf {
+        config.join("projects/-work-toy").join(rel)
+    }
+
+    #[test]
+    fn an_agent_filter_returns_only_that_agent_and_the_cache_follows_the_files() {
+        let dir = TempDir::new("flight_agent_cache");
+        let (config, claude) = recorded_account(&dir);
+        let cache = FlightCache::default();
+        let only = PageRequest {
+            agent: Some("a2f2a89910f21f43e".into()),
+            page_size: Some(1000),
+            ..Default::default()
+        };
+        let v = page(&claude, &config, SELFTEST, &only, &cache);
+        assert!(!v.page.events.is_empty());
+        assert!(v
+            .page
+            .events
+            .iter()
+            .all(|e| e.agent.id == "a2f2a89910f21f43e"));
+        assert_eq!((cache.hits(), cache.misses()), (0, 1));
+        let _ = page(&claude, &config, SELFTEST, &PageRequest::default(), &cache);
+        assert_eq!(
+            (cache.hits(), cache.misses()),
+            (1, 1),
+            "unchanged files: a hit"
+        );
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(toy_in(&config, &format!("{SELFTEST}.jsonl")))
+            .unwrap();
+        writeln!(f, "{}", prompt("2031-01-01T00:00:00Z")).unwrap();
+        drop(f);
+        let again = page(
+            &claude,
+            &config,
+            SELFTEST,
+            &PageRequest {
+                page_size: Some(1000),
+                ..Default::default()
+            },
+            &cache,
+        );
+        assert_eq!(cache.misses(), 2, "an append is a miss");
+        assert_eq!(again.page.events.last().unwrap().kind, "turn.start");
+    }
+
+    /// A session file of about `bytes`, made of the failing fixture's lines.
+    fn big_session(dir: &TempDir, bytes: usize) -> (PathBuf, ClaudeSettings) {
+        let config = dir.join("a");
+        let proj = config.join("projects/-work-toy");
+        std::fs::create_dir_all(&proj).unwrap();
+        let src = std::fs::read_to_string(toy().join(format!("{FAILING}.jsonl"))).unwrap();
+        let mut text = String::new();
+        while text.len() < bytes {
+            text.push_str(&src);
+        }
+        std::fs::write(proj.join(format!("{FAILING}.jsonl")), text).unwrap();
+        (
+            config.clone(),
+            settings(vec![account("a", &config, CapturePolicy::Metadata)]),
+        )
+    }
+
+    #[test]
+    fn the_first_page_of_a_2_mb_session_comes_back_within_a_second() {
+        let dir = TempDir::new("flight_2mb");
+        let (config, claude) = big_session(&dir, 2 * 1024 * 1024);
+        let started = std::time::Instant::now();
+        let v = page(
+            &claude,
+            &config,
+            FAILING,
+            &PageRequest::default(),
+            &FlightCache::default(),
+        );
+        let took = started.elapsed();
+        assert_eq!(v.page.events.len(), DEFAULT_PAGE_FOR_TEST);
+        assert!(v.page.next_cursor.is_some());
+        assert!(
+            took < std::time::Duration::from_secs(1),
+            "first page took {took:?}"
+        );
+    }
+
+    const DEFAULT_PAGE_FOR_TEST: usize = 200;
+
+    /// SM-2 on a 20 MB session. Too slow for the debug gate:
+    /// `cargo test --release flight_first_page_20mb -- --ignored`
+    #[test]
+    #[ignore]
+    fn flight_first_page_20mb() {
+        let dir = TempDir::new("flight_20mb");
+        let (config, claude) = big_session(&dir, 20 * 1024 * 1024);
+        let started = std::time::Instant::now();
+        let v = page(
+            &claude,
+            &config,
+            FAILING,
+            &PageRequest::default(),
+            &FlightCache::default(),
+        );
+        let took = started.elapsed();
+        assert_eq!(v.page.events.len(), DEFAULT_PAGE_FOR_TEST);
+        assert!(
+            took < std::time::Duration::from_secs(1),
+            "first page took {took:?}"
+        );
+    }
+
+    #[test]
+    fn an_off_account_gives_the_policy_off_view_and_opens_nothing() {
+        let dir = TempDir::new("flight_session_off");
+        let config = dir.join("a");
+        std::fs::create_dir_all(&config).unwrap();
+        let claude = settings(vec![account("a", &config, CapturePolicy::Off)]);
+        let opens = Opens::default();
+        let v = session_view(
+            &claude,
+            &by_session(&config, SELFTEST),
+            &PageRequest::default(),
+            &FlightCache::default(),
+            &opens,
+        )
+        .unwrap();
+        assert_eq!((v.status.as_str(), v.policy), ("off", CapturePolicy::Off));
+        assert!(v.page.events.is_empty() && v.agents.is_empty());
+        assert_eq!(opens.count(), 0);
+        let other = dir.join("elsewhere");
+        let refused = session_view(
+            &claude,
+            &by_session(&other, SELFTEST),
+            &PageRequest::default(),
+            &FlightCache::default(),
+            &opens,
+        );
+        assert_eq!(refused.unwrap_err(), UNKNOWN_FOLDER);
+    }
+
+    #[test]
+    fn a_runs_page_names_the_run_as_its_trace() {
+        let dir = TempDir::new("flight_run_trace");
+        let (config, claude) = recorded_account(&dir);
+        let run = dir.join("r-20261104-000000-abcd");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(
+            run.join("app-usage.json"),
+            json!({"schema": 1, "sessions": [{"sessionId": FAILING, "configDir": config.display().to_string()}]}).to_string(),
+        )
+        .unwrap();
+        let q = Query {
+            run_dir: Some(run),
+            ..Default::default()
+        };
+        let v = session_view(
+            &claude,
+            &q,
+            &PageRequest::default(),
+            &FlightCache::default(),
+            &Opens::default(),
+        )
+        .unwrap();
+        assert_eq!(v.trace, "r-20261104-000000-abcd");
+        assert!(v
+            .page
+            .events
+            .iter()
+            .all(|e| e.trace == "r-20261104-000000-abcd"));
+        assert_eq!(v.failures.len(), 2);
     }
 
     #[test]

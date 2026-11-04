@@ -165,6 +165,8 @@ pub struct Span {
 #[serde(rename_all = "camelCase")]
 pub struct AgentNode {
     pub id: String,
+    /// The session this agent belongs to (a run can hold several).
+    pub session: String,
     pub kind: String,
     #[serde(rename = "type")]
     pub agent_type: Option<String>,

@@ -12,6 +12,11 @@ use std::path::Path;
 #[serde(rename_all = "camelCase")]
 pub struct Lane {
     pub id: String,
+    /// The index of the run's recorded session this lane belongs to.
+    pub session: usize,
+    /// The sub-agent's id (`None` for the orchestrator lane), the filter a
+    /// trace opens on.
+    pub agent_id: Option<String>,
     /// The agent type (`dcv2:implementer` -> `implementer`; an unknown type keeps its name).
     pub label: String,
     pub description: Option<String>,
@@ -161,6 +166,8 @@ pub fn timeline(run_dir: &Path) -> Timeline {
         let span = tracker.activity_span();
         lanes.push(Lane {
             id: format!("session-{n}"),
+            session: n,
+            agent_id: None,
             label: "orchestrator".into(),
             description: None,
             state: "completed".into(),
@@ -172,6 +179,8 @@ pub fn timeline(run_dir: &Path) -> Timeline {
             let finished = sub.finished_ms.is_some();
             lanes.push(Lane {
                 id: format!("{n}-{}", sub.tool_use_id),
+                session: n,
+                agent_id: sub.agent_id.clone(),
                 label: short(&sub.agent_type),
                 description: sub.description.clone(),
                 state: if !finished && matches!(sub.status.as_str(), "spawned" | "completed") {
@@ -252,6 +261,21 @@ mod tests {
             .collect();
         out.sort();
         out
+    }
+
+    #[test]
+    fn a_lane_names_its_session_and_agent_so_a_trace_can_open_on_it() {
+        let dir = TempDir::new("timeline_lane_ids");
+        let run = run_from_fixture(&dir);
+        let t = timeline(&run);
+        let json = serde_json::to_value(&t.lanes).unwrap();
+        let orchestrator = &json[0];
+        assert_eq!(orchestrator["session"], 0);
+        assert!(orchestrator["agentId"].is_null());
+        let sub = t.lanes.iter().find(|l| l.agent_id.is_some()).unwrap();
+        let sub_json = serde_json::to_value(sub).unwrap();
+        assert_eq!(sub_json["session"], 0);
+        assert!(sub_json["agentId"].is_string());
     }
 
     #[test]
