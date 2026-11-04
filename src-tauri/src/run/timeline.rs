@@ -54,18 +54,71 @@ fn short(kind: &str) -> String {
     kind.strip_prefix("dcv2:").unwrap_or(kind).to_string()
 }
 
-/// `(time, stage, text)` of every log.md line (`<UTC time> <stage> <text>`).
-/// The app's own notes (`app: ...`: attention, cleanup) are not run progress and are left out, so
-/// they neither end a wait nor extend the span.
+/// `PR<digits>`.
+fn is_pr_id(word: &str) -> bool {
+    word.strip_prefix("PR")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Text that is not run progress: the app's own notes (`app: ...`, attention and cleanup) and the
+/// plugin's two records (`stop-check <PR|-> pass|fail|skip`, `pr <PR> <old> -> <new>`, plugin
+/// 0.7.0). They never end an approval wait and never extend the span. The same two forms
+/// `state.sh log` refuses. This is the only place that decides it.
+fn not_progress(text: &str) -> bool {
+    if text.starts_with("app:") {
+        return true;
+    }
+    let words: Vec<&str> = text.split(' ').collect();
+    match words.as_slice() {
+        ["stop-check", pr, result] => {
+            (*pr == "-" || is_pr_id(pr)) && matches!(*result, "pass" | "fail" | "skip")
+        }
+        ["pr", pr, old, "->", new] => is_pr_id(pr) && !old.is_empty() && !new.is_empty(),
+        _ => false,
+    }
+}
+
+/// One progress line of log.md: its time, stage, text and the byte offset of the line.
+struct Entry {
+    at: i64,
+    stage: String,
+    text: String,
+    offset: u64,
+}
+
+fn log_entries(text: &str) -> Vec<Entry> {
+    let mut offset = 0u64;
+    let mut out = Vec::new();
+    for raw in text.split_inclusive('\n') {
+        let start = offset;
+        offset += raw.len() as u64;
+        let line = raw.trim_end_matches(['\n', '\r']);
+        let mut parts = line.splitn(3, ' ');
+        let (Some(time), Some(stage)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let Some(at) = parse_time_ms(time) else {
+            continue;
+        };
+        let text = parts.next().unwrap_or("");
+        if !not_progress(text) {
+            out.push(Entry {
+                at,
+                stage: stage.to_string(),
+                text: text.to_string(),
+                offset: start,
+            });
+        }
+    }
+    out
+}
+
+/// `(time, stage, text)` of every progress log.md line (`<UTC time> <stage> <text>`); see
+/// [`not_progress`] for the lines that are left out.
 fn log_lines(text: &str) -> Vec<(i64, String, String)> {
-    text.lines()
-        .filter_map(|line| {
-            let mut parts = line.splitn(3, ' ');
-            let at = parse_time_ms(parts.next()?)?;
-            let stage = parts.next()?.to_string();
-            let text = parts.next().unwrap_or("").to_string();
-            (!text.starts_with("app:")).then_some((at, stage, text))
-        })
+    log_entries(text)
+        .into_iter()
+        .map(|e| (e.at, e.stage, e.text))
         .collect()
 }
 
@@ -128,6 +181,78 @@ pub fn bands(log: &str) -> Vec<Band> {
                 end_ms: next.unwrap_or(*at).max(*at),
             }),
         }
+    }
+    out
+}
+
+/// One approval stop: from its `waiting for ... approval` line (or the run of them) to the next
+/// progress line. `kind` is `plan`, `ship` or `other`; the offsets are the byte offsets of the
+/// opening and closing lines of log.md; `outcome` comes from the closing line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalBand {
+    pub kind: String,
+    pub name: String,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub open_offset: u64,
+    pub close_offset: Option<u64>,
+    /// `approved`, `declined`, `ended` (any other line) or `open` (nothing followed).
+    pub outcome: String,
+}
+
+fn is_wait(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.starts_with("waiting for") && lower.contains("approval")
+}
+
+fn outcome_of(text: &str) -> &'static str {
+    match text.trim().to_ascii_lowercase().as_str() {
+        "plan approved by the user"
+        | "ship approved by the user"
+        | "plan auto-approved (test-mode)"
+        | "ship auto-approved (test-mode)" => "approved",
+        "plan not approved; run paused"
+        | "ship declined; run paused"
+        | "plan changes requested" => "declined",
+        _ => "ended",
+    }
+}
+
+/// The approval stops of log.md, from the same line filter and walk as [`bands`], so their total
+/// time is the wait time `wait_and_span` stores. No other module parses approval text.
+pub fn approval_bands(log: &str) -> Vec<ApprovalBand> {
+    let entries = log_entries(log);
+    let mut out: Vec<ApprovalBand> = Vec::new();
+    let mut i = 0;
+    while i < entries.len() {
+        if !is_wait(&entries[i].text) {
+            i += 1;
+            continue;
+        }
+        let first = i;
+        while i + 1 < entries.len() && is_wait(&entries[i + 1].text) {
+            i += 1;
+        }
+        let close = entries.get(i + 1);
+        let name = entries[first].text.trim().to_string();
+        let lower = name.to_ascii_lowercase();
+        out.push(ApprovalBand {
+            kind: if lower.contains("plan approval") {
+                "plan"
+            } else if lower.contains("ship approval") {
+                "ship"
+            } else {
+                "other"
+            }
+            .into(),
+            name,
+            start_ms: entries[first].at,
+            end_ms: close.map_or(entries[i].at, |c| c.at),
+            open_offset: entries[first].offset,
+            close_offset: close.map(|c| c.offset),
+            outcome: close.map_or("open", |c| outcome_of(&c.text)).into(),
+        });
+        i += 1;
     }
     out
 }
@@ -369,5 +494,114 @@ mod tests {
         assert_eq!(wait_and_span(none), (Some(0.0), Some(10.0)));
         assert_eq!(wait_and_span("no timed lines here\n"), (None, None));
         assert_eq!(wait_and_span(""), (None, None));
+    }
+
+    const APPROVALS: &str = include_str!("../../../fixtures/timeline/approvals.md");
+
+    /// The log with every plugin record line removed.
+    fn without_records(log: &str) -> String {
+        log.lines()
+            .filter(|l| !l.contains(" stop-check ") && !l.contains(" pr PR1 "))
+            .map(|l| format!("{l}\n"))
+            .collect()
+    }
+
+    #[test]
+    fn plugin_records_inside_a_wait_change_neither_the_wait_nor_the_span_nor_the_bands() {
+        let bare = without_records(APPROVALS);
+        assert_ne!(bare.len(), APPROVALS.len(), "the fixture has record lines");
+        assert_eq!(wait_and_span(APPROVALS), wait_and_span(&bare));
+        let shape = |log: &str| {
+            bands(log)
+                .into_iter()
+                .map(|b| (b.kind, b.name, b.start_ms, b.end_ms))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shape(APPROVALS), shape(&bare));
+        // A stop-check line, and a pr line, right inside a wait: the wait is still 3 minutes.
+        for record in [
+            "2026-10-29T10:02:00Z planning stop-check PR2 fail",
+            "2026-10-29T10:02:00Z planning stop-check - skip",
+            "2026-10-29T10:02:00Z planning pr PR2 building -> reviewing",
+            "2026-10-29T10:02:00Z planning pr PR3 - -> pending",
+        ] {
+            let log = format!(
+                "2026-10-29T10:00:00Z planning start\n2026-10-29T10:01:00Z planning waiting for plan approval\n{record}\n2026-10-29T10:04:00Z building plan approved\n"
+            );
+            assert_eq!(wait_and_span(&log), (Some(3.0), Some(4.0)), "{record}");
+        }
+        // Look-alikes are progress: they do end the wait.
+        for text in [
+            "stop-check PR2 maybe",
+            "stop-check pass",
+            "pr PR2 a -> b c",
+            "pr two a -> b",
+            "PR2 stop-check pass",
+        ] {
+            let log = format!(
+                "2026-10-29T10:01:00Z planning waiting for plan approval\n2026-10-29T10:02:00Z planning {text}\n2026-10-29T10:04:00Z building go\n"
+            );
+            assert_eq!(wait_and_span(&log).0, Some(1.0), "{text}");
+        }
+    }
+
+    #[test]
+    fn approval_bands_give_kind_outcome_and_the_offsets_of_the_opening_and_closing_lines() {
+        // The byte offset where the line holding `needle` starts.
+        let at = |needle: &str| {
+            let hit = APPROVALS.find(needle).unwrap();
+            APPROVALS[..hit].rfind('\n').map_or(0, |n| n + 1) as u64
+        };
+        let bands = approval_bands(APPROVALS);
+        let got: Vec<(&str, &str, u64, Option<u64>)> = bands
+            .iter()
+            .map(|b| {
+                (
+                    b.kind.as_str(),
+                    b.outcome.as_str(),
+                    b.open_offset,
+                    b.close_offset,
+                )
+            })
+            .collect();
+        let want = vec![
+            ("plan", "approved", at("09:02:00Z"), Some(at("09:05:00Z"))),
+            ("plan", "approved", at("09:06:00Z"), Some(at("09:07:00Z"))),
+            ("plan", "declined", at("09:10:00Z"), Some(at("09:11:00Z"))),
+            ("plan", "declined", at("09:12:00Z"), Some(at("09:14:00Z"))),
+            ("ship", "approved", at("09:20:00Z"), Some(at("09:21:00Z"))),
+            ("ship", "approved", at("09:22:00Z"), Some(at("09:23:00Z"))),
+            ("ship", "declined", at("09:24:00Z"), Some(at("09:26:00Z"))),
+            ("ship", "ended", at("09:30:00Z"), Some(at("09:31:00Z"))),
+            ("ship", "open", at("09:40:00Z"), None),
+        ];
+        assert_eq!(got, want);
+        // The first wait: opened 09:02, closed by the approval at 09:05, whatever sat between.
+        assert_eq!(bands[0].end_ms - bands[0].start_ms, 3 * 60_000);
+        assert_eq!(bands[0].name, "waiting for plan approval");
+        let open = bands.last().unwrap();
+        assert_eq!(open.end_ms, open.start_ms, "an open wait has no length yet");
+        // The same total as the stored wait minutes.
+        let total: i64 = bands.iter().map(|b| b.end_ms - b.start_ms).sum();
+        assert_eq!(Some(minutes(total)), wait_and_span(APPROVALS).0);
+        assert!(approval_bands("").is_empty());
+        let other = "2026-11-02T09:00:00Z planning waiting for merge approval\n2026-11-02T09:01:00Z planning go\n";
+        assert_eq!(approval_bands(other)[0].kind, "other");
+    }
+
+    #[test]
+    fn approval_wording_is_matched_whole_and_case_insensitively() {
+        for (text, want) in [
+            ("Plan approved by the user", "approved"),
+            ("plan approved by the user and more", "ended"),
+            ("ship declined; run paused", "declined"),
+            ("plan changes requested", "declined"),
+            ("approved", "ended"),
+        ] {
+            let log = format!(
+                "2026-11-02T09:00:00Z plan-approval waiting for plan approval\n2026-11-02T09:01:00Z plan-approval {text}\n"
+            );
+            assert_eq!(approval_bands(&log)[0].outcome, want, "{text}");
+        }
     }
 }
