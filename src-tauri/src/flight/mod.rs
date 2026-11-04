@@ -14,6 +14,7 @@
 //! - `redact`: the one secret scanner (also used by ClickUp).
 //! - `host`: the seam to the app (paths, accounts, policy, reads).
 
+pub mod adapters;
 pub mod host;
 pub mod schema;
 pub mod tail;

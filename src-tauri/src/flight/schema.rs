@@ -211,6 +211,17 @@ pub fn event_id(file: &str, offset: u64, line_sha256: &str) -> String {
     format!("ev_{}", &digest[..16])
 }
 
+/// The id of the `seq`-th event of one source line: the first one is
+/// [`event_id`], later ones (a line can hold several tool_use blocks) add
+/// their index so ids stay distinct.
+pub fn event_id_seq(file: &str, offset: u64, line_sha256: &str, seq: usize) -> String {
+    if seq == 0 {
+        return event_id(file, offset, line_sha256);
+    }
+    let digest = sha256_hex(format!("{file}:{offset}:{line_sha256}:{seq}").as_bytes());
+    format!("ev_{}", &digest[..16])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
