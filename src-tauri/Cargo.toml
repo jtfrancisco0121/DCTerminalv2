@@ -3,6 +3,8 @@ name = "dcterminalv2"
 version = "0.1.0"
 description = "Claude terminal tabs, one Claude account per window"
 authors = ["JT Francisco"]
+license = "Apache-2.0"
+repository = "https://github.com/jtfrancisco0121/DCTerminalv2"
 edition = "2021"
 default-run = "dcterminalv2"
 

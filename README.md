@@ -33,6 +33,16 @@ Built with Tauri 2 (Rust in `src-tauri/`, React + xterm.js in `src/`) and the bu
 
 ## Install
 
+### Download (macOS, Apple silicon)
+
+1. Get `DCTerminalv2_<version>_aarch64.dmg` from [Releases](https://github.com/jtfrancisco0121/DCTerminalv2/releases/latest), open it and drag **DCTerminalv2** to Applications.
+2. The app is signed ad hoc, not notarized, so macOS blocks the first open. Either run `xattr -dr com.apple.quarantine /Applications/DCTerminalv2.app`, or open it once, then click **Open Anyway** in **System Settings › Privacy & Security**.
+3. You still need the **Claude Code CLI** (`claude`, signed in), **git** and **python3**; Node.js 18+ only for BMAD planning. Rust and npm are needed only to build from source.
+
+Intel Macs and Windows: build from source below.
+
+### From source (macOS)
+
 ```sh
 git clone https://github.com/jtfrancisco0121/DCTerminalv2.git
 cd DCTerminalv2
@@ -169,3 +179,7 @@ npm run dev:app                                      # tauri dev
 - [docs/run-folder.md](docs/run-folder.md): the run folder contract and run rules
 - [docs/skills.md](docs/skills.md): the plugin, roles, memory and guard
 - [docs/plans/](docs/plans/): dated design plans
+
+## License
+
+[Apache License 2.0](LICENSE). The vendored BMAD-METHOD skills in `plugin/bmad/` keep their own license ([plugin/bmad/LICENSE](plugin/bmad/LICENSE)).
