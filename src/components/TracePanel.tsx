@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { flightContent, flightSession } from "../flight/api";
-import type { AgentNode, ContentOut, Failure, FlightEvent, SessionView, TraceTarget } from "../flight/types";
-import { flightDerivedText, flightKindText, flightStatusText, flightStatusTone } from "../run/words";
+import { ORCHESTRATION } from "../flight/types";
+import type { AgentNode, ContentOut, Failure, FlightEvent, Phase, SessionView, TraceTarget } from "../flight/types";
+import {
+  flightDerivedText,
+  flightKindText,
+  flightStatusText,
+  flightStatusTone,
+  orchestrationStatusText,
+  orchestrationText,
+  orchestrationTone,
+} from "../run/words";
 import { errorText } from "./InlineNotice";
 import { Pill } from "./Pill";
 
@@ -17,6 +26,43 @@ type ContentState =
   | { id: string; state: "loading" }
   | { id: string; state: "ready"; out: ContentOut }
   | { id: string; state: "error"; message: string };
+
+type Lane = "agents" | "orchestration" | "both";
+const LANES: { id: Lane; label: string }[] = [
+  { id: "agents", label: "Agents" },
+  { id: "orchestration", label: "Orchestration" },
+  { id: "both", label: "Both" },
+];
+
+const isRun = (event: FlightEvent) => event.agent.id === ORCHESTRATION;
+const ruleOf = (event: FlightEvent) => (typeof event.attrs.rule === "string" ? event.attrs.rule : null);
+const prOfAttrs = (event: FlightEvent) => (typeof event.attrs.pr === "string" ? event.attrs.pr : null);
+
+/** Agent id -> PR id, from the agent trees. */
+function prsOf(nodes: AgentNode[], out = new Map<string, string>()): Map<string, string> {
+  for (const node of nodes) {
+    if (node.pr) out.set(node.id, node.pr);
+    prsOf(node.children, out);
+  }
+  return out;
+}
+
+/** "PR2": solid when the tie is exact; dashed "PR2 · heuristic" with a tooltip (hover and focus) when it was guessed. */
+function PrPill({ pr, label }: { pr: string; label: string | undefined }) {
+  if (label?.startsWith("exact:")) {
+    return (
+      <Pill tone="muted" className="pill-pr" title={label}>
+        {pr}
+      </Pill>
+    );
+  }
+  const tip = "Guessed from the agent's description: this run is from a plugin before the exact PR rule.";
+  return (
+    <span className="pill tone-muted pill-pr pill-heuristic" tabIndex={0} data-tip={tip} title={label ?? tip} aria-label={`${pr}, heuristic. ${tip}`}>
+      {pr} · heuristic
+    </span>
+  );
+}
 
 const clock = (at: string) => {
   const date = new Date(at);
@@ -80,9 +126,7 @@ function AgentTree({
               {node.pr && (
                 <>
                   {" "}
-                  <Pill tone="muted" title={node.prDerived?.label}>
-                    {node.pr}
-                  </Pill>
+                  <PrPill pr={node.pr} label={node.prDerived?.label} />
                 </>
               )}
               {node.files.length > 0 && <span className="hint"> · {node.files.length} files</span>}
@@ -105,11 +149,44 @@ function AgentTree({
   );
 }
 
+/** The fields of an opened event: what it is, when, its attributes and the phase of the run it happened in. */
+function EventFields({ event, phase }: { event: FlightEvent; phase: Phase | undefined }) {
+  const attrs = Object.entries(event.attrs).filter(([, v]) => typeof v === "string" || typeof v === "number");
+  return (
+    <dl className="trace-fields" data-testid="trace-fields">
+      <dt>Event</dt>
+      <dd>
+        {flightKindText(event.kind)}
+        {event.name ? `: ${event.name}` : ""} · {event.at}
+      </dd>
+      {attrs.map(([k, v]) => (
+        <div key={k} className="trace-field">
+          <dt>{k}</dt>
+          <dd>{String(v)}</dd>
+        </div>
+      ))}
+      {phase && (phase.stage || phase.prState) && (
+        <>
+          <dt>Phase</dt>
+          <dd>
+            {phase.stage ? `stage ${phase.stage}` : ""}
+            {phase.prState ? ` · PR ${phase.prState}${phase.label?.startsWith("heuristic:") ? " (heuristic)" : ""}` : ""}
+          </dd>
+        </>
+      )}
+    </dl>
+  );
+}
+
 type Props = {
   target: TraceTarget;
   /** Open on this agent only (a lane click). */
   agent?: string;
+  /** Open on the page holding this event (a search result's first match). */
+  focus?: string;
   onClose: () => void;
+  /** The Search button of the header (traces opened from the search page, or any run Trace). */
+  onSearch?: () => void;
 };
 
 /**
@@ -117,7 +194,7 @@ type Props = {
  * agent touched, from the run's Claude transcripts. Content is read only when an event is opened and arrives
  * redacted; it is shown as plain text in a `pre`.
  */
-export function TracePanel({ target, agent: initialAgent, onClose }: Props) {
+export function TracePanel({ target, agent: initialAgent, focus, onClose, onSearch }: Props) {
   const [agent, setAgent] = useState<string | undefined>(initialAgent);
   const [view, setView] = useState<SessionView | null>(null);
   const [events, setEvents] = useState<FlightEvent[]>([]);
@@ -129,6 +206,10 @@ export function TracePanel({ target, agent: initialAgent, onClose }: Props) {
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
   const [content, setContent] = useState<ContentState | null>(null);
   const [copied, setCopied] = useState(false);
+  const [lane, setLane] = useState<Lane>("both");
+  const [prFilter, setPrFilter] = useState<string | null>(null);
+  const focusRef = useRef<string | undefined>(focus);
+  const scrollTo = useRef<string | null>(null);
   const page = useRef<HTMLElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const serial = useRef(0);
@@ -139,12 +220,21 @@ export function TracePanel({ target, agent: initialAgent, onClose }: Props) {
       const mine = ++serial.current;
       setPhase("cold");
       try {
-        const v = await flightSession({ ...target, agent: filter });
+        const at = focusRef.current;
+        const v = await flightSession({ ...target, agent: filter, ...(at ? { focus: at } : {}) });
         if (mine !== serial.current) return;
         setView(v);
         setEvents(v.page.events);
         setNext(v.page.nextCursor);
         setError(null);
+        if (at) {
+          // Open on the focused event once, not again on a refresh or an agent filter.
+          focusRef.current = undefined;
+          if (v.page.events.some((e) => e.id === at)) {
+            setSelected(at);
+            scrollTo.current = at;
+          }
+        }
       } catch (err) {
         if (mine === serial.current) setError(errorText(err));
       } finally {
@@ -162,6 +252,13 @@ export function TracePanel({ target, agent: initialAgent, onClose }: Props) {
     setContent(null);
     void load(agent);
   }, [load, agent]);
+
+  useEffect(() => {
+    if (scrollTo.current && events.some((e) => e.id === scrollTo.current)) {
+      document.getElementById(`trace-row-${scrollTo.current}`)?.scrollIntoView?.({ block: "center" });
+      scrollTo.current = null;
+    }
+  }, [events, lane, prFilter]);
 
   // The page takes the keyboard from a terminal underneath.
   useEffect(() => {
@@ -188,12 +285,27 @@ export function TracePanel({ target, agent: initialAgent, onClose }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [next, phase, agent, targetKey]);
 
-  const rows = useMemo(() => rowsOf(events, opened), [events, opened]);
+  const prByAgent = useMemo(() => prsOf(view?.agents ?? []), [view]);
+  const prOf = useCallback(
+    (e: FlightEvent) => (isRun(e) ? prOfAttrs(e) : (e.agent.pr ?? prByAgent.get(e.agent.id) ?? null)),
+    [prByAgent],
+  );
+  const lanes = Boolean(target.runDir);
+  const shownEvents = useMemo(
+    () =>
+      events.filter(
+        (e) =>
+          (!lanes || lane === "both" || (lane === "orchestration") === isRun(e)) && (prFilter === null || prOf(e) === prFilter),
+      ),
+    [events, lane, lanes, prFilter, prOf],
+  );
+  const rows = useMemo(() => rowsOf(shownEvents, opened), [shownEvents, opened]);
   const byId = useMemo(() => new Map(events.map((e) => [e.id, e])), [events]);
   const failures = useMemo(() => flatFailures(view?.failures ?? []), [view]);
   const failure = failures.find((f) => f.id === failureId) ?? null;
   const off = view?.status === "off";
   const gone = (view?.notices ?? []).some((n) => n.startsWith("transcript gone"));
+  const notices = (view?.notices ?? []).filter((n) => !n.startsWith("transcript gone"));
 
   const select = (id: string) => {
     setSelected(id);
@@ -204,6 +316,9 @@ export function TracePanel({ target, agent: initialAgent, onClose }: Props) {
     if (phase !== null) return;
     setFailureId(target_.id);
     setContent(null);
+    // A failure the filters hide is shown again.
+    setLane("both");
+    setPrFilter(null);
     let known = events.some((e) => e.id === target_.id);
     let cursor = next;
     let pages = 0;
@@ -296,6 +411,11 @@ export function TracePanel({ target, agent: initialAgent, onClose }: Props) {
         <h2>Trace</h2>
         <span className="trace-actions">
           {view && !off && <span className="hint">{view.trace}</span>}
+          {onSearch && (
+            <button type="button" className="secondary-button" onClick={onSearch}>
+              Search
+            </button>
+          )}
           <button type="button" className="secondary-button" disabled={phase !== null} onClick={() => void load(agent)}>
             Refresh
           </button>
@@ -338,6 +458,11 @@ export function TracePanel({ target, agent: initialAgent, onClose }: Props) {
               A session transcript is gone: Claude Code deletes old logs. What is left is shown.
             </p>
           )}
+          {notices.map((n) => (
+            <p key={n} className="hint warn" data-testid="trace-notice">
+              {n}
+            </p>
+          ))}
           {events.length === 0 && !gone && <p className="hint">No events were recorded for this run yet.</p>}
           <div className="trace-body">
             <aside className="trace-rail" aria-label="Failures and agents">
@@ -355,6 +480,7 @@ export function TracePanel({ target, agent: initialAgent, onClose }: Props) {
                         onClick={() => void jumpToFailure(f)}
                       >
                         {clock(f.at)} {f.name ?? flightKindText(f.kind)}{" "}
+                        {f.rule && <code className="trace-rule tone-warn">{f.rule}</code>}{" "}
                         <Pill tone="danger" title={`${f.derived.label} · ${f.derived.evidence.length} events`}>
                           {flightDerivedText(f.derived.label)}
                         </Pill>
@@ -409,6 +535,45 @@ export function TracePanel({ target, agent: initialAgent, onClose }: Props) {
                   )}
                 </div>
               )}
+              {lanes && (
+                <div
+                  className="trace-lanes"
+                  role="radiogroup"
+                  aria-label="Lanes"
+                  onKeyDown={(event) => {
+                    const at = LANES.findIndex((l) => l.id === lane);
+                    const by = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
+                    if (by === 0) return;
+                    event.preventDefault();
+                    const to = LANES[(at + by + LANES.length) % LANES.length]!;
+                    setLane(to.id);
+                    requestAnimationFrame(() => document.getElementById(`trace-lane-${to.id}`)?.focus());
+                  }}
+                >
+                  {LANES.map((l) => (
+                    <button
+                      key={l.id}
+                      id={`trace-lane-${l.id}`}
+                      type="button"
+                      role="radio"
+                      aria-checked={lane === l.id}
+                      tabIndex={lane === l.id ? 0 : -1}
+                      className="trace-lane-choice"
+                      onClick={() => setLane(l.id)}
+                    >
+                      {l.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {prFilter && (
+                <p className="hint" data-testid="trace-pr-filter">
+                  Showing {prFilter} only.{" "}
+                  <button type="button" className="secondary-button" onClick={() => setPrFilter(null)}>
+                    Show all PRs
+                  </button>
+                </p>
+              )}
               <div className="trace-list" ref={list} onScroll={onScroll} role="presentation">
                 <div
                   className="trace-events"
@@ -437,22 +602,62 @@ export function TracePanel({ target, agent: initialAgent, onClose }: Props) {
                         id={`trace-row-${row.id}`}
                         role="option"
                         aria-selected={selected === row.id}
-                        className={`trace-row${failureId === row.id ? " trace-row-failure" : ""}`}
+                        className={`trace-row${isRun(row.event) ? " trace-row-run" : ""}${failureId === row.id ? " trace-row-failure" : ""}`}
                         onClick={() => {
                           setSelected(row.id);
                           openContent(row.event);
                         }}
                       >
                         <span className="trace-time">{clock(row.event.at)}</span>{" "}
-                        <span className="trace-agent-name">{agentName(row.event.agent)}</span>{" "}
-                        <span>
-                          {flightKindText(row.event.kind)}
-                          {row.event.name ? `: ${row.event.name}` : ""}
-                        </span>
-                        {row.event.status !== null && (
+                        {isRun(row.event) ? (
+                          <>
+                            <span className="trace-lane-chip">run</span>{" "}
+                            <span>{orchestrationText(row.event)}</span>
+                            {orchestrationStatusText(row.event) && (
+                              <>
+                                {" "}
+                                <Pill tone={orchestrationTone(row.event.kind, row.event.status)}>
+                                  {orchestrationStatusText(row.event)}
+                                </Pill>
+                              </>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <span className="trace-agent-name">{agentName(row.event.agent)}</span>{" "}
+                            <span>
+                              {flightKindText(row.event.kind)}
+                              {row.event.name ? `: ${row.event.name}` : ""}
+                            </span>
+                            {row.event.status !== null && (
+                              <>
+                                {" "}
+                                <Pill tone={flightStatusTone(row.event.status)}>{flightStatusText(row.event.status)}</Pill>
+                              </>
+                            )}
+                          </>
+                        )}
+                        {ruleOf(row.event) && (
                           <>
                             {" "}
-                            <Pill tone={flightStatusTone(row.event.status)}>{flightStatusText(row.event.status)}</Pill>
+                            <code className="trace-rule tone-warn">{ruleOf(row.event)}</code>
+                          </>
+                        )}
+                        {prOf(row.event) && (
+                          <>
+                            {" "}
+                            <button
+                              type="button"
+                              className="pill tone-muted trace-pr-button"
+                              aria-label={`Show only ${prOf(row.event)}`}
+                              aria-pressed={prFilter === prOf(row.event)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setPrFilter((now) => (now === prOf(row.event) ? null : prOf(row.event)));
+                              }}
+                            >
+                              {prOf(row.event)}
+                            </button>
                           </>
                         )}
                       </div>
@@ -477,7 +682,8 @@ export function TracePanel({ target, agent: initialAgent, onClose }: Props) {
                   {content.state === "error" && <p className="error">{content.message}</p>}
                   {content.state === "ready" && (
                     <>
-                      <pre className="trace-pre">{content.out.text}</pre>
+                      {shown && <EventFields event={shown} phase={view?.phases?.[shown.id]} />}
+                      <pre className={`trace-pre${shown && isRun(shown) ? " trace-pre-run" : ""}`}>{content.out.text}</pre>
                       <p className="hint">
                         {content.out.redactions} redacted
                         {shown ? ` · source ${shown.content.ref.file.split(/[\\/]/).pop()} @ ${shown.content.ref.offset}+${shown.content.ref.len}` : ""}

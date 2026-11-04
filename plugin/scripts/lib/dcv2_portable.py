@@ -249,8 +249,8 @@ def real_path(p):
 
 def is_protected(p, run_ident, names_cf, pathmod, ident_fn, has_request_md=lambda d: False):
     """Whether `p` (a path value) is a protected run file of the run whose identity is `run_ident`: a name in
-    `names_cf` (casefolded) directly in the run folder or in a folder holding a request.md, or anything under a
-    `requests` folder of one. An unresolvable path is protected (fail closed); the null device is not a file."""
+    `names_cf` (casefolded) directly in the run folder or in a folder holding a request.md, `logs/guard.log` of one,
+    or anything under a `requests` folder of one. An unresolvable path is protected (fail closed); the null device is not a file."""
     ident_p = ident_fn(p)
     if ident_p == UNRESOLVED:
         return True
@@ -264,8 +264,13 @@ def is_protected(p, run_ident, names_cf, pathmod, ident_fn, has_request_md=lambd
             if d_ident == UNRESOLVED or (d_ident is not None and d_ident == run_ident) or has_request_md(d):
                 return True
         q = pathmod.dirname(q)
+    d = pathmod.dirname(p)
+    if pathmod.basename(p).casefold() == "guard.log" and pathmod.basename(d).casefold() == "logs":  # <run>/logs/guard.log
+        g = pathmod.dirname(d)
+        g_ident = ident_fn(g)
+        if g_ident == UNRESOLVED or (g_ident is not None and g_ident == run_ident) or has_request_md(g):
+            return True
     if pathmod.basename(p).casefold() not in names_cf:
         return False
-    d = pathmod.dirname(p)
     d_ident = ident_fn(d)
     return d_ident == UNRESOLVED or (d_ident is not None and d_ident == run_ident) or has_request_md(d)

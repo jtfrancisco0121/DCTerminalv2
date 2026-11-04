@@ -5,6 +5,9 @@ import {
   checkTone,
   ESTIMATE_NOTE,
   ESTIMATES_CAPTION,
+  orchestrationStatusText,
+  orchestrationText,
+  orchestrationTone,
   outcomeTone,
   tabProgress,
   ciChip,
@@ -311,5 +314,60 @@ describe("outcomeTone and the estimate words", () => {
   it("keeps the one wording of an estimate", () => {
     expect(ESTIMATE_NOTE).toBe("An estimate at API list prices, not a bill");
     expect(ESTIMATES_CAPTION).toBe("Estimates at API list prices");
+  });
+});
+
+describe("the run lane's words and tones", () => {
+  const e = (kind: string, name: string | null, status: string | null, attrs: Record<string, unknown> = {}) => ({
+    kind,
+    name,
+    status,
+    attrs,
+  });
+
+  it("names every orchestration kind in the app's words", () => {
+    const words: [ReturnType<typeof e>, string][] = [
+      [e("stage.change", "reviewing", null), "Stage: reviewing"],
+      [e("approval.wait", "plan", null), "Waiting for plan approval"],
+      [e("approval.wait", "ship", null), "Waiting for ship approval"],
+      [e("approval.decision", "plan", "ok"), "Plan approved"],
+      [e("approval.decision", "ship", "declined"), "Ship declined"],
+      [e("review.round", "PR2-round1", null, { pr: "PR2", round: 1 }), "PR2 review round 1"],
+      [e("review.round", "plan-round2", null, { round: 2 }), "Plan review round 2"],
+      [e("check.end", "cargo test", "fail", { source: "app", pr: "PR2" }), "Check (app) PR2 failed"],
+      [e("check.end", "npm test", "pass", { source: "skill", pr: "PR1" }), "Check (skill) PR1 passed"],
+      [e("check.end", "x", "fail", { source: "stop-check", pr: "PR2" }), "stop-check PR2 failed"],
+      [e("check.end", "x", "skip", { source: "stop-check" }), "stop-check skipped"],
+      [e("ci.state", "fail", "fail", { pr: "PR2", ci: "fail" }), "CI PR2 failed"],
+      [e("x.dcv2.pr-state", "fixing", null, { pr: "PR2", from: "reviewing", to: "fixing" }), "pr PR2 reviewing → fixing"],
+      [e("retry", "PR2", null, { pr: "PR2" }), "Retry PR2"],
+      [e("attention", "approval-wait", null), "Needs attention: approval-wait"],
+      [e("x.dcv2.log", null, null), "Log line"],
+      [e("x.dcv2.request", "recheck", "ok", { result: "done" }), "Request: recheck done"],
+      [e("tool.blocked", "Bash", "blocked"), "Guard blocked Bash"],
+    ];
+    for (const [event, text] of words) expect(orchestrationText(event), text).toBe(text);
+    expect(orchestrationStatusText(e("check.end", "x", "fail"))).toBe("failed");
+    expect(orchestrationStatusText(e("approval.decision", "plan", "ok"))).toBe("approved");
+    expect(orchestrationStatusText(e("x.dcv2.log", null, null))).toBeNull();
+  });
+
+  it("gives each kind its tone: danger for failed checks, warn for blocks and retries, success for passes", () => {
+    expect(orchestrationTone("check.end", "fail")).toBe("danger");
+    expect(orchestrationTone("check.end", "error")).toBe("danger");
+    expect(orchestrationTone("check.end", "pass")).toBe("success");
+    expect(orchestrationTone("check.end", "skip")).toBe("muted");
+    expect(orchestrationTone("ci.state", "fail")).toBe("danger");
+    expect(orchestrationTone("ci.state", "pass")).toBe("success");
+    expect(orchestrationTone("tool.blocked", "blocked")).toBe("warn");
+    expect(orchestrationTone("retry", null)).toBe("warn");
+    expect(orchestrationTone("approval.decision", "ok")).toBe("success");
+    expect(orchestrationTone("approval.decision", "declined")).toBe("warn");
+    expect(orchestrationTone("approval.wait", null)).toBe("you");
+    expect(orchestrationTone("stage.change", null)).toBe("running");
+    expect(orchestrationTone("x.dcv2.pr-state", null)).toBe("muted");
+    expect(orchestrationTone("x.dcv2.log", null)).toBe("muted");
+    expect(orchestrationTone("x.dcv2.request", "ok")).toBe("muted");
+    expect(orchestrationTone("whatever", undefined)).toBe("muted");
   });
 });

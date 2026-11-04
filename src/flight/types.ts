@@ -43,6 +43,65 @@ export interface Usage {
   usd: number | null;
 }
 
+/** Event kinds (schema.rs `kind`): the core ones, then the run folder's orchestration kinds. */
+export const KIND = {
+  SESSION_START: "session.start",
+  TURN_START: "turn.start",
+  TURN_END: "turn.end",
+  LLM_CALL: "llm.call",
+  TOOL_START: "tool.start",
+  TOOL_END: "tool.end",
+  TOOL_BLOCKED: "tool.blocked",
+  AGENT_SPAWN: "agent.spawn",
+  FILE_CHANGE: "file.change",
+  ERROR: "error",
+  UNKNOWN: "x.claude.unknown",
+  STAGE_CHANGE: "stage.change",
+  APPROVAL_WAIT: "approval.wait",
+  APPROVAL_DECISION: "approval.decision",
+  CHECK_END: "check.end",
+  REVIEW_ROUND: "review.round",
+  CI_STATE: "ci.state",
+  RETRY: "retry",
+  ATTENTION: "attention",
+  PR_STATE: "x.dcv2.pr-state",
+  LOG: "x.dcv2.log",
+  REQUEST: "x.dcv2.request",
+} as const;
+
+/** `status` values of the orchestration events (schema.rs `status`), beside `ok`, `error`, `blocked`. */
+export const STATUS = {
+  PASS: "pass",
+  FAIL: "fail",
+  SKIP: "skip",
+  OK: "ok",
+  DECLINED: "declined",
+  BLOCKED: "blocked",
+} as const;
+
+/** Keys of `FlightEvent.attrs` the orchestration events use (schema.rs `attr`). */
+export const ATTR = {
+  SOURCE: "source",
+  PR: "pr",
+  ROUND: "round",
+  VERDICT: "verdict",
+  HEAD: "head",
+  EXIT_CODE: "exitCode",
+  CI: "ci",
+  PR_STATE: "prState",
+  RULE: "rule",
+  TOOL: "tool",
+  FROM: "from",
+  TO: "to",
+  REQUEST_KIND: "requestKind",
+  RESULT: "result",
+  AGENT: "agent",
+} as const;
+
+/** The lane of the run folder's own events, and the provider that writes them. */
+export const ORCHESTRATION = "orchestration";
+export const PROVIDER_DCV2 = "dcv2";
+
 export interface FlightEvent {
   /** Always 1. */
   schema: number;
@@ -106,6 +165,15 @@ export interface Failure {
   before: string[];
   repeatOf: Derived | null;
   repeats: Failure[];
+  /** The guard rule id, when the guard's own log names this block. */
+  rule?: string | null;
+}
+
+/** Where in the run an event happened (derive.rs `phases`). `label` is `exact:log-line` or `heuristic:status-now`. */
+export interface Phase {
+  stage: string | null;
+  prState: string | null;
+  label: string | null;
 }
 
 /** One page of events and the cursor of the next, or null on the last. */
@@ -123,6 +191,8 @@ export interface SessionView {
   failures: Failure[];
   page: Page;
   notices: string[];
+  /** Phase of each event of the page, by event id. */
+  phases?: Record<string, Phase>;
 }
 
 /** What `flight_content` returns: redacted text and how many lines were redacted. */
@@ -137,4 +207,37 @@ export interface TraceTarget {
   runDir?: string;
   configDir?: string;
   sessionId?: string;
+}
+
+/** The filter of `flight_search` (index.rs `SearchFilter`). `failed` in `status` means `fail` or `error`. */
+export interface SearchFilter {
+  kind?: string;
+  nameContains?: string;
+  status?: string[];
+  stage?: string;
+  prState?: string;
+  prRole?: string;
+  /** PR state `reviewing` or agent role `pr-reviewer`. */
+  inReview?: boolean;
+  repo?: string;
+  from?: string;
+  to?: string;
+  text?: string;
+}
+
+/** One run with matches: the count, and the first matching Event the Trace opens on. */
+export interface RunHit {
+  runId: string;
+  runDir: string;
+  title: string;
+  outcome: string;
+  matches: number;
+  firstEventId: string;
+}
+
+export interface SearchOut {
+  runs: RunHit[];
+  /** Runs left out because their account's capture policy is off. */
+  excludedOff: number;
+  progress: { current: number; total: number };
 }

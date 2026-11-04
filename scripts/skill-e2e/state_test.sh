@@ -156,6 +156,23 @@ expect 1 "reviewed with a failing check refused (7)" put < <(status building rev
 expect 1 "reviewed with check error refused (7)" put < <(status building reviewed pending 'doc["prs"][0]["check"]["result"]="error"')
 expect 0 "needs-attention with check error accepted (7)" put < <(status building needs-attention pending 'doc["prs"][0]["check"]["result"]="error"; doc["prs"][0]["note"]="check could not run"')
 expect 1 "needs-attention without a note refused" put < <(status building needs-attention pending)
+echo "# pr state lines (plugin records, written by write_status)"
+grep -q ' building pr PR1 - -> needs-attention$' "$RUN/log.md" && ok "  a new PR logs '-' as its old state" || bad "  no 'pr PR1 - -> needs-attention' in: $(tail -4 "$RUN/log.md")"
+grep -q ' building pr PR2 - -> pending$' "$RUN/log.md" && ok "  PR2 pending is logged too" || bad "  no 'pr PR2 - -> pending' in: $(tail -4 "$RUN/log.md")"
+is "  status.json is still schema 1" "$RUN/status.json" schema 1
+n1="$(wc -l < "$RUN/log.md")"
+expect 0 "put with no state change" put < <(status building needs-attention pending 'doc["prs"][0]["check"]["result"]="error"; doc["prs"][0]["note"]="check could not run"')
+(( $(wc -l < "$RUN/log.md") == n1 )) && ok "  an unchanged put logs no pr line" || bad "  log grew: $(tail -2 "$RUN/log.md")"
+expect 0 "put PR2 pending -> building" put < <(status building needs-attention building 'doc["prs"][0]["check"]["result"]="error"; doc["prs"][0]["note"]="check could not run"')
+tail -1 "$RUN/log.md" | grep -q ' building pr PR2 pending -> building$' && ok "  logs exactly the change" || bad "  log: $(tail -2 "$RUN/log.md")"
+(( $(wc -l < "$RUN/log.md") == n1 + 1 )) && ok "  one line for one change" || bad "  log: $(tail -3 "$RUN/log.md")"
+expect 1 "log refuses a stop-check record" bash "$STATE" log "$RUN" <<<'stop-check PR2 pass'
+expect 1 "log refuses a pr record" bash "$STATE" log "$RUN" <<<'pr PR2 fixing -> reviewed'
+expect 1 "log refuses a record with extra spaces" bash "$STATE" log "$RUN" <<<'  stop-check   -  skip '
+(( $(wc -l < "$RUN/log.md") == n1 + 1 )) && ok "  refused text writes nothing" || bad "  log: $(tail -3 "$RUN/log.md")"
+expect 0 "log still takes text that merely mentions stop-check" bash "$STATE" log "$RUN" <<<'PR2 stop-check passed after the fix'
+tail -1 "$RUN/log.md" | grep -q 'PR2 stop-check passed after the fix$' && ok "  ordinary text is logged" || bad "  log: $(tail -2 "$RUN/log.md")"
+expect 0 "put PR2 back to pending (keeps the later tests as they were)" put < <(status building needs-attention pending 'doc["prs"][0]["check"]["result"]="error"; doc["prs"][0]["note"]="check could not run"')
 
 echo "# gate (A1)"
 expect 1 "reviewed refused without a gate" put < <(status building reviewed pending)
@@ -426,6 +443,7 @@ is "  stage shipping" "$RUN/status.json" stage '"shipping"'
 is "  shipApproval.by user" "$RUN/status.json" shipApproval.by '"user"'
 expect 0 "ship-pr PR1 (no remote)" bash "$STATE" ship-pr "$RUN" PR1
 is "  PR1 local-only" "$RUN/status.json" prs.0.state '"local-only"'
+grep -Eq ' pr PR1 reviewed -> local-only$' "$RUN/log.md" && ok "  ship-pr logs the state change" || bad "  no 'pr PR1 reviewed -> local-only': $(tail -3 "$RUN/log.md")"
 # Local-mode ship-pr has the github-mode protections (CAP-14). Each case undoes itself, so PR2 ships normally after them.
 pr2() { python3 - "$RUN" "$@" <<'PY'    # pr2 <python on st (status.json) and g (.guard.json)>
 import json, sys

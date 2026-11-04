@@ -8,6 +8,9 @@
 # not building/fixing, a missing worktree, a check slower than the timeout
 # (remembered per PR in <run>/logs/.stop-check.json, then skipped), or any error of its own.
 # Full output of a failing check: <run>/logs/<PR>-stop-check.txt.
+# Each run of the hook in a bound, unfinished run appends one line `<UTC> <stage> stop-check <PR|-> pass|fail|skip` to
+# <run>/log.md (docs/run-folder.md, "Plugin records for the Trace"): the main session's Stop is `- skip`; an implementer
+# is pass / fail, or skip (no check, slow, no matching PR, PR not building/fixing, worktree mismatch). A write error is ignored.
 # Slop check: the check yields one outcome (pass, absent = no check command, slow = cached slow or timed out now,
 # fail). Slop findings (slop-patterns.tsv, lines the PR added since its base commit, committed or not) are reported
 # for pass, absent and slow; a failing check is reported alone. DCV2_SLOP_CHECK=off turns slop off.
@@ -42,14 +45,39 @@ except Exception:
 if not isinstance(data, dict) or data.get("stop_hook_active"):
     sys.exit(0)
 agent = str(data.get("agent_type") or "")
-if (agent[5:] if agent.startswith("dcv2:") else agent) != "implementer":
-    sys.exit(0)
 run = portable.real_path(os.environ["DCV2_RUN_DIR"])
 try:
     st = json.load(open(os.path.join(run, "status.json")))
 except Exception:
     sys.exit(0)
-prs = [p for p in st.get("prs") or [] if isinstance(p, dict)]
+if not isinstance(st, dict):
+    sys.exit(0)
+
+
+def log_result(who, result):
+    """Append `<UTC> <stage> stop-check <PR|-> pass|fail|skip` to log.md (0.7.0): one O_APPEND|O_NOFOLLOW write, never created,
+    nothing once the run is done or failed. Any error is swallowed: the hook's result never depends on it."""
+    try:
+        stage = str(st.get("stage") or "run")
+        if stage in ("done", "failed"):
+            return
+        if not re.fullmatch(r"[a-z-]+", stage):
+            stage = "run"
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        fd = os.open(os.path.join(run, "log.md"), os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            os.write(fd, f"{stamp} {stage} stop-check {who} {result}\n".encode())
+        finally:
+            os.close(fd)
+    except Exception:
+        pass
+
+
+if (agent[5:] if agent.startswith("dcv2:") else agent) != "implementer":
+    if not agent:  # the main session's Stop: one `-` skip line; other sub-agents log nothing
+        log_result("-", "skip")
+    sys.exit(0)
+prs =[p for p in st.get("prs") or [] if isinstance(p, dict)]
 by_id = {p.get("id"): p for p in prs}
 
 
@@ -80,10 +108,12 @@ if not pid:
     pid = busy[0] if len(busy) == 1 else None
 pr = by_id.get(pid)
 if not pr or pr.get("state") not in ("building", "fixing"):
+    log_result(pid if pr else "-", "skip")
     sys.exit(0)
 try:
     repo = portable.real_path(str(pr.get("repoPath") or ""))
     if not pr.get("repoPath") or not os.path.isabs(pr["repoPath"]):
+        log_result(pid, "skip")
         sys.exit(0)
     wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-worktrees",
                       f"dcv2-{os.path.basename(run)}-{str(pid).lower()}")
@@ -91,14 +121,17 @@ try:
     if portable.ident(str(guard.get("runDir") or "")) != portable.ident(run) or \
             portable.ident(str((guard.get("worktrees") or {}).get(pid) or "")) != portable.ident(wt) or \
             portable.ident(str(pr.get("worktree") or "")) != portable.ident(wt) or not os.path.isdir(wt):
+        log_result(pid, "skip")
         sys.exit(0)
     cwd = portable.real_path(wt)  # a value: the folder the check runs in
     # The resolved folder must still be wt itself (a symlink to elsewhere is skipped): compared as written, so not through ident().
     if not (os.path.normcase(cwd) == os.path.normcase(wt) or os.path.normcase(cwd).startswith(os.path.normcase(wt) + os.sep)):
+        log_result(pid, "skip")
         sys.exit(0)
 except SystemExit:
     raise
 except Exception:
+    log_result(pid, "skip")
     sys.exit(0)
 # The check command: repos.json only (the app's input), matched by real path. None = absent (no command).
 cmd = None
@@ -257,6 +290,7 @@ if cmd:
                 cache[pid] = {"slow": False, "command": cmd, "seconds": round(time.time() - start, 1)}
                 save_cache()
 
+log_result(pid, {"pass": "pass", "fail": "fail"}.get(outcome, "skip"))  # before slop: slop findings never change the logged result
 if outcome != "fail":
     if slop_on:
         try:

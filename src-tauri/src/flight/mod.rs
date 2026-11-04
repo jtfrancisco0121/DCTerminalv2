@@ -18,6 +18,7 @@ pub mod adapters;
 pub mod correlate;
 pub mod derive;
 pub mod host;
+pub mod index;
 pub mod redact;
 pub mod schema;
 pub mod session;
@@ -64,6 +65,53 @@ pub mod testkit {
             });
         }
         (claude::events_for(&main, &subs), metas)
+    }
+
+    /// The checked-in run folder of wave 1 (stages, approvals, checks, a review, CI, a guard block and a
+    /// transcript with a PR2 implementer and PR2 pr-reviewer).
+    pub fn wave1_fixture() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/run/flight-wave1")
+    }
+
+    fn copy_tree(from: &Path, to: &Path, skip_config: bool, config: &str) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if skip_config && name == "config" {
+                continue;
+            }
+            // `logs` and `*.log` are git-ignored, so the fixture keeps them as `_logs` and `guard-log.txt`.
+            let target_name = match name.as_str() {
+                "_logs" => "logs",
+                "guard-log.txt" => "guard.log",
+                other => other,
+            };
+            let target = to.join(target_name);
+            if entry.path().is_dir() {
+                copy_tree(&entry.path(), &target, false, config);
+            } else if name == "meta.json" || name == "app-usage.json" {
+                let text = std::fs::read_to_string(entry.path()).unwrap();
+                std::fs::write(target, text.replace("@CONFIG@", config)).unwrap();
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    /// The wave 1 fixture copied into `dir`: the run folder `r-20261105-100000-fa17` and, next to it,
+    /// the account folder `config` it names. Returns `(run folder, account folder)`.
+    pub fn wave1_run(dir: &TempDir) -> (PathBuf, PathBuf) {
+        let config = dir.join("config");
+        let run = dir.join("r-20261105-100000-fa17");
+        let config_text = config.display().to_string().replace('\\', "/");
+        copy_tree(&wave1_fixture(), &run, true, &config_text);
+        copy_tree(
+            &wave1_fixture().join("config"),
+            &config,
+            false,
+            &config_text,
+        );
+        (run, config)
     }
 
     /// Events of a synthetic main log made of `lines`.

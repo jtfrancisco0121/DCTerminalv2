@@ -55,6 +55,10 @@
 # state.sh. When DCV2_MEMORY_DIR is set (every dcv2 launch), nobody writes into it with
 # Edit/Write or a shell redirect/copy: agents use memory.sh write (the app's editor writes as the
 # user, outside Claude). Sessions with no DCV2_RUN_DIR and no pipeline agent are not affected otherwise.
+# Every block in a bound run appends one line to <run>/logs/guard.log (docs/run-folder.md): UTC, rule id (the RULES table),
+# tool, agent id (main), tool_use_id (-), tab separated. Never command text, paths or the message; a write failure changes
+# nothing. logs/guard.log is protected like the other run records. The three blocks made in bash before Python starts
+# (no Python, a payload that does not parse) cannot be logged.
 # Exit 2 blocks the tool call (stderr is shown to the model).
 input="$(cat)"
 PIPE_RE='"agent_type"[[:space:]]*:[[:space:]]*"(dcv2:)?(implementer|planner|plan-reviewer|risk-reviewer|pr-reviewer|memory-updater)"'
@@ -88,7 +92,7 @@ _glib="$(cd "$gdir/lib" 2>/dev/null && pwd -P)" || DCV2_PY=()
 (( ${#DCV2_PY[@]} > 0 )) || fallback
 
 IFS= read -r -d '' PY <<'PY' || true
-import json, os, re, shlex, sys
+import datetime, json, os, re, shlex, sys
 
 sys.dont_write_bytecode = True  # no __pycache__ inside the plugin folder (the installed app bundle is sealed)
 sys.path.insert(0, os.environ["DCV2_LIB_DIR"])  # set by guard.sh itself, from its own path
@@ -157,12 +161,107 @@ if run:
 # (the ClickUp snapshot and records, meta.json, the app's own check results).
 PROTECTED = ("status.json", "writeback.json", ".guard.json",
              "tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json", "app-usage.json",
-             "app-cleanup.json", "app-github.json", "waves.json")
+             "app-cleanup.json", "app-github.json", "waves.json", "guard.log")
 who = agent or "the orchestrator"
 where = "your worktree or the run folder" if role == "implementer" else "the run folder"
 
 
-def block(msg):
+# Every block has one rule id from this table (the kebab-case key). The id, never the message, is what logs/guard.log records.
+RULES = {
+    "no-run-bound": "a pipeline agent runs with no bound run",
+    "no-file-path": "Edit/Write without a file path",
+    "no-command": "a shell tool without a command text",
+    "run-trust": "the app's signed run records",
+    "run-file-write": "a protected run file written by hand",
+    "bmad-config": "BMAD config written by hand",
+    "git-user-config": "the user's git config",
+    "memory-write": "codebase memory written without memory.sh",
+    "no-write-zone": "the plugin, Claude's config or app data",
+    "main-checkout-write": "a repo main checkout written by the orchestrator",
+    "memory-updater-write": "the memory updater wrote outside a run",
+    "risk-reviewer-write": "the risk reviewer wrote outside a run",
+    "outside-allowed-write": "a write outside the worktree or run folder",
+    "unknown-write-target": "a write whose target cannot be told",
+    "mcp-tool": "a sub-agent called an MCP tool",
+    "mcp-write-verb": "the orchestrator called a non-read MCP tool",
+    "powershell": "PowerShell in a run",
+    "ship-gate": "a ship step before the ship approval",
+    "git-worktree": "git worktree outside state.sh",
+    "git-ref-change": "a git command that changes shared refs",
+    "git-notes": "git notes",
+    "git-fetch-branch": "git fetch into a local branch",
+    "git-branch": "git branch changes",
+    "git-config-flag": "git -c / --config-env / --exec-path",
+    "git-remote-config": "git remote or config changes",
+    "git-env": "an environment variable that redirects git",
+    "git-outside-worktree": "a changing git command outside a worktree",
+    "main-checkout-git": "changing git in a repo main checkout",
+    "copied-file-commit": "committing a file copied from the main checkout",
+    "push-forbidden": "a push by a sub-agent or outside shipping",
+    "push-force": "a force push or remote branch delete",
+    "push-target": "a push from an unknown folder",
+    "push-multi": "a push of more than one branch",
+    "push-ref": "a push of a non dcv2/ branch",
+    "push-github-mode": "a direct push in a GitHub review run",
+    "gh-subagent": "gh from a sub-agent",
+    "gh-write": "a GitHub-writing gh command",
+    "gh-api-write": "gh api write",
+    "gh-pr-write": "gh pr merge / close / edit",
+    "gh-pr-create": "gh pr create outside state.sh",
+    "state-github-subagent": "state.sh GitHub command from a sub-agent",
+    "state-github-local": "state.sh GitHub command in a local review run",
+    "state-plan-approval": "state.sh GitHub command before the plan approval",
+    "state-ship-approval": "state.sh ready before the ship approval",
+    "state-other-run": "state.sh on another run folder",
+    "bmad-runtime": "the BMAD runtime outside the planner",
+    "live-test": "live Claude tests",
+    "claude-launch": "launching claude",
+    "env-unknown": "a variable assignment whose name is unknown",
+    "env-setting": "a setting the guard and plugin trust",
+    "env-parse": "an env -S text that does not parse",
+    "keychain": "reading the keychain",
+    "interpreter-write": "inline interpreter code that writes or names a protected file",
+    "write-then-run": "a command that writes a file and runs it",
+    "worktree-discard": "discarding a run worktree",
+    "pipe-program": "a program read from a pipe",
+    "stdin-program": "a program read from stdin",
+    "process-substitution": "a program from <(...)",
+    "nesting-depth": "command nesting too deep",
+    "parse-error": "a command that does not parse",
+    "test-remotes": "the test-suite remote override",
+}
+
+
+def log_block(rule):
+    """Append one line to <run>/logs/guard.log: UTC, rule id, tool, agent id (main), tool_use_id (-), tab separated. Never the
+    command, a path or the message. One O_APPEND|O_NOFOLLOW write under 512 bytes; any failure is swallowed (the block stays)."""
+    try:
+        if not run or not os.path.isdir(run):
+            return
+
+        def field(v, dflt):
+            v = re.sub(r"[^A-Za-z0-9_.:-]", "", str(v or ""))[:100]
+            return v or dflt
+
+        logs = os.path.join(run, "logs")
+        if os.path.islink(logs):
+            return
+        os.makedirs(logs, exist_ok=True)
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        line = "\t".join((stamp, rule, field(tool, "-"), field(data.get("agent_id"), "main"), field(data.get("tool_use_id"), "-"))) + "\n"
+        fd = os.open(os.path.join(logs, "guard.log"), os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o644)
+        try:
+            os.write(fd, line.encode("ascii", "replace")[:511])
+        finally:
+            os.close(fd)
+    except Exception:
+        pass
+
+
+def block(rule, msg):
+    if rule not in RULES:
+        raise ValueError("unknown guard rule id: " + repr(rule))
+    log_block(rule)
     print("Blocked by the dcv2 guard: " + msg, file=sys.stderr)
     sys.exit(2)
 
@@ -267,39 +366,39 @@ def in_checkout(p):
 
 
 if pipeline and not run and role not in UNBOUND_OK:
-    block(f"{who} runs only inside an Eagle-Eye run, and none is bound (DCV2_RUN_DIR is not set at launch).")
+    block("no-run-bound", f"{who} runs only inside an Eagle-Eye run, and none is bound (DCV2_RUN_DIR is not set at launch).")
 
 # ---- Edit / Write ------------------------------------------------------------------------
 if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
     path = inp.get("file_path") or inp.get("notebook_path") or ""
     if not path:
         if pipeline:
-            block(f"{tool} without a file path")
+            block("no-file-path", f"{tool} without a file path")
         sys.exit(0)
     p = real(str(path), cwd0)
     if inside(p, trust_root):
-        block(TRUST_MSG)
+        block("run-trust", TRUST_MSG)
     if protected(p):
-        block("write run-folder state only with scripts/state.sh (put / approve / writeback / worktree), never with Edit or Write.")
+        block("run-file-write", "write run-folder state only with scripts/state.sh (put / approve / writeback / worktree), never with Edit or Write.")
     if bmad_config(p):
-        block(BMAD_CFG_MSG)
+        block("bmad-config", BMAD_CFG_MSG)
     if (run or pipeline) and git_user_config(p):
-        block(GITCONFIG_MSG)
+        block("git-user-config", GITCONFIG_MSG)
     if inside(p, mem):
-        block("codebase memory is written only with `bash <plugin>/scripts/memory.sh write <repo id> <file> <<'EOF'` "
+        block("memory-write", "codebase memory is written only with `bash <plugin>/scripts/memory.sh write <repo id> <file> <<'EOF'` "
               "(it checks size caps, secrets and pinned lines), never with Edit or Write.")
     zone = no_write_zone(p)
     if zone:
-        block(f"{p} is {zone}: it is never written from a bound run.")
+        block("no-write-zone", f"{p} is {zone}: it is never written from a bound run.")
     if not pipeline and run and main_checkout(p):
-        block(f"the orchestrator never edits a repo's main checkout ({p}); sub-agents work in the run's worktrees.")
+        block("main-checkout-write", f"the orchestrator never edits a repo's main checkout ({p}); sub-agents work in the run's worktrees.")
     if not pipeline or write_allowed(p):
         sys.exit(0)
     if role == "memory-updater" and not run:
-        block("the memory updater writes nothing with Edit/Write outside a run; use memory.sh write for memory.")
+        block("memory-updater-write", "the memory updater writes nothing with Edit/Write outside a run; use memory.sh write for memory.")
     if role == "risk-reviewer" and not run:
-        block("the risk reviewer writes nothing outside a run; give the review in your reply.")
-    block(f"{who} may only write inside {where}, not {p}. Never edit a repo main checkout; use the exact worktree path you were given.")
+        block("risk-reviewer-write", "the risk reviewer writes nothing outside a run; give the review in your reply.")
+    block("outside-allowed-write", f"{who} may only write inside {where}, not {p}. Never edit a repo main checkout; use the exact worktree path you were given.")
 
 bound = pipeline or bool(run)
 
@@ -310,20 +409,20 @@ bound = pipeline or bool(run)
 MCP_READ_RE = re.compile(r"^(get|list|read|search|fetch|view|query|find|describe)", re.I)
 if tool.startswith("mcp__"):
     if pipeline:
-        block(f"{who} calls no MCP tool ({tool}): their effects cannot be checked.")
+        block("mcp-tool", f"{who} calls no MCP tool ({tool}): their effects cannot be checked.")
     if run and not MCP_READ_RE.match(tool.rsplit("__", 1)[-1]):
-        block(f"the orchestrator calls only read-verb MCP tools (get / list / read / search / fetch / view / query / find / "
+        block("mcp-write-verb", f"the orchestrator calls only read-verb MCP tools (get / list / read / search / fetch / view / query / find / "
               f"describe), not {tool}: their effects cannot be checked. Writes go through state.sh.")
     sys.exit(0)
 
 # ---- Bash, Monitor, PowerShell: the shell text in tool_input.command ------------------------
 if tool == "PowerShell" and bound:
-    block("PowerShell is not used in a run (its writes, such as Set-Content, Out-File, Remove-Item and Copy-Item, cannot be "
+    block("powershell", "PowerShell is not used in a run (its writes, such as Set-Content, Out-File, Remove-Item and Copy-Item, cannot be "
           "checked here); use Bash.")
 if tool not in ("Bash", "Monitor", "PowerShell") or not (bound or mem):
     sys.exit(0)
 if bound and not str(inp.get("command") or "").strip():
-    block(f"{tool} without a command text: it cannot be checked.")
+    block("no-command", f"{tool} without a command text: it cannot be checked.")
 
 GIT_RO = {"status", "log", "diff", "show", "rev-parse", "rev-list", "ls-files", "ls-tree", "cat-file", "grep",
           "blame", "annotate", "describe", "shortlog", "merge-base", "name-rev", "for-each-ref", "show-ref",
@@ -374,7 +473,7 @@ def is_punct(t):
 def ship_gate(what):
     stage, appr = status.get("stage"), status.get("shipApproval")
     if stage != "shipping" or not appr:
-        block(f"{what} is allowed only at shipping, after the user's ship approval (stage {stage}, shipApproval "
+        block("ship-gate", f"{what} is allowed only at shipping, after the user's ship approval (stage {stage}, shipApproval "
               f"{'set' if appr else 'missing'}). Ship with `state.sh ship-pr <run> <pr id>`.")
 
 
@@ -382,38 +481,38 @@ def check_write(t, cwd):
     if t in SAFE_DEV or t.startswith("/dev/fd/"):
         return
     if bound and re.search(r"[$`*?]", t) and re.search(r"\.gitconfig|\.config/git|/git/config\b", t):
-        block(GITCONFIG_MSG)
+        block("git-user-config", GITCONFIG_MSG)
     if re.search(r"[$`*?]", t) or (cwd is None and not os.path.isabs(os.path.expanduser(t))):
         if trust_root and "run-trust" in t.lower():
-            block(TRUST_MSG)
+            block("run-trust", TRUST_MSG)
         if mem and re.search(r"\$\{?DCV2_MEMORY_DIR\b", t):
-            block("codebase memory is written only with memory.sh write, never with a shell redirect.")
+            block("memory-write", "codebase memory is written only with memory.sh write, never with a shell redirect.")
         if mem and cwd is None and MEM_MENTIONED:
-            block("cannot tell where this relative write lands (the command changes into an unknown folder and mentions "
+            block("unknown-write-target", "cannot tell where this relative write lands (the command changes into an unknown folder and mentions "
                   "the memory folder); write memory only with memory.sh write.")
         if pipeline:
-            block(f"cannot check the write target {t!r}: write to a literal absolute path")
+            block("unknown-write-target", f"cannot check the write target {t!r}: write to a literal absolute path")
         return
     p = real(t, cwd)
     if inside(p, trust_root):
-        block(TRUST_MSG)
+        block("run-trust", TRUST_MSG)
     if inside(p, mem):
-        block("codebase memory is written only with memory.sh write, never with a shell redirect, copy or move.")
+        block("memory-write", "codebase memory is written only with memory.sh write, never with a shell redirect, copy or move.")
     if not bound:
         return
     if git_user_config(p):
-        block(GITCONFIG_MSG)
+        block("git-user-config", GITCONFIG_MSG)
     zone = no_write_zone(p)
     if zone:
-        block(f"{p} is {zone}: it is never written from a bound run.")
+        block("no-write-zone", f"{p} is {zone}: it is never written from a bound run.")
     if protected(p):
-        block("write run-folder state only with scripts/state.sh, never with a shell redirect or copy.")
+        block("run-file-write", "write run-folder state only with scripts/state.sh, never with a shell redirect or copy.")
     if bmad_config(p):
-        block(BMAD_CFG_MSG)
+        block("bmad-config", BMAD_CFG_MSG)
     if not pipeline and main_checkout(p):
-        block(f"the orchestrator never writes into a repo's main checkout ({p}).")
+        block("main-checkout-write", f"the orchestrator never writes into a repo's main checkout ({p}).")
     if pipeline and not write_allowed(p) and in_checkout(p):
-        block(f"{who} may not write {p} from Bash: it is in a git checkout outside {where}.")
+        block("outside-allowed-write", f"{who} may not write {p} from Bash: it is in a git checkout outside {where}.")
 
 
 def link_operands(args):
@@ -580,12 +679,12 @@ def shared_refs(sub, rest, target):
     how = ("worktrees are made by `state.sh worktree`; removing worktrees and branches is `state.sh cleanup <run>` "
            "(at done / failed), or the app does it.")
     if sub == "worktree" and rest[:1] != ["list"]:
-        block(f"{who} never runs `git worktree {' '.join(rest[:1])}`: {how}")
+        block("git-worktree", f"{who} never runs `git worktree {' '.join(rest[:1])}`: {how}")
     if sub in ("update-ref", "prune", "gc", "replace") or (sub == "symbolic-ref" and not git_readonly(sub, rest)) \
             or (sub == "reflog" and not git_readonly(sub, rest)) or (sub == "tag" and not git_readonly(sub, rest)):
-        block(f"{who} never runs `git {sub}` (it changes refs every worktree of the repo shares): {how}")
+        block("git-ref-change", f"{who} never runs `git {sub}` (it changes refs every worktree of the repo shares): {how}")
     if sub == "notes" and rest[:1] not in ([], ["list"], ["show"]):
-        block(f"{who} never writes git notes (they are shared by every worktree).")
+        block("git-notes", f"{who} never writes git notes (they are shared by every worktree).")
     mine = own_branch(target) if role == "implementer" else None
     if sub in ("fetch", "pull"):
         refs = [a for a in rest if not a.startswith("-")][1:]
@@ -593,18 +692,18 @@ def shared_refs(sub, rest, target):
             dst = ref.split(":", 1)[1] if ":" in ref else ""
             dst = dst[len("refs/heads/"):] if dst.startswith("refs/heads/") else dst
             if ":" in ref and dst and not dst.startswith("refs/remotes/") and dst != mine:
-                block(f"{who} never fetches into a local branch (`git {sub} … {ref}`): branches are shared by every worktree.")
+                block("git-fetch-branch", f"{who} never fetches into a local branch (`git {sub} … {ref}`): branches are shared by every worktree.")
     if sub == "branch" and not git_readonly(sub, rest):
         names = [a for a in rest if not a.startswith("-")]
         if not (mine and not [a for a in rest if a.startswith("-")] and names == [mine]):
-            block(f"{who} never changes branches with `git branch` (they are shared by every worktree): {how}")
+            block("git-branch", f"{who} never changes branches with `git branch` (they are shared by every worktree): {how}")
     if sub in ("checkout", "switch"):
         for i, a in enumerate(rest):
             flag = a.split("=", 1)[0]
             if flag in ("-b", "-B", "-c", "-C", "--orphan", "--create", "--force-create") or re.match(r"^-[a-zA-Z]*[bBcC]$", a):
                 name = a.split("=", 1)[1] if "=" in a else (rest[i + 1] if i + 1 < len(rest) else "")
                 if not mine or name != mine:
-                    block(f"{who} never creates or resets a branch (`git {sub} {a} {name}`): branches are shared by every worktree.")
+                    block("git-branch", f"{who} never creates or resets a branch (`git {sub} {a} {name}`): branches are shared by every worktree.")
 
 
 def check_git(args, cwd):
@@ -619,13 +718,13 @@ def check_git(args, cwd):
             i += 2
             continue
         if a == "--config-env" or a.startswith("--config-env="):
-            block("`git --config-env` is never used in a dcv2 run.")
+            block("git-config-flag", "`git --config-env` is never used in a dcv2 run.")
         if a.startswith("--exec-path="):
-            block("`git --exec-path=<dir>` is never used in a dcv2 run.")
+            block("git-config-flag", "`git --exec-path=<dir>` is never used in a dcv2 run.")
         if a == "-c" or (a.startswith("-c") and len(a) > 2):
             kv = args[i + 1] if a == "-c" and i + 1 < len(args) else a[2:]
             if not git_c_ok(kv):
-                block(f"`git -c {kv.split('=', 1)[0]}=…` is not allowed in a dcv2 run (only identity, colour, advice and "
+                block("git-config-flag", f"`git -c {kv.split('=', 1)[0]}=…` is not allowed in a dcv2 run (only identity, colour, advice and "
                       "similar harmless keys): it could run a program.")
             if a != "-c":
                 i += 1
@@ -648,37 +747,37 @@ def check_git(args, cwd):
     rest = args[i + 1:]
     if sub == "push":
         if pipeline:
-            block(f"{who} never pushes; the orchestrator ships with state.sh ship-pr after the user's approval.")
+            block("push-forbidden", f"{who} never pushes; the orchestrator ships with state.sh ship-pr after the user's approval.")
         if any(a in ("-f", "--force", "--force-with-lease", "--force-if-includes", "--mirror", "--delete", "-d", "--prune")
                or a.startswith("--force-with-lease=") or a.startswith("+") or (":" in a and a.startswith(":"))
                or re.match(r"^-[a-zA-Z]*[fd]", a) for a in rest):
-            block("force pushes and remote branch deletes are never allowed.")
+            block("push-force", "force pushes and remote branch deletes are never allowed.")
         if run and (target is None or main_checkout(target)):
-            block(f"push only from the PR's worktree, never from a repo's main checkout or an unknown folder ({target or 'unknown'}).")
+            block("push-target", f"push only from the PR's worktree, never from a repo's main checkout or an unknown folder ({target or 'unknown'}).")
         if any(a in ("--all", "--branches", "--tags") for a in rest):
-            block("push one dcv2/ branch at a time (no --all / --tags).")
+            block("push-multi", "push one dcv2/ branch at a time (no --all / --tags).")
         refs = [a for a in rest if not a.startswith("-")][1:]
         for ref in refs:
             dst = ref.split(":", 1)[-1]
             dst = dst[len("refs/heads/"):] if dst.startswith("refs/heads/") else dst
             if dst != "HEAD" and not dst.startswith("dcv2/") or (dst == "HEAD" and ":" in ref):
-                block(f"the run pushes only its own dcv2/ branches (not {ref!r}); ship with state.sh ship-pr.")
+                block("push-ref", f"the run pushes only its own dcv2/ branches (not {ref!r}); ship with state.sh ship-pr.")
         if mode == "github":
-            block("this run reviews on GitHub: pushes go only through state.sh (draft-pr / push / ready), which check the stage and approvals.")
+            block("push-github-mode", "this run reviews on GitHub: pushes go only through state.sh (draft-pr / push / ready), which check the stage and approvals.")
         ship_gate("git push")
         return
     shared_refs(sub, rest, target)
     check_orchestrator_destructive(sub, rest, target)
     if not pipeline:
         if run and sub in ("remote", "config") and not git_readonly(sub, rest):
-            block(f"the orchestrator never changes git remotes or config (`git {sub} ...`): they are shared by the repo and "
+            block("git-remote-config", f"the orchestrator never changes git remotes or config (`git {sub} ...`): they are shared by the repo and "
                   "its worktrees, and every push goes to the remote recorded for the run.")
         if run and target and main_checkout(target) and not git_readonly(sub, rest):
-            block(f"the orchestrator never runs `git {sub}` in a repo's main checkout ({target}); worktrees go through state.sh worktree.")
+            block("main-checkout-git", f"the orchestrator never runs `git {sub}` in a repo's main checkout ({target}); worktrees go through state.sh worktree.")
         return
     if role == "implementer" and target and any(inside(target, w) for w in worktrees):
         if sub in ("remote", "config") and not git_readonly(sub, rest):
-            block(f"{who} never changes git remotes or config (`git {sub} ...`); pushes go to the remote recorded for the run.")
+            block("git-remote-config", f"{who} never changes git remotes or config (`git {sub} ...`); pushes go to the remote recorded for the run.")
         if sub in ("add", "stage", "commit") and copied:
             force = any(a == "--force" or (re.match(r"^-[a-zA-Z]+$", a) and "f" in a) for a in rest)
             for a in rest:
@@ -686,12 +785,12 @@ def check_git(args, cwd):
                     continue
                 p = norm(os.path.join(target, os.path.expanduser(a)))
                 if p in copied or (force and any(c.startswith(p.rstrip(os.sep) + os.sep) for c in copied)):
-                    block(f"`git {sub}` would include {a!r}, a file copied in from the main checkout (repos.json copyFiles): "
+                    block("copied-file-commit", f"`git {sub}` would include {a!r}, a file copied in from the main checkout (repos.json copyFiles): "
                           "it is never staged or committed. Stage only the files your story changed.")
         return
     if git_readonly(sub, rest):
         return
-    block(f"{who} may not run `git {sub}` in {target or 'an unknown folder'}: "
+    block("git-outside-worktree", f"{who} may not run `git {sub}` in {target or 'an unknown folder'}: "
           + ("outside its worktree only read-only git commands are allowed." if role == "implementer"
              else "it may only run read-only git commands."))
 
@@ -714,9 +813,9 @@ def check_gh(args):
     sub, verb = (words + ["", ""])[:2]
     if pipeline:
         if sub in ("pr", "api"):
-            block(f"{who} never calls `gh {sub}`; the orchestrator opens PRs at shipping.")
+            block("gh-subagent", f"{who} never calls `gh {sub}`; the orchestrator opens PRs at shipping.")
         if verb in GH_WRITES:
-            block(f"{who} never changes anything on GitHub (`gh {sub} {verb}`).")
+            block("gh-write", f"{who} never changes anything on GitHub (`gh {sub} {verb}`).")
         return
     if sub == "api":
         # Only reads: no method flag, or GET. Any short-flag cluster with X sets the method (-X PUT, -XPUT,
@@ -743,18 +842,18 @@ def check_gh(args):
                     continue
             j += 1
         if (method is not None and method.upper() != "GET") or fields:
-            block("the run never writes to GitHub with `gh api`; every GitHub write goes through a state.sh command.")
+            block("gh-api-write", "the run never writes to GitHub with `gh api`; every GitHub write goes through a state.sh command.")
         return
     if sub == "pr" and verb in ("merge", "close", "edit", "ready", "reopen", "review", "comment", "lock"):
-        block(f"the run never runs `gh pr {verb}` itself: it never merges, closes or edits PRs"
+        block("gh-pr-write", f"the run never runs `gh pr {verb}` itself: it never merges, closes or edits PRs"
               + ("; drafts, comments and `ready` go through state.sh." if mode == "github" else "."))
     if sub == "pr" and verb == "create":
         if mode == "github":
-            block("this run reviews on GitHub: PRs are opened only by `state.sh draft-pr` / `state.sh ready`.")
+            block("gh-pr-create", "this run reviews on GitHub: PRs are opened only by `state.sh draft-pr` / `state.sh ready`.")
         ship_gate("gh pr create")
         return
     if verb in GH_WRITES:
-        block(f"the run never changes anything on GitHub with `gh {sub} {verb}`; GitHub writes go through state.sh.")
+        block("gh-write", f"the run never changes anything on GitHub with `gh {sub} {verb}`; GitHub writes go through state.sh.")
 
 
 GH_STATE = ("draft-pr", "push", "post-review", "comment")
@@ -766,21 +865,21 @@ def check_state_sh(args):
     sub = next((a for a in args[1:] if not a.startswith("-")), "")
     if pipeline:
         if sub in GH_STATE + ("ready", "ship-pr", "cleanup", "request"):
-            block(f"{who} never runs `state.sh {sub}`: only the orchestrator touches GitHub.")
+            block("state-github-subagent", f"{who} never runs `state.sh {sub}`: only the orchestrator touches GitHub.")
         return
     if sub in GH_STATE:
         if mode != "github":
-            block(f"`state.sh {sub}` is for runs that review on GitHub; this run's review mode is local.")
+            block("state-github-local", f"`state.sh {sub}` is for runs that review on GitHub; this run's review mode is local.")
         plan = status.get("plan") if isinstance(status.get("plan"), dict) else {}
         if not plan.get("approval"):
-            block(f"`state.sh {sub}` needs the plan approval first (stop #1).")
+            block("state-plan-approval", f"`state.sh {sub}` needs the plan approval first (stop #1).")
     if sub == "ready" and not status.get("shipApproval"):
-        block("`state.sh ready` needs the ship approval first (stop #2).")
+        block("state-ship-approval", "`state.sh ready` needs the ship approval first (stop #2).")
     if sub in ("cleanup", "request", "request-wait") and run:
         rest = [a for a in args[1:] if not a.startswith("-")]
         target = re.sub(r"\$\{?DCV2_RUN_DIR\}?", lambda _: run, rest[1] if len(rest) > 1 else "")
         if "$" not in target and not same(os.path.expanduser(target), run):
-            block(f"`state.sh {sub}` acts only on this run's folder ({run}), not {target or 'none'}.")
+            block("state-other-run", f"`state.sh {sub}` acts only on this run's folder ({run}), not {target or 'none'}.")
 
 
 def check_node(args, cwd):
@@ -797,7 +896,7 @@ def check_node(args, cwd):
         d, b = os.path.split(p)
         if b == "runtime.mjs" and os.path.basename(d) in ("bmad", ""):
             if role != "planner":
-                block(f"{who} never runs the BMAD runtime: only the planner does, for its bmad pass "
+                block("bmad-runtime", f"{who} never runs the BMAD runtime: only the planner does, for its bmad pass "
                       "(the orchestrator checks the documents with `state.sh bmad-check`).")
 
 
@@ -824,15 +923,15 @@ def live_tests_on(wt):
 def check_live(script, cwd):
     """golden.sh / bmad_spike.sh launch claude: only the implementer / pr-reviewer, in its worktree, with liveTests."""
     if role not in ("implementer", "pr-reviewer"):
-        block(f"{who} never runs the live Claude tests ({os.path.basename(script)}).")
+        block("live-test", f"{who} never runs the live Claude tests ({os.path.basename(script)}).")
     if "$" in script or (cwd is None and not os.path.isabs(os.path.expanduser(script))):
-        block(f"cannot tell where {script!r} is: run it as `cd <worktree> && bash scripts/skill-e2e/{os.path.basename(script)} ...`")
+        block("live-test", f"cannot tell where {script!r} is: run it as `cd <worktree> && bash scripts/skill-e2e/{os.path.basename(script)} ...`")
     p = real(script, cwd or "/")
     wt = next((w for w in worktrees if inside(p, w)), None)
     if not wt or os.path.relpath(norm(p), norm(wt)) != os.path.join("scripts", "skill-e2e", os.path.basename(norm(p))):
-        block(f"live Claude tests run only as your worktree's scripts/skill-e2e/{os.path.basename(script)}.")
+        block("live-test", f"live Claude tests run only as your worktree's scripts/skill-e2e/{os.path.basename(script)}.")
     if not live_tests_on(wt):
-        block("live Claude tests are off for this repo (the app setting \"Allow live Claude tests in checks\"); "
+        block("live-test", "live Claude tests are off for this repo (the app setting \"Allow live Claude tests in checks\"); "
               "they stay a manual step for the user.")
 
 
@@ -890,7 +989,7 @@ def check_env(w):
     m = PROTECTED_ENV_RE.match(w)
     if not m:
         if re.match(r"^[^=\s]*\$[^=\s]*=", w):
-            block(f"cannot tell which variable `{w.split('=', 1)[0]}=…` sets in a dcv2 session; name it literally.")
+            block("env-unknown", f"cannot tell which variable `{w.split('=', 1)[0]}=…` sets in a dcv2 session; name it literally.")
         return
     name, val = m.group(1), m.group(2)
     if name.startswith("DCV2_E2E_"):
@@ -902,7 +1001,7 @@ def check_env(w):
         v = os.path.expanduser(val)
         if os.path.isabs(v) and "$" not in v and same(v, own):
             return
-    block(f"setting {name} is not allowed in a dcv2 session: it redirects what the guard, state.sh, memory.sh and the plugin trust "
+    block("env-setting", f"setting {name} is not allowed in a dcv2 session: it redirects what the guard, state.sh, memory.sh and the plugin trust "
           f"(use `env -u {name} …` to unset it for one command; a plain terminal is unaffected).")
 
 
@@ -928,7 +1027,7 @@ def unwrap(words):
                 try:
                     words = shlex.split(text) + words
                 except ValueError:
-                    block("could not parse `env -S` text")
+                    block("env-parse", "could not parse `env -S` text")
                 continue
             if opt in RUNNERS[b] and words:
                 words = words[1:]
@@ -983,7 +1082,7 @@ def check_security(args):
     """No reading the app's keychain items (ClickUp token, trust key) from inside a run."""
     sub = next((a for a in args if not a.startswith("-")), "")
     if sub in ("dump-keychain", "find-generic-password", "find-internet-password", "export", "find-key", "find-certificate"):
-        block("the app's keychain items are never read from inside a run.")
+        block("keychain", "the app's keychain items are never read from inside a run.")
 
 
 # ---- interpreters, stdin scripts, files a command wrote itself (CAP-12) -------------------------------------------
@@ -1085,12 +1184,12 @@ def check_code(name, texts, cwd):
     low = text.casefold()
     writes = bool(WRITE_PRIM_RE.search(text))
     if run and not pipeline and writes:
-        block(f"the orchestrator never runs inline {name} code that writes or runs programs (open(...,'w'), write_text, writeFile, "
+        block("interpreter-write", f"the orchestrator never runs inline {name} code that writes or runs programs (open(...,'w'), write_text, writeFile, "
               "os.system, subprocess, ...): it cannot be checked; write run files with state.sh and edit with Edit/Write.")
     if "run-trust" in low:
-        block(TRUST_MSG)
+        block("run-trust", TRUST_MSG)
     if run and ("dcv2_run_dir" in low or norm(run) in low) and any(n in low for n in PROTECTED_CF):
-        block(f"inline {name} code that names the run folder and a protected run file (status.json, writeback.json, .guard.json, "
+        block("interpreter-write", f"inline {name} code that names the run folder and a protected run file (status.json, writeback.json, .guard.json, "
               "meta.json, repos.json, ...) is not allowed: write run-folder state only with scripts/state.sh.")
     for piece in re.split(r"""[\s'"`(),=\[\]{}<>;:|&+*]+""", text):
         if not piece or "$" in piece:
@@ -1100,16 +1199,16 @@ def check_code(name, texts, cwd):
             if os.path.isabs(os.path.expanduser(piece)) or cwd is not None:
                 p = real(piece, cwd or "/")
                 if protected(p):
-                    block(f"inline {name} code names {piece!r}, a run file only state.sh (or the app) writes: use state.sh.")
+                    block("interpreter-write", f"inline {name} code names {piece!r}, a run file only state.sh (or the app) writes: use state.sh.")
             else:
-                block(f"inline {name} code names {piece!r} and the working folder is not known: it may be a run file; use state.sh.")
+                block("interpreter-write", f"inline {name} code names {piece!r} and the working folder is not known: it may be a run file; use state.sh.")
         if looks_like_path and (os.path.isabs(os.path.expanduser(piece)) or cwd is not None):
             p = real(piece, cwd or "/")
             if inside(p, trust_root):
-                block(TRUST_MSG)
+                block("run-trust", TRUST_MSG)
             if writes and (inside(p, mem) or any(inside(p, r) for r in
                                                   [r for r in (os.environ.get("CLAUDE_PLUGIN_ROOT") or "", GUARD_PLUGIN) if r])):
-                block(f"inline {name} code with a write names {piece!r}: codebase memory is written only with memory.sh write, "
+                block("memory-write", f"inline {name} code with a write names {piece!r}: codebase memory is written only with memory.sh write, "
                       "and the plugin is never written from a run.")
 
 
@@ -1124,7 +1223,7 @@ def note_written(t, cwd):
 def check_runs_written(path, cwd, what):
     if bound and path and "$" not in path and (os.path.isabs(os.path.expanduser(path)) or cwd is not None) \
             and norm(real(path, cwd or "/")) in WRITTEN:
-        block(f"this command writes {path} and then runs it ({what}): the code is never seen by the guard. Write the file in one "
+        block("write-then-run", f"this command writes {path} and then runs it ({what}): the code is never seen by the guard. Write the file in one "
               "command (Edit/Write) and run it in the next.")
 
 
@@ -1152,7 +1251,7 @@ def check_orchestrator_destructive(sub, rest, target):
     if not kind:
         return
     if target is None or worktree_hit(target):
-        block(f"the orchestrator never runs `{kind}` in a run worktree (or where the folder cannot be told): it discards the "
+        block("worktree-discard", f"the orchestrator never runs `{kind}` in a run worktree (or where the folder cannot be told): it discards the "
               "Implementer's files. The Implementer cleans up inside its own worktree.")
 
 
@@ -1167,7 +1266,7 @@ def check_orchestrator_rm(args, cwd):
     unknown = cwd is None and any(not os.path.isabs(os.path.expanduser(t)) for t in targets)
     if worktree_hit(cwd) or unknown or any(
             "$" in t or re.search(r"[*?]", t) or worktree_hit(real(t, cwd or "/")) for t in targets):
-        block("the orchestrator never runs `rm -r` in a run worktree, or on a path that cannot be told apart from one: it deletes "
+        block("worktree-discard", "the orchestrator never runs `rm -r` in a run worktree, or on a path that cannot be told apart from one: it deletes "
               "the Implementer's files. Worktrees are removed with `state.sh cleanup` (or by the app).")
 
 
@@ -1196,7 +1295,7 @@ def check_program_source(name, words, args, script, piped, docs, stdin_text, std
             return  # `bash -c '<text>'` is analysed by the caller
         if operand is None and name in SHELLS:
             if piped:
-                block(f"`| {name}` runs a program that comes from a pipe: it cannot be checked. Save it with Edit/Write, read it, "
+                block("pipe-program", f"`| {name}` runs a program that comes from a pipe: it cannot be checked. Save it with Edit/Write, read it, "
                       "then run the file in a later command.")
             for body in here:  # a heredoc / here-string fed to a shell is a command text: look at it as one
                 if depth < 4:
@@ -1204,16 +1303,16 @@ def check_program_source(name, words, args, script, piped, docs, stdin_text, std
             for f in stdin_files:
                 check_runs_written(f, cwd, f"fed to {name}")
         elif operand in ("/dev/stdin", "-") or (operand or "").startswith("/dev/fd/"):
-            block(f"`{name} {operand}` runs a program from stdin: it cannot be checked.")
+            block("stdin-program", f"`{name} {operand}` runs a program from stdin: it cannot be checked.")
         elif operand:
             check_runs_written(operand, cwd, f"run with {name}")
         return
     code, operand = interp_parse(fam, args) if fam else ([], next((a for a in args if not a.startswith("-")), None))
     if operand in ("/dev/stdin",) or (operand or "").startswith("/dev/fd/"):
-        block(f"`{name} {operand}` runs a program from stdin: it cannot be checked.")
+        block("stdin-program", f"`{name} {operand}` runs a program from stdin: it cannot be checked.")
     if not code and operand in (None, "-"):
         if piped:
-            block(f"`| {name}` runs a program that comes from a pipe: it cannot be checked. (Reading piped JSON is fine with "
+            block("pipe-program", f"`| {name}` runs a program that comes from a pipe: it cannot be checked. (Reading piped JSON is fine with "
                   f"`| {name} -c '<code>'`.)")
         code = list(here)  # a heredoc / here-string is the program
         for f in stdin_files:
@@ -1227,18 +1326,18 @@ def check_program_source(name, words, args, script, piped, docs, stdin_text, std
 def analyze(cmd, cwd, depth=0):
     if depth > 4:
         if pipeline:
-            block("command nesting too deep to check")
+            block("nesting-depth", "command nesting too deep to check")
         return cwd
     text, docs = split_heredocs(cmd)
     if bound and PROC_SUBST_RE.search(text):
-        block("a shell or interpreter reading its program from <(...) is never run in a dcv2 run: the program cannot be checked.")
+        block("process-substitution", "a shell or interpreter reading its program from <(...) is never run in a dcv2 run: the program cannot be checked.")
     try:
         toks = lex(text)
     except ValueError:
         if pipeline:
-            block("could not parse this command (unbalanced quotes?); write it more simply")
+            block("parse-error", "could not parse this command (unbalanced quotes?); write it more simply")
         if bound and re.search(r"\bgit\b.*\bpush\b|\bgh\b.*\bpr\b", text):
-            block("could not parse this push / PR command")
+            block("parse-error", "could not parse this push / PR command")
         return cwd
     segs, seg, flags, after_pipe = [], [], [], False
     for t in toks:
@@ -1289,7 +1388,7 @@ def analyze(cmd, cwd, depth=0):
         if bound:
             for w in words:
                 if GIT_ENV_RE.match(w):
-                    block(f"setting {w.split('=', 1)[0]} is not allowed in a dcv2 run: it changes which repo git works on "
+                    block("git-env", f"setting {w.split('=', 1)[0]} is not allowed in a dcv2 run: it changes which repo git works on "
                           "or which programs it runs.")
         if run or mem:
             for w in prefix_assignments(words):
@@ -1303,15 +1402,15 @@ def analyze(cmd, cwd, depth=0):
             check_program_source(name, words, args, script, piped, docs, stdin_text, stdin_files, cwd, depth)
         if pipeline:
             if "$" in words[0] and "claude" in CMD:
-                block(f"cannot tell which program `{words[0]}` is, and the command mentions claude: {who} never launches claude.")
+                block("claude-launch", f"cannot tell which program `{words[0]}` is, and the command mentions claude: {who} never launches claude.")
             if any("@anthropic-ai/claude-code" in w for w in words) or name == "claude-code":
-                block(f"{who} never launches claude (the @anthropic-ai/claude-code package).")
+                block("claude-launch", f"{who} never launches claude (the @anthropic-ai/claude-code package).")
             if name in ("find",):
                 for i, a in enumerate(args):
                     if a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args):
                         analyze(" ".join(shlex.quote(x) for x in args[i + 1:] if x not in (";", "+")), cwd, depth + 1)
         if bound and any("ade-runtime.mjs" in w for w in words):
-            block("ade-runtime.mjs is the bundle behind the BMAD wrapper and bypasses its write checks; run `node <plugin>/bmad/runtime.mjs <command>` (planner only).")
+            block("bmad-runtime", "ade-runtime.mjs is the bundle behind the BMAD wrapper and bypasses its write checks; run `node <plugin>/bmad/runtime.mjs <command>` (planner only).")
         if name in ("cd", "pushd"):
             d = next((a for a in args if not a.startswith("-")), "~")
             if mem and re.search(r"\$\{?DCV2_MEMORY_DIR\b", d):
@@ -1331,7 +1430,7 @@ def analyze(cmd, cwd, depth=0):
         elif name in ("node", "nodejs") and bound:
             check_node(args, cwd)
         elif name == "claude" and pipeline:
-            block(f"{who} never launches claude. Live Claude tests run only as `bash scripts/skill-e2e/golden.sh` or "
+            block("claude-launch", f"{who} never launches claude. Live Claude tests run only as `bash scripts/skill-e2e/golden.sh` or "
                   "`bmad_spike.sh` in your worktree, when the repo allows them (repos.json liveTests).")
         elif name in LIVE_SCRIPTS and pipeline:
             check_live(words[0], cwd)
@@ -1359,7 +1458,7 @@ def analyze(cmd, cwd, depth=0):
 
 CMD = str(inp.get("command") or "")
 if bound and "DCV2_TEST_LOCAL_REMOTES" in CMD:
-    block("DCV2_TEST_LOCAL_REMOTES is set only by the test suites, never from inside a run.")
+    block("test-remotes", "DCV2_TEST_LOCAL_REMOTES is set only by the test suites, never from inside a run.")
 MEM_MENTIONED = bool(mem) and ("DCV2_MEMORY_DIR" in CMD or mem.casefold() in CMD.casefold())
 analyze(CMD, cwd0)
 sys.exit(0)

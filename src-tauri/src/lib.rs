@@ -131,6 +131,7 @@ pub fn run() {
             app.manage(observe_state);
             app.manage(observe::attention::AttentionState::default());
             app.manage(flight::host::FlightCache::default());
+            flight::host::spawn_index(app.handle());
             for note in store::take_recovery_notes() {
                 eprintln!("DCTerminalv2: {note}");
             }
@@ -254,6 +255,7 @@ pub fn run() {
             observe::read_check_log,
             commands::flight::flight_content,
             commands::flight::flight_session,
+            commands::flight::flight_search,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

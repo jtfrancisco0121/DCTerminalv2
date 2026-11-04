@@ -83,6 +83,18 @@ assert all(r.startswith(("Read(./", "Read(**/node_modules", "Read(**/dist", "Rea
     "only unambiguous build output is denied at any depth; target/ and coverage/ only at the start folder (and one level down)"
 PY
 
+echo "# Agent description rule (0.7.0): exact PR attribution"
+SK="$P/skills/eagle-eye/SKILL.md"
+for a in implementer pr-reviewer; do
+  python3 - "$SK" "$a" <<'PY' && ok "SKILL.md names the PR<n> description rule for dcv2:$a" || bad "SKILL.md: no PR<n> description rule for dcv2:$a"
+import re, sys
+text, agent = open(sys.argv[1]).read(), sys.argv[2]
+step3 = text.split("## Step 3", 1)[1].split("\n## ", 1)[0]
+assert f"`dcv2:{agent}`" in step3
+assert re.search(r"`description` of every `dcv2:implementer` and `dcv2:pr-reviewer` launch starts with `PR<n> `", step3)
+PY
+done
+
 echo "# commit body and version-bump rules (AD-10)"
 VFILES=('package.json` `version' 'src-tauri/Cargo.toml` `[package] version' 'src-tauri/tauri.conf.json` `version' 'plugin/VERSION' 'plugin/.claude-plugin/plugin.json` `version')
 for r in implementer developer; do

@@ -11,6 +11,8 @@ pub const TOOL_USE_ID: &str = "exact:tool_use_id";
 pub const ROOT: &str = "exact:session-root";
 pub const SUBAGENT_FILE: &str = "heuristic:subagent-without-spawn";
 pub const DESCRIPTION_PREFIX: &str = "heuristic:description-prefix";
+/// The same prefix in a run from plugin 0.7.0 on, where SKILL.md requires it.
+pub const EXACT_PR_DESCRIPTION: &str = "exact:pr-description";
 
 // The panel reads failures and the tree; spans are kept for the run-folder
 // adapter and compare (M2, M3) and are covered by the tests below.
@@ -64,8 +66,9 @@ pub fn spans(events: &[Event]) -> Vec<Span> {
 /// The root (`main`) with every sub-agent below its parent. A sub-agent is
 /// linked by its spawn: the `Agent` tool_use id that `meta.json` names, or the
 /// `agentId` its spawn result returned. `role` is the type without `dcv2:`;
-/// `pr` is set only from a description starting `PR<n> ` (a heuristic).
-pub fn agent_tree(events: &[Event], metas: &BTreeMap<String, AgentMeta>) -> AgentNode {
+/// `pr` is set only from a description starting `PR<n> `: exact when the run
+/// is from a plugin that requires that form (`exact`), a heuristic otherwise.
+pub fn agent_tree(events: &[Event], metas: &BTreeMap<String, AgentMeta>, exact: bool) -> AgentNode {
     let pr_prefix = Regex::new(r"^(PR[0-9]+) ").unwrap();
     let mut first: BTreeMap<&str, &Event> = BTreeMap::new();
     for e in events {
@@ -125,7 +128,12 @@ pub fn agent_tree(events: &[Event], metas: &BTreeMap<String, AgentMeta>) -> Agen
                 Some(cap) => (
                     Some(cap[1].to_string()),
                     Some(Derived {
-                        label: DESCRIPTION_PREFIX.into(),
+                        label: if exact {
+                            EXACT_PR_DESCRIPTION
+                        } else {
+                            DESCRIPTION_PREFIX
+                        }
+                        .into(),
                         evidence: sample.map(|e| e.id.clone()).into_iter().collect(),
                     }),
                 ),
@@ -222,7 +230,7 @@ mod tests {
     #[test]
     fn the_recorded_session_is_main_with_one_plan_reviewer_and_no_failures() {
         let (events, metas) = recorded(SELFTEST);
-        let tree = agent_tree(&events, &metas);
+        let tree = agent_tree(&events, &metas, false);
         assert_eq!(tree.id, "main");
         assert_eq!(tree.children.len(), 1);
         let child = &tree.children[0];
@@ -275,7 +283,7 @@ mod tests {
             assert!(f.derived.evidence.contains(&f.id));
             assert!(f.repeat_of.is_none(), "different commands are not repeats");
         }
-        let tree = agent_tree(&events, &metas);
+        let tree = agent_tree(&events, &metas, false);
         assert_eq!(tree.files, ["/work/toy/src/add.js"]);
         let statuses: Vec<_> = spans(&events).iter().map(|s| s.status.clone()).collect();
         assert_eq!(
@@ -459,14 +467,33 @@ mod tests {
         let (events, mut metas) = recorded(SELFTEST);
         let id = metas.keys().next().unwrap().clone();
         metas.get_mut(&id).unwrap().description = Some("PR2 build the thing".into());
-        let node = &agent_tree(&events, &metas).children[0];
+        let node = &agent_tree(&events, &metas, false).children[0];
         assert_eq!(node.pr.as_deref(), Some("PR2"));
         assert_eq!(
             node.pr_derived.as_ref().unwrap().label,
             "heuristic:description-prefix"
         );
         metas.get_mut(&id).unwrap().description = Some("review PR2".into());
-        assert!(agent_tree(&events, &metas).children[0].pr.is_none());
+        assert!(agent_tree(&events, &metas, false).children[0].pr.is_none());
+        assert!(agent_tree(&events, &metas, true).children[0].pr.is_none());
+    }
+
+    #[test]
+    fn the_exact_flag_changes_only_the_label_of_a_prefixed_description() {
+        let (events, mut metas) = recorded(SELFTEST);
+        let id = metas.keys().next().unwrap().clone();
+        metas.get_mut(&id).unwrap().description = Some("PR2 review round 1".into());
+        let exact = &agent_tree(&events, &metas, true).children[0];
+        assert_eq!(exact.pr.as_deref(), Some("PR2"));
+        let derived = exact.pr_derived.as_ref().unwrap();
+        assert_eq!(derived.label, EXACT_PR_DESCRIPTION);
+        assert!(!derived.evidence.is_empty());
+        let heuristic = &agent_tree(&events, &metas, false).children[0];
+        assert_eq!(heuristic.pr.as_deref(), Some("PR2"));
+        assert_eq!(
+            heuristic.pr_derived.as_ref().unwrap().label,
+            DESCRIPTION_PREFIX
+        );
     }
 
     #[test]
@@ -482,7 +509,7 @@ mod tests {
                 all.extend(node.pr_derived.clone());
                 node.children.iter().for_each(|c| walk(c, all));
             }
-            walk(&agent_tree(&events, &metas), &mut all);
+            walk(&agent_tree(&events, &metas, false), &mut all);
             assert!(all.len() >= 3);
             for d in all {
                 assert!(!d.label.is_empty() && !d.evidence.is_empty(), "{d:?}");

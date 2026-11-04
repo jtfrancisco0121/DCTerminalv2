@@ -768,6 +768,23 @@ def gates(doc, run, old=None, plan_trace=True):
     return None, out
 
 
+def log_pr_states(run, old, doc):
+    """One `pr <PR> <old> -> <new>` log.md line per PR whose state changed between the old and the new status.json (`-` for
+    a new PR). write_status is the only status.json writer, so put, ship-pr, draft-pr, ready and needs-attention all pass here.
+    The line is a plugin record (run/timeline.rs not_progress); status.json itself is unchanged. A log problem never fails the write."""
+    try:
+        before = {p.get("id"): p.get("state") for p in ((old or {}).get("prs") or []) if isinstance(p, dict)} if isinstance(old, dict) else {}
+        stage = str(doc.get("stage") or "run")
+        for p in doc.get("prs") or []:
+            pid, new = p.get("id"), p.get("state")
+            if not (isinstance(pid, str) and isinstance(new, str)) or before.get(pid) == new:
+                continue
+            prev = before.get(pid)
+            append_log(run, stage, f"pr {pid} {prev if isinstance(prev, str) and prev else '-'} -> {new}")
+    except (OSError, AttributeError, TypeError) as e:
+        print(f"note: pr state line not logged ({type(e).__name__})", file=sys.stderr)
+
+
 def write_status(run, doc, trusted=False, plan_trace=True):
     dest = os.path.join(run, "status.json")
     old = load_json(dest)
@@ -779,6 +796,7 @@ def write_status(run, doc, trusted=False, plan_trace=True):
     if refusal:
         die(refusal)
     atomic_write(dest, json.dumps(doc, indent=2) + "\n")
+    log_pr_states(run, old, doc)
     if doc.get("stage") in ("done", "failed"):
         try:
             write_report(run)
@@ -2843,9 +2861,16 @@ except Exception: print("run")' "$run/status.json" 2>/dev/null || echo run)"
     [[ "$stage" =~ ^[a-z-]+$ ]] || { echo "log: stage must be a stage name" >&2; exit 2; }
     text="$(cat)"; text="${text//$'\r'/ }"; text="${text//$'\n'/ }"
     [[ -n "${text// /}" ]] || { echo "log: empty text on stdin" >&2; exit 2; }
+    squash() { tr -s '[:space:]' ' ' <<<"$1" | sed -e 's/^ //' -e 's/ $//'; }
+    # Two line forms are plugin records (stop-check.sh, write_status), never the orchestrator's text: refused, nothing
+    # written. The same forms as run/timeline.rs not_progress.
+    sq="$(squash "$text")"
+    if [[ "$sq" =~ ^stop-check\ (PR[0-9]+|-)\ (pass|fail|skip)$ || "$sq" =~ ^pr\ PR[0-9]+\ [^[:space:]]+\ -\>\ [^[:space:]]+$ ]]; then
+      echo "log: refused. 'stop-check <PR|-> pass|fail|skip' and 'pr <PR> <old> -> <new>' lines are written by the plugin only; say it another way." >&2
+      exit 1
+    fi
     # The same event twice in a row, same stage, within 30 s (state.sh already logged it and the orchestrator repeated
     # it) is written once. Retry lines always count.
-    squash() { tr -s '[:space:]' ' ' <<<"$1" | sed -e 's/^ //' -e 's/ $//'; }
     lastline="$(tail -n 1 "$run/log.md" 2>/dev/null || true)"
     read -r lt ls _ <<<"$lastline" || true
     last="$(cut -d' ' -f3- <<<"$lastline")"
