@@ -205,6 +205,11 @@ class NtPaths(unittest.TestCase):
         self.assertFalse(p.is_protected("/c/app/runs/r-x/notes.md", run, names, ntpath, ident_fn))
         self.assertFalse(p.is_protected("/c/other/status.json", run, names, ntpath, ident_fn))
         self.assertTrue(p.is_protected("/c/app/runs/r-x/requests/1.json", run, names, ntpath, ident_fn))
+        self.assertTrue(p.is_protected("/c/app/runs/r-x/logs/guard.log", run, names, ntpath, ident_fn), "nested guard.log")
+        self.assertTrue(p.is_protected("/C/APP/RUNS/R-X/LOGS/GUARD.LOG", run, names, ntpath, ident_fn), "nested guard.log, any case")
+        self.assertFalse(p.is_protected("/c/app/runs/r-x/logs/PR1-check.txt", run, names, ntpath, ident_fn))
+        self.assertFalse(p.is_protected("/c/other/logs/guard.log", run, names, ntpath, ident_fn), "another folder's guard.log")
+        self.assertFalse(p.is_protected("/c/app/runs/r-x/deeper/logs/guard.log", run, names, ntpath, ident_fn))
         self.assertTrue(p.is_protected("/bad/status.json", run, names, ntpath, ident_fn), "UNRESOLVED is refused")
         self.assertFalse(p.is_protected("/dev/null", run, names, ntpath, ident_fn), "the null device is no file")
 

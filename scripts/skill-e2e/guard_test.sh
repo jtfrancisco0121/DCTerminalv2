@@ -896,4 +896,74 @@ else
   echo "skip: the Windows path spelling cases run only where os.name == 'nt' (the Windows branches are never faked here; portable_test.py covers them with ntpath)"
 fi
 
+echo "# Every block carries a rule id (static) and writes one guard.log line (logs/guard.log, rule ids only)"
+GUARD="$GUARD" python3 - <<'PYEOF' && echo "ok   every block() call passes a RULES key" || { echo "FAIL block() rule ids"; fails=1; }
+import ast, os, re
+src = open(os.environ["GUARD"]).read()
+code = src.split("<<'PY' || true\n", 1)[1].split("\nPY\n", 1)[0]
+tree = ast.parse(code)
+rules = None
+for n in ast.walk(tree):
+    if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "RULES" for t in n.targets):
+        rules = {k.value for k in n.value.keys}
+assert rules, "no RULES table"
+calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "block"]
+bad = [n.lineno for n in calls if not (n.args and isinstance(n.args[0], ast.Constant) and n.args[0].value in rules)]
+assert len(calls) >= 90, len(calls)
+assert not bad, "block() without a RULES id at python lines %s" % bad
+assert all(re.fullmatch(r"[a-z]+(-[a-z]+)*", r) for r in rules), "rule ids are kebab-case"
+PYEOF
+
+gpayload() { # <agent> <tool> <key> <value> <tool_use_id> <agent_id>
+  python3 -c 'import json,sys; a,t,k,v,u,i,c=sys.argv[1:8]; print(json.dumps({"agent_type":a or None,"tool_name":t,"tool_input":{k:v},"cwd":c,"tool_use_id":u or None,"agent_id":i or None}))' "$1" "$2" "$3" "$4" "$5" "$6" "$d/ws"
+}
+newrun() { mkdir -p "$1"; printf 'folder: %s/ws\n' "$d" > "$1/request.md"; echo '{}' > "$1/status.json"; }
+GRUN="$d/app/runs/r-g"; newrun "$GRUN"
+gexp() { # <run> <label> <payload>: exits 2 with the guard message in $d/gerr
+  local got=0; env DCV2_RUN_DIR="$1" bash "$GUARD" <<<"$3" 2>"$d/gerr" || got=$?
+  if [[ $got == 2 ]]; then echo "ok   $2 -> 2"; else echo "FAIL $2 -> $got (want 2)"; fails=1; fi
+}
+gexp "$GRUN" "implementer Write outside" "$(gpayload dcv2:implementer Write file_path "$R/SECRETPATH.js" toolu_01AAA agent-1)"
+cp "$d/gerr" "$d/gerr.base"
+gexp "$GRUN" "orchestrator Write status.json" "$(gpayload "" Write file_path "$GRUN/status.json" toolu_01BBB "")"
+gexp "$GRUN" "implementer push" "$(gpayload dcv2:implementer Bash command "git push origin SECRETWORD" "" agent-2)"
+gexp "$GRUN" "orchestrator redirect into status.json" "$(gpayload "" Bash command "echo SECRETWORD > $GRUN/status.json" "" "")"
+gexp "$GRUN" "Write to logs/guard.log" "$(gpayload "" Write file_path "$GRUN/logs/guard.log" toolu_01CCC "")"
+gexp "$GRUN" "implementer Edit to logs/guard.log" "$(gpayload dcv2:implementer Edit file_path "$GRUN/logs/guard.log" toolu_01DDD agent-1)"
+gexp "$GRUN" "shell redirect to logs/guard.log" "$(gpayload "" Bash command "echo x >> $GRUN/logs/guard.log" toolu_01EEE "")"
+GUARD="$GUARD" GLOG="$GRUN/logs/guard.log" python3 - <<'PYEOF' && echo "ok   one well-formed guard.log line per block, no command text, path or message" || { echo "FAIL guard.log lines"; fails=1; }
+import os, re
+lines = open(os.environ["GLOG"]).read().split("\n")
+assert lines.pop() == "", "ends with a newline"
+assert len(lines) == 7, lines
+rules = set(re.findall(r'^    "([a-z-]+)": ".*",$', open(os.environ["GUARD"]).read(), re.M))
+for l in lines:
+    f = l.split("\t")
+    assert len(f) == 5, l
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", f[0]), l
+    assert f[1] in rules, l
+    assert f[2] in ("Write", "Edit", "Bash"), l
+    assert len(l) < 512
+    assert "SECRET" not in l and "/" not in l and "Blocked by" not in l and "git push" not in l, l
+assert lines[0].split("\t")[3:] == ["agent-1", "toolu_01AAA"], lines[0]
+assert lines[1].split("\t")[3:] == ["main", "toolu_01BBB"], lines[1]
+assert lines[2].split("\t")[3:] == ["agent-2", "-"], lines[2]
+PYEOF
+
+echo "# A guard.log write that fails never changes the exit code or the message"
+BASEMSG="$(cat "$d/gerr.base")"
+GU="$d/app/runs/r-u"; newrun "$GU"; mkdir "$GU/logs"; chmod 500 "$GU/logs"
+gexp "$GU" "logs/ unwritable" "$(gpayload dcv2:implementer Write file_path "$R/SECRETPATH.js" toolu_01AAA agent-1)"
+[[ "$(cat "$d/gerr")" == "$BASEMSG" ]] && echo "ok   unwritable logs/: same message" || { echo "FAIL unwritable logs/: message changed"; fails=1; }
+chmod 700 "$GU/logs"
+GS="$d/app/runs/r-s"; newrun "$GS"; mkdir "$d/linktarget"; ln -s "$d/linktarget" "$GS/logs"
+gexp "$GS" "logs/ is a symlink" "$(gpayload dcv2:implementer Write file_path "$R/SECRETPATH.js" toolu_01AAA agent-1)"
+[[ "$(cat "$d/gerr")" == "$BASEMSG" && -z "$(ls -A "$d/linktarget")" ]] && echo "ok   symlinked logs/: same message, target untouched" || { echo "FAIL symlinked logs/"; fails=1; }
+GF="$d/app/runs/r-f"; newrun "$GF"; mkdir "$GF/logs"; echo keep > "$d/filetarget"; ln -s "$d/filetarget" "$GF/logs/guard.log"
+gexp "$GF" "logs/guard.log is a symlink" "$(gpayload dcv2:implementer Write file_path "$R/SECRETPATH.js" toolu_01AAA agent-1)"
+[[ "$(cat "$d/gerr")" == "$BASEMSG" && "$(cat "$d/filetarget")" == keep ]] && echo "ok   symlinked guard.log: same message, target untouched" || { echo "FAIL symlinked guard.log"; fails=1; }
+GB="$d/app/runs/r-b"; newrun "$GB"; echo x > "$GB/logs"
+gexp "$GB" "logs is a plain file" "$(gpayload dcv2:implementer Write file_path "$R/SECRETPATH.js" toolu_01AAA agent-1)"
+[[ "$(cat "$d/gerr")" == "$BASEMSG" ]] && echo "ok   logs as a file: same message" || { echo "FAIL logs as a file"; fails=1; }
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }
