@@ -4,6 +4,11 @@ import attentionRs from "../../src-tauri/src/observe/attention.rs?raw";
 import {
   ATTENTION_KINDS,
   checkTone,
+  compareGroupText,
+  compareKeyText,
+  compareOpensTrace,
+  compareSentence,
+  compareValueText,
   ESTIMATE_NOTE,
   ESTIMATES_CAPTION,
   orchestrationStatusText,
@@ -381,5 +386,37 @@ describe("the run lane's words and tones", () => {
     expect(orchestrationTone("x.dcv2.log", null)).toBe("muted");
     expect(orchestrationTone("x.dcv2.request", "ok")).toBe("muted");
     expect(orchestrationTone("whatever", undefined)).toBe("muted");
+  });
+});
+
+describe("compare words", () => {
+  it("words every group, key and cell, and null is never a number", () => {
+    expect(compareGroupText("windowShare")).toBe("Window share");
+    expect(compareGroupText("something-new")).toBe("something-new");
+    expect(compareKeyText("failures", "tool.blocked:run-file-write")).toBe("guard blocks (run-file-write)");
+    expect(compareKeyText("failures", "tool.end")).toBe("failed tool calls");
+    expect(compareKeyText("checks", "skill/PR2")).toBe("skill check, PR2");
+    expect(compareKeyText("retries", "PR2")).toBe("retries of PR2");
+    expect(compareKeyText("tokens", "cacheWrite")).toBe("cache write");
+    expect(compareKeyText("windowShare", "fiveHour")).toBe("five-hour window");
+    expect(compareKeyText("tools", "Bash")).toBe("Bash");
+    expect(compareValueText("tools", 0)).toBe("0");
+    expect(compareValueText("stages", 12.5)).toBe("12.5 min");
+    expect(compareValueText("tokens", 12345)).toBe("12,345");
+    expect(compareValueText("windowShare", 4.5)).toBe("4.5 points (estimate)");
+    expect(compareValueText("windowShare", null)).toBe("not recorded");
+    expect(compareValueText("checks", "pass")).toBe("pass");
+  });
+
+  it("states the first difference with both values, or that there is none, and only event rows open a Trace", () => {
+    expect(compareSentence({ group: "failures", key: "tool.blocked", a: 1, b: 0 })).toBe(
+      "First difference: Failures, guard blocks (1 vs 0)",
+    );
+    expect(compareSentence({ group: "windowShare", key: "weekly", a: null, b: 2 })).toContain("not recorded vs 2 points (estimate)");
+    expect(compareSentence(null)).toBe("No differences in these rows.");
+    expect(compareOpensTrace("failures")).toBe(true);
+    expect(compareOpensTrace("tokens")).toBe(false);
+    expect(compareOpensTrace("windowShare")).toBe(false);
+    expect(compareOpensTrace("stages")).toBe(false);
   });
 });

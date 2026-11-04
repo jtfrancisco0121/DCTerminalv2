@@ -25,6 +25,7 @@ pub const GROUPS: [&str; 9] = [
 /// (`tool.start` for a Repeat's input hash, a failing Event, `check.end` for its source).
 #[derive(Debug, Clone, Default)]
 pub struct IndexedEvent {
+    pub id: String,
     pub kind: String,
     pub name: Option<String>,
     pub status: Option<String>,
@@ -76,6 +77,9 @@ pub struct Row {
     pub a: Value,
     pub b: Value,
     pub differs: bool,
+    /// The first Event of this row in run A / run B, so a click opens the Trace there (none for record numbers).
+    pub a_event: Option<String>,
+    pub b_event: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -87,6 +91,8 @@ pub struct Rows {
 }
 
 type Cells = BTreeMap<String, Value>;
+/// Per group and key, the id of the first Event that made the cell.
+type Firsts = BTreeMap<&'static str, BTreeMap<String, String>>;
 
 fn bump(cells: &mut Cells, key: String) {
     let n = cells.get(&key).and_then(Value::as_u64).unwrap_or(0);
@@ -105,18 +111,30 @@ fn pr_of(e: &IndexedEvent) -> String {
         .unwrap_or_else(|| "-".into())
 }
 
-fn repeat_names(failures: &[Failure], out: &mut Cells) {
+fn repeat_names(failures: &[Failure], out: &mut Cells, firsts: &mut BTreeMap<String, String>) {
     for f in failures {
         for repeat in &f.repeats {
-            bump(out, repeat.name.clone().unwrap_or_else(|| "-".into()));
+            let name = repeat.name.clone().unwrap_or_else(|| "-".into());
+            firsts
+                .entry(name.clone())
+                .or_insert_with(|| repeat.id.clone());
+            bump(out, name);
         }
-        repeat_names(&f.repeats, out);
+        repeat_names(&f.repeats, out, firsts);
     }
 }
 
 /// The cells of every group of one side. Count groups hold only the keys the side has (the other side's
 /// missing key reads as 0); record groups hold `null` for a number not recorded.
-fn cells(side: &Side) -> BTreeMap<&'static str, Cells> {
+fn cells(side: &Side) -> (BTreeMap<&'static str, Cells>, Firsts) {
+    let mut firsts: Firsts = BTreeMap::new();
+    let mut first = |group: &'static str, key: &str, id: &str| {
+        firsts
+            .entry(group)
+            .or_default()
+            .entry(key.to_string())
+            .or_insert_with(|| id.to_string());
+    };
     let mut stages = Cells::new();
     let mut tokens = Cells::new();
     if let Some(record) = &side.record {
@@ -142,8 +160,16 @@ fn cells(side: &Side) -> BTreeMap<&'static str, Cells> {
     );
     for e in &side.events {
         match e.kind.as_str() {
-            kind::TOOL_START => bump(&mut tools, e.name.clone().unwrap_or_else(|| "-".into())),
-            kind::RETRY => bump(&mut retries, pr_of(e)),
+            kind::TOOL_START => {
+                let name = e.name.clone().unwrap_or_else(|| "-".into());
+                first("tools", &name, &e.id);
+                bump(&mut tools, name);
+            }
+            kind::RETRY => {
+                let pr = pr_of(e);
+                first("retries", &pr, &e.id);
+                bump(&mut retries, pr);
+            }
             kind::CHECK_END => {
                 let source = e
                     .event
@@ -152,8 +178,10 @@ fn cells(side: &Side) -> BTreeMap<&'static str, Cells> {
                     .and_then(Value::as_str)
                     .unwrap_or("check");
                 // The last result of a (source, PR) wins.
+                let key = format!("{source}/{}", pr_of(e));
+                first("checks", &key, &e.id);
                 checks.insert(
-                    format!("{source}/{}", pr_of(e)),
+                    key,
                     json!(e.status.clone().unwrap_or_else(|| "unknown".into())),
                 );
             }
@@ -164,9 +192,11 @@ fn cells(side: &Side) -> BTreeMap<&'static str, Cells> {
                 Some(rule) => format!("{}:{rule}", e.kind),
                 None => e.kind.clone(),
             };
+            first("failures", &key, &e.id);
             bump(&mut failures, key);
         }
         for path in &e.paths {
+            first("files", path, &e.id);
             bump(&mut files, path.clone());
         }
     }
@@ -181,9 +211,15 @@ fn cells(side: &Side) -> BTreeMap<&'static str, Cells> {
                 .push(ev.clone());
         }
     }
+    let mut repeat_firsts = BTreeMap::new();
     for events in sessions.values() {
-        repeat_names(&derive::failures_with_repeats(events), &mut repeats);
+        repeat_names(
+            &derive::failures_with_repeats(events),
+            &mut repeats,
+            &mut repeat_firsts,
+        );
     }
+    firsts.insert("repeats", repeat_firsts);
     let mut share = Cells::new();
     for (key, value) in [
         ("fiveHour", side.share.five_hour),
@@ -194,17 +230,20 @@ fn cells(side: &Side) -> BTreeMap<&'static str, Cells> {
             value.map_or(Value::Null, |v| json!((v * 10.0).round() / 10.0)),
         );
     }
-    BTreeMap::from([
-        ("stages", stages),
-        ("tools", tools),
-        ("failures", failures),
-        ("retries", retries),
-        ("repeats", repeats),
-        ("files", files),
-        ("checks", checks),
-        ("tokens", tokens),
-        ("windowShare", share),
-    ])
+    (
+        BTreeMap::from([
+            ("stages", stages),
+            ("tools", tools),
+            ("failures", failures),
+            ("retries", retries),
+            ("repeats", repeats),
+            ("files", files),
+            ("checks", checks),
+            ("tokens", tokens),
+            ("windowShare", share),
+        ]),
+        firsts,
+    )
 }
 
 /// Whether a group's missing key reads as 0 (a count) or as "not recorded" (null).
@@ -218,7 +257,7 @@ fn counts(group: &str) -> bool {
 /// The rows of two sides, groups in the fixed order and keys sorted inside a group, with the Divergence.
 /// A number not recorded is `null`; it differs from the other side's value unless that is null too.
 pub fn rows(a: &Side, b: &Side) -> Rows {
-    let (ca, cb) = (cells(a), cells(b));
+    let ((ca, fa), (cb, fb)) = (cells(a), cells(b));
     let mut out = Vec::new();
     for group in GROUPS {
         let (ga, gb) = (&ca[group], &cb[group]);
@@ -229,12 +268,15 @@ pub fn rows(a: &Side, b: &Side) -> Rows {
         for key in keys {
             let va = ga.get(key).cloned().unwrap_or_else(|| missing.clone());
             let vb = gb.get(key).cloned().unwrap_or_else(|| missing.clone());
+            let event = |f: &Firsts| f.get(group).and_then(|g| g.get(key)).cloned();
             out.push(Row {
                 group: group.into(),
                 key: key.clone(),
                 differs: va != vb,
                 a: va,
                 b: vb,
+                a_event: event(&fa),
+                b_event: event(&fb),
             });
         }
     }

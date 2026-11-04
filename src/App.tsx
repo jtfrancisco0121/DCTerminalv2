@@ -36,6 +36,7 @@ import { InlineNotice } from "./components/InlineNotice";
 import { NewTabForm } from "./components/NewTabForm";
 import { RunPanel } from "./components/RunPanel";
 import { TracePanel } from "./components/TracePanel";
+import { ComparePage } from "./components/ComparePage";
 import { TraceSearch, type SearchState } from "./components/TraceSearch";
 import type { TraceTarget } from "./flight/types";
 import { PreviewHost } from "./components/PreviewPane";
@@ -117,11 +118,19 @@ function App() {
   const [attention, setAttention] = useState<AttentionSummary | null>(null);
   const [activeRunsOpen, setActiveRunsOpen] = useState(false);
   // A window-level page drawn over the workspace; the terminals stay mounted underneath.
-  const [page, setPage] = useState<"dashboard" | "analytics" | "trace-search" | null>(null);
+  const [page, setPage] = useState<"dashboard" | "analytics" | "trace-search" | "compare" | null>(null);
+  // The two runs on the Compare page, kept while a Trace opened from it is shown.
+  const [compare, setCompare] = useState<{ a: string | null; b: string | null }>({ a: null, b: null });
   // The last trace search (form and results), kept while the app runs so Escape from a Trace returns to it.
   const [traceSearch, setTraceSearch] = useState<SearchState | null>(null);
   // The Session Inspector, another page over the workspace; focus returns to whatever opened it.
-  const [trace, setTrace] = useState<{ target: TraceTarget; agent?: string; focus?: string; fromSearch?: boolean } | null>(null);
+  const [trace, setTrace] = useState<{
+    target: TraceTarget;
+    agent?: string;
+    focus?: string;
+    fromSearch?: boolean;
+    fromCompare?: boolean;
+  } | null>(null);
   const traceOpener = useRef<HTMLElement | null>(null);
   const [dialog, setDialog] = useState<"new-tab" | "new-window" | "pick-account" | "settings" | "runs" | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
@@ -217,10 +226,15 @@ function App() {
 
   const active = state?.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
 
-  const openTrace = (target: TraceTarget, agent?: string, focus?: string, fromSearch?: boolean) => {
+  const openTrace = (target: TraceTarget, agent?: string, focus?: string, fromSearch?: boolean, fromCompare?: boolean) => {
     traceOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setPage(null);
-    setTrace({ target, agent, focus, fromSearch });
+    setTrace({ target, agent, focus, fromSearch, fromCompare });
+  };
+  const openCompare = (a: string | null, b: string | null) => {
+    setTrace(null);
+    setCompare({ a, b });
+    setPage("compare");
   };
   const openTraceSearch = () => {
     setTrace(null);
@@ -232,6 +246,13 @@ function App() {
       traceOpener.current = null;
       setTrace(null);
       setPage("trace-search");
+      return;
+    }
+    // A Trace opened from a Compare cell goes back to Compare, with the same two runs.
+    if (trace?.fromCompare) {
+      traceOpener.current = null;
+      setTrace(null);
+      setPage("compare");
       return;
     }
     setTrace(null);
@@ -656,6 +677,21 @@ function App() {
       detail: "Find runs by what happened in them",
       run: openTraceSearch,
     });
+    items.push({
+      id: "page:compare",
+      group: "Runs",
+      label: "Compare runs",
+      detail: "The two most recent finished runs of this folder",
+      run: () => {
+        // Finished runs of the active folder, newest first (the list is newest first).
+        const finished = (paletteRuns?.runs ?? []).filter(
+          (item) =>
+            (!active || item.folder === active.cwd) &&
+            ["done", "failed", "eval-done"].includes(item.record?.outcome ?? item.stage ?? ""),
+        );
+        openCompare(finished[0]?.runDir ?? null, finished[1]?.runDir ?? null);
+      },
+    });
     if (active?.runDir) {
       const runDir = active.runDir;
       items.push({
@@ -832,6 +868,16 @@ function App() {
             initial={traceSearch}
             onChange={setTraceSearch}
             onOpen={(hit) => openTrace({ runDir: hit.runDir }, undefined, hit.firstEventId, true)}
+            onCompare={(a, b) => openCompare(a, b)}
+            onClose={() => setPage(null)}
+          />
+        )}
+        {page === "compare" && (
+          <ComparePage
+            initialA={compare.a}
+            initialB={compare.b}
+            onChange={(a, b) => setCompare({ a, b })}
+            onOpenTrace={(runDir, eventId) => openTrace({ runDir }, undefined, eventId, false, true)}
             onClose={() => setPage(null)}
           />
         )}

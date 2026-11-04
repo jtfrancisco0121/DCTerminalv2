@@ -169,6 +169,7 @@ vi.mock("./flight/api", () => ({
   })),
   flightContent: vi.fn(),
   flightSearch: vi.fn(),
+  flightCompare: vi.fn(),
 }));
 
 const running = new Set<string>();
@@ -652,6 +653,48 @@ describe("App run pages", () => {
     });
     expect(screen.queryByRole("region", { name: "Trace search" })).toBeNull();
     expect(screen.getByTestId("terminal")).toBeTruthy();
+    expect(terminalLife.mounts).toBe(1);
+    expect(terminalLife.unmounts).toBe(0);
+    vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
+    cleanup();
+    endState();
+  });
+
+  it("opens Compare runs from the palette on the folder's two newest finished runs; a value opens its Trace and Escape returns", async () => {
+    await openApp();
+    await waitFor(() => expect(screen.getByTestId("tab-progress-tab_run")).toBeTruthy());
+    const { flightCompare, flightSession } = await import("./flight/api");
+    const side = (id: string) => ({ runId: id, runDir: `/d/runs/${id}`, title: id, outcome: "done", indexed: true, off: false });
+    vi.mocked(flightCompare).mockResolvedValue({
+      a: side("r-a"),
+      b: side("r-b"),
+      rows: [{ group: "failures", key: "tool.blocked:run-file-write", a: 0, b: 1, differs: true, bEvent: "ev_block" }],
+      divergence: 0,
+      progress: { current: 2, total: 2 },
+    });
+
+    await paletteOpen(/Compare runs/);
+    const compare = await screen.findByRole("region", { name: "Compare runs" });
+    expect(screen.getByTestId("terminal")).toBeTruthy();
+    await waitFor(() => expect(vi.mocked(flightCompare)).toHaveBeenCalledWith("/d/runs/r-a", "/d/runs/r-b"));
+    fireEvent.click(await within(compare).findByRole("button", { name: /Open the trace of r-b/ }));
+    expect(await screen.findByRole("region", { name: "Trace" })).toBeTruthy();
+    expect(vi.mocked(flightSession)).toHaveBeenLastCalledWith(
+      expect.objectContaining({ runDir: "/d/runs/r-b", focus: "ev_block" }),
+    );
+    // Escape returns to Compare with the same two runs.
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(screen.queryByRole("region", { name: "Trace" })).toBeNull();
+    const again = await screen.findByRole("region", { name: "Compare runs" });
+    expect((within(again).getByLabelText("Run A") as HTMLSelectElement).value).toBe("/d/runs/r-a");
+    expect((within(again).getByLabelText("Run B") as HTMLSelectElement).value).toBe("/d/runs/r-b");
+    // Escape on the page closes it; the terminal was never unmounted.
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(screen.queryByRole("region", { name: "Compare runs" })).toBeNull();
     expect(terminalLife.mounts).toBe(1);
     expect(terminalLife.unmounts).toBe(0);
     vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });

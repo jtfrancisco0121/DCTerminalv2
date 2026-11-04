@@ -630,3 +630,74 @@ export function snapshotFailure(timeline: ReadonlyArray<{ text: string }>): stri
   }
   return null;
 }
+
+// ---- Compare (flight/compare.rs): the words of the rows and of the first difference ----------
+
+const COMPARE_GROUP_TEXT: Record<string, string> = {
+  stages: "Active minutes per stage",
+  tools: "Tool calls",
+  failures: "Failures",
+  retries: "Retries",
+  repeats: "Repeats",
+  files: "Files touched",
+  checks: "Checks",
+  tokens: "Tokens",
+  windowShare: "Window share",
+};
+
+/** The heading of a Compare row group. */
+export function compareGroupText(group: string): string {
+  return COMPARE_GROUP_TEXT[group] ?? group;
+}
+
+const COMPARE_KEY_TEXT: Record<string, string> = {
+  input: "input",
+  output: "output",
+  cacheWrite: "cache write",
+  cacheRead: "cache read",
+  fiveHour: "five-hour window",
+  weekly: "weekly window",
+  "tool.end": "failed tool calls",
+  "tool.blocked": "guard blocks",
+  error: "errors",
+  "check.end": "failed checks",
+};
+
+/** The words of a row's key: a guard block with its rule, a check with its source and PR, a stage as it is. */
+export function compareKeyText(group: string, key: string): string {
+  if (group === "failures") {
+    const [kind, rule] = [key.split(":")[0] ?? key, key.includes(":") ? key.slice(key.indexOf(":") + 1) : null];
+    const base = COMPARE_KEY_TEXT[kind] ?? kind;
+    return rule ? `${base} (${rule})` : base;
+  }
+  if (group === "checks") {
+    const [source, pr] = key.split("/");
+    return `${source ?? key} check${pr && pr !== "-" ? `, ${pr}` : ""}`;
+  }
+  if (group === "retries") return key === "-" ? "retries (no PR)" : `retries of ${key}`;
+  return COMPARE_KEY_TEXT[key] ?? key;
+}
+
+/** A cell: null is "not recorded"; minutes, percent points (an estimate) and counts read as what they are. */
+export function compareValueText(group: string, value: number | string | null | undefined): string {
+  if (value === null || value === undefined) return "not recorded";
+  if (typeof value === "string") return value;
+  if (group === "stages") return `${value} min`;
+  if (group === "windowShare") return `${value} points (estimate)`;
+  if (group === "tokens") return value.toLocaleString("en-US");
+  return String(value);
+}
+
+/** "First difference: guard blocks (run-file-write) (0 vs 1)" for the Divergence row, or a no-difference line. */
+export function compareSentence(
+  row: { group: string; key: string; a: number | string | null; b: number | string | null } | null | undefined,
+): string {
+  if (!row) return "No differences in these rows.";
+  return `First difference: ${compareGroupText(row.group)}, ${compareKeyText(row.group, row.key)} (${compareValueText(row.group, row.a)} vs ${compareValueText(row.group, row.b)})`;
+}
+
+/** Whether a Compare cell can open a Trace (record numbers cannot). */
+export function compareOpensTrace(group: string): boolean {
+  return group !== "tokens" && group !== "windowShare" && group !== "stages";
+}
+

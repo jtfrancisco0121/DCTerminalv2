@@ -252,3 +252,52 @@ export interface SearchOut {
   excludedOff: number;
   progress: { current: number; total: number };
 }
+
+/** One side of a comparison (host.rs `CompareSide`). */
+export interface CompareSide {
+  runId: string;
+  runDir: string;
+  title: string;
+  outcome: string;
+  /** The run is in the trace index. */
+  indexed: boolean;
+  /** AgentFlight is off for the run's account: nothing of it is read. */
+  off: boolean;
+}
+
+/** The groups of a Compare row, in the fixed order of the page (compare.rs `GROUPS`). */
+export const COMPARE_GROUPS = [
+  "stages",
+  "tools",
+  "failures",
+  "retries",
+  "repeats",
+  "files",
+  "checks",
+  "tokens",
+  "windowShare",
+] as const;
+export type CompareGroup = (typeof COMPARE_GROUPS)[number];
+
+/** One Compare row: a number, a text or null (not recorded) on each side. */
+export interface CompareRow {
+  group: CompareGroup | string;
+  key: string;
+  a: number | string | null;
+  b: number | string | null;
+  differs: boolean;
+  /** The first Event of the row in run A / run B (none for record numbers). */
+  aEvent?: string | null;
+  bEvent?: string | null;
+}
+
+/** What `flight_compare` returns. `rows` is empty unless both sides are indexed and readable. */
+export interface CompareOut {
+  a: CompareSide;
+  b: CompareSide;
+  rows: CompareRow[];
+  /** The index (into `rows`) of the first row that differs. */
+  divergence: number | null;
+  progress: { current: number; total: number };
+}
+

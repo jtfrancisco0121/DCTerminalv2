@@ -25,6 +25,8 @@ export interface SearchState {
   /** The filter of the last search that returned, and its answer. */
   filter: SearchFilter | null;
   out: SearchOut | null;
+  /** The runs ticked for Compare (run folders, oldest tick first); at most two. */
+  selected?: string[];
 }
 
 export const EMPTY_FORM: SearchForm = {
@@ -99,6 +101,8 @@ type Props = {
   onChange: (state: SearchState) => void;
   /** Open this run's Trace on its first match. */
   onOpen: (hit: RunHit) => void;
+  /** Compare the two ticked runs (the button is enabled at exactly two). */
+  onCompare?: (a: string, b: string) => void;
   onClose: () => void;
 };
 
@@ -106,17 +110,18 @@ type Props = {
  * Trace search: structured filters over the local index (no query text), results as runs with their match
  * counts, and a result opens the run's Trace on the first matching event. Nothing searches while you type.
  */
-export function TraceSearch({ initial, onChange, onOpen, onClose }: Props) {
+export function TraceSearch({ initial, onChange, onOpen, onCompare, onClose }: Props) {
   const [form, setForm] = useState<SearchForm>(initial?.form ?? EMPTY_FORM);
   const [filter, setFilter] = useState<SearchFilter | null>(initial?.filter ?? null);
   const [out, setOut] = useState<SearchOut | null>(initial?.out ?? null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [active, setActive] = useState(0);
+  const [selected, setSelected] = useState<string[]>(initial?.selected ?? []);
   const page = useRef<HTMLElement>(null);
   const busyRef = useRef(false);
-  const latest = useRef({ form, filter, out });
-  latest.current = { form, filter, out };
+  const latest = useRef({ form, filter, out, selected });
+  latest.current = { form, filter, out, selected };
 
   // The page takes the keyboard from a terminal underneath.
   useEffect(() => page.current?.focus(), []);
@@ -135,11 +140,11 @@ export function TraceSearch({ initial, onChange, onOpen, onClose }: Props) {
       setFilter(asked);
       setError(null);
       setActive(0);
-      onChange({ form: next, filter: asked, out: answer });
+      onChange({ form: next, filter: asked, out: answer, selected: latest.current.selected });
     } catch (err) {
       // The previous results stay.
       setError(errorText(err));
-      onChange({ form: next, filter: latest.current.filter, out: latest.current.out });
+      onChange({ form: next, filter: latest.current.filter, out: latest.current.out, selected: latest.current.selected });
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -156,7 +161,17 @@ export function TraceSearch({ initial, onChange, onOpen, onClose }: Props) {
     setFilter(null);
     setOut(null);
     setError(null);
-    onChange({ form: EMPTY_FORM, filter: null, out: null });
+    setSelected([]);
+    onChange({ form: EMPTY_FORM, filter: null, out: null, selected: [] });
+  };
+
+  /** Ticks a run for Compare; a third replaces the oldest tick. */
+  const toggle = (runDir: string) => {
+    const next = selected.includes(runDir)
+      ? selected.filter((d) => d !== runDir)
+      : [...selected, runDir].slice(-2);
+    setSelected(next);
+    onChange({ form, filter, out, selected: next });
   };
 
   const runs = out?.runs ?? [];
@@ -280,6 +295,24 @@ export function TraceSearch({ initial, onChange, onOpen, onClose }: Props) {
         </p>
       )}
 
+      {runs.length > 0 && onCompare && (
+        <div className="trace-search-compare">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={selected.length !== 2}
+            onClick={() => selected.length === 2 && onCompare(selected[0]!, selected[1]!)}
+          >
+            Compare
+          </button>
+          {selected.length !== 2 && (
+            <span className="hint" data-testid="compare-hint">
+              Select two runs to compare.
+            </span>
+          )}
+        </div>
+      )}
+
       {runs.length > 0 && (
         <ul
           className="trace-search-results"
@@ -298,6 +331,15 @@ export function TraceSearch({ initial, onChange, onOpen, onClose }: Props) {
               className="trace-search-result"
               onClick={() => onOpen(hit)}
             >
+              {onCompare && (
+                <input
+                  type="checkbox"
+                  aria-label={`Select run ${hit.runId} for compare`}
+                  checked={selected.includes(hit.runDir)}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={() => toggle(hit.runDir)}
+                />
+              )}{" "}
               <strong>{hit.title || hit.runId}</strong>{" "}
               <span className="hint">
                 {hit.runId}

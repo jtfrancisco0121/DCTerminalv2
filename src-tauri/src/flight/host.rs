@@ -1409,7 +1409,7 @@ fn indexed_events(
     let mut stmt = conn
         .prepare(
             "SELECT kind, name, status, pr, failure, rule, paths,
-                    CASE WHEN kind IN ('tool.start', 'check.end') OR failure IS NOT NULL THEN event_json END
+                    CASE WHEN kind IN ('tool.start', 'check.end') OR failure IS NOT NULL THEN event_json END, id
              FROM events WHERE run_id = ?1 ORDER BY at, src_file, src_offset",
         )
         .map_err(|e| format!("index: {e}"))?;
@@ -1428,6 +1428,7 @@ fn indexed_events(
                     .map(|p| p.lines().map(str::to_string).collect())
                     .unwrap_or_default(),
                 event: json.and_then(|j| serde_json::from_str(&j).ok()),
+                id: r.get(8)?,
             })
         })
         .map_err(|e| format!("index: {e}"))?;
@@ -4121,6 +4122,24 @@ mod tests {
             ("failures", "tool.blocked:run-file-write")
         );
         assert_eq!((&row.a, &row.b), (&json!(0), &json!(1)));
+        assert!(row.a_event.is_none(), "the passing run has no such Event");
+        let blocked = row
+            .b_event
+            .clone()
+            .expect("the failing run's blocked Event opens in its Trace");
+        let page = read_all(
+            &settings(vec![account(
+                "f",
+                &dir.join("config-fail"),
+                CapturePolicy::Metadata,
+            )]),
+            &fail,
+        );
+        assert!(page
+            .page
+            .events
+            .iter()
+            .any(|e| e.id == blocked && e.kind == "tool.blocked"));
         assert_eq!(
             out.rows.iter().filter(|r| r.differs).count(),
             1,
