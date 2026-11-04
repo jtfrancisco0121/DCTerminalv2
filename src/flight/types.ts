@@ -107,3 +107,34 @@ export interface Failure {
   repeatOf: Derived | null;
   repeats: Failure[];
 }
+
+/** One page of events and the cursor of the next, or null on the last. */
+export interface Page {
+  events: FlightEvent[];
+  nextCursor: string | null;
+}
+
+/** What `flight_session` returns. `off`: the account's policy lets nothing be read. */
+export interface SessionView {
+  status: "ok" | "off" | string;
+  trace: string;
+  policy: CapturePolicy;
+  agents: AgentNode[];
+  failures: Failure[];
+  page: Page;
+  notices: string[];
+}
+
+/** What `flight_content` returns: redacted text and how many lines were redacted. */
+export interface ContentOut {
+  text: string;
+  redactions: number;
+  policy: CapturePolicy;
+}
+
+/** Which transcripts: a run's recorded sessions, or one session of one account folder. */
+export interface TraceTarget {
+  runDir?: string;
+  configDir?: string;
+  sessionId?: string;
+}

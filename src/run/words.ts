@@ -476,3 +476,56 @@ export function outcomeTone(outcome: string | null | undefined, stage: string | 
   if (value === "failed") return "danger";
   return stage ? "running" : "muted";
 }
+
+/** A trace event's status: ok, error, blocked (a hook or guard said no), cancelled; null is a call still open. */
+export function flightStatusTone(status: string | null | undefined): Tone {
+  switch (status) {
+    case "ok":
+      return "success";
+    case "error":
+      return "danger";
+    case "blocked":
+      return "warn";
+    default:
+      return "muted";
+  }
+}
+
+export function flightStatusText(status: string | null | undefined): string {
+  switch (status) {
+    case "ok":
+      return "ok";
+    case "error":
+      return "failed";
+    case "blocked":
+      return "blocked";
+    case "cancelled":
+      return "cancelled";
+    default:
+      return "open";
+  }
+}
+
+const FLIGHT_KINDS: Record<string, string> = {
+  "session.start": "Session started",
+  "turn.start": "Prompt",
+  "turn.end": "Turn ended",
+  "llm.call": "Model call",
+  "tool.start": "Tool call",
+  "tool.end": "Tool result",
+  "tool.blocked": "Tool blocked",
+  "agent.spawn": "Agent started",
+  "file.change": "File change",
+  error: "API error",
+  "x.claude.unknown": "Unknown line",
+};
+
+/** Plain words for an event kind; an unknown kind is shown as it is. */
+export function flightKindText(kind: string): string {
+  return FLIGHT_KINDS[kind] ?? kind;
+}
+
+/** "exact:is_error" is a fact; "heuristic:…" is a guess and is labelled so. */
+export function flightDerivedText(label: string): string {
+  return label.startsWith("heuristic:") ? "heuristic" : "exact";
+}

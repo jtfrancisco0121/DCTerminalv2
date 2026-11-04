@@ -35,6 +35,20 @@ const seen: TabObservation = {
   stall: { minutes: 12, threshold: 10 },
 };
 
+describe("ObserveView trace link", () => {
+  it("offers Open trace only when something listens", () => {
+    const onOpenTrace = vi.fn();
+    const { unmount } = render(
+      <ObserveView seen={seen} nudging={false} onNudge={vi.fn()} onResume={vi.fn()} onOpenTrace={onOpenTrace} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open trace" }));
+    expect(onOpenTrace).toHaveBeenCalledTimes(1);
+    unmount();
+    render(<ObserveView seen={seen} nudging={false} onNudge={vi.fn()} onResume={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Open trace" })).toBeNull();
+  });
+});
+
 describe("ObserveView", () => {
   it("shows state, context warning, sub-agents and the cost estimate", () => {
     render(<ObserveView seen={seen} nudging={false} onNudge={vi.fn()} onResume={vi.fn()} />);

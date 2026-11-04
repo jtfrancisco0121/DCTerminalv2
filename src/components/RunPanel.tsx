@@ -588,10 +588,13 @@ export function RunPanel({
   windowId,
   onTabsChanged,
   onLayoutChange,
+  onOpenTrace,
 }: {
   runDir: string;
   tabId?: string;
   onResume?: () => void;
+  /** Open the Session Inspector on this run (on one agent when given). Works without a tab. */
+  onOpenTrace?: (agent?: string) => void;
   /** Focus the tab's terminal (the approval card's Go to prompt). */
   onGoToPrompt?: () => void;
   /** The window a "Shell here" tab opens in. */
@@ -753,10 +756,10 @@ export function RunPanel({
         onCopyBranch={copyBranch}
         onSlopCheck={(prId) => slopCheck(runDir, prId)}
         away={away}
-        session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} /> : undefined}
+        session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} onOpenTrace={onOpenTrace ? () => onOpenTrace() : undefined} /> : undefined}
         extra={
           <>
-            <FleetTimeline runDir={runDir} live={!runFinished(view)} />
+            <FleetTimeline runDir={runDir} live={!runFinished(view)} onOpenLane={onOpenTrace ? (lane) => onOpenTrace(lane.agentId ?? "main") : undefined} />
             <ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} mergeKey={mergeKey(view)} />
           </>
         }

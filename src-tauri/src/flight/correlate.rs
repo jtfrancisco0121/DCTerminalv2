@@ -12,6 +12,9 @@ pub const ROOT: &str = "exact:session-root";
 pub const SUBAGENT_FILE: &str = "heuristic:subagent-without-spawn";
 pub const DESCRIPTION_PREFIX: &str = "heuristic:description-prefix";
 
+// The panel reads failures and the tree; spans are kept for the run-folder
+// adapter and compare (M2, M3) and are covered by the tests below.
+#[cfg_attr(not(test), allow(dead_code))]
 fn ms(at: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(at)
         .ok()
@@ -20,6 +23,7 @@ fn ms(at: &str) -> Option<i64> {
 
 /// One span per tool call: its `tool.start`, paired by span id with its
 /// `tool.end` or `tool.blocked`. A start with no end is open (status `None`).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn spans(events: &[Event]) -> Vec<Span> {
     let mut ends: HashMap<(&str, &str), &Event> = HashMap::new();
     for e in events
@@ -380,7 +384,7 @@ mod tests {
         assert_eq!(failures.len(), 1);
         let error = events.iter().find(|e| e.kind == kind::ERROR).unwrap();
         assert_eq!(failures[0].derived.label, "exact:stop-failure");
-        assert_eq!(failures[0].derived.evidence, [error.id.clone()]);
+        assert_eq!(failures[0].derived.evidence, vec![error.id.clone()]);
         let kinds: Vec<&str> = failures[0]
             .before
             .iter()

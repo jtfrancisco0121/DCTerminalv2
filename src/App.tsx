@@ -35,6 +35,8 @@ import { Dialog } from "./components/Dialog";
 import { InlineNotice } from "./components/InlineNotice";
 import { NewTabForm } from "./components/NewTabForm";
 import { RunPanel } from "./components/RunPanel";
+import { TracePanel } from "./components/TracePanel";
+import type { TraceTarget } from "./flight/types";
 import { PreviewHost } from "./components/PreviewPane";
 import { RunAnalytics } from "./components/RunAnalytics";
 import { RunDashboard } from "./components/RunDashboard";
@@ -115,6 +117,9 @@ function App() {
   const [activeRunsOpen, setActiveRunsOpen] = useState(false);
   // A window-level page drawn over the workspace; the terminals stay mounted underneath.
   const [page, setPage] = useState<"dashboard" | "analytics" | null>(null);
+  // The Session Inspector, another page over the workspace; focus returns to whatever opened it.
+  const [trace, setTrace] = useState<{ target: TraceTarget; agent?: string } | null>(null);
+  const traceOpener = useRef<HTMLElement | null>(null);
   const [dialog, setDialog] = useState<"new-tab" | "new-window" | "pick-account" | "settings" | "runs" | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
   // The command palette (Cmd+K), the run list it offers, and the Settings section it opens.
@@ -209,8 +214,21 @@ function App() {
 
   const active = state?.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
 
+  const openTrace = (target: TraceTarget, agent?: string) => {
+    traceOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setPage(null);
+    setTrace({ target, agent });
+  };
+  const closeTrace = () => {
+    setTrace(null);
+    const opener = traceOpener.current;
+    traceOpener.current = null;
+    if (opener?.isConnected) window.setTimeout(() => opener.focus(), 0);
+  };
+
   const select = (tabId: string) => {
     setPage(null);
+    setTrace(null);
     setState((current) => (current ? { ...current, activeTabId: tabId } : current));
     selectTab(windowId, tabId).catch((err: unknown) => fail("Select tab", err));
   };
@@ -561,13 +579,17 @@ function App() {
 
   // Escape closes a page (a dialog or the palette on top takes the key first).
   useEffect(() => {
-    if (!page || dialog || paletteOpen) return;
+    if ((!page && !trace) || dialog || paletteOpen) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setPage(null);
+      if (event.key !== "Escape") return;
+      if (trace) closeTrace();
+      else setPage(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [page, dialog, paletteOpen]);
+    // closeTrace only reads a ref and sets state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, trace, dialog, paletteOpen]);
 
   // The palette offers unfinished runs and the role tiles: read them when it opens.
   useEffect(() => {
@@ -611,6 +633,16 @@ function App() {
           }
           return startRun(windowId, active.cwd, "", role.id).then((run) => started(run));
         },
+      });
+    }
+    if (active?.runDir) {
+      const runDir = active.runDir;
+      items.push({
+        id: "page:trace",
+        group: "Runs",
+        label: "Open trace",
+        detail: "What the agents of this run did",
+        run: () => openTrace({ runDir }),
       });
     }
     items.push({
@@ -754,10 +786,10 @@ function App() {
             </button>
           </div>
         )}
-        {active && !blocked && !active.runDir && terminalsOf(active, !dialog && !page)}
+        {active && !blocked && !active.runDir && terminalsOf(active, !dialog && !page && !trace)}
         {active && !blocked && active.runDir && (
           <div className="run-layout">
-            {terminalsOf(active, !dialog && !page)}
+            {terminalsOf(active, !dialog && !page && !trace)}
             <PreviewHost onLayoutChange={() => refitTerminal(active.id)} />
             <RunPanel
               key={active.runDir}
@@ -768,11 +800,13 @@ function App() {
               windowId={windowId}
               onTabsChanged={() => void reload()}
               onLayoutChange={() => refitTerminal(active.id)}
+              onOpenTrace={(agent) => openTrace({ runDir: active.runDir! }, agent)}
             />
           </div>
         )}
         {page === "dashboard" && <RunDashboard runs={runTabReadings} onClose={() => setPage(null)} />}
         {page === "analytics" && <RunAnalytics onClose={() => setPage(null)} />}
+        {trace && <TracePanel target={trace.target} agent={trace.agent} onClose={closeTrace} />}
       </section>
       <AttentionNotices />
       {activeRunsOpen && (

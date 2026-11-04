@@ -10,6 +10,9 @@ export type Lane = {
   startMs: number | null;
   finishMs: number | null;
   costUsd: number | null;
+  /** The recorded session this lane belongs to, and its sub-agent id (null: the orchestrator). */
+  session?: number;
+  agentId?: string | null;
 };
 export type Band = { kind: "stage" | "wait"; name: string; startMs: number; endMs: number };
 export type Timeline = {

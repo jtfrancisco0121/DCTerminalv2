@@ -187,6 +187,53 @@ pub fn names_in(dir: &Path) -> Vec<String> {
     names
 }
 
+/// `src` without its test-only items: an item whose attribute is
+/// `#[cfg(test)]` or `#[cfg(all(test, ...))]` (a module, function or use)
+/// is removed up to its closing brace or semicolon. Line comments go too.
+pub fn without_test_items(src: &str) -> String {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim_start();
+        let test_attr = line.starts_with("#[cfg(test)]") || line.starts_with("#[cfg(all(test");
+        if !test_attr {
+            if !line.starts_with("//") {
+                out.push_str(lines[i]);
+                out.push('\n');
+            }
+            i += 1;
+            continue;
+        }
+        // Skip the attribute, then the item: to the matching `}` of its first `{`, or its `;`.
+        let mut depth = 0i32;
+        let mut opened = false;
+        i += 1;
+        while i < lines.len() {
+            for ch in lines[i].chars() {
+                match ch {
+                    '{' => {
+                        depth += 1;
+                        opened = true;
+                    }
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            let ends = if opened {
+                depth <= 0
+            } else {
+                lines[i].trim_end().ends_with(';')
+            };
+            i += 1;
+            if ends {
+                break;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,51 +315,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(a);
         let _ = std::fs::remove_dir_all(b);
     }
-}
-
-/// `src` without its test-only items: an item whose attribute is
-/// `#[cfg(test)]` or `#[cfg(all(test, ...))]` (a module, function or use)
-/// is removed up to its closing brace or semicolon. Line comments go too.
-pub fn without_test_items(src: &str) -> String {
-    let lines: Vec<&str> = src.lines().collect();
-    let mut out = String::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i].trim_start();
-        let test_attr = line.starts_with("#[cfg(test)]") || line.starts_with("#[cfg(all(test");
-        if !test_attr {
-            if !line.starts_with("//") {
-                out.push_str(lines[i]);
-                out.push('\n');
-            }
-            i += 1;
-            continue;
-        }
-        // Skip the attribute, then the item: to the matching `}` of its first `{`, or its `;`.
-        let mut depth = 0i32;
-        let mut opened = false;
-        i += 1;
-        while i < lines.len() {
-            for ch in lines[i].chars() {
-                match ch {
-                    '{' => {
-                        depth += 1;
-                        opened = true;
-                    }
-                    '}' => depth -= 1,
-                    _ => {}
-                }
-            }
-            let ends = if opened {
-                depth <= 0
-            } else {
-                lines[i].trim_end().ends_with(';')
-            };
-            i += 1;
-            if ends {
-                break;
-            }
-        }
-    }
-    out
 }

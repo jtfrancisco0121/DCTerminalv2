@@ -145,6 +145,7 @@ pub struct Derived {
 }
 
 /// A tool call: its start and, when it came, its end.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Span {

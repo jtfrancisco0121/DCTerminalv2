@@ -59,6 +59,7 @@ pub fn subagent_files(main: &Path) -> Vec<(String, PathBuf, PathBuf)> {
 pub struct Opens(AtomicUsize);
 
 impl Opens {
+    #[cfg(test)]
     pub fn count(&self) -> usize {
         self.0.load(Ordering::SeqCst)
     }
@@ -114,8 +115,6 @@ pub struct Query {
 /// The files of one session.
 #[derive(Debug, Clone)]
 pub struct SessionFiles {
-    pub config_dir: String,
-    pub session_id: String,
     pub main: PathBuf,
     pub subagents: Vec<SubagentFile>,
 }
@@ -192,12 +191,7 @@ pub fn resolve(claude: &ClaudeSettings, query: &Query, opens: &Opens) -> Access 
             })
             .collect();
         opens.add(1 + subagents.len());
-        sessions.push(SessionFiles {
-            config_dir,
-            session_id,
-            main,
-            subagents,
-        });
+        sessions.push(SessionFiles { main, subagents });
     }
     Access::Ready(SessionSet {
         policy,
@@ -246,9 +240,11 @@ struct CacheInner {
 pub struct FlightCache(Arc<CacheInner>);
 
 impl FlightCache {
+    #[cfg(test)]
     pub fn hits(&self) -> usize {
         self.0.hits.load(Ordering::SeqCst)
     }
+    #[cfg(test)]
     pub fn misses(&self) -> usize {
         self.0.misses.load(Ordering::SeqCst)
     }

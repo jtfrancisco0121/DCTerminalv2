@@ -157,6 +157,19 @@ vi.mock("./run/api", () => ({
   readMemoryFile: vi.fn(async () => ""),
 }));
 
+vi.mock("./flight/api", () => ({
+  flightSession: vi.fn(async () => ({
+    status: "ok",
+    trace: "r-1",
+    policy: "metadata",
+    agents: [],
+    failures: [],
+    page: { events: [], nextCursor: null },
+    notices: [],
+  })),
+  flightContent: vi.fn(),
+}));
+
 const running = new Set<string>();
 vi.mock("./terminal/live", async (original) => ({
   ...(await original<typeof import("./terminal/live")>()),
@@ -563,6 +576,28 @@ describe("App run pages", () => {
     fireEvent.click(within(screen.getByRole("region", { name: "Run dashboard" })).getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("region", { name: "Run dashboard" })).toBeNull();
 
+    expect(screen.getByTestId("terminal")).toBeTruthy();
+    expect(terminalLife.mounts).toBe(1);
+    expect(terminalLife.unmounts).toBe(0);
+    vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
+    cleanup();
+    endState();
+  });
+
+  it("opens the trace from the palette over the run panel; Escape closes it and no terminal is unmounted", async () => {
+    await openApp();
+    await waitFor(() => expect(screen.getByTestId("tab-progress-tab_run")).toBeTruthy());
+    const { flightSession } = await import("./flight/api");
+
+    await paletteOpen(/Open trace/);
+    expect(await screen.findByRole("region", { name: "Trace" })).toBeTruthy();
+    expect(vi.mocked(flightSession)).toHaveBeenCalledWith(expect.objectContaining({ runDir: "/d/runs/r-1" }));
+    expect(screen.getByTestId("terminal")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(screen.queryByRole("region", { name: "Trace" })).toBeNull();
     expect(screen.getByTestId("terminal")).toBeTruthy();
     expect(terminalLife.mounts).toBe(1);
     expect(terminalLife.unmounts).toBe(0);
