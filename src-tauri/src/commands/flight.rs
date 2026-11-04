@@ -4,6 +4,7 @@
 //! they read.
 
 use crate::flight::host::{self, ContentOut, FlightCache, Opens, Query};
+use crate::flight::index::{SearchFilter, SearchOut};
 use crate::flight::schema::SourceRef;
 use crate::flight::session::{PageRequest, SessionView};
 use crate::store::SettingsStore;
@@ -102,4 +103,14 @@ pub async fn flight_session(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Searches the trace index with a structured filter (no SQL text from the caller). It runs on a worker
+/// thread, holds no store lock, and opens `flight.db` read-only; the index thread is its only writer.
+#[tauri::command]
+pub async fn flight_search(app: AppHandle, filter: SearchFilter) -> Result<SearchOut, String> {
+    let data = crate::data_dir::app_data_dir(&app).path;
+    tauri::async_runtime::spawn_blocking(move || host::search_index(&data, &filter))
+        .await
+        .map_err(|e| e.to_string())?
 }

@@ -14,8 +14,8 @@
       "state": "fixing",
       "check": {
         "command": "cargo test --manifest-path src-tauri/Cargo.toml",
-        "result": "fail",
-        "summary": "1 test failed",
+        "result": "pass",
+        "summary": "all tests passed in the skill's own run",
         "cwd": null,
         "log": null
       },

@@ -5,7 +5,10 @@
 
 use super::adapters::dcv2_run::{self, ApprovalIn, RunEvents, RunInputs};
 use super::adapters::{AgentMeta, SubagentFile};
-use super::index::{self, Exclusion, Limits, PassStats, RunInput, SessionInput, SourceStamp};
+use super::index::{
+    self, Counts, Exclusion, Limits, PassStats, RunInput, SearchFilter, SearchOut, SessionInput,
+    SourceStamp,
+};
 use super::redact::{first_hit, redact};
 use super::schema::{sha256_hex, CapturePolicy, SourceRef};
 use super::session::{self, PageRequest, Parsed, SessionView};
@@ -790,6 +793,26 @@ pub fn spawn_index(app: &tauri::AppHandle) {
                 }
             }
         });
+}
+
+/// `flight_search`: the structured search over `<data>/flight.db`, on a connection that can only read. A
+/// database that does not exist yet gives no runs and the progress `0 of M` (M = the app's run folders).
+pub fn search_index(data: &Path, filter: &SearchFilter) -> Result<SearchOut, String> {
+    let db = data.join(INDEX_FILE);
+    let mut out = if db.is_file() {
+        let conn = index::open_reader(&db)?;
+        index::search(&conn, filter)?
+    } else {
+        SearchOut {
+            runs: Vec::new(),
+            excluded_off: 0,
+            progress: Counts::default(),
+        }
+    };
+    if out.progress.total == 0 {
+        out.progress.total = app_run_dirs(data).len() as i64;
+    }
+    Ok(out)
 }
 
 /// What `flight_content` returns.
@@ -1862,7 +1885,7 @@ mod tests {
         sorted.sort();
         assert_eq!(keys, sorted, "one keyed order across both sources");
         // A transcript event sits between two orchestration events of the same run.
-        let pos = |f: &dyn Fn(&Event) -> bool| events.iter().position(|e| f(e)).unwrap();
+        let pos = |f: &dyn Fn(&Event) -> bool| events.iter().position(f).unwrap();
         let spawn = pos(&|e| e.kind == "agent.spawn" && e.at.starts_with("2026-11-05T10:08"));
         let building = pos(&|e| e.kind == kind::PR_STATE && e.at.starts_with("2026-11-05T10:07"));
         let reviewing = pos(&|e| e.kind == kind::PR_STATE && e.at.starts_with("2026-11-05T10:20"));
@@ -2092,8 +2115,8 @@ mod tests {
             .iter()
             .filter(|f| f.kind == kind::CHECK_END)
             .collect();
-        // skill (status.json), app and stop-check all failed in the fixture.
-        assert_eq!(checks.len(), 3);
+        // The app's re-run and the stop-check failed; the skill's own check (status.json) passed.
+        assert_eq!(checks.len(), 2);
         assert!(checks.iter().all(|f| f.derived.label == derive::CHECK_FAIL));
         assert!(checks.iter().all(|f| f.name.as_deref() == Some(CARGO)));
         let sorted: Vec<&String> = v.failures.iter().map(|f| &f.at).collect();
@@ -2213,23 +2236,23 @@ mod tests {
         let (_d, run, claude) = wave1("flight_wave1_phases", CapturePolicy::Full);
         let v = all_events(&claude, &run);
         assert_eq!(v.phases.len(), v.page.events.len(), "one phase per event");
-        let named = |source: &str| {
+        let named = |source: &str, status: &str| {
             event_by(&v, |e| {
                 e.kind == kind::CHECK_END
                     && e.attrs.get("source").and_then(|s| s.as_str()) == Some(source)
-                    && e.status.as_deref() == Some("fail")
+                    && e.status.as_deref() == Some(status)
             })
         };
-        let app = phase(&v, named("app"));
+        let app = phase(&v, named("app", "fail"));
         assert_eq!(app.pr_state.as_deref(), Some("reviewing"));
         assert_eq!(app.label.as_deref(), Some("exact:log-line"));
         assert_eq!(app.stage.as_deref(), Some("building"));
         assert_eq!(
-            phase(&v, named("stop-check")).pr_state.as_deref(),
+            phase(&v, named("stop-check", "fail")).pr_state.as_deref(),
             Some("fixing")
         );
         assert_eq!(
-            phase(&v, named("skill")).pr_state.as_deref(),
+            phase(&v, named("skill", "pass")).pr_state.as_deref(),
             Some("reviewing")
         );
         let reviewer = v
@@ -2627,6 +2650,125 @@ mod tests {
         }
         let lib = std::fs::read_to_string(src.join("lib.rs")).unwrap();
         assert!(lib.contains("flight::host::spawn_index(app.handle())"));
+    }
+
+    // ---- flight_search (S8) ----
+
+    fn review_search() -> SearchFilter {
+        SearchFilter {
+            name_contains: Some("cargo test".into()),
+            status: vec!["fail".into()],
+            in_review: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_real_pass_over_the_fixture_then_the_search_finds_the_run_and_its_first_match() {
+        let dir = TempDir::new("flight_search_e2e");
+        let (run, config) = wave1_run(&dir);
+        let claude = settings(vec![account("a", &config, CapturePolicy::Full)]);
+        let mut conn = index::open_writer(&dir.join(INDEX_FILE)).unwrap();
+        index_pass(
+            &mut conn,
+            &claude,
+            std::slice::from_ref(&run),
+            &Limits::default(),
+        )
+        .unwrap();
+        let view = all_events(&claude, &run);
+        let check = |source: &str, status: &str| -> String {
+            event_by(&view, |e| {
+                e.kind == kind::CHECK_END
+                    && e.attrs.get("source").and_then(|s| s.as_str()) == Some(source)
+                    && e.status.as_deref() == Some(status)
+            })
+            .id
+            .clone()
+        };
+        let out = search_index(dir.path(), &review_search()).unwrap();
+        assert_eq!(out.runs.len(), 1, "{out:?}");
+        let hit = &out.runs[0];
+        assert_eq!(hit.run_id, "r-20261105-100000-fa17");
+        assert_eq!(hit.run_dir, run.display().to_string());
+        assert_eq!(
+            hit.matches, 1,
+            "the app check; the stop-check failed in `fixing`"
+        );
+        assert_eq!(hit.first_event_id, check("app", "fail"));
+        assert_eq!(out.excluded_off, 0);
+        assert_eq!(
+            out.progress,
+            Counts {
+                current: 1,
+                total: 1
+            }
+        );
+        // The stop-check fail is in `fixing`, and only it.
+        let fixing = SearchFilter {
+            name_contains: Some("cargo test".into()),
+            status: vec!["fail".into()],
+            pr_state: Some("fixing".into()),
+            ..Default::default()
+        };
+        let out = search_index(dir.path(), &fixing).unwrap();
+        assert_eq!(out.runs.len(), 1);
+        assert_eq!(out.runs[0].matches, 1);
+        assert_eq!(out.runs[0].first_event_id, check("stop-check", "fail"));
+        // Roles and stages reach the transcript Events too.
+        let reviewer = SearchFilter {
+            pr_role: Some("pr-reviewer".into()),
+            ..Default::default()
+        };
+        assert!(search_index(dir.path(), &reviewer).unwrap().runs[0].matches > 0);
+        let blocked = SearchFilter {
+            kind: Some("tool.blocked".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            search_index(dir.path(), &blocked).unwrap().runs[0].matches,
+            2
+        );
+    }
+
+    #[test]
+    fn without_a_database_the_search_is_empty_and_progress_counts_the_run_folders() {
+        let dir = TempDir::new("flight_search_missing");
+        for id in ["r-20261105-000001-aaaa", "r-20261105-000002-bbbb"] {
+            std::fs::create_dir_all(dir.join("runs").join(id)).unwrap();
+        }
+        let out = search_index(dir.path(), &SearchFilter::default()).unwrap();
+        assert!(out.runs.is_empty());
+        assert_eq!(out.excluded_off, 0);
+        assert_eq!(
+            out.progress,
+            Counts {
+                current: 0,
+                total: 2
+            }
+        );
+        assert!(
+            !dir.join(INDEX_FILE).exists(),
+            "a search creates no database"
+        );
+    }
+
+    #[test]
+    fn an_off_run_is_counted_in_the_search_and_never_listed() {
+        let dir = TempDir::new("flight_search_off");
+        let (run, config) = wave1_run(&dir);
+        let off = settings(vec![account("a", &config, CapturePolicy::Off)]);
+        let mut conn = index::open_writer(&dir.join(INDEX_FILE)).unwrap();
+        index_pass(
+            &mut conn,
+            &off,
+            std::slice::from_ref(&run),
+            &Limits::default(),
+        )
+        .unwrap();
+        let out = search_index(dir.path(), &SearchFilter::default()).unwrap();
+        assert!(out.runs.is_empty());
+        assert_eq!(out.excluded_off, 1);
     }
 
     #[test]

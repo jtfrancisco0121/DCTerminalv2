@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn a_phase_has_the_last_stage_and_pr_state_at_or_before_the_event() {
-        let events = vec![
+        let events = [
             ev("early", kind::TOOL_START, false, "main", None, &[]),
             stage("st1", "planning"),
             stage("st2", "building"),
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn before_a_prs_first_line_the_state_is_that_lines_from_unless_it_is_new() {
-        let events = vec![
+        let events = [
             check("a", "PR1"),
             pr_line("l", "PR1", "building", "reviewing"),
             check("b", "PR3"),
@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn a_run_with_no_pr_lines_falls_back_to_status_json_and_says_so() {
-        let events = vec![
+        let events = [
             stage("st", "building"),
             check("c", "PR2"),
             check("d", "PR7"),
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn a_run_with_no_stage_lines_has_no_stage() {
-        let events = vec![check("c", "PR2")];
+        let events = [check("c", "PR2")];
         let refs: Vec<&Event> = events.iter().collect();
         let got = phases(&refs, &HashMap::new(), &BTreeMap::new());
         assert_eq!(phase_of(&got, "c").0, None);

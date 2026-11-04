@@ -331,3 +331,112 @@ pub fn view(
         phases,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flight::testkit::*;
+    use crate::test_support::TempDir;
+    use serde_json::json;
+
+    fn events(n: usize) -> Vec<std::sync::Arc<Parsed>> {
+        let dir = TempDir::new("session_focus");
+        let lines: Vec<serde_json::Value> = (0..n)
+            .map(|i| {
+                tool_use(
+                    &format!("2026-11-05T10:00:{i:02}Z"),
+                    &format!("m{i}"),
+                    &format!("t{i}"),
+                    "Bash",
+                    json!({"command": format!("echo {i}")}),
+                )
+            })
+            .collect();
+        vec![std::sync::Arc::new(Parsed::from_events(synthetic(
+            &dir, "s.jsonl", &lines,
+        )))]
+    }
+
+    fn page(sessions: &[std::sync::Arc<Parsed>], request: &PageRequest) -> SessionView {
+        view(
+            sessions,
+            None,
+            None,
+            CapturePolicy::Full,
+            request,
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn focus_starts_the_first_page_at_the_page_holding_the_event() {
+        let sessions = events(25);
+        let all = page(
+            &sessions,
+            &PageRequest {
+                page_size: Some(1000),
+                ..Default::default()
+            },
+        );
+        let ids: Vec<String> = all.page.events.iter().map(|e| e.id.clone()).collect();
+        assert!(ids.len() >= 26);
+        let size = 10;
+        let at = 13;
+        let v = page(
+            &sessions,
+            &PageRequest {
+                page_size: Some(size),
+                focus: Some(ids[at].clone()),
+                ..Default::default()
+            },
+        );
+        let got: Vec<&String> = v.page.events.iter().map(|e| &e.id).collect();
+        assert_eq!(
+            got[0], &ids[10],
+            "the page of 10 that holds index 13 starts at 10"
+        );
+        assert!(got.contains(&&ids[at]));
+        assert!(v.page.next_cursor.is_some());
+        // The next page continues from there, with no repeat.
+        let next = page(
+            &sessions,
+            &PageRequest {
+                page_size: Some(size),
+                cursor: v.page.next_cursor.clone(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(next.page.events[0].id, ids[20]);
+        // A cursor wins over a focus, an unknown focus starts at the top.
+        let both = page(
+            &sessions,
+            &PageRequest {
+                page_size: Some(size),
+                cursor: v.page.next_cursor,
+                focus: Some(ids[1].clone()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(both.page.events[0].id, ids[20]);
+        let unknown = page(
+            &sessions,
+            &PageRequest {
+                page_size: Some(size),
+                focus: Some("ev_none".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(unknown.page.events[0].id, ids[0]);
+        // The first page of an event in the first page is the first page.
+        let first = page(
+            &sessions,
+            &PageRequest {
+                page_size: Some(size),
+                focus: Some(ids[3].clone()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(first.page.events[0].id, ids[0]);
+    }
+}

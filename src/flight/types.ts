@@ -208,3 +208,36 @@ export interface TraceTarget {
   configDir?: string;
   sessionId?: string;
 }
+
+/** The filter of `flight_search` (index.rs `SearchFilter`). `failed` in `status` means `fail` or `error`. */
+export interface SearchFilter {
+  kind?: string;
+  nameContains?: string;
+  status?: string[];
+  stage?: string;
+  prState?: string;
+  prRole?: string;
+  /** PR state `reviewing` or agent role `pr-reviewer`. */
+  inReview?: boolean;
+  repo?: string;
+  from?: string;
+  to?: string;
+  text?: string;
+}
+
+/** One run with matches: the count, and the first matching Event the Trace opens on. */
+export interface RunHit {
+  runId: string;
+  runDir: string;
+  title: string;
+  outcome: string;
+  matches: number;
+  firstEventId: string;
+}
+
+export interface SearchOut {
+  runs: RunHit[];
+  /** Runs left out because their account's capture policy is off. */
+  excludedOff: number;
+  progress: { current: number; total: number };
+}

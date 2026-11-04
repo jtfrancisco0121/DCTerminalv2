@@ -656,6 +656,200 @@ pub fn progress(conn: &Connection) -> Progress {
     .unwrap_or_default()
 }
 
+/// A structured search. Every field is a value bound as a parameter: no SQL text ever comes from the caller.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SearchFilter {
+    /// An event kind: `check.end`, `tool.blocked`, ...
+    pub kind: Option<String>,
+    /// The event name contains this (a tool or check name such as `cargo test`).
+    pub name_contains: Option<String>,
+    /// `ok`, `error`, `blocked`, `fail`, `pass`, ... `failed` means `fail` or `error`.
+    pub status: Vec<String>,
+    pub stage: Option<String>,
+    pub pr_state: Option<String>,
+    /// The agent role: `implementer`, `pr-reviewer`, ...
+    pub pr_role: Option<String>,
+    /// PR state `reviewing` or agent role `pr-reviewer` (status.json has no review stage).
+    pub in_review: bool,
+    /// The run's repo contains this.
+    pub repo: Option<String>,
+    /// Event time range: a date (`2026-11-05`) or a time.
+    pub from: Option<String>,
+    pub to: Option<String>,
+    /// Names and paths only, never content.
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunHit {
+    pub run_id: String,
+    pub run_dir: String,
+    pub title: String,
+    pub outcome: String,
+    pub matches: i64,
+    /// The match earliest in the Trace's order: the Trace opens on it.
+    pub first_event_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Counts {
+    pub current: i64,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchOut {
+    /// Newest run first.
+    pub runs: Vec<RunHit>,
+    /// Runs left out because their account's capture policy is `off`.
+    pub excluded_off: i64,
+    pub progress: Counts,
+}
+
+/// `%needle%` with `\`, `%` and `_` escaped, for `LIKE ? ESCAPE '\'`.
+fn like(needle: &str) -> String {
+    let mut out = String::from("%");
+    for c in needle.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('%');
+    out
+}
+
+/// The end of a bare date covers the whole day.
+fn upper_bound(to: &str) -> String {
+    if to.len() <= 10 {
+        format!("{to}T23:59:59.999Z")
+    } else {
+        to.to_string()
+    }
+}
+
+fn blank(v: &Option<String>) -> Option<&str> {
+    v.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Runs with matching Events, newest first, each with its match count and its first match. Read-only.
+pub fn search(conn: &Connection, filter: &SearchFilter) -> Result<SearchOut, String> {
+    let mut conds: Vec<String> = vec!["r.excluded_off = 0".into()];
+    let mut args: Vec<String> = Vec::new();
+    fn bind(conds: &mut Vec<String>, args: &mut Vec<String>, sql: &str, value: String) {
+        args.push(value);
+        conds.push(sql.replace('?', &format!("?{}", args.len())));
+    }
+    if let Some(k) = blank(&filter.kind) {
+        bind(&mut conds, &mut args, "e.kind = ?", k.to_string());
+    }
+    if let Some(n) = blank(&filter.name_contains) {
+        bind(&mut conds, &mut args, "e.name LIKE ? ESCAPE '\\'", like(n));
+    }
+    let mut statuses: Vec<String> = Vec::new();
+    for st in filter
+        .status
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        if st == "failed" {
+            statuses.extend(["fail".to_string(), "error".to_string()]);
+        } else {
+            statuses.push(st.to_string());
+        }
+    }
+    statuses.sort();
+    statuses.dedup();
+    if !statuses.is_empty() {
+        let mut marks = Vec::new();
+        for st in statuses {
+            args.push(st);
+            marks.push(format!("?{}", args.len()));
+        }
+        conds.push(format!("e.status IN ({})", marks.join(", ")));
+    }
+    if let Some(v) = blank(&filter.stage) {
+        bind(&mut conds, &mut args, "e.stage = ?", v.to_string());
+    }
+    if let Some(v) = blank(&filter.pr_state) {
+        bind(&mut conds, &mut args, "e.pr_state = ?", v.to_string());
+    }
+    if let Some(v) = blank(&filter.pr_role) {
+        bind(&mut conds, &mut args, "e.role = ?", v.to_string());
+    }
+    if filter.in_review {
+        conds.push("(e.pr_state = 'reviewing' OR e.role = 'pr-reviewer')".into());
+    }
+    if let Some(v) = blank(&filter.repo) {
+        bind(&mut conds, &mut args, "r.repo LIKE ? ESCAPE '\\'", like(v));
+    }
+    if let Some(v) = blank(&filter.from) {
+        bind(&mut conds, &mut args, "e.at >= ?", v.to_string());
+    }
+    if let Some(v) = blank(&filter.to) {
+        bind(&mut conds, &mut args, "e.at <= ?", upper_bound(v));
+    }
+    if let Some(v) = blank(&filter.text) {
+        args.push(like(v));
+        let n = args.len();
+        conds.push(format!(
+            "(e.name LIKE ?{n} ESCAPE '\\' OR e.paths LIKE ?{n} ESCAPE '\\')"
+        ));
+    }
+    let sql = format!(
+        "WITH m AS (
+            SELECT e.run_id AS run_id, e.id AS id, e.at AS at, e.src_file AS src_file,
+                   e.src_offset AS src_offset, e.rowid AS rid
+            FROM events e JOIN runs r ON r.run_id = e.run_id
+            WHERE {}
+         )
+         SELECT r.run_id, r.dir, r.title, r.outcome, c.n, f.id
+         FROM runs r
+         JOIN (SELECT run_id, COUNT(*) AS n FROM m GROUP BY run_id) c ON c.run_id = r.run_id
+         JOIN (SELECT run_id, id,
+                      ROW_NUMBER() OVER (PARTITION BY run_id ORDER BY at, src_file, src_offset, rid) AS rn
+               FROM m) f ON f.run_id = r.run_id AND f.rn = 1
+         ORDER BY r.run_id DESC
+         LIMIT 500",
+        conds.join(" AND ")
+    );
+    let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(args.iter()), |r| {
+            Ok(RunHit {
+                run_id: r.get(0)?,
+                run_dir: r.get(1)?,
+                title: r.get(2)?,
+                outcome: r.get(3)?,
+                matches: r.get(4)?,
+                first_event_id: r.get(5)?,
+            })
+        })
+        .map_err(db_err)?;
+    let runs = rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
+    let excluded_off: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM runs WHERE excluded_off = 1",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(db_err)?;
+    let p = progress(conn);
+    Ok(SearchOut {
+        runs,
+        excluded_off,
+        progress: Counts {
+            current: p.current,
+            total: p.seen,
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1041,5 +1235,434 @@ mod tests {
         let conn = open_writer(&path).unwrap();
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM runs"), 0);
         assert_eq!(count(&conn, "PRAGMA user_version"), SCHEMA_VERSION);
+    }
+
+    /// `(kind, status, name, stage, pr_state, role)` of an extra seeded event.
+    type Extra = (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        Option<&'static str>,
+        &'static str,
+    );
+
+    /// One run of `events` events straight into the tables (no adapter): mixed kinds, plus the `extra`
+    /// events `(kind, status, name, stage, pr_state, role)`.
+    fn seed(conn: &mut Connection, run: &str, events: usize, extra: &[Extra]) {
+        let tx = conn.transaction().unwrap();
+        tx.execute(
+            "INSERT INTO runs VALUES (?1, ?2, ?3, 'toy', 'done', 0, 'now')",
+            params![run, format!("/runs/{run}"), format!("title {run}")],
+        )
+        .unwrap();
+        {
+            let mut ins = tx
+                .prepare(
+                    "INSERT INTO events (run_id, id, session, agent_id, role, pr_exact, kind, status, name, at, stage,
+                       pr_state, src_file, src_offset, src_len, src_sha256, event_json)
+                     VALUES (?1, ?2, 's', ?3, ?4, 0, ?5, ?6, ?7, ?8, ?9, ?10, '/f', ?11, 1, 'x', '{}')",
+                )
+                .unwrap();
+            let mix = [
+                "tool.start",
+                "tool.end",
+                "llm.call",
+                "file.change",
+                "turn.start",
+            ];
+            for i in 0..events {
+                ins.execute(params![
+                    run,
+                    format!("{run}-{i}"),
+                    "main",
+                    Option::<String>::None,
+                    mix[i % mix.len()],
+                    if i % 17 == 0 {
+                        Some("error")
+                    } else {
+                        Some("ok")
+                    },
+                    if i % 3 == 0 {
+                        Some("Bash")
+                    } else {
+                        Some("Edit")
+                    },
+                    format!("2026-11-05T10:{:02}:{:02}.000Z", (i / 60) % 60, i % 60),
+                    "building",
+                    Option::<String>::None,
+                    i as i64,
+                ])
+                .unwrap();
+            }
+            for (j, (k, status, name, stage, pr_state, role)) in extra.iter().enumerate() {
+                ins.execute(params![
+                    run,
+                    format!("{run}-x{j}"),
+                    "a1",
+                    role,
+                    k,
+                    status,
+                    name,
+                    format!("2026-11-05T11:00:{j:02}.000Z"),
+                    stage,
+                    pr_state,
+                    10_000 + j as i64,
+                ])
+                .unwrap();
+            }
+        }
+        tx.commit().unwrap();
+    }
+
+    const CARGO_TEST: &str = "cargo test --manifest-path src-tauri/Cargo.toml";
+
+    fn review_filter() -> SearchFilter {
+        SearchFilter {
+            kind: Some("check.end".into()),
+            name_contains: Some("cargo test".into()),
+            status: vec!["fail".into()],
+            in_review: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn cargo_test_failed_in_review_returns_the_seeded_runs_newest_first_within_a_second() {
+        let mut conn = open_memory();
+        let mut wanted = Vec::new();
+        for i in 0..100 {
+            let run = format!("r-20261105-{i:04}");
+            let extra: Vec<Extra> = match i % 10 {
+                // In review by PR state.
+                0 | 5 => vec![
+                    (
+                        "check.end",
+                        "fail",
+                        CARGO_TEST,
+                        "building",
+                        Some("reviewing"),
+                        "implementer",
+                    ),
+                    (
+                        "check.end",
+                        "fail",
+                        CARGO_TEST,
+                        "building",
+                        Some("reviewing"),
+                        "implementer",
+                    ),
+                ],
+                // In review by the reviewer's role (no PR state).
+                3 => vec![(
+                    "check.end",
+                    "fail",
+                    CARGO_TEST,
+                    "building",
+                    None,
+                    "pr-reviewer",
+                )],
+                // Decoys: not in review, passed, another check, another kind.
+                1 => vec![(
+                    "check.end",
+                    "fail",
+                    CARGO_TEST,
+                    "building",
+                    Some("fixing"),
+                    "implementer",
+                )],
+                2 => vec![(
+                    "check.end",
+                    "pass",
+                    CARGO_TEST,
+                    "building",
+                    Some("reviewing"),
+                    "implementer",
+                )],
+                4 => vec![(
+                    "check.end",
+                    "fail",
+                    "cargo build",
+                    "building",
+                    Some("reviewing"),
+                    "implementer",
+                )],
+                6 => vec![(
+                    "tool.end",
+                    "fail",
+                    CARGO_TEST,
+                    "building",
+                    Some("reviewing"),
+                    "implementer",
+                )],
+                _ => vec![],
+            };
+            if matches!(i % 10, 0 | 3 | 5) {
+                wanted.push((run.clone(), extra.len() as i64));
+            }
+            seed(&mut conn, &run, 300, &extra);
+        }
+        wanted.reverse();
+        assert!(
+            count(&conn, "SELECT COUNT(*) FROM events") >= 30_000,
+            "about 300 events a run"
+        );
+        let started = std::time::Instant::now();
+        let out = search(&conn, &review_filter()).unwrap();
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_secs(1),
+            "search took {took:?}"
+        );
+        let got: Vec<(String, i64)> = out
+            .runs
+            .iter()
+            .map(|r| (r.run_id.clone(), r.matches))
+            .collect();
+        assert_eq!(
+            got, wanted,
+            "exactly the seeded runs, newest first, with their match counts"
+        );
+        assert!(out.runs.iter().all(|r| r.first_event_id.contains("-x0")));
+        assert_eq!(out.excluded_off, 0);
+    }
+
+    #[test]
+    fn a_percent_in_the_filter_is_a_literal_and_text_looks_at_names_and_paths_only() {
+        let mut conn = open_memory();
+        seed(
+            &mut conn,
+            "r-1",
+            3,
+            &[
+                ("check.end", "fail", "100% done", "b", None, "x"),
+                ("file.change", "ok", "Edit", "b", None, "x"),
+            ],
+        );
+        conn.execute(
+            "UPDATE events SET paths = '/work/toy/src/add_rs.js' WHERE id = 'r-1-x1'",
+            [],
+        )
+        .unwrap();
+        seed(
+            &mut conn,
+            "r-2",
+            3,
+            &[("check.end", "fail", "1000 done", "b", None, "x")],
+        );
+        let by_name = |n: &str| SearchFilter {
+            name_contains: Some(n.into()),
+            ..Default::default()
+        };
+        let hits = |f: &SearchFilter| -> Vec<String> {
+            search(&conn, f)
+                .unwrap()
+                .runs
+                .into_iter()
+                .map(|r| r.run_id)
+                .collect()
+        };
+        assert_eq!(hits(&by_name("%")), ["r-1"], "a % is not a wildcard");
+        assert_eq!(hits(&by_name("0% d")), ["r-1"]);
+        assert_eq!(
+            hits(&by_name("1_0")),
+            Vec::<String>::new(),
+            "an _ is not a wildcard"
+        );
+        assert_eq!(hits(&by_name("\\")), Vec::<String>::new());
+        let text = |t: &str| SearchFilter {
+            text: Some(t.into()),
+            ..Default::default()
+        };
+        assert_eq!(hits(&text("add_rs")), ["r-1"], "paths are searched");
+        assert_eq!(hits(&text("add.rs")), Vec::<String>::new());
+        // SQL in a filter is only ever a value.
+        assert_eq!(
+            hits(&by_name("x'; DROP TABLE events; --")),
+            Vec::<String>::new()
+        );
+        assert!(count(&conn, "SELECT COUNT(*) FROM events") > 0);
+    }
+
+    #[test]
+    fn status_failed_means_fail_or_error_and_the_other_filters_narrow() {
+        let mut conn = open_memory();
+        seed(
+            &mut conn,
+            "r-1",
+            0,
+            &[
+                (
+                    "check.end",
+                    "fail",
+                    "a",
+                    "building",
+                    Some("fixing"),
+                    "implementer",
+                ),
+                ("tool.end", "error", "Bash", "shipping", None, "implementer"),
+                ("tool.end", "ok", "Bash", "shipping", None, "pr-reviewer"),
+            ],
+        );
+        let run = |f: SearchFilter| search(&conn, &f).unwrap().runs.first().map(|r| r.matches);
+        assert_eq!(
+            run(SearchFilter {
+                status: vec!["failed".into()],
+                ..Default::default()
+            }),
+            Some(2)
+        );
+        assert_eq!(
+            run(SearchFilter {
+                status: vec!["error".into()],
+                ..Default::default()
+            }),
+            Some(1)
+        );
+        assert_eq!(
+            run(SearchFilter {
+                stage: Some("shipping".into()),
+                ..Default::default()
+            }),
+            Some(2)
+        );
+        assert_eq!(
+            run(SearchFilter {
+                pr_state: Some("fixing".into()),
+                ..Default::default()
+            }),
+            Some(1)
+        );
+        assert_eq!(
+            run(SearchFilter {
+                pr_role: Some("pr-reviewer".into()),
+                ..Default::default()
+            }),
+            Some(1)
+        );
+        assert_eq!(
+            run(SearchFilter {
+                repo: Some("oy".into()),
+                ..Default::default()
+            }),
+            Some(3)
+        );
+        assert_eq!(
+            run(SearchFilter {
+                repo: Some("nope".into()),
+                ..Default::default()
+            }),
+            None
+        );
+        assert_eq!(
+            run(SearchFilter {
+                from: Some("2026-11-06".into()),
+                ..Default::default()
+            }),
+            None
+        );
+        assert_eq!(
+            run(SearchFilter {
+                to: Some("2026-11-05".into()),
+                ..Default::default()
+            }),
+            Some(3),
+            "a bare date covers its day"
+        );
+        assert_eq!(
+            run(SearchFilter {
+                to: Some("2026-11-04".into()),
+                ..Default::default()
+            }),
+            None
+        );
+        assert_eq!(
+            run(SearchFilter::default()),
+            Some(3),
+            "no filter: every event"
+        );
+    }
+
+    #[test]
+    fn search_reads_after_the_writer_is_gone_and_opens_no_write_connection() {
+        let dir = TempDir::new("index_reader");
+        let path = dir.join("flight.db");
+        {
+            let mut writer = open_writer(&path).unwrap();
+            seed(
+                &mut writer,
+                "r-1",
+                5,
+                &[(
+                    "check.end",
+                    "fail",
+                    CARGO_TEST,
+                    "b",
+                    Some("reviewing"),
+                    "implementer",
+                )],
+            );
+            // The writer drops here: its WAL is checkpointed and may be removed.
+        }
+        let reader = open_reader(&path).unwrap();
+        let out = search(&reader, &review_filter()).unwrap();
+        assert_eq!(out.runs.len(), 1);
+        assert!(
+            reader.execute("DELETE FROM events", []).is_err(),
+            "a read-only connection cannot write"
+        );
+        assert!(reader
+            .execute("INSERT INTO progress VALUES (1, 1, 1, 'x', 1)", [])
+            .is_err());
+        assert_eq!(count(&reader, "SELECT COUNT(*) FROM events"), 6);
+        // With the writer alive and writing, the reader still reads.
+        let mut writer = open_writer(&path).unwrap();
+        seed(
+            &mut writer,
+            "r-2",
+            5,
+            &[(
+                "check.end",
+                "fail",
+                CARGO_TEST,
+                "b",
+                Some("reviewing"),
+                "implementer",
+            )],
+        );
+        let out = search(&reader, &review_filter()).unwrap();
+        assert_eq!(out.runs.len(), 2);
+    }
+
+    #[test]
+    fn excluded_off_runs_are_counted_not_listed() {
+        let mut conn = open_memory();
+        seed(
+            &mut conn,
+            "r-1",
+            0,
+            &[("check.end", "fail", CARGO_TEST, "b", Some("reviewing"), "x")],
+        );
+        conn.execute(
+            "INSERT INTO runs VALUES ('r-2', '/r2', 't', 'toy', 'done', 1, 'now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO runs VALUES ('r-3', '/r3', 't', 'toy', 'done', 1, 'now')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO progress VALUES (1, 1, 1, 'now', 10)", [])
+            .unwrap();
+        let out = search(&conn, &review_filter()).unwrap();
+        assert_eq!((out.runs.len(), out.excluded_off), (1, 2));
+        assert_eq!(
+            out.progress,
+            Counts {
+                current: 1,
+                total: 1
+            }
+        );
     }
 }

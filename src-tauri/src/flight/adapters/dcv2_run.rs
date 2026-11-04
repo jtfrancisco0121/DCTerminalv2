@@ -1000,7 +1000,7 @@ mod tests {
             .filter(|e| attr_of(e, attr::SOURCE) == Some("skill"))
             .collect();
         assert_eq!(skill.len(), 1);
-        assert_eq!(skill[0].status.as_deref(), Some(status::FAIL));
+        assert_eq!(skill[0].status.as_deref(), Some(status::PASS));
         assert_eq!(skill[0].at, "2026-11-05T10:21:00.000Z");
         assert_eq!(attr_of(skill[0], attr::PR), Some("PR2"));
         assert!(skill[0].content.source.file.ends_with("status.json"));
