@@ -170,6 +170,8 @@ pub struct AgentNode {
     pub agent_type: Option<String>,
     pub role: Option<String>,
     pub pr: Option<String>,
+    /// How `pr` was found (set only with `pr`).
+    pub pr_derived: Option<Derived>,
     pub description: Option<String>,
     /// The spawn tool_use id that links this agent to its parent.
     pub spawn_span: Option<String>,

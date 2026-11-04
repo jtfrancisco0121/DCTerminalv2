@@ -15,9 +15,78 @@
 //! - `host`: the seam to the app (paths, accounts, policy, reads).
 
 pub mod adapters;
+pub mod correlate;
+pub mod derive;
 pub mod host;
 pub mod schema;
 pub mod tail;
+
+/// Builders shared by the tests of the adapter, correlation and host.
+#[cfg(test)]
+pub mod testkit {
+    use super::adapters::{claude, AgentMeta, SubagentFile};
+    use super::schema::Event;
+    use crate::test_support::TempDir;
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
+    pub fn toy() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/claude-2.1.287/projects/-work-toy")
+    }
+
+    /// A session of the recorded fixtures: events and the sub-agent metas.
+    pub fn recorded(session: &str) -> (Vec<Event>, BTreeMap<String, AgentMeta>) {
+        let main = toy().join(format!("{session}.jsonl"));
+        let dir = toy().join(session).join("subagents");
+        let (mut subs, mut metas) = (Vec::new(), BTreeMap::new());
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Some(id) = name
+                .strip_prefix("agent-")
+                .and_then(|n| n.strip_suffix(".jsonl"))
+            else {
+                continue;
+            };
+            let meta = std::fs::read_to_string(entry.path().with_extension("meta.json"))
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .map(|v| AgentMeta::from_json(&v));
+            if let Some(m) = &meta {
+                metas.insert(id.to_string(), m.clone());
+            }
+            subs.push(SubagentFile {
+                agent_id: id.to_string(),
+                path: entry.path(),
+                meta,
+            });
+        }
+        (claude::events_for(&main, &subs), metas)
+    }
+
+    /// Events of a synthetic main log made of `lines`.
+    pub fn synthetic(dir: &TempDir, name: &str, lines: &[Value]) -> Vec<Event> {
+        let text: String = lines.iter().map(|l| l.to_string() + "\n").collect();
+        let path = dir.join(name);
+        std::fs::write(&path, text).unwrap();
+        claude::events_for(&path, &[])
+    }
+
+    pub fn prompt(at: &str) -> Value {
+        json!({"type": "user", "timestamp": at, "message": {"role": "user", "content": "do it"}})
+    }
+
+    pub fn tool_use(at: &str, msg: &str, id: &str, name: &str, input: Value) -> Value {
+        json!({"type": "assistant", "timestamp": at, "message": {"id": msg, "model": "m",
+            "content": [{"type": "tool_use", "id": id, "name": name, "input": input}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}}})
+    }
+
+    pub fn tool_result(at: &str, id: &str, text: &str, is_error: bool) -> Value {
+        json!({"type": "user", "timestamp": at, "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": id, "content": text, "is_error": is_error}]}})
+    }
+}
 
 #[cfg(test)]
 mod tests {

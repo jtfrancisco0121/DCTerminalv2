@@ -87,6 +87,7 @@ export interface AgentNode {
   type: string | null;
   role: string | null;
   pr: string | null;
+  prDerived: Derived | null;
   description: string | null;
   spawnSpan: string | null;
   files: string[];
