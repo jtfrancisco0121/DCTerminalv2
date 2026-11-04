@@ -394,6 +394,37 @@ Records only the plugin can write; the app's Trace (`flight/adapters/dcv2_run.rs
 - **`<app data>/flight.db`** is a rebuildable cache of the Trace index, not part of the run folder; deleting it is safe. Only the app's index thread writes it, and it holds ids, names, statuses, times and source refs, never content.
 - **Capture policy of a run.** A run's policy comes from the accounts of its recorded sessions (`app-usage.json` `sessions[].configDir`) plus `meta.json` `account.configDir`; a run with neither is refused, and a run whose account is `off` opens no run file.
 
+## Wave 2: run snapshots and eval runs (plugin 0.8.0)
+
+Additive; every schema stays 1.
+
+### The snapshot (`<run>/flight/`)
+
+App-written (by the trace index thread, never by the skill), inside the run folder (deleted with it), written whole and never edited in place. A snapshot belongs to one terminal record.
+
+| File | Holds |
+|---|---|
+| `manifest.json` | `{"schema":1,"createdAt","policy":"metadata"\|"redacted"\|"full","sessions":[{"id","configDir"}],"sources":[{"file","size","mtime","sha256"}],"events":<n>,"contentLines":<n>,"truncated":bool,"outcome":"done"\|"failed"\|"eval-done","recordStatusUpdatedAt":<the record's statusUpdatedAt>}` |
+| `events.jsonl` | one schema-1 Event per line (no content) for every transcript Event of the run's recorded sessions and their sub-agents; each keeps its id and `SourceRef` |
+| `content.jsonl` | only under `redacted` or `full`: `{"id","sha256","text","redactions"}` per Event with content, always redacted |
+
+- Run-folder Events (the Orchestration lane) are not copied; the run files are read live.
+- Cap 64 MiB per snapshot: past it, content lines stop and `truncated` is true; Events are always complete.
+- Built in `<run>/.flight.tmp-<hex>/` and renamed to `flight`. When the record's `outcome` or `statusUpdatedAt` differs from the manifest's (a `failed` run resumed and ended again), a new snapshot is built the same way, carrying over unchanged the Events and content of sessions whose transcripts are gone, and swapped in: the old `flight/` is renamed `.flight.tmp-<hex>-old`, the new one renamed to `flight`, the old one removed. A pass that finds a `-old` folder and no `flight/` restores it first.
+- A failed write leaves the previous `flight/` (or none) and is retried on a later pass, at most 3 times per run per app session. `app: trace snapshot failed: <reason>` is appended to log.md once per run, app session and reason.
+- Protected: `guard.sh` and `lib/dcv2_portable.py` `is_protected` block agent writes to the whole `flight/` subtree and to any `.flight.tmp-*` entry of the run folder (a subtree rule like `requests/`).
+
+### Eval runs (meta.json `eval`, dispatch.json, status.json)
+
+- **meta.json `eval`**: `{"group":"<batch id>","index":<1..N>,"of":<N>,"source":"<source run id>","bases":{"<repo path>":{"base":"<branch>","baseCommit":"<sha>"}}}`, written by the app at start (`bases` optional: the source run's per-repo base from its status.json `prs[]`; a repo without one uses the default branch). `of` is 2..10, `index` 1..of. Guard-protected like all of meta.json. Absent (or malformed) = a normal run.
+- **dispatch.json `batches[]`** gains `kind` (`"eval"`; missing = a ticket batch), and for eval batches `source` (source run id) and `n`. `notified` may hold `eval-finished`. Unknown fields are kept on rewrite.
+- **Plan approval**: `state.sh approve <run> plan eval` (eval runs only) sets `plan.approval = {"by":"eval","at":<UTC>}` and logs `plan approved for eval (eval mode)`. `by: "eval"` is accepted only in `plan.approval`, only for a run whose meta.json has `eval`, and never in `shipApproval`.
+- **The end**: `stage: "ship-approval"`, `waitingFor: null`, `paused: null`, log line `eval run finished`. No stop #2, no ship, no memory update, no writeback.
+- **state.sh refusals** for an eval run (`NOT SHIPPED: eval run` / `NOT APPROVED: eval run`): `ship-pr`, `draft-pr`, `push`, `ready`, `post-review`, `comment`, `writeback`, `approve <run> ship`, and `put` with `waitingFor: ship-approval` or stage `shipping` / `done`. Nothing is written.
+- **Base pin**: `state.sh base <repoPath> <run>` for an eval run whose `eval.bases` names the repo prints `base=<source base> baseCommit=<source sha> remote=<...>` (`NO BASE` if the commit is not in the repo); `state.sh worktree` refuses another base commit for that repo (`NOT MADE: eval run builds on <sha>`). Every other case behaves as before.
+- **preflight** prints `eval=<index>/<of> group=<id>` for an eval run, no line otherwise.
+- **app-usage.json `outcome`** gains `"eval-done"`: a run with meta.json `eval` at `ship-approval` with `waitingFor: null`. An eval run that fails records `failed`; `done` is never written for one.
+
 ## Files the app adds (P3a)
 
 The app creates the folder and writes, besides the inputs above:
