@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "runId": "r-20261105-100000-fa17",
+  "updatedAt": "2026-11-05T10:36:00Z",
+  "stage": "building",
+  "waitingFor": null,
+  "folder": "/work",
+  "prs": [
+    {
+      "id": "PR2",
+      "title": "Add add()",
+      "repo": "toy",
+      "repoPath": "/work/toy",
+      "state": "fixing",
+      "check": {
+        "command": "cargo test --manifest-path src-tauri/Cargo.toml",
+        "result": "pass",
+        "summary": "all tests passed in the skill's own run",
+        "cwd": null,
+        "log": null
+      },
+      "review": {
+        "round": 1,
+        "verdict": "REQUEST CHANGES",
+        "openFindings": 1,
+        "path": "reviews/PR2-round1.md"
+      },
+      "startedAt": "2026-11-05T10:07:00Z",
+      "updatedAt": "2026-11-05T10:21:00Z"
+    }
+  ]
+}

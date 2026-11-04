@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "sessions": [
+    {
+      "sessionId": "aaaa1111-2222-4333-8444-555555555555",
+      "configDir": "@CONFIG@"
+    }
+  ],
+  "outcome": "done",
+  "prCount": 1,
+  "prUrls": [],
+  "tokens": {
+    "input": 1200,
+    "output": 340,
+    "cacheWrite5m": 0,
+    "cacheWrite1h": 0,
+    "cacheRead": 5000
+  },
+  "activeMinutesByStage": {
+    "planning": 6.0,
+    "building": 44.0
+  },
+  "waitMinutes": 3.0,
+  "spanMinutes": 53.0,
+  "firstActivity": "2026-11-05T10:00:00Z",
+  "lastActivity": "2026-11-05T10:53:00Z",
+  "statusUpdatedAt": "2026-11-05T10:53:00Z"
+}

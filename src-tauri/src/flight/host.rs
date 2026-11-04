@@ -5,6 +5,7 @@
 
 use super::adapters::dcv2_run::{self, ApprovalIn, RunEvents, RunInputs};
 use super::adapters::{AgentMeta, SubagentFile};
+use super::compare;
 use super::index::{
     self, Counts, Exclusion, Limits, PassStats, RunInput, SearchFilter, SearchOut, SessionInput,
     SourceStamp,
@@ -1325,6 +1326,228 @@ pub fn search_index(data: &Path, filter: &SearchFilter) -> Result<SearchOut, Str
         out.progress.total = app_run_dirs(data).len() as i64;
     }
     Ok(out)
+}
+
+// ---- compare (CAP-10, AD-47) ----------------------------------------------------------
+
+/// One side of a comparison, as the page shows it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareSide {
+    pub run_id: String,
+    pub run_dir: String,
+    pub title: String,
+    pub outcome: String,
+    /// The run is in the trace index.
+    pub indexed: bool,
+    /// The account's policy is `off`: nothing of this side is read.
+    pub off: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareOut {
+    pub a: CompareSide,
+    pub b: CompareSide,
+    /// Empty unless both sides are indexed and readable.
+    pub rows: Vec<compare::Row>,
+    pub divergence: Option<usize>,
+    /// How far the index is (runs current of runs seen), for the "not indexed yet" meter.
+    pub progress: Counts,
+}
+
+/// The usage readings of an account's windows, for Window share: the host asks by config folder.
+pub type UsageHistory = Vec<crate::usage::WindowHistory>;
+
+fn rfc3339_ms(text: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|d| d.timestamp_millis())
+}
+
+fn share_of(
+    claude: &ClaudeSettings,
+    run_dir: &Path,
+    record: &crate::run::record::RunRecord,
+    usage: &dyn Fn(&str) -> UsageHistory,
+) -> compare::Share {
+    let account = crate::run::folder::read_json_value(&run_dir.join("meta.json"))
+        .and_then(|m| m["account"]["id"].as_str().map(str::to_string));
+    let (Some(account), Some(start), Some(end)) = (
+        account,
+        record.first_activity.as_deref().and_then(rfc3339_ms),
+        record.last_activity.as_deref().and_then(rfc3339_ms),
+    ) else {
+        return compare::Share::default();
+    };
+    let config = resolved_account_config(claude, &account).path;
+    let history = usage(&config);
+    let of = |window: &str| {
+        let readings: Vec<compare::Reading> = history
+            .iter()
+            .filter(|h| h.rate_limit_type == window)
+            .flat_map(|h| h.readings.iter())
+            .map(|r| compare::Reading {
+                at_ms: r.at_ms,
+                utilization: r.utilization,
+                resets_at: r.resets_at,
+            })
+            .collect();
+        compare::window_share(&readings, start, end)
+    };
+    compare::Share {
+        five_hour: of("five_hour"),
+        weekly: of("seven_day"),
+    }
+}
+
+/// The indexed Events of one run, light columns for all and the whole Event only for the kinds Compare needs.
+fn indexed_events(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+) -> Result<Vec<compare::IndexedEvent>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT kind, name, status, pr, failure, rule, paths,
+                    CASE WHEN kind IN ('tool.start', 'check.end') OR failure IS NOT NULL THEN event_json END
+             FROM events WHERE run_id = ?1 ORDER BY at, src_file, src_offset",
+        )
+        .map_err(|e| format!("index: {e}"))?;
+    let rows = stmt
+        .query_map([run_id], |r| {
+            let paths: Option<String> = r.get(6)?;
+            let json: Option<String> = r.get(7)?;
+            Ok(compare::IndexedEvent {
+                kind: r.get(0)?,
+                name: r.get(1)?,
+                status: r.get(2)?,
+                pr: r.get(3)?,
+                failure: r.get(4)?,
+                rule: r.get(5)?,
+                paths: paths
+                    .map(|p| p.lines().map(str::to_string).collect())
+                    .unwrap_or_default(),
+                event: json.and_then(|j| serde_json::from_str(&j).ok()),
+            })
+        })
+        .map_err(|e| format!("index: {e}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("index: {e}"))
+}
+
+/// `flight_compare`: two run folders, each already through `checked_run_dir`. Reads the trace index through a
+/// read-only connection and each run's record; it never writes `flight.db` and never indexes on demand. The
+/// same folder twice is refused.
+pub fn compare_runs(
+    data: &Path,
+    claude: &ClaudeSettings,
+    a: &Path,
+    b: &Path,
+    usage: &dyn Fn(&str) -> UsageHistory,
+) -> Result<CompareOut, String> {
+    if ident(a) == ident(b) {
+        return Err("Pick two different runs.".into());
+    }
+    let db = data.join(INDEX_FILE);
+    let conn = if db.is_file() {
+        index::open_reader(&db).ok().filter(|c| {
+            c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .is_ok_and(|v| v == index::SCHEMA_VERSION)
+        })
+    } else {
+        None
+    };
+    let mut sides = Vec::new();
+    for dir in [a, b] {
+        let run_id = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let query = Query {
+            run_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
+        let off = match resolve(claude, &query, &Opens::default()) {
+            Access::Off => true,
+            Access::Refused(why) => return Err(format!("{run_id}: {why}")),
+            Access::Ready(_) => false,
+        };
+        let row: Option<(String, i64)> = conn.as_ref().and_then(|c| {
+            c.query_row(
+                "SELECT outcome, excluded_off FROM runs WHERE run_id = ?1",
+                [&run_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+        });
+        let record = crate::run::record::read_record(dir);
+        let indexed = row.is_some();
+        let off = off || row.as_ref().is_some_and(|(_, excluded)| *excluded != 0);
+        let outcome = row
+            .map(|(o, _)| o)
+            .filter(|o| !o.is_empty())
+            .or_else(|| record.as_ref().and_then(|r| r.outcome.clone()))
+            .unwrap_or_default();
+        let side = if indexed && !off {
+            let events = indexed_events(conn.as_ref().expect("indexed"), &run_id)?;
+            let record_in = record.as_ref().map(|r| compare::Record {
+                tokens: compare::Tokens {
+                    input: r.tokens.input,
+                    output: r.tokens.output,
+                    cache_write: r.tokens.cache_write_5m + r.tokens.cache_write_1h,
+                    cache_read: r.tokens.cache_read,
+                },
+                minutes_by_stage: r.active_minutes_by_stage.clone(),
+            });
+            Some(compare::Side {
+                events,
+                share: record
+                    .as_ref()
+                    .map(|r| share_of(claude, dir, r, usage))
+                    .unwrap_or_default(),
+                record: record_in,
+            })
+        } else {
+            None
+        };
+        sides.push((
+            CompareSide {
+                run_id,
+                run_dir: dir.display().to_string(),
+                title: crate::run::folder::request_title(dir).unwrap_or_default(),
+                outcome,
+                indexed,
+                off,
+            },
+            side,
+        ));
+    }
+    let (b_side, b_data) = sides.pop().expect("two sides");
+    let (a_side, a_data) = sides.pop().expect("two sides");
+    let rows = match (&a_data, &b_data) {
+        (Some(x), Some(y)) => compare::rows(x, y),
+        _ => compare::Rows {
+            rows: Vec::new(),
+            divergence: None,
+        },
+    };
+    let progress = conn
+        .as_ref()
+        .map(|c| {
+            let p = index::progress(c);
+            Counts {
+                current: p.current,
+                total: p.seen,
+            }
+        })
+        .unwrap_or_default();
+    Ok(CompareOut {
+        a: a_side,
+        b: b_side,
+        rows: rows.rows,
+        divergence: rows.divergence,
+        progress,
+    })
 }
 
 /// What `flight_content` returns.
@@ -3857,6 +4080,179 @@ mod tests {
         assert!(
             read_all(&full, &run).snapshot.is_none(),
             "a linked flight folder"
+        );
+    }
+
+    // ---- compare ----
+
+    fn no_usage(_: &str) -> UsageHistory {
+        Vec::new()
+    }
+
+    /// The pair indexed under two accounts (one per account folder), plus the settings for it.
+    fn compare_setup(dir: &TempDir) -> (PathBuf, PathBuf, ClaudeSettings) {
+        use crate::flight::testkit::compare_guard_runs;
+        let ((pass, pass_config), (fail, fail_config)) = compare_guard_runs(dir);
+        let claude = settings(vec![
+            account("p", &pass_config, CapturePolicy::Metadata),
+            account("f", &fail_config, CapturePolicy::Metadata),
+        ]);
+        let mut conn = index::open_writer(&dir.join(INDEX_FILE)).unwrap();
+        index_pass(
+            &mut conn,
+            &claude,
+            &[pass.clone(), fail.clone()],
+            &Limits::default(),
+        )
+        .unwrap();
+        (pass, fail, claude)
+    }
+
+    #[test]
+    fn two_runs_that_differ_by_one_guard_block_diverge_at_the_failures_row() {
+        let dir = TempDir::new("flight_compare_guard");
+        let (pass, fail, claude) = compare_setup(&dir);
+        let out = compare_runs(dir.path(), &claude, &pass, &fail, &no_usage).unwrap();
+        assert!(out.a.indexed && out.b.indexed && !out.a.off && !out.b.off);
+        let at = out.divergence.expect("a difference");
+        let row = &out.rows[at];
+        assert_eq!(
+            (row.group.as_str(), row.key.as_str()),
+            ("failures", "tool.blocked:run-file-write")
+        );
+        assert_eq!((&row.a, &row.b), (&json!(0), &json!(1)));
+        assert_eq!(
+            out.rows.iter().filter(|r| r.differs).count(),
+            1,
+            "only the guard block differs: {:?}",
+            out.rows.iter().filter(|r| r.differs).collect::<Vec<_>>()
+        );
+        // The record numbers are the same for both and are rows too.
+        let tokens: Vec<_> = out.rows.iter().filter(|r| r.group == "tokens").collect();
+        assert_eq!(tokens.len(), 4);
+        assert!(out
+            .rows
+            .iter()
+            .any(|r| r.group == "tools" && r.key == "Bash" && r.a == json!(1) && r.b == json!(1)));
+        // Swapping the sides swaps the values and finds the same row.
+        let back = compare_runs(dir.path(), &claude, &fail, &pass, &no_usage).unwrap();
+        assert_eq!(
+            back.divergence.map(|i| back.rows[i].key.clone()),
+            Some("tool.blocked:run-file-write".to_string())
+        );
+        assert_eq!(
+            (
+                &back.rows[back.divergence.unwrap()].a,
+                &back.rows[back.divergence.unwrap()].b
+            ),
+            (&json!(1), &json!(0))
+        );
+    }
+
+    #[test]
+    fn compare_refuses_the_same_folder_and_reports_a_side_that_is_not_indexed_or_off() {
+        let dir = TempDir::new("flight_compare_states");
+        let (pass, fail, claude) = compare_setup(&dir);
+        let same = compare_runs(dir.path(), &claude, &pass, &pass, &no_usage).unwrap_err();
+        assert_eq!(same, "Pick two different runs.");
+
+        // A run the index has not seen: its side says so, and no rows are made.
+        let other = dir.join("r-20261105-100000-new");
+        let other_config = dir.join("config-new");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::create_dir_all(&other_config).unwrap();
+        let mut claude2 = claude.clone();
+        claude2
+            .accounts
+            .push(account("n", &other_config, CapturePolicy::Metadata));
+        std::fs::write(
+            other.join("meta.json"),
+            json!({"account": {"id": "n", "configDir": other_config.display().to_string()}})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            other.join("app-usage.json"),
+            json!({"schema": 1, "sessions": []}).to_string(),
+        )
+        .unwrap();
+        let out = compare_runs(dir.path(), &claude2, &pass, &other, &no_usage).unwrap();
+        assert!(out.a.indexed && !out.b.indexed);
+        assert!(out.rows.is_empty() && out.divergence.is_none());
+
+        // An `off` account: that side reads nothing and the rows stay empty.
+        let off = settings(vec![
+            account("p", &dir.join("config-pass"), CapturePolicy::Off),
+            account("f", &dir.join("config-fail"), CapturePolicy::Metadata),
+        ]);
+        let out = compare_runs(dir.path(), &off, &pass, &fail, &no_usage).unwrap();
+        assert!(out.a.off && !out.b.off);
+        assert!(out.rows.is_empty());
+    }
+
+    #[test]
+    fn window_share_comes_from_the_accounts_readings_inside_the_runs_span() {
+        let dir = TempDir::new("flight_compare_share");
+        let (pass, fail, claude) = compare_setup(&dir);
+        let at = |t: &str| {
+            chrono::DateTime::parse_from_rfc3339(t)
+                .unwrap()
+                .timestamp_millis()
+        };
+        let usage = |_: &str| -> UsageHistory {
+            vec![crate::usage::WindowHistory {
+                rate_limit_type: "five_hour".into(),
+                readings: vec![
+                    crate::usage::Reading {
+                        at_ms: at("2026-11-05T09:50:00Z"),
+                        utilization: Some(10.0),
+                        resets_at: Some(9_999_999_999),
+                    },
+                    crate::usage::Reading {
+                        at_ms: at("2026-11-05T10:30:00Z"),
+                        utilization: Some(12.0),
+                        resets_at: Some(9_999_999_999),
+                    },
+                    crate::usage::Reading {
+                        at_ms: at("2026-11-05T10:50:00Z"),
+                        utilization: Some(14.5),
+                        resets_at: Some(9_999_999_999),
+                    },
+                ],
+            }]
+        };
+        let out = compare_runs(dir.path(), &claude, &pass, &fail, &usage).unwrap();
+        let five = out.rows.iter().find(|r| r.key == "fiveHour").unwrap();
+        assert_eq!(
+            (&five.a, &five.b),
+            (&json!(4.5), &json!(4.5)),
+            "the estimate over the span"
+        );
+        let weekly = out.rows.iter().find(|r| r.key == "weekly").unwrap();
+        assert_eq!(
+            (&weekly.a, weekly.differs),
+            (&Value::Null, false),
+            "no weekly readings: not recorded"
+        );
+    }
+
+    #[test]
+    fn compare_never_writes_flight_db_and_never_creates_it() {
+        let dir = TempDir::new("flight_compare_readonly");
+        let (pass, fail, claude) = compare_setup(&dir);
+        let db = dir.join(INDEX_FILE);
+        let before = std::fs::read(&db).unwrap();
+        let stamp = std::fs::metadata(&db).unwrap().modified().unwrap();
+        compare_runs(dir.path(), &claude, &pass, &fail, &no_usage).unwrap();
+        assert_eq!(std::fs::read(&db).unwrap(), before);
+        assert_eq!(std::fs::metadata(&db).unwrap().modified().unwrap(), stamp);
+        // No index at all: both sides are "not indexed" and nothing is created.
+        let empty = TempDir::new("flight_compare_noindex");
+        let out = compare_runs(empty.path(), &claude, &pass, &fail, &no_usage).unwrap();
+        assert!(!out.a.indexed && !out.b.indexed && out.rows.is_empty());
+        assert!(
+            !empty.join(INDEX_FILE).exists(),
+            "compare never indexes on demand"
         );
     }
 }

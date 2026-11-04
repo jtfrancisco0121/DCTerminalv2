@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "checks": {
+    "PR2": {
+      "result": "fail",
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml",
+      "head": "abc1234",
+      "clean": true,
+      "exitCode": 101,
+      "finishedAt": "2026-11-05T10:22:00Z",
+      "log": "logs/PR2-app-check.txt"
+    }
+  }
+}

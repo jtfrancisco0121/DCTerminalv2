@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "prs": {
+    "PR2": {
+      "ci": "fail",
+      "prState": "OPEN",
+      "at": "2026-11-05T10:40:00Z",
+      "error": null
+    }
+  }
+}

@@ -114,3 +114,49 @@ pub async fn flight_search(app: AppHandle, filter: SearchFilter) -> Result<Searc
         .await
         .map_err(|e| e.to_string())?
 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompareRequest {
+    pub a: String,
+    pub b: String,
+}
+
+/// Compares two finished runs from the trace index and their records: the rows in one fixed group order and
+/// the first difference. Runs on a worker thread outside the store locks, reads `flight.db` read-only and
+/// never indexes on demand. The same run twice is refused.
+#[tauri::command]
+pub async fn flight_compare(
+    app: AppHandle,
+    settings: State<'_, Mutex<SettingsStore>>,
+    usage: State<'_, Mutex<crate::usage::UsageStore>>,
+    request: CompareRequest,
+) -> Result<host::CompareOut, String> {
+    let data = crate::data_dir::app_data_dir(&app).path;
+    let a = crate::run::checked_run_dir(&data, &request.a)?;
+    let b = crate::run::checked_run_dir(&data, &request.b)?;
+    let claude = settings.lock().map_err(|e| e.to_string())?.claude().clone();
+    // The usage readings of the accounts of both runs, copied under a short lock.
+    let mut histories: std::collections::HashMap<String, host::UsageHistory> =
+        std::collections::HashMap::new();
+    {
+        let usage = usage.lock().map_err(|e| e.to_string())?;
+        for dir in [&a, &b] {
+            let account = crate::run::folder::read_json_value(&dir.join("meta.json"))
+                .and_then(|m| m["account"]["id"].as_str().map(str::to_string));
+            if let Some(account) = account {
+                let config =
+                    crate::store::settings_store::resolved_account_config(&claude, &account).path;
+                histories
+                    .entry(config.clone())
+                    .or_insert_with(|| usage.snapshot(&config).history);
+            }
+        }
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        host::compare_runs(&data, &claude, &a, &b, &|config| {
+            histories.get(config).cloned().unwrap_or_default()
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

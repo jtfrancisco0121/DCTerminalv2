@@ -12,10 +12,12 @@
 //! - `adapters`: provider transcripts to events.
 //! - `correlate`, `derive`: spans, tree, failures, files, repeats.
 //! - `redact`: the one secret scanner (also used by ClickUp).
+//! - `compare`: the rows and the Divergence of two runs.
 //! - `snapshot`: the text of a run's `flight/` snapshot (events, refs, content under policy).
 //! - `host`: the seam to the app (paths, accounts, policy, reads).
 
 pub mod adapters;
+pub mod compare;
 pub mod correlate;
 pub mod derive;
 pub mod host;
@@ -132,6 +134,35 @@ pub mod testkit {
         let config_text = config.display().to_string().replace('\\', "/");
         copy_tree(&wave2_snapshot_fixture(), &run, false, &config_text);
         (run, config)
+    }
+
+    /// The checked-in pair of runs for Compare: the same run twice, but in `fail` the guard blocked one Bash
+    /// call that went through in `pass`.
+    pub fn compare_guard_fixture() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/run/compare-guard")
+    }
+
+    /// The pair copied into `dir`: `((pass run, its account folder), (fail run, its account folder))`.
+    pub fn compare_guard_runs(dir: &TempDir) -> ((PathBuf, PathBuf), (PathBuf, PathBuf)) {
+        let make = |name: &str| {
+            let config = dir.join(format!("config-{name}"));
+            let run = dir.join(format!("r-20261105-100000-{name}"));
+            let config_text = config.display().to_string().replace('\\', "/");
+            copy_tree(
+                &compare_guard_fixture().join(name),
+                &run,
+                true,
+                &config_text,
+            );
+            copy_tree(
+                &compare_guard_fixture().join(name).join("config"),
+                &config,
+                false,
+                &config_text,
+            );
+            (run, config)
+        };
+        (make("pass"), make("fail"))
     }
 
     /// Events of a synthetic main log made of `lines`.
