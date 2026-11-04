@@ -103,6 +103,30 @@ pub fn policy_for_files(
     })
 }
 
+/// The plugin version from which every implementer and PR reviewer is launched with a
+/// `PR<n> ` description (SKILL.md Step 3), so a PR tied by that prefix is exact. A test ties
+/// it to `plugin/VERSION` and SKILL.md.
+pub const EXACT_PR_FROM: &str = "0.7.0";
+
+/// `major.minor.patch` as numbers; anything else is `None`.
+fn version_triple(text: &str) -> Option<(u64, u64, u64)> {
+    let core = text.trim().split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let mut next = || parts.next()?.parse::<u64>().ok();
+    let triple = (next()?, next()?, next()?);
+    parts.next().is_none().then_some(triple)
+}
+
+/// Whether the run's meta.json `pluginVersion` is at least [`EXACT_PR_FROM`]. A missing or
+/// unparsable version is older.
+pub fn exact_pr(run_dir: &Path) -> bool {
+    let from = version_triple(EXACT_PR_FROM);
+    crate::run::folder::read_json_value(&run_dir.join("meta.json"))
+        .and_then(|m| m["pluginVersion"].as_str().map(str::to_string))
+        .and_then(|v| version_triple(&v))
+        .is_some_and(|v| Some(v) >= from)
+}
+
 /// What to open: a run's recorded sessions, or one session of one folder.
 #[derive(Debug, Clone, Default)]
 pub struct Query {
@@ -216,6 +240,10 @@ const CACHE_SESSIONS: usize = 8;
 /// A file's identity for the cache: its real path, size and mtime.
 type Stamp = (String, u64, Option<SystemTime>);
 
+/// A parsed session is keyed by the stamps of all its files and by the exact-PR flag
+/// (the same files give a different PR label under the other flag).
+type CacheKey = (Vec<Stamp>, bool);
+
 fn stamp(path: &Path) -> Stamp {
     let meta = std::fs::metadata(path).ok();
     (
@@ -228,7 +256,7 @@ fn stamp(path: &Path) -> Stamp {
 #[derive(Debug, Default)]
 struct CacheInner {
     /// Oldest first; a session is keyed by the stamps of all its files.
-    entries: Mutex<Vec<(Vec<Stamp>, Arc<Parsed>)>>,
+    entries: Mutex<Vec<(CacheKey, Arc<Parsed>)>>,
     hits: AtomicUsize,
     misses: AtomicUsize,
 }
@@ -249,9 +277,10 @@ impl FlightCache {
         self.0.misses.load(Ordering::SeqCst)
     }
 
-    fn parsed(&self, files: &SessionFiles) -> Arc<Parsed> {
-        let mut key = vec![stamp(&files.main)];
-        key.extend(files.subagents.iter().map(|s| stamp(&s.path)));
+    fn parsed(&self, files: &SessionFiles, exact: bool) -> Arc<Parsed> {
+        let mut stamps = vec![stamp(&files.main)];
+        stamps.extend(files.subagents.iter().map(|s| stamp(&s.path)));
+        let key: CacheKey = (stamps, exact);
         if let Ok(entries) = self.0.entries.lock() {
             if let Some((_, hit)) = entries.iter().find(|(k, _)| *k == key) {
                 self.0.hits.fetch_add(1, Ordering::SeqCst);
@@ -259,10 +288,10 @@ impl FlightCache {
             }
         }
         self.0.misses.fetch_add(1, Ordering::SeqCst);
-        let parsed = Arc::new(session::parse(&files.main, &files.subagents));
+        let parsed = Arc::new(session::parse(&files.main, &files.subagents, exact));
         if let Ok(mut entries) = self.0.entries.lock() {
-            // The file grew: drop the older parse of the same main file.
-            entries.retain(|(k, _)| k.first().map(|f| &f.0) != key.first().map(|f| &f.0));
+            // The file grew (or the flag changed): drop the older parse of the same main file.
+            entries.retain(|(k, _)| k.0.first().map(|f| &f.0) != key.0.first().map(|f| &f.0));
             entries.push((key, parsed.clone()));
             while entries.len() > CACHE_SESSIONS {
                 entries.remove(0);
@@ -290,7 +319,12 @@ pub fn session_view(
         Access::Off => return Ok(SessionView::off(trace.as_deref().unwrap_or(""))),
         Access::Ready(set) => set,
     };
-    let parsed: Vec<Arc<Parsed>> = set.sessions.iter().map(|s| cache.parsed(s)).collect();
+    let exact = query.run_dir.as_deref().is_some_and(exact_pr);
+    let parsed: Vec<Arc<Parsed>> = set
+        .sessions
+        .iter()
+        .map(|s| cache.parsed(s, exact))
+        .collect();
     session::view(&parsed, trace.as_deref(), set.policy, request, set.notices)
 }
 
@@ -1153,6 +1187,98 @@ mod tests {
             .iter()
             .all(|e| e.trace == "r-20261104-000000-abcd"));
         assert_eq!(v.failures.len(), 2);
+    }
+
+    #[test]
+    fn the_exact_pr_constant_is_tied_to_the_plugin_version_and_the_skill() {
+        let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugin");
+        let version = std::fs::read_to_string(plugin.join("VERSION")).unwrap();
+        let (from, now, before) = (
+            version_triple(EXACT_PR_FROM).unwrap(),
+            version_triple(&version).unwrap(),
+            version_triple("0.6.0").unwrap(),
+        );
+        assert!(
+            before < from,
+            "EXACT_PR_FROM is after the version without the rule"
+        );
+        assert!(
+            from <= now,
+            "plugin/VERSION {version} is older than EXACT_PR_FROM"
+        );
+        let skill = std::fs::read_to_string(plugin.join("skills/eagle-eye/SKILL.md")).unwrap();
+        assert!(
+            skill.contains("`PR<n> `"),
+            "SKILL.md lost the description rule"
+        );
+        for agent in ["dcv2:implementer", "dcv2:pr-reviewer"] {
+            assert!(skill.contains(agent));
+        }
+        assert!(version_triple("0.7.0") == Some((0, 7, 0)));
+        assert!(version_triple("0.7").is_none() && version_triple("x").is_none());
+        assert!(version_triple("0.7.0-beta.1") == Some((0, 7, 0)));
+        assert!(
+            version_triple("0.10.0") > version_triple("0.9.9"),
+            "numeric, not text"
+        );
+    }
+
+    #[test]
+    fn a_run_is_exact_from_the_plugin_version_in_its_meta() {
+        let dir = TempDir::new("flight_exact_pr");
+        let run = dir.join("r-1");
+        std::fs::create_dir_all(&run).unwrap();
+        assert!(!exact_pr(&run), "no meta.json");
+        for (meta, want) in [
+            (json!({"pluginVersion": "0.7.0"}), true),
+            (json!({"pluginVersion": "0.7.1"}), true),
+            (json!({"pluginVersion": "1.0.0"}), true),
+            (json!({"pluginVersion": "0.10.0"}), true),
+            (json!({"pluginVersion": "0.6.0"}), false),
+            (json!({"pluginVersion": "0.6.9"}), false),
+            (json!({"pluginVersion": "x"}), false),
+            (json!({"pluginVersion": 7}), false),
+            (json!({}), false),
+        ] {
+            std::fs::write(run.join("meta.json"), meta.to_string()).unwrap();
+            assert_eq!(exact_pr(&run), want, "{meta}");
+        }
+    }
+
+    #[test]
+    fn the_cache_key_holds_the_exact_flag() {
+        let dir = TempDir::new("flight_exact_cache");
+        let (config, claude) = recorded_account(&dir);
+        let cache = FlightCache::default();
+        let run = dir.join("r-1");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(
+            run.join("app-usage.json"),
+            json!({"schema": 1, "sessions": [{"sessionId": SELFTEST, "configDir": config.display().to_string()}]}).to_string(),
+        )
+        .unwrap();
+        let q = Query {
+            run_dir: Some(run.clone()),
+            ..Default::default()
+        };
+        let view = |c: &FlightCache| {
+            session_view(&claude, &q, &PageRequest::default(), c, &Opens::default()).unwrap()
+        };
+        std::fs::write(
+            run.join("meta.json"),
+            json!({"pluginVersion": "0.6.0"}).to_string(),
+        )
+        .unwrap();
+        view(&cache);
+        view(&cache);
+        assert_eq!((cache.hits(), cache.misses()), (1, 1));
+        std::fs::write(
+            run.join("meta.json"),
+            json!({"pluginVersion": "0.7.0"}).to_string(),
+        )
+        .unwrap();
+        view(&cache);
+        assert_eq!(cache.misses(), 2, "the other flag is a different parse");
     }
 
     #[test]

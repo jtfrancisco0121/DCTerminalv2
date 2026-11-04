@@ -22,19 +22,41 @@ pub struct Parsed {
     pub failures: Vec<Failure>,
 }
 
-pub fn parse(main: &Path, subagents: &[SubagentFile]) -> Parsed {
-    let events = claude::events_for(main, subagents);
+/// `exact` says the run's agents were launched with the exact `PR<n> ` description rule
+/// (plugin 0.7.0 on), so a PR tied by that prefix is labelled exact.
+pub fn parse(main: &Path, subagents: &[SubagentFile], exact: bool) -> Parsed {
+    let mut events = claude::events_for(main, subagents);
     let metas: BTreeMap<String, AgentMeta> = subagents
         .iter()
         .filter_map(|s| Some((s.agent_id.clone(), s.meta.clone()?)))
         .collect();
-    let tree = correlate::agent_tree(&events, &metas);
+    let tree = correlate::agent_tree(&events, &metas, exact);
+    // Each event carries its agent's PR (the index and the phases read it from there).
+    let prs = agent_prs(&tree);
+    for event in events.iter_mut() {
+        if let Some(pr) = prs.get(&event.agent.id) {
+            event.agent.pr = Some(pr.clone());
+        }
+    }
     let failures = derive::failures_with_repeats(&events);
     Parsed {
         events,
         tree,
         failures,
     }
+}
+
+/// agent id -> PR id, for every agent of the tree that has one.
+pub fn agent_prs(tree: &AgentNode) -> std::collections::HashMap<String, String> {
+    fn walk(node: &AgentNode, out: &mut std::collections::HashMap<String, String>) {
+        if let Some(pr) = &node.pr {
+            out.insert(node.id.clone(), pr.clone());
+        }
+        node.children.iter().for_each(|c| walk(c, out));
+    }
+    let mut out = std::collections::HashMap::new();
+    walk(tree, &mut out);
+    out
 }
 
 /// The position after which the next page starts: the last returned event's
