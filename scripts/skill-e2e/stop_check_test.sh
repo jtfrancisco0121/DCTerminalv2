@@ -233,4 +233,48 @@ status building building; guard; repos '"bash check.sh"' '"true"'
 echo '{' > "$RUN/repos.json"
 expect 0 "unreadable repos.json" "$(payload dcv2:implementer "$reply1")"
 
+echo "# log.md: one stop-check line per hook run in an unfinished run"
+status building building; guard; repos '"bash check.sh"' '"true"'; rm -f "$RUN/logs/.stop-check.json" "$WT1/ok.txt"
+: > "$RUN/log.md"
+lines() { wc -l < "$RUN/log.md" | tr -d ' '; }
+lastl() { tail -n 1 "$RUN/log.md" | cut -d' ' -f2-; }
+logs_as() { # <label> <expected log text after the time> <lines before>
+  if [[ "$(lastl)" == "$2" && "$(lines)" == "$(( $3 + 1 ))" ]]; then echo "ok     log.md: $1 -> $2"; else echo "FAIL   log.md: $1 -> '$(lastl)' ($(lines) lines, want '$2' after $3)"; fails=1; fi
+}
+n=$(lines); expect 2 "logged: failing check" "$(payload dcv2:implementer "$reply1")"; logs_as "fail" "building stop-check PR1 fail" "$n"
+okif "  the time is UTC ISO" 'grep -Eq "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z building stop-check PR1 fail$" "$RUN/log.md"'
+touch "$WT1/ok.txt"
+n=$(lines); expect 0 "logged: passing check" "$(payload dcv2:implementer "$reply1")"; logs_as "pass" "building stop-check PR1 pass" "$n"
+rm -f "$WT1/ok.txt"
+repos 'null' '"true"'
+n=$(lines); expect 0 "logged: no check command" "$(payload dcv2:implementer "$reply1")"; logs_as "absent" "building stop-check PR1 skip" "$n"
+repos '"sleep 5; false"' '"true"'
+n=$(lines); expect 0 "logged: slow check" "$(payload dcv2:implementer "$reply1")" DCV2_STOP_CHECK_TIMEOUT=1; logs_as "slow" "building stop-check PR1 skip" "$n"
+rm -f "$RUN/logs/.stop-check.json"; repos '"bash check.sh"' '"true"'
+status building building
+n=$(lines); expect 0 "logged: no matching PR (two busy)" "$(payload dcv2:implementer "nothing to see")"; logs_as "no PR" "building stop-check - skip" "$n"
+status building pending
+n=$(lines); expect 0 "logged: PR2 not building" "$(payload dcv2:implementer "$reply2")"; logs_as "not building" "building stop-check PR2 skip" "$n"
+status building building
+n=$(lines); expect 0 "logged: the main session's Stop" "$(payload "" "$reply1")"; logs_as "main Stop" "building stop-check - skip" "$n"
+n=$(lines)
+expect 0 "a planner's SubagentStop" "$(payload dcv2:planner "$reply1")"
+expect 0 "stop_hook_active" "$(payload dcv2:implementer "$reply1" true)"
+expect 0 "DCV2_STOP_HOOKS=off" "$(payload dcv2:implementer "$reply1")" DCV2_STOP_HOOKS=off
+expect 0 "no run bound" "$(payload "" "$reply1")" DCV2_RUN_DIR=
+okif "none of those logged anything" '[[ "$(lines)" == "$n" ]]'
+python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); s["stage"]="done"; json.dump(s,open(p,"w"))' "$RUN/status.json"
+expect 0 "main Stop in a done run" "$(payload "" "$reply1")"
+expect 2 "implementer in a done run still blocks on a failing check" "$(payload dcv2:implementer "$reply1")"
+okif "  nothing logged after done" '[[ "$(lines)" == "$n" ]]'
+status building building
+chmod 444 "$RUN/log.md"
+expect 2 "log.md read-only: a failing check still blocks" "$(payload dcv2:implementer "$reply1")"
+touch "$WT1/ok.txt"; expect 0 "log.md read-only: a passing check still passes" "$(payload dcv2:implementer "$reply1")"; rm -f "$WT1/ok.txt"
+expect 0 "log.md read-only: the main Stop" "$(payload "" "$reply1")"
+chmod 644 "$RUN/log.md"
+okif "  read-only log.md was not changed" '[[ "$(lines)" == "$n" ]]'
+rm -f "$RUN/log.md"; expect 0 "no log.md: the main Stop" "$(payload "" "$reply1")"
+okif "  log.md is not created" '[[ ! -e "$RUN/log.md" ]]'
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }

@@ -193,6 +193,7 @@ has "  opened" "draft=opened url=https://github.com/shim/repo/pull/1"
 is "  prUrl" "$RUN/status.json" prs.1.prUrl '"https://github.com/shim/repo/pull/1"'
 is "  draft true" "$RUN/status.json" prs.1.draft true
 is "  state drafted" "$RUN/status.json" prs.1.state '"drafted"'
+grep -Eq ' pr PR2 [a-z-]+ -> drafted$' "$RUN/log.md" && ok "  the state change is logged as a pr line" || bad "  no pr PR2 -> drafted line: $(tail -3 "$RUN/log.md")"
 is "  comments []" "$RUN/status.json" prs.1.comments '[]'
 git -C "$d/origin.git" show-ref -q --verify refs/heads/dcv2/r-g-pr2 && ok "  branch pushed" || bad "  branch not on origin"
 grep -q "pr create --draft --base main --head dcv2/r-g-pr2 --title PR 2 title" "$GH_SHIM_DIR/calls.log" && ok "  gh pr create --draft" || bad "  calls: $(cat "$GH_SHIM_DIR/calls.log")"
