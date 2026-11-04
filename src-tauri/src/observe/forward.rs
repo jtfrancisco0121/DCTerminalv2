@@ -28,23 +28,30 @@ pub const MAX_INPUT: u64 = 1024 * 1024;
 /// Connect, write and read together stay under a second.
 pub const STEP_TIMEOUT: Duration = Duration::from_millis(300);
 
+/// The string fields kept from a hook payload (documented in
+/// `docs/launch.md`; a test ties the doc to this list).
+pub const KEPT_FIELDS: &[&str] = &[
+    "hook_event_name",
+    "session_id",
+    "agent_id",
+    "agent_type",
+    "notification_type",
+    "tool_name",
+    "tool_use_id",
+    "source",
+    "reason",
+];
+
 /// The fields kept from a hook payload. `background_running` counts the
 /// background tasks Claude reports as running (Stop, SubagentStop).
 pub fn reduce(payload: &Value) -> Value {
     let mut out = Map::new();
-    for key in [
-        "hook_event_name",
-        "session_id",
-        "agent_id",
-        "agent_type",
-        "notification_type",
-        "tool_name",
-        "tool_use_id",
-        "source",
-        "reason",
-    ] {
-        if let Some(Value::String(text)) = payload.get(key) {
-            out.insert(key.into(), Value::String(text.chars().take(200).collect()));
+    for key in KEPT_FIELDS {
+        if let Some(Value::String(text)) = payload.get(*key) {
+            out.insert(
+                (*key).into(),
+                Value::String(text.chars().take(200).collect()),
+            );
         }
     }
     if let Some(Value::Array(tasks)) = payload.get("background_tasks") {

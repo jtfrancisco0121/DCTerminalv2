@@ -26,7 +26,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 pub const ORCHESTRATOR: &str = "orchestrator";
-/// A gap longer than this between two log events is idle, not work.
+/// A gap longer than this between two transcript events is idle, not work
+/// (excluded). Dense transcript events; `log.md` lines are sparse and use
+/// `run::record::IDLE_CAP_MS` (clamped) instead.
 pub const ACTIVE_GAP_MS: i64 = 5 * 60 * 1000;
 /// The context meter warns from this share of the window (A4).
 pub const CONTEXT_WARN: f64 = 0.60;
