@@ -251,6 +251,7 @@ pub fn run() {
             observe::claude_version_status,
             observe::run_claude_selftest,
             observe::read_check_log,
+            commands::flight::flight_content,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

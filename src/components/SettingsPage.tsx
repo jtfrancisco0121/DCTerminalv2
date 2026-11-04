@@ -74,7 +74,12 @@ const DEFAULT_RUN: RunSettings = { maxImplementers: 3, stopHooks: true };
 const accountsKey = (claudePath: string, accounts: ClaudeAccount[]) =>
   JSON.stringify({
     claudePath: claudePath.trim() || null,
-    accounts: accounts.map((a) => ({ id: a.id, name: a.name, configDir: a.configDir || null })),
+    accounts: accounts.map((a) => ({
+      id: a.id,
+      name: a.name,
+      configDir: a.configDir || null,
+      capturePolicy: a.capturePolicy ?? "metadata",
+    })),
   });
 const terminalKey = (t: TerminalSettings) => JSON.stringify(t, Object.keys(t).sort());
 const runKey = (r: RunSettings) =>
@@ -686,6 +691,38 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
         <p className="hint">
           Adds a small hook to every Claude tab so its dot shows working, waiting or needs you.
         </p>
+        <h3>Session Inspector</h3>
+        <p className="hint">
+          What the trace may read from each account&apos;s session logs. Content is shown only when you open an event
+          and is always secret-scanned; Off reads nothing. Saved with the accounts.
+        </p>
+        {accounts.map((account, index) => (
+          <label key={account.id} className="field-label">
+            Capture policy of {account.name}
+            <select
+              className="text-input"
+              aria-label={`Capture policy of ${account.name}`}
+              value={account.capturePolicy ?? "metadata"}
+              onChange={(event) => edit(index, { capturePolicy: event.target.value as ClaudeAccount["capturePolicy"] })}
+            >
+              <option value="off">Off (read nothing)</option>
+              <option value="metadata">Metadata (default)</option>
+              <option value="redacted">Redacted</option>
+              <option value="full">Full</option>
+            </select>
+          </label>
+        ))}
+        <div className="button-row">
+          <button
+            type="button"
+            className="primary-button"
+            disabled={!accountsDirty}
+            onClick={() => void saveAccounts()}
+          >
+            Save capture policy
+          </button>
+          <UnsavedMarker show={accountsDirty} />
+        </div>
       </section>
 
       <section className="settings-section" aria-label="Notifications">

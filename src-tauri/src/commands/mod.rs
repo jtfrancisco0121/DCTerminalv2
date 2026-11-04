@@ -1,6 +1,7 @@
 //! Tauri commands that are not the terminal itself (`pty`) or the windows
 //! (`windows`): tabs, settings and accounts, and Claude usage.
 
+pub(crate) mod flight;
 mod settings;
 mod tabs;
 mod usage;

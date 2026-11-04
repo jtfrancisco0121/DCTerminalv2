@@ -178,6 +178,31 @@ pub fn secret_hits(text: &str) -> Vec<(usize, &'static str)> {
     hits
 }
 
+/// `text` with every line `secret_hits` flags replaced by
+/// `[redacted: <kind>]` (its line ending kept), and the number of lines
+/// replaced. Lines are split exactly as `secret_hits` splits them.
+pub fn redact(text: &str) -> (String, usize) {
+    let hits: std::collections::HashMap<usize, &'static str> =
+        secret_hits(text).into_iter().collect();
+    if hits.is_empty() {
+        return (text.to_string(), 0);
+    }
+    let mut out = String::with_capacity(text.len());
+    for (n, piece) in text.split_inclusive(['\n', '\r']).enumerate() {
+        match hits.get(&(n + 1)) {
+            Some(kind) => {
+                out.push_str(&format!("[redacted: {kind}]"));
+                // Keep the line ending (a hit line is never the bare ending).
+                if let Some(end) = piece.chars().last().filter(|c| *c == '\n' || *c == '\r') {
+                    out.push(end);
+                }
+            }
+            None => out.push_str(piece),
+        }
+    }
+    (out, hits.len())
+}
+
 /// The first secret-looking line's kind, if any.
 pub fn first_hit(text: &str) -> Option<&'static str> {
     secret_hits(text).first().map(|(_, kind)| *kind)
@@ -186,6 +211,22 @@ pub fn first_hit(text: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_replaces_only_the_hit_lines_and_counts_them() {
+        let text =
+            "fine\nDB_PASSWORD=s3cr3tPass!\r\nkeep: me\nAPI_KEY=Zx8Kq2Lm9Pw4Rt7Yb1Nc6Vd3\nend";
+        let (out, n) = redact(text);
+        assert_eq!(n, 2);
+        let kind = "a secret assignment (.env / JSON / YAML style)";
+        assert_eq!(
+            out,
+            format!("fine\n[redacted: {kind}]\r\nkeep: me\n[redacted: {kind}]\nend")
+        );
+        assert!(!out.contains("s3cr3t") && !out.contains("Zx8Kq2"));
+        assert_eq!(redact("plain\ntext\n"), ("plain\ntext\n".to_string(), 0));
+        assert_eq!(redact(""), (String::new(), 0));
+    }
 
     #[test]
     fn real_looking_secrets_are_found_and_plain_text_is_not() {

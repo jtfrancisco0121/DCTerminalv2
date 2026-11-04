@@ -1652,6 +1652,7 @@ mod tests {
                     id: "work".into(),
                     name: "Work".into(),
                     config_dir: None,
+                    capture_policy: Default::default(),
                 }],
             })
             .unwrap();

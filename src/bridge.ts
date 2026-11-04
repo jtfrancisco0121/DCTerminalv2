@@ -94,6 +94,8 @@ export type ClaudeAccount = {
   id: string;
   name: string;
   configDir?: string | null;
+  /** What the Session Inspector may read from this account's logs. Absent: `metadata`. */
+  capturePolicy?: "off" | "metadata" | "redacted" | "full";
 };
 
 export type ClaudeSettings = {
