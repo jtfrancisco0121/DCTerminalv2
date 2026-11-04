@@ -12,6 +12,7 @@ use super::index::{
 use super::redact::{first_hit, redact};
 use super::schema::{sha256_hex, CapturePolicy, SourceRef};
 use super::session::{self, PageRequest, Parsed, SessionView};
+use super::snapshot;
 use crate::provider::claude::same_config_dir;
 use crate::store::settings_store::{resolved_account_config, ClaudeAccount, ClaudeSettings};
 use serde::Serialize;
@@ -776,6 +777,7 @@ pub fn spawn_index(app: &tauri::AppHandle) {
         .name("flight-index".into())
         .spawn(move || {
             let mut conn: Option<rusqlite::Connection> = None;
+            let mut snapshots = SnapshotState::default();
             loop {
                 std::thread::sleep(INDEX_EVERY);
                 let data = crate::data_dir::app_data_dir(&app).path;
@@ -791,8 +793,376 @@ pub fn spawn_index(app: &tauri::AppHandle) {
                         index_pass(conn, &claude, &dirs, &Limits::default())
                     }));
                 }
+                // The snapshot pass: the same thread, after the index pass, over the same run folders.
+                let settings = app.state::<Mutex<crate::store::SettingsStore>>();
+                let claude = settings.lock().map(|s| s.claude().clone()).ok();
+                if let Some(claude) = claude {
+                    let dirs = app_run_dirs(&data);
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        snapshot_pass(&claude, &dirs, &mut snapshots)
+                    }));
+                }
             }
         });
+}
+
+// ---- the run snapshot (CAP-11, AD-45) ----------------------------------------------------
+
+/// The snapshot folder inside a run folder.
+pub const SNAPSHOT_DIR: &str = "flight";
+/// A snapshot being built, or the old one being replaced (`<this><hex>` and `<this><hex>-old`).
+pub const SNAPSHOT_TMP: &str = ".flight.tmp-";
+/// At most this many runs get a snapshot in one pass.
+pub const SNAPSHOTS_PER_PASS: usize = 2;
+/// A run is tried at most this many times per app session.
+pub const SNAPSHOT_ATTEMPTS: u32 = 3;
+const SNAPSHOT_MANIFEST_MAX: u64 = 4 * 1024 * 1024;
+const SNAPSHOT_FILE_MAX: u64 = 512 * 1024 * 1024;
+
+/// Tries and the last reason logged, per run folder, for this app session only.
+#[derive(Debug, Default)]
+pub struct SnapshotState {
+    tried: std::collections::HashMap<PathBuf, (u32, Option<String>)>,
+}
+
+impl SnapshotState {
+    #[cfg(test)]
+    pub fn attempts(&self, run: &Path) -> u32 {
+        self.tried.get(run).map_or(0, |t| t.0)
+    }
+}
+
+/// A transcript file's identity for the manifest: path, size, mtime (ms) and the sha256 of its bytes.
+fn snap_source(path: &Path) -> Option<snapshot::SnapSource> {
+    let meta = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
+    let bytes = std::fs::read(path).ok()?;
+    Some(snapshot::SnapSource {
+        file: path.display().to_string(),
+        size: meta.len(),
+        mtime: meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_millis() as i64),
+        sha256: sha256_hex(&bytes),
+    })
+}
+
+fn read_snapshot_text(path: &Path, cap: u64) -> Result<String, String> {
+    use crate::store::{read_capped, CappedError};
+    let bytes = read_capped(path, cap).map_err(|e| match e {
+        CappedError::Missing => "missing".to_string(),
+        CappedError::NotRegular => "not a regular file".to_string(),
+        CappedError::TooLarge => "too large".to_string(),
+        CappedError::Io(e) => e,
+    })?;
+    String::from_utf8(bytes).map_err(|_| "not UTF-8".to_string())
+}
+
+/// The three files of a run's snapshot, read without following links; `None` when it is absent or damaged.
+fn read_snapshot(run_dir: &Path) -> Option<snapshot::Old> {
+    let dir = run_dir.join(SNAPSHOT_DIR);
+    let manifest: snapshot::Manifest = serde_json::from_str(
+        &read_snapshot_text(&dir.join("manifest.json"), SNAPSHOT_MANIFEST_MAX).ok()?,
+    )
+    .ok()?;
+    if manifest.schema != snapshot::SCHEMA {
+        return None;
+    }
+    Some(snapshot::Old {
+        events_jsonl: read_snapshot_text(&dir.join("events.jsonl"), SNAPSHOT_FILE_MAX).ok()?,
+        content_jsonl: read_snapshot_text(&dir.join("content.jsonl"), SNAPSHOT_FILE_MAX).ok(),
+        manifest,
+    })
+}
+
+fn remove_tree(path: &Path) {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_dir() => {
+            let _ = std::fs::remove_dir_all(path);
+        }
+        Ok(_) => {
+            let _ = std::fs::remove_file(path);
+        }
+        Err(_) => {}
+    }
+}
+
+/// Puts a run folder right after a crash: a `.flight.tmp-<hex>-old` folder with no `flight/` is the snapshot
+/// a swap had set aside, so it comes back first; every other `.flight.tmp-*` entry is removed.
+fn recover_snapshot_leftovers(run_dir: &Path) {
+    let entries: Vec<(String, PathBuf)> = std::fs::read_dir(run_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| Some((e.file_name().to_str()?.to_string(), e.path())))
+        .filter(|(n, _)| n.starts_with(SNAPSHOT_TMP))
+        .collect();
+    if entries.is_empty() {
+        return;
+    }
+    let live = run_dir.join(SNAPSHOT_DIR);
+    let mut restored = std::fs::symlink_metadata(&live).is_ok();
+    for (name, path) in &entries {
+        if !restored && name.ends_with("-old") && std::fs::rename(path, &live).is_ok() {
+            restored = true;
+        }
+    }
+    for (_, path) in entries {
+        if path.exists() || std::fs::symlink_metadata(&path).is_ok() {
+            remove_tree(&path);
+        }
+    }
+}
+
+/// The redacted text behind every distinct source line of `events` (found again by the line's sha256), read
+/// from the transcripts. A line that changed since it was parsed is skipped.
+fn snapshot_content(events: &[super::schema::Event]) -> Vec<snapshot::ContentLine> {
+    let mut files: std::collections::HashMap<String, std::fs::File> =
+        std::collections::HashMap::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for event in events {
+        let source = &event.content.source;
+        if source.len == 0 || source.len > MAX_LINE || !seen.insert(source.sha256.clone()) {
+            continue;
+        }
+        let file = match files.entry(source.file.clone()) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => match std::fs::File::open(&source.file)
+            {
+                Ok(f) => e.insert(f),
+                Err(_) => continue,
+            },
+        };
+        let mut bytes = Vec::new();
+        if file.seek(SeekFrom::Start(source.offset)).is_err()
+            || file.take(source.len).read_to_end(&mut bytes).is_err()
+            || bytes.len() as u64 != source.len
+            || sha256_hex(&bytes) != source.sha256
+        {
+            continue;
+        }
+        let (text, redactions) = render_line(&bytes);
+        out.push(snapshot::ContentLine {
+            id: event.id.clone(),
+            sha256: source.sha256.clone(),
+            text,
+            redactions,
+        });
+    }
+    out
+}
+
+/// Builds a run's snapshot text: the live sessions parsed now plus, from the old snapshot, the sessions whose
+/// transcripts are gone.
+fn build_snapshot(
+    run_dir: &Path,
+    set: &SessionSet,
+    outcome: &str,
+    updated: Option<String>,
+    old: Option<&snapshot::Old>,
+    cap: usize,
+) -> Result<snapshot::Built, String> {
+    let recorded = crate::run::record::read_record(run_dir)
+        .map(|r| r.sessions)
+        .unwrap_or_default();
+    let exact = exact_pr(run_dir);
+    let mut live = Vec::new();
+    let mut all_events = Vec::new();
+    for files in &set.sessions {
+        let id = session_id_of(&files.main);
+        let config_dir = recorded
+            .iter()
+            .find(|s| s.session_id == id)
+            .map(|s| s.config_dir.clone())
+            .unwrap_or_default();
+        let parsed = session::parse(&files.main, &files.subagents, exact);
+        let sources = std::iter::once(files.main.as_path())
+            .chain(files.subagents.iter().map(|s| s.path.as_path()))
+            .filter_map(snap_source)
+            .collect();
+        all_events.extend(parsed.events.iter().cloned());
+        live.push(snapshot::SessionIn {
+            session: snapshot::SnapSession { id, config_dir },
+            events: parsed.events,
+            sources,
+        });
+    }
+    let content = if matches!(set.policy, CapturePolicy::Redacted | CapturePolicy::Full) {
+        snapshot_content(&all_events)
+    } else {
+        Vec::new()
+    };
+    let carry = old
+        .map(|o| snapshot::carry_over(o, &set.gone))
+        .unwrap_or_default();
+    snapshot::build(snapshot::Input {
+        created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        policy: set.policy,
+        outcome: outcome.to_string(),
+        record_status_updated_at: updated,
+        live: &live,
+        carry,
+        content,
+        cap,
+    })
+}
+
+/// Writes `built` as `<run>/flight/`: into `.flight.tmp-<hex>/`, then the swap. The old `flight/` is renamed
+/// `.flight.tmp-<hex>-old`, the new one renamed `flight`, the old one removed; a failure puts the old one back.
+/// `flight/` is never edited in place, and no write follows a link.
+fn write_snapshot(run_dir: &Path, built: &snapshot::Built) -> Result<(), String> {
+    let live = run_dir.join(SNAPSHOT_DIR);
+    if let Ok(meta) = std::fs::symlink_metadata(&live) {
+        if !meta.file_type().is_dir() {
+            return Err("flight is not a folder".into());
+        }
+    }
+    let hex = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    let tmp = run_dir.join(format!("{SNAPSHOT_TMP}{hex}"));
+    std::fs::create_dir(&tmp).map_err(|e| format!("temp folder: {e}"))?;
+    let written = (|| -> Result<(), String> {
+        let manifest = serde_json::to_vec_pretty(&built.manifest).map_err(|e| e.to_string())?;
+        crate::store::write_run_file(&tmp.join("events.jsonl"), built.events_jsonl.as_bytes())?;
+        if let Some(content) = &built.content_jsonl {
+            crate::store::write_run_file(&tmp.join("content.jsonl"), content.as_bytes())?;
+        }
+        // The manifest last: a folder without one is never read as a snapshot.
+        crate::store::write_run_file(&tmp.join("manifest.json"), &manifest)
+    })();
+    if let Err(why) = written {
+        remove_tree(&tmp);
+        return Err(why);
+    }
+    let old = run_dir.join(format!("{SNAPSHOT_TMP}{hex}-old"));
+    let had_old = std::fs::symlink_metadata(&live).is_ok();
+    if had_old {
+        if let Err(e) = std::fs::rename(&live, &old) {
+            remove_tree(&tmp);
+            return Err(format!("could not set the old snapshot aside: {e}"));
+        }
+    }
+    if let Err(e) = std::fs::rename(&tmp, &live) {
+        if had_old {
+            let _ = std::fs::rename(&old, &live);
+        }
+        remove_tree(&tmp);
+        return Err(format!("could not move the snapshot in: {e}"));
+    }
+    if had_old {
+        remove_tree(&old);
+    }
+    Ok(())
+}
+
+/// Why a run gets no snapshot now, or `None` when it does: its record is terminal, its account keeps run
+/// traces, its policy is not `off`, and `flight/` is absent or belongs to another record.
+fn snapshot_candidate(
+    claude: &ClaudeSettings,
+    run_dir: &Path,
+) -> Option<(String, Option<String>, SessionSet)> {
+    let record = crate::run::record::read_record(run_dir)?;
+    let outcome = record
+        .outcome
+        .clone()
+        .filter(|o| matches!(o.as_str(), "done" | "failed" | "eval-done"))?;
+    let updated = record.status_updated_at.clone();
+    let account = crate::run::folder::read_json_value(&run_dir.join("meta.json"))
+        .and_then(|m| m["account"]["id"].as_str().map(str::to_string))?;
+    if !claude
+        .accounts
+        .iter()
+        .any(|a| a.id == account && a.keep_run_traces)
+    {
+        return None;
+    }
+    if let Some(old) = read_snapshot(run_dir) {
+        if old.manifest.outcome == outcome && old.manifest.record_status_updated_at == updated {
+            return None;
+        }
+    }
+    let query = Query {
+        run_dir: Some(run_dir.to_path_buf()),
+        ..Default::default()
+    };
+    match resolve(claude, &query, &Opens::default()) {
+        Access::Ready(set) => Some((outcome, updated, set)),
+        Access::Off | Access::Refused(_) => None,
+    }
+}
+
+/// Whether the last `trace snapshot` line of the run's log.md is a failure.
+fn last_snapshot_line_failed(run_dir: &Path) -> bool {
+    read_snapshot_text(&run_dir.join("log.md"), 8 * 1024 * 1024)
+        .ok()
+        .and_then(|log| {
+            log.lines()
+                .rev()
+                .find(|l| l.contains(" app: trace snapshot "))
+                .map(|l| l.contains(" app: trace snapshot failed: "))
+        })
+        .unwrap_or(false)
+}
+
+/// One snapshot pass over `run_dirs`, run by the index thread after each index pass. A run gets `<run>/flight/`
+/// once per terminal record (see [`snapshot_candidate`]); at most [`SNAPSHOTS_PER_PASS`] runs per pass. A
+/// failure leaves the previous `flight/` in place, is retried on a later pass at most [`SNAPSHOT_ATTEMPTS`]
+/// times per run per app session, and is logged once per run, session and reason. Returns how many were written.
+pub fn snapshot_pass(
+    claude: &ClaudeSettings,
+    run_dirs: &[PathBuf],
+    state: &mut SnapshotState,
+) -> usize {
+    let mut written = 0;
+    for dir in run_dirs {
+        recover_snapshot_leftovers(dir);
+        if written >= SNAPSHOTS_PER_PASS {
+            continue;
+        }
+        if state
+            .tried
+            .get(dir)
+            .is_some_and(|t| t.0 >= SNAPSHOT_ATTEMPTS)
+        {
+            continue;
+        }
+        let Some((outcome, updated, set)) = snapshot_candidate(claude, dir) else {
+            continue;
+        };
+        let old = read_snapshot(dir);
+        let result = build_snapshot(
+            dir,
+            &set,
+            &outcome,
+            updated,
+            old.as_ref(),
+            snapshot::MAX_BYTES,
+        )
+        .and_then(|built| write_snapshot(dir, &built));
+        match result {
+            Ok(()) => {
+                state.tried.remove(dir);
+                written += 1;
+                // The run panel shows the last failure until a later line says it was written.
+                if last_snapshot_line_failed(dir) {
+                    let _ = crate::run::folder::append_app_log(dir, "trace snapshot written");
+                }
+            }
+            Err(reason) => {
+                let entry = state.tried.entry(dir.clone()).or_default();
+                entry.0 += 1;
+                if entry.1.as_deref() != Some(reason.as_str()) {
+                    entry.1 = Some(reason.clone());
+                    let _ = crate::run::folder::append_app_log(
+                        dir,
+                        &format!("trace snapshot failed: {reason}"),
+                    );
+                }
+            }
+        }
+    }
+    written
 }
 
 /// `flight_search`: the structured search over `<data>/flight.db`, on a connection that can only read. A
@@ -2784,5 +3154,300 @@ mod tests {
         };
         assert!(set.sessions.is_empty());
         assert!(set.notices[0].starts_with("transcript gone"));
+    }
+
+    // ---- the run snapshot ----
+
+    fn keeping(mut accounts: Vec<ClaudeAccount>) -> ClaudeSettings {
+        for a in &mut accounts {
+            a.keep_run_traces = true;
+        }
+        settings(accounts)
+    }
+
+    /// The record of a finished run: both sessions listed, `outcome` and the status stamp it was computed from.
+    fn finish(run: &Path, config: &Path, sessions: &[&str], outcome: Option<&str>, updated: &str) {
+        let list: Vec<Value> = sessions
+            .iter()
+            .map(|s| json!({"sessionId": s, "configDir": config.display().to_string()}))
+            .collect();
+        std::fs::write(
+            run.join("app-usage.json"),
+            json!({"schema": 1, "sessions": list, "outcome": outcome, "statusUpdatedAt": updated})
+                .to_string(),
+        )
+        .unwrap();
+    }
+
+    fn manifest_of(run: &Path) -> snapshot::Manifest {
+        serde_json::from_str(&std::fs::read_to_string(run.join("flight/manifest.json")).unwrap())
+            .unwrap()
+    }
+
+    fn event_ids(run: &Path) -> Vec<String> {
+        std::fs::read_to_string(run.join("flight/events.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| {
+                serde_json::from_str::<super::super::schema::Event>(l)
+                    .unwrap()
+                    .id
+            })
+            .collect()
+    }
+
+    fn entries_named(run: &Path, prefix: &str) -> Vec<String> {
+        std::fs::read_dir(run)
+            .unwrap()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            .filter(|n| n.starts_with(prefix))
+            .collect()
+    }
+
+    #[test]
+    fn a_finished_run_whose_account_keeps_traces_gets_one_snapshot_per_record_and_metadata_holds_no_content(
+    ) {
+        let dir = TempDir::new("flight_snapshot_basic");
+        let (run, config) = wave1_run(&dir);
+        let mut state = SnapshotState::default();
+        let dirs = std::slice::from_ref(&run);
+        let claude = keeping(vec![account("a", &config, CapturePolicy::Metadata)]);
+        // Not finished: no outcome in the record.
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 0);
+        assert!(!run.join("flight").exists());
+        finish(&run, &config, &[WAVE1_SID], Some("done"), "t1");
+        // Finished, but the account does not keep traces.
+        let off_switch = settings(vec![account("a", &config, CapturePolicy::Metadata)]);
+        assert_eq!(snapshot_pass(&off_switch, dirs, &mut state), 0);
+        assert!(!run.join("flight").exists());
+        // The `off` policy opens nothing, whatever the switch says.
+        let off = keeping(vec![account("a", &config, CapturePolicy::Off)]);
+        assert_eq!(snapshot_pass(&off, dirs, &mut state), 0);
+        assert!(!run.join("flight").exists());
+
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 1);
+        let manifest = manifest_of(&run);
+        assert_eq!(
+            (
+                manifest.outcome.as_str(),
+                manifest.record_status_updated_at.as_deref()
+            ),
+            ("done", Some("t1"))
+        );
+        assert_eq!(manifest.policy, CapturePolicy::Metadata);
+        assert!(manifest.events > 0 && manifest.events == event_ids(&run).len());
+        assert_eq!(manifest.sessions[0].id, WAVE1_SID);
+        assert_eq!(manifest.content_lines, 0);
+        assert!(
+            !run.join("flight/content.jsonl").exists(),
+            "metadata keeps no content"
+        );
+        assert!(!manifest.sources.is_empty());
+        assert!(entries_named(&run, SNAPSHOT_TMP).is_empty());
+        // Once per terminal record: the same record writes nothing again.
+        let created = manifest.created_at.clone();
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 0);
+        assert_eq!(manifest_of(&run).created_at, created);
+        // The snapshot is a regular tree of three files at most.
+        let names = entries_named(&run.join("flight"), "");
+        assert_eq!(names.len(), 2, "{names:?}");
+    }
+
+    #[test]
+    fn redacted_and_full_snapshots_keep_redacted_content_by_source_line() {
+        for policy in [CapturePolicy::Redacted, CapturePolicy::Full] {
+            let dir = TempDir::new("flight_snapshot_content");
+            let (run, config) = wave1_run(&dir);
+            finish(&run, &config, &[WAVE1_SID], Some("failed"), "t1");
+            let claude = keeping(vec![account("a", &config, policy)]);
+            assert_eq!(
+                snapshot_pass(
+                    &claude,
+                    std::slice::from_ref(&run),
+                    &mut SnapshotState::default()
+                ),
+                1
+            );
+            let manifest = manifest_of(&run);
+            assert_eq!(manifest.outcome, "failed");
+            assert!(manifest.content_lines > 0);
+            let content = std::fs::read_to_string(run.join("flight/content.jsonl")).unwrap();
+            assert_eq!(content.lines().count(), manifest.content_lines);
+            // Every content line is found again by a source ref of an Event.
+            let events = std::fs::read_to_string(run.join("flight/events.jsonl")).unwrap();
+            for line in content.lines() {
+                let c: snapshot::ContentLine = serde_json::from_str(line).unwrap();
+                assert!(events.contains(&c.sha256), "{}", c.sha256);
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_then_resumed_run_gets_a_new_snapshot_that_keeps_the_gone_sessions_events() {
+        let dir = TempDir::new("flight_snapshot_resume");
+        let (run, config) = wave1_run(&dir);
+        let claude = keeping(vec![account("a", &config, CapturePolicy::Full)]);
+        let dirs = std::slice::from_ref(&run);
+        let mut state = SnapshotState::default();
+        finish(&run, &config, &[WAVE1_SID], Some("failed"), "t1");
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 1);
+        let before = event_ids(&run);
+        let content_before = manifest_of(&run).content_lines;
+        assert!(!before.is_empty());
+
+        // Claude deletes the first session's transcript; the run resumes with a second session and ends again.
+        let proj = config.join("projects/-work-toy");
+        std::fs::remove_file(proj.join(format!("{WAVE1_SID}.jsonl"))).unwrap();
+        std::fs::remove_dir_all(proj.join(WAVE1_SID)).unwrap();
+        session(
+            &config,
+            SID_B,
+            &[
+                prompt("2026-11-06T10:00:00Z"),
+                tool_use(
+                    "2026-11-06T10:00:01Z",
+                    "m1",
+                    "t1",
+                    "Bash",
+                    json!({"command": "ls"}),
+                ),
+            ],
+        );
+        finish(&run, &config, &[WAVE1_SID, SID_B], Some("done"), "t2");
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 1);
+        let manifest = manifest_of(&run);
+        assert_eq!(
+            (
+                manifest.outcome.as_str(),
+                manifest.record_status_updated_at.as_deref()
+            ),
+            ("done", Some("t2"))
+        );
+        let after = event_ids(&run);
+        assert!(
+            before.iter().all(|id| after.contains(id)),
+            "the gone session's Events are kept with their ids"
+        );
+        assert!(
+            after.len() > before.len(),
+            "and the new session's are added"
+        );
+        let ids: Vec<&str> = manifest.sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, [WAVE1_SID, SID_B]);
+        assert!(
+            manifest.content_lines >= content_before,
+            "the gone session's content is carried"
+        );
+        assert!(
+            entries_named(&run, SNAPSHOT_TMP).is_empty(),
+            "the old snapshot was removed after the swap"
+        );
+    }
+
+    #[test]
+    fn leftovers_are_removed_and_a_crash_between_the_two_renames_is_restored() {
+        let dir = TempDir::new("flight_snapshot_crash");
+        let (run, config) = wave1_run(&dir);
+        let claude = keeping(vec![account("a", &config, CapturePolicy::Metadata)]);
+        let dirs = std::slice::from_ref(&run);
+        let mut state = SnapshotState::default();
+        finish(&run, &config, &[WAVE1_SID], Some("done"), "t1");
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 1);
+        let ids = event_ids(&run);
+        // A crashed build, and a crash after the old snapshot was set aside.
+        std::fs::create_dir(run.join(".flight.tmp-dead0001")).unwrap();
+        std::fs::write(run.join(".flight.tmp-dead0001/events.jsonl"), "x").unwrap();
+        std::fs::rename(run.join("flight"), run.join(".flight.tmp-beef0002-old")).unwrap();
+        assert_eq!(
+            snapshot_pass(&claude, dirs, &mut state),
+            0,
+            "the restored snapshot is the current record's"
+        );
+        assert_eq!(event_ids(&run), ids, "nothing was lost");
+        assert!(
+            entries_named(&run, SNAPSHOT_TMP).is_empty(),
+            "{:?}",
+            entries_named(&run, SNAPSHOT_TMP)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_write_leaves_the_previous_snapshot_and_is_logged_once_per_reason_and_tried_three_times(
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new("flight_snapshot_fail");
+        let (run, config) = wave1_run(&dir);
+        let claude = keeping(vec![account("a", &config, CapturePolicy::Metadata)]);
+        let dirs = std::slice::from_ref(&run);
+        let mut state = SnapshotState::default();
+        finish(&run, &config, &[WAVE1_SID], Some("done"), "t1");
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 1);
+        let log_before = std::fs::read_to_string(run.join("log.md")).unwrap();
+
+        // The record changes, and the run folder cannot be written to: every pass fails the same way.
+        finish(&run, &config, &[WAVE1_SID], Some("failed"), "t2");
+        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root ignores the mode: skip then.
+        if std::fs::create_dir(run.join(".probe")).is_ok() {
+            std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = std::fs::remove_dir(run.join(".probe"));
+            return;
+        }
+        for _ in 0..5 {
+            assert_eq!(snapshot_pass(&claude, dirs, &mut state), 0);
+        }
+        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            state.attempts(&run),
+            SNAPSHOT_ATTEMPTS,
+            "no more than 3 tries per app session"
+        );
+        assert_eq!(
+            manifest_of(&run).outcome,
+            "done",
+            "the previous snapshot stays"
+        );
+        let log = std::fs::read_to_string(run.join("log.md")).unwrap();
+        let added = log.strip_prefix(&log_before).unwrap_or(&log);
+        assert_eq!(
+            added.matches("app: trace snapshot failed:").count(),
+            1,
+            "one line for the same reason: {added}"
+        );
+        // A new app session (a fresh state) tries again and succeeds.
+        assert_eq!(
+            snapshot_pass(&claude, dirs, &mut SnapshotState::default()),
+            1
+        );
+        assert_eq!(manifest_of(&run).outcome, "failed");
+        let log = std::fs::read_to_string(run.join("log.md")).unwrap();
+        assert!(
+            log.trim_end().ends_with("app: trace snapshot written"),
+            "the panel can tell the failure is over: {log}"
+        );
+    }
+
+    #[test]
+    fn a_flight_that_is_not_a_folder_is_a_failure_and_nothing_follows_a_link() {
+        let dir = TempDir::new("flight_snapshot_link");
+        let (run, config) = wave1_run(&dir);
+        let claude = keeping(vec![account("a", &config, CapturePolicy::Metadata)]);
+        finish(&run, &config, &[WAVE1_SID], Some("done"), "t1");
+        std::fs::write(run.join("flight"), "i am a file").unwrap();
+        let mut state = SnapshotState::default();
+        assert_eq!(
+            snapshot_pass(&claude, std::slice::from_ref(&run), &mut state),
+            0
+        );
+        assert_eq!(
+            std::fs::read_to_string(run.join("flight")).unwrap(),
+            "i am a file"
+        );
+        assert_eq!(state.attempts(&run), 1);
+        assert!(std::fs::read_to_string(run.join("log.md"))
+            .unwrap()
+            .contains("app: trace snapshot failed: flight is not a folder"));
     }
 }

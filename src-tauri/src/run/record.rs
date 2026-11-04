@@ -71,7 +71,7 @@ pub struct RunRecord {
     pub schema: u32,
     #[serde(default)]
     pub sessions: Vec<SessionRef>,
-    /// `done` or `failed`; None until the run finished.
+    /// `done`, `failed` or (an eval run at `ship-approval`) `eval-done`; None until the run finished.
     #[serde(default)]
     pub outcome: Option<String>,
     #[serde(default)]

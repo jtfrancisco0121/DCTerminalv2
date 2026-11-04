@@ -585,6 +585,16 @@ for who in "" dcv2:implementer; do                                  # the app's 
   b 2 "$who" "cp /dev/null $RUN/app-usage.json"
 done
 b 0 "" "cat $RUN/requests/20261027T100000Z-recheck.result.json"
+for who in "" dcv2:implementer; do                                  # the trace snapshot subtree and its temp folders (0.8.0)
+  w 2 "$who" "$RUN/flight/events.jsonl"
+  w 2 "$who" "$RUN/flight/manifest.json"
+  w 2 "$who" "$RUN/.flight.tmp-ab/x"
+  b 2 "$who" "echo '{}' > $RUN/flight/events.jsonl"
+  b 2 "$who" "cp /dev/null $RUN/flight/content.jsonl"
+  b 2 "$who" "mkdir -p $RUN/.flight.tmp-ab"
+  b 2 "$who" "echo x > $RUN/.flight.tmp-ab/x"
+done
+b 0 "" "cat $RUN/flight/manifest.json"
 
 echo "# BMAD runtime: path forms are normalised"
 bx 2 dcv2:implementer "cd \"$PLUG/bmad\" && node ./runtime.mjs memlog init --workspace x"

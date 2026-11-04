@@ -36,6 +36,7 @@ import {
   reviewTone,
   runFinished,
   safeUrl,
+  snapshotFailure,
   stageText,
   storiesText,
   wantsAppChecks,
@@ -414,6 +415,11 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
         <div className="hint run-id">{view.runId}</div>
       </header>
       {view.statusProblem && <p className="hint warn">{view.statusProblem}</p>}
+      {snapshotFailure(view.timeline) !== null && (
+        <p className="hint warn" data-testid="snapshot-failed">
+          Trace snapshot failed: {snapshotFailure(view.timeline)}
+        </p>
+      )}
       {session}
       {!view.hasStatus && !view.statusProblem && <p className="hint">Claude is starting the run in the tab.</p>}
       {view.waitingFor && (

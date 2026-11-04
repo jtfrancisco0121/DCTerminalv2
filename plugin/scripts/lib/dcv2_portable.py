@@ -250,7 +250,9 @@ def real_path(p):
 def is_protected(p, run_ident, names_cf, pathmod, ident_fn, has_request_md=lambda d: False):
     """Whether `p` (a path value) is a protected run file of the run whose identity is `run_ident`: a name in
     `names_cf` (casefolded) directly in the run folder or in a folder holding a request.md, `logs/guard.log` of one,
-    or anything under a `requests` folder of one. An unresolvable path is protected (fail closed); the null device is not a file."""
+    or anything under a `requests` folder or a `flight` folder (the app's trace snapshot) of one, or under any
+    `.flight.tmp-*` entry of one (a snapshot being built). A plain name in `names_cf` covers only a direct child,
+    so these subtrees need their own rule. An unresolvable path is protected (fail closed); the null device is not a file."""
     ident_p = ident_fn(p)
     if ident_p == UNRESOLVED:
         return True
@@ -258,7 +260,8 @@ def is_protected(p, run_ident, names_cf, pathmod, ident_fn, has_request_md=lambd
         return False
     q = p
     while q and q != pathmod.dirname(q):
-        if pathmod.basename(q).casefold() == "requests":
+        base = pathmod.basename(q).casefold()
+        if base in ("requests", "flight") or base.startswith(".flight.tmp-"):
             d = pathmod.dirname(q)
             d_ident = ident_fn(d)
             if d_ident == UNRESOLVED or (d_ident is not None and d_ident == run_ident) or has_request_md(d):

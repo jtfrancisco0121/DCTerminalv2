@@ -616,3 +616,17 @@ export function orchestrationStatusText(e: OrchestrationEvent): string | null {
   if (e.kind === KIND.CHECK_END || e.kind === KIND.CI_STATE) return CHECK_WORD[e.status ?? ""] ?? null;
   return null;
 }
+
+/**
+ * The reason of the run's latest "trace snapshot failed" log line (written by the app's index thread), or null once a
+ * later "trace snapshot written" line says it was made. Lines read `app: trace snapshot failed: <reason>`.
+ */
+export function snapshotFailure(timeline: ReadonlyArray<{ text: string }>): string | null {
+  for (let at = timeline.length - 1; at >= 0; at -= 1) {
+    const text = timeline[at]!.text;
+    const failed = /^app: trace snapshot failed: (.*)$/.exec(text);
+    if (failed) return failed[1] ?? "";
+    if (/^app: trace snapshot written$/.test(text)) return null;
+  }
+  return null;
+}

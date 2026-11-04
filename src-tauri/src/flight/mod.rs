@@ -12,6 +12,7 @@
 //! - `adapters`: provider transcripts to events.
 //! - `correlate`, `derive`: spans, tree, failures, files, repeats.
 //! - `redact`: the one secret scanner (also used by ClickUp).
+//! - `snapshot`: the text of a run's `flight/` snapshot (events, refs, content under policy).
 //! - `host`: the seam to the app (paths, accounts, policy, reads).
 
 pub mod adapters;
@@ -22,6 +23,7 @@ pub mod index;
 pub mod redact;
 pub mod schema;
 pub mod session;
+pub mod snapshot;
 pub mod tail;
 
 /// Builders shared by the tests of the adapter, correlation and host.

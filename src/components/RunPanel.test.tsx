@@ -20,6 +20,26 @@ function renderPanel(overrides: Partial<RunView> = {}) {
   return handlers;
 }
 
+describe("trace snapshot failures", () => {
+  it("shows the latest failure reason once, and nothing after a later 'written' line", () => {
+    const line = (text: string) => ({ time: "2026-11-05T10:00:00Z", stage: "done", text });
+    renderPanel({ timeline: [...view.timeline, line("app: trace snapshot failed: flight is not a folder")] });
+    expect(screen.getByTestId("snapshot-failed").textContent).toBe("Trace snapshot failed: flight is not a folder");
+    cleanup();
+    renderPanel({
+      timeline: [
+        ...view.timeline,
+        line("app: trace snapshot failed: flight is not a folder"),
+        line("app: trace snapshot written"),
+      ],
+    });
+    expect(screen.queryByTestId("snapshot-failed")).toBeNull();
+    cleanup();
+    renderPanel();
+    expect(screen.queryByTestId("snapshot-failed")).toBeNull();
+  });
+});
+
 describe("PR card actions", () => {
   const handlers = () => ({
     onRerunChecks: vi.fn(),
