@@ -195,4 +195,38 @@ describe("RunsView table and summary", () => {
     await screen.findByTestId("run-r-1");
     expect(screen.queryByRole("button", { name: "Analytics" })).toBeNull();
   });
+
+  it("shows a finished eval run as finished, with no Resume and a Results link, and a normal ship-approval run as it was", async () => {
+    const onEvalResults = vi.fn();
+    const evalRun: RunListItem = {
+      ...base,
+      runId: "r-e1",
+      runDir: "/d/runs/r-e1",
+      title: "Eval one",
+      stage: "ship-approval",
+      record: { ...base.record!, outcome: "eval-done" },
+      eval: { group: "b-9", index: 1, of: 2, source: "r-0" },
+    };
+    const waiting: RunListItem = { ...base, runId: "r-w", runDir: "/d/runs/r-w", title: "Waits", stage: "ship-approval", record: null };
+    const running: RunListItem = { ...evalRun, runId: "r-e2", runDir: "/d/runs/r-e2", title: "Eval two", stage: "building", record: null };
+    runs.push(evalRun, waiting, running);
+    try {
+      render(<RunsView windowId="main" onClose={() => {}} onStarted={() => {}} onEvalResults={onEvalResults} />);
+      const row = await screen.findByTestId("run-r-e1");
+      expect(row.textContent).toContain("Eval run finished");
+      expect(row.textContent).not.toContain("Waiting for your go");
+      expect(within(row).queryByRole("button", { name: "Resume" })).toBeNull();
+      fireEvent.click(within(row).getByRole("button", { name: "Results" }));
+      expect(onEvalResults).toHaveBeenCalledWith("b-9");
+      // A normal run at ship-approval still waits and can be resumed.
+      const normal = screen.getByTestId("run-r-w");
+      expect(normal.textContent).toContain("Waiting for your go to open the PRs");
+      expect(within(normal).getByRole("button", { name: "Resume" })).toBeTruthy();
+      // An eval run still building can be resumed, and has Results too.
+      const live = screen.getByTestId("run-r-e2");
+      expect(within(live).getByRole("button", { name: "Resume" })).toBeTruthy();
+    } finally {
+      runs.splice(runs.indexOf(evalRun), 3);
+    }
+  });
 });

@@ -840,6 +840,20 @@ pub struct BatchView {
     pub rows: Vec<BatchRowView>,
     /// Counted rows that wait for the user now.
     pub waiting_for_you: usize,
+    /// Set for an eval group: it reads "k of n finished", never "waiting for you".
+    pub eval: Option<EvalBatchView>,
+}
+
+/// What the overview shows of an eval group.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalBatchView {
+    /// How many runs the group has.
+    pub n: u32,
+    /// The run it repeats.
+    pub source: String,
+    /// Counted runs that have ended (at `ship-approval`, or failed).
+    pub finished: usize,
 }
 
 fn row_view(d: &Dispatch, run: &BatchRun) -> BatchRowView {
@@ -894,11 +908,22 @@ pub fn batch_views(d: &Dispatch) -> Vec<BatchView> {
                 .iter()
                 .filter(|r| !r.removed && r.waiting_for.is_some())
                 .count();
+            let eval = is_eval_batch(b).then(|| EvalBatchView {
+                n: b.n.unwrap_or(rows.len() as u32),
+                source: b.source.clone().unwrap_or_default(),
+                finished: rows
+                    .iter()
+                    .filter(|r| {
+                        !r.removed && matches!(r.stage.as_str(), "ship-approval" | "failed")
+                    })
+                    .count(),
+            });
             BatchView {
                 id: b.id.clone(),
                 created_at: b.created_at.clone(),
                 rows,
                 waiting_for_you,
+                eval,
             }
         })
         .collect()
@@ -2217,6 +2242,27 @@ mod tests {
         let back: Value = serde_json::to_value(&parsed).unwrap();
         assert_eq!(back["later"]["x"], 1);
         assert_eq!(back["source"], "r-0");
+    }
+
+    #[test]
+    fn an_eval_batch_view_counts_its_finished_runs_and_waits_for_nobody() {
+        let (mut batch, _) = plan_batch(&params("x"), &[group("t1"), group("t2")], "a", "b-1");
+        assert!(batch_views(&Dispatch {
+            batches: vec![batch.clone()],
+            ..Dispatch::default()
+        })[0]
+            .eval
+            .is_none());
+        batch.kind = Some("eval".into());
+        batch.n = Some(2);
+        batch.source = Some("r-0".into());
+        let view = &batch_views(&Dispatch {
+            batches: vec![batch],
+            ..Dispatch::default()
+        })[0];
+        let eval = view.eval.as_ref().expect("an eval group");
+        assert_eq!((eval.n, eval.source.as_str(), eval.finished), (2, "r-0", 0));
+        assert_eq!(view.waiting_for_you, 0);
     }
 
     #[test]

@@ -702,6 +702,44 @@ describe("App run pages", () => {
     endState();
   });
 
+  it("offers Resume in the palette for an unfinished run but not for a finished eval run", async () => {
+    await openApp();
+    await waitFor(() => expect(screen.getByTestId("tab-progress-tab_run")).toBeTruthy());
+    const api = await import("./run/api");
+    const open = (id: string, title: string, over: object) => ({ ...finishedRun(id, 20, 1), title, ...over });
+    vi.mocked(api.runOverview).mockResolvedValue({
+      pluginDir: "/app/plugin",
+      pluginVersion: "abc123",
+      roles: [],
+      runs: [
+        open("r-wait", "Waits for ship", { stage: "ship-approval", record: null }),
+        open("r-eval", "Eval finished", {
+          stage: "ship-approval",
+          record: null,
+          eval: { group: "b-1", index: 1, of: 2, source: "r-0" },
+        }),
+      ],
+    } as never);
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "K", ctrlKey: true, shiftKey: true });
+    });
+    await screen.findAllByRole("option");
+    await waitFor(() => {
+      const texts = screen.getAllByRole("option").map((o) => o.textContent ?? "");
+      expect(texts.some((t) => t.includes("Resume: Waits for ship"))).toBe(true);
+    });
+    const all = screen.getAllByRole("option").map((o) => o.textContent ?? "");
+    expect(all.some((t) => t.includes("Resume: Eval finished"))).toBe(false);
+    const waiting = all.find((t) => t.includes("Resume: Waits for ship"))!;
+    expect(waiting).toContain("Waiting for your go to open the PRs");
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
+    cleanup();
+    endState();
+  });
+
   it("opens analytics from the palette and from the Runs dialog; terminals stay; Escape closes it", async () => {
     await openApp();
 

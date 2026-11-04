@@ -8,6 +8,7 @@ import {
   compareOpensTrace,
   compareSentence,
   compareValueText,
+  outcomeText,
   outcomeTone,
 } from "../run/words";
 import { errorText } from "./InlineNotice";
@@ -45,7 +46,7 @@ function SideNote({ side }: { side: CompareSide }) {
     <p className="hint" data-testid={`compare-side-${side.runId}`}>
       <strong>{side.title || side.runId}</strong> {side.runId}{" "}
       {side.outcome && (
-        <Pill tone={outcomeTone(side.outcome, null)}>{side.outcome}</Pill>
+        <Pill tone={outcomeTone(side.outcome, null)}>{outcomeText(side.outcome)}</Pill>
       )}
     </p>
   );

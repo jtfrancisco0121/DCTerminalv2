@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { activeRuns, focusTab, type ActiveRun } from "../bridge";
-import { stageText } from "../run/words";
+import { evalFinished, stageText } from "../run/words";
 import { Stepper } from "./Stepper";
 import { BatchOverview } from "./BatchOverview";
 import { reportError } from "../uiErrors";
@@ -47,7 +47,7 @@ export function ActiveRuns({ onClose, onAllRuns, onDashboard }: Props) {
               <strong>{run.label}</strong>
               <span className="hint">
                 {" "}
-                — {stageText(run.stage)}
+                — {stageText(run.stage, run.eval)}
                 {run.prsTotal > 0 ? ` · ${run.prsDone}/${run.prsTotal} PRs` : ""}
               </span>
               {run.waitingFor && <span className="active-flag active-flag-wait"> waiting for you</span>}
@@ -59,7 +59,8 @@ export function ActiveRuns({ onClose, onAllRuns, onDashboard }: Props) {
                 stage={run.stage}
                 waitingFor={run.waitingFor}
                 prs={{ done: run.prsDone, total: run.prsTotal }}
-                mode={run.runMode}
+                mode={run.eval ? "eval" : run.runMode}
+                finished={evalFinished(run)}
                 variant="compact"
               />
             </div>

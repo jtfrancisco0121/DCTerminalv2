@@ -56,6 +56,17 @@ describe("TraceSearch", () => {
     });
   });
 
+  it("words a finished eval run's outcome instead of printing it raw", async () => {
+    flightSearch.mockResolvedValue(out({ runs: [hit("r-e", 1, { outcome: "eval-done" }), hit("r-d", 1)] }));
+    view();
+    fireEvent.submit(form());
+    await screen.findByRole("listbox", { name: "Matching runs" });
+    const [evalRow, doneRow] = results();
+    expect(evalRow!.textContent).toContain("Eval run finished");
+    expect(evalRow!.textContent).not.toContain("eval-done");
+    expect(doneRow!.textContent).toContain("Done");
+  });
+
   it("filterOf leaves empty fields out and sends only values", () => {
     expect(filterOf(EMPTY_FORM)).toEqual({});
     expect(filterOf({ ...EMPTY_FORM, nameContains: "  x  ", prState: "fixing", from: "2026-11-01", text: "a'; DROP" })).toEqual({

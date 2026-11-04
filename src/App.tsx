@@ -46,7 +46,7 @@ import { RunsView } from "./components/RunsView";
 import { StartScreen } from "./components/StartScreen";
 import { resumeRun, runOverview, startRun, type RunOverview, type StartedRun } from "./run/api";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
-import { stageText, tabProgress, type TabProgress } from "./run/words";
+import { runFinished, stageText, tabProgress, type TabProgress } from "./run/words";
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
 import { TabBar } from "./components/TabBar";
@@ -641,12 +641,12 @@ function App() {
       run: () => select(tab.id),
     }));
     for (const item of paletteRuns?.runs ?? []) {
-      if (item.stage === "done" || item.stage === "failed") continue;
+      if (runFinished(item)) continue;
       items.push({
         id: `run:${item.runDir}`,
         group: "Runs",
         label: `Resume: ${item.title ?? item.runId}`,
-        detail: stageText(item.stage),
+        detail: stageText(item.stage, item.eval),
         run: () =>
           resumeRun(windowId, item.runDir).then((started_) => {
             void started(started_);

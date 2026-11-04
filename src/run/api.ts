@@ -52,6 +52,16 @@ export type RecordTotals = {
   lastActivity: string | null;
 };
 
+/** One run of an eval group (meta.json `eval`): the same task repeated N times to compare outcomes. */
+export type EvalRef = {
+  group: string;
+  index: number;
+  of: number;
+  source: string;
+  /** Per repo path, what the source run built on. */
+  bases?: Record<string, { base: string; baseCommit: string }> | null;
+};
+
 export type RunListItem = {
   runId: string;
   runDir: string;
@@ -74,6 +84,8 @@ export type RunListItem = {
   repos?: string[];
   /** BMAD planning was applied (null: not decided yet). */
   bmadApplied?: boolean | null;
+  /** meta.json's `eval`; missing or null is a normal run. */
+  eval?: EvalRef | null;
 };
 
 export type RunOverview = {
@@ -195,6 +207,8 @@ export type RunView = {
   reviewMode?: string;
   /** meta.json's `mode` (`epic-plan`); missing or null is a normal run. */
   runMode?: string | null;
+  /** meta.json's `eval` (one run of an eval group); missing or null is a normal run. */
+  eval?: EvalRef | null;
   /** status.json has `shipApproval`. */
   shipApproved?: boolean;
   /** BMAD planning; missing or null when the run has it off (or is older). */

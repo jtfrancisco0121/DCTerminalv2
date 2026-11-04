@@ -4,6 +4,10 @@ import attentionRs from "../../src-tauri/src/observe/attention.rs?raw";
 import {
   ATTENTION_KINDS,
   checkTone,
+  evalFinished,
+  outcomeText,
+  runFinished,
+  stageText,
   compareGroupText,
   compareKeyText,
   compareOpensTrace,
@@ -418,5 +422,50 @@ describe("compare words", () => {
     expect(compareOpensTrace("tokens")).toBe(false);
     expect(compareOpensTrace("windowShare")).toBe(false);
     expect(compareOpensTrace("stages")).toBe(false);
+  });
+});
+
+describe("a finished eval run", () => {
+  const evalRef = { group: "b-1", index: 1, of: 3, source: "r-0" };
+  const finished = { stage: "ship-approval", eval: evalRef };
+
+  it("is finished, not waiting, with the success tone and its own words", () => {
+    expect(evalFinished(finished)).toBe(true);
+    expect(evalFinished({ stage: "building", eval: evalRef })).toBe(false);
+    expect(evalFinished({ stage: "ship-approval", eval: null })).toBe(false);
+    expect(evalFinished(null)).toBe(false);
+    expect(runFinished(finished)).toBe(true);
+    expect(runFinished({ stage: "ship-approval" })).toBe(false);
+    expect(runFinished({ stage: "building", eval: evalRef })).toBe(false);
+    const progress = tabProgress({ runId: "r-1", stage: "ship-approval", waitingFor: null, eval: evalRef, prsDone: 2, prsTotal: 2 });
+    expect(progress).toEqual({ fraction: 1, tone: "success", waiting: false, title: "Eval run finished · 2/2 PRs" });
+    // Even a stray waitingFor on an eval run at its end does not read as waiting.
+    expect(tabProgress({ runId: "r-1", stage: "ship-approval", waitingFor: "ship-approval", eval: evalRef, prsDone: 0, prsTotal: 0 })?.waiting).toBe(false);
+    // A normal run at ship-approval still waits.
+    expect(tabProgress({ runId: "r-2", stage: "ship-approval", waitingFor: "ship-approval", prsDone: 0, prsTotal: 1 })?.waiting).toBe(true);
+    expect(outcomeTone(undefined, "ship-approval", evalRef)).toBe("success");
+    expect(outcomeTone("eval-done", "ship-approval")).toBe("success");
+    expect(outcomeTone("failed", "failed", evalRef)).toBe("danger");
+    expect(outcomeTone(undefined, "ship-approval")).toBe("running");
+  });
+
+  it("words the stage and the outcome, and leaves a normal stage as it was", () => {
+    expect(stageText("ship-approval", evalRef)).toBe("Eval run finished");
+    expect(stageText("ship-approval")).toBe("Waiting for your go to open the PRs");
+    expect(stageText("building", evalRef)).toBe("Building");
+    expect(stageText(null, evalRef)).toBe("Starting");
+    expect(outcomeText("eval-done")).toBe("Eval run finished");
+    expect(outcomeText("done")).toBe("Done");
+    expect(outcomeText("failed")).toBe("Failed");
+    expect(outcomeText(undefined)).toBe("Starting");
+  });
+
+  it("has an eval stepper that skips the ship steps and shows every step done at the end", () => {
+    const steps = runSteps("ship-approval", null, { done: 1, total: 1 }, { mode: "eval", finished: true });
+    expect(steps?.steps.map((s) => s.label)).toEqual(["Planning", "Plan approval", "Building", "Eval finished"]);
+    expect(steps?.steps.every((s) => s.status === "done")).toBe(true);
+    expect(steps?.steps.some((s) => s.you)).toBe(false);
+    const running = runSteps("building", null, { done: 0, total: 1 }, { mode: "eval" });
+    expect(running?.steps.map((s) => s.status)).toEqual(["done", "done", "current", "todo"]);
   });
 });

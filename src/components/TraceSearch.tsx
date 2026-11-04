@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { flightSearch } from "../flight/api";
 import type { RunHit, SearchFilter, SearchOut } from "../flight/types";
+import { outcomeText } from "../run/words";
 import { errorText } from "./InlineNotice";
 import { Meter } from "./Meter";
 import { Pill } from "./Pill";
@@ -343,7 +344,7 @@ export function TraceSearch({ initial, onChange, onOpen, onCompare, onClose }: P
               <strong>{hit.title || hit.runId}</strong>{" "}
               <span className="hint">
                 {hit.runId}
-                {hit.outcome ? ` · ${hit.outcome}` : ""}
+                {hit.outcome ? ` · ${outcomeText(hit.outcome)}` : ""}
               </span>{" "}
               <Pill tone="muted">
                 {hit.matches} {hit.matches === 1 ? "match" : "matches"}

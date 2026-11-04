@@ -37,6 +37,20 @@ describe("RunDashboard", () => {
     vi.useRealTimers();
   });
 
+  it("does not list a finished eval run as open, and words an unfinished one as running", () => {
+    const ev = { group: "b-1", index: 1, of: 2, source: "r-0" };
+    render(
+      <RunDashboard
+        runs={[run("a"), run("e1", { stage: "ship-approval", eval: ev }), run("e2", { stage: "building", eval: ev }), run("w", { stage: "ship-approval", waitingFor: "ship-approval" })]}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getAllByTestId(/^card-/).map((el) => el.getAttribute("data-testid"))).toEqual(["card-a", "card-e2", "card-w"]);
+    expect(screen.queryByText(/Eval run finished/)).toBeNull();
+    expect(within(screen.getByTestId("card-w")).getByText(/Waiting for your go to open the PRs/)).toBeTruthy();
+    expect(within(screen.getByTestId("card-e2")).getAllByText(/Building/).length).toBeGreaterThan(0);
+  });
+
   it("shows a card per unfinished run tab with steps and one pill per PR, and leaves finished runs out", () => {
     render(<RunDashboard runs={[run("a"), run("b", { windowLabel: "win-2" }), run("c", { stage: "done" }), run("d", { stage: "failed" })]} onClose={() => {}} />);
     expect(screen.getAllByTestId(/^card-/).map((el) => el.getAttribute("data-testid"))).toEqual(["card-a", "card-b"]);

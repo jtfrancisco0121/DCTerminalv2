@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { focusTab, type ActiveRun } from "../bridge";
-import { prStateText, prStateTone, stageText } from "../run/words";
+import { evalFinished, prStateText, prStateTone, runFinished, stageText } from "../run/words";
 import { reportError } from "../uiErrors";
 import { Pill } from "./Pill";
 import { Stepper } from "./Stepper";
@@ -33,7 +33,7 @@ export function RunDashboard({ runs, onClose }: Props) {
   const page = useRef<HTMLElement>(null);
   useEffect(() => page.current?.focus(), []);
 
-  const open = runs.filter((run) => run.stage !== "done" && run.stage !== "failed");
+  const open = runs.filter((run) => !runFinished(run));
 
   return (
     <section className="page" role="region" aria-label="Run dashboard" tabIndex={-1} ref={page}>
@@ -51,7 +51,7 @@ export function RunDashboard({ runs, onClose }: Props) {
             <li key={run.tabId} className="run-card" data-testid={`card-${run.tabId}`}>
               <div className="run-card-head">
                 <strong>{run.label}</strong>
-                <span className="hint"> — {stageText(run.stage)}</span>
+                <span className="hint"> — {stageText(run.stage, run.eval)}</span>
                 {run.waitingFor && (
                   <span className="active-flag active-flag-wait">
                     {" "}
@@ -64,7 +64,8 @@ export function RunDashboard({ runs, onClose }: Props) {
                 stage={run.stage}
                 waitingFor={run.waitingFor}
                 prs={{ done: run.prsDone, total: run.prsTotal }}
-                mode={run.runMode}
+                mode={run.eval ? "eval" : run.runMode}
+                finished={evalFinished(run)}
               />
               {(run.prs ?? []).length > 0 && (
                 <div className="run-card-prs">

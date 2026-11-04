@@ -414,6 +414,8 @@ export type ActiveRun = {
   waitingSince?: string | null;
   /** The run's mode (`epic-plan`); missing or null is a normal run. */
   runMode?: string | null;
+  /** The run's `eval` (one run of an eval group); missing or null is a normal run. */
+  eval?: { group: string; index: number; of: number; source: string } | null;
   stalled: boolean;
   prsDone: number;
   prsTotal: number;

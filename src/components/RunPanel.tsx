@@ -25,6 +25,7 @@ import {
   checkTone,
   ciChip,
   draftBadge,
+  evalFinished,
   gateTone,
   groupTimeline,
   localTime,
@@ -397,20 +398,21 @@ function BmadSection({
 
 /** The progress panel for one run, drawn from a read of its folder. */
 export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch, onSlopCheck, away }: ViewProps) {
-  const timeline = groupTimeline(view.timeline);
+  const timeline = groupTimeline(view.timeline, 30, view.eval);
   return (
     <aside className="run-panel" aria-label="Run progress">
       {away && <AwayNotice lines={away.lines} onDismiss={away.dismiss} />}
       <header className="run-panel-head">
         <div className="run-stage" data-testid="run-stage">
-          {stageText(view.stage)}
+          {stageText(view.stage, view.eval)}
         </div>
         <Stepper
           stage={view.stage}
           waitingFor={view.waitingFor}
           prs={{ done: prsDone(view.prs), total: view.prs.length }}
-          mode={view.runMode}
-          reached={reachedStep(view.timeline, view.runMode)}
+          mode={view.eval ? "eval" : view.runMode}
+          reached={reachedStep(view.timeline, view.eval ? "eval" : view.runMode)}
+          finished={evalFinished(view)}
         />
         <div className="hint run-id">{view.runId}</div>
       </header>
@@ -739,13 +741,14 @@ export function RunPanel({
     <>
       <RunPanelShell
         windowId={windowId ?? "main"}
-        stageLabel={stageText(view.stage)}
+        stageLabel={stageText(view.stage, view.eval)}
         attention={Boolean(view.waitingFor)}
         stage={view.stage}
         waitingFor={view.waitingFor}
         prs={{ done: prsDone(view.prs), total: view.prs.length }}
-        mode={view.runMode}
-        reached={reachedStep(view.timeline, view.runMode)}
+        mode={view.eval ? "eval" : view.runMode}
+        reached={reachedStep(view.timeline, view.eval ? "eval" : view.runMode)}
+        finished={evalFinished(view)}
         onLayoutChange={onLayoutChange}
       >
       <div className="run-panel-clicks" onClickCapture={(event) => { altClick.current = event.altKey; }}>

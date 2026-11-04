@@ -2,7 +2,7 @@
 
 import { KIND, STATUS } from "../flight/types";
 import type { UsageTone } from "../usage/limits";
-import type { LogLine, PrView, RunView } from "./api";
+import type { EvalRef, LogLine, PrView, RunView } from "./api";
 
 /**
  * The one status vocabulary of the UI. Components pick a tone from these
@@ -114,10 +114,31 @@ const STAGES: Record<string, string> = {
   failed: "Failed",
 };
 
-/** Unknown stages are shown as they are. */
-export function stageText(stage: string | null): string {
+/** The words for a finished eval run, wherever its stage or outcome is shown. */
+export const EVAL_FINISHED_TEXT = "Eval run finished";
+
+/**
+ * A run of an eval group that has ended: it carries meta.json `eval` and stops at `ship-approval` for good (nothing is
+ * shipped). The twin of Rust `folder::finished_eval`; every function below that reads a run's stage checks it first.
+ */
+export function evalFinished(run: { stage?: string | null; eval?: EvalRef | null } | null | undefined): boolean {
+  return Boolean(run && run.eval && run.stage === "ship-approval");
+}
+
+/**
+ * Unknown stages are shown as they are. Pass the run's `eval` where there is one: a finished eval run reads "Eval run
+ * finished", never "Waiting for your go to open the PRs". Without the second argument it is unchanged.
+ */
+export function stageText(stage: string | null, evalRef?: EvalRef | null): string {
   if (!stage) return "Starting";
+  if (evalRef && stage === "ship-approval") return EVAL_FINISHED_TEXT;
   return STAGES[stage] ?? stage;
+}
+
+/** The words of a run record's outcome: `eval-done` is "Eval run finished", the rest as a stage. */
+export function outcomeText(outcome: string | null | undefined): string {
+  if (outcome === "eval-done") return EVAL_FINISHED_TEXT;
+  return stageText(outcome ?? null);
 }
 
 /** The event kinds the detector announces (src-tauri/src/observe/attention.rs), for Settings. */
@@ -185,9 +206,9 @@ export function checkMark(result: string | null | undefined): string {
   }
 }
 
-/** The run is over: offer the worktree clean-up. */
-export function runFinished(view: RunView): boolean {
-  return view.stage === "done" || view.stage === "failed";
+/** The run is over: offer the worktree clean-up. A finished eval run is over too. */
+export function runFinished(view: { stage?: string | null; eval?: EvalRef | null }): boolean {
+  return view.stage === "done" || view.stage === "failed" || evalFinished(view);
 }
 
 /**
@@ -339,6 +360,17 @@ export const RUN_STEPS: ReadonlyArray<{ key: string; label: string }> = [
 /** An epic-plan run only plans: it never builds or ships (plugin/scripts/state.sh). */
 export const EPIC_PLAN_STEPS: ReadonlyArray<string> = ["planning", "plan-approval", "done"];
 
+/**
+ * An eval run plans, builds and reviews, then ends at `ship-approval` with nothing to approve (state.sh refuses the
+ * ship steps): its last step is the end, and its plan approval is not the user's.
+ */
+export const EVAL_STEPS: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "planning", label: "Planning" },
+  { key: "plan-approval", label: "Plan approval" },
+  { key: "building", label: "Building" },
+  { key: "ship-approval", label: "Eval finished" },
+];
+
 /** The steps where the user answers. */
 export const USER_STEPS: ReadonlyArray<string> = ["plan-approval", "ship-approval"];
 
@@ -350,6 +382,7 @@ export function prsDone(prs: ReadonlyArray<{ state: string | null }>): number {
 }
 
 function stepSetFor(mode: string | null | undefined): ReadonlyArray<{ key: string; label: string }> {
+  if (mode === "eval") return EVAL_STEPS;
   return mode === "epic-plan" ? RUN_STEPS.filter((step) => EPIC_PLAN_STEPS.includes(step.key)) : RUN_STEPS;
 }
 
@@ -375,7 +408,7 @@ export function runSteps(
   stage: string | null,
   waitingFor: string | null,
   prs: { done: number; total: number },
-  opts: { mode?: string | null; reached?: string | null } = {},
+  opts: { mode?: string | null; reached?: string | null; finished?: boolean } = {},
 ): { steps: RunStep[]; failed: boolean } | null {
   if (!stage) return null;
   const set = stepSetFor(opts.mode);
@@ -388,10 +421,11 @@ export function runSteps(
   const steps = set.map((step, i): RunStep => {
     let status: StepStatus;
     if (failed) status = i <= reachedAt ? "done" : "todo";
-    else if (stage === "done") status = "done";
+    else if (stage === "done" || opts.finished) status = "done";
     else if (waitAt >= 0) status = i < waitAt ? "done" : i === waitAt ? "waiting" : "todo";
     else status = i < at ? "done" : i === at ? "current" : "todo";
-    const out: RunStep = { key: step.key, label: step.label, status, you: USER_STEPS.includes(step.key) };
+    const you = opts.mode !== "eval" && USER_STEPS.includes(step.key);
+    const out: RunStep = { key: step.key, label: step.label, status, you };
     if (step.key === "building" && prs.total > 0) out.extra = `${prs.done}/${prs.total} PRs`;
     return out;
   });
@@ -406,14 +440,14 @@ export type TimelineGroup = { key: string; stage: string | null; label: string; 
  * The key is the stage plus the group's oldest line, so it stays the same
  * while newer lines are appended and the window shifts.
  */
-export function groupTimeline(lines: ReadonlyArray<LogLine>, limit = 30): TimelineGroup[] {
+export function groupTimeline(lines: ReadonlyArray<LogLine>, limit = 30, evalRef?: EvalRef | null): TimelineGroup[] {
   const groups: TimelineGroup[] = [];
   for (const line of lines.slice(-limit).reverse()) {
     const last = groups[groups.length - 1];
     if (last && last.stage === line.stage) {
       last.lines.push(line);
     } else {
-      groups.push({ key: "", stage: line.stage, label: line.stage ? stageText(line.stage) : "Other", lines: [line] });
+      groups.push({ key: "", stage: line.stage, label: line.stage ? stageText(line.stage, evalRef) : "Other", lines: [line] });
     }
   }
   for (const group of groups) {
@@ -434,6 +468,7 @@ export type TabReading = {
   stage?: string | null;
   waitingFor?: string | null;
   runMode?: string | null;
+  eval?: EvalRef | null;
   prsDone: number;
   prsTotal: number;
 };
@@ -459,6 +494,8 @@ export function tabProgress(reading: TabReading | null | undefined): TabProgress
   const join = (head: string) => (prs ? `${head} · ${prs}` : head);
   if (stage === "failed") return { fraction: 1, tone: "danger", waiting: false, title: join("Failed") };
   if (stage === "done") return { fraction: 1, tone: "success", waiting: false, title: join("Done") };
+  // A finished eval run is over, not waiting for anyone.
+  if (evalFinished(reading)) return { fraction: 1, tone: "success", waiting: false, title: join(EVAL_FINISHED_TEXT) };
   const waiting = Boolean(reading.waitingFor);
   const set = stepSetFor(reading.runMode);
   const at = set.findIndex((step) => step.key === stage);
@@ -472,8 +509,13 @@ export function tabProgress(reading: TabReading | null | undefined): TabProgress
 }
 
 /** The tone of a run's outcome in the Runs table: the record's outcome, else the stage. */
-export function outcomeTone(outcome: string | null | undefined, stage: string | null | undefined): Tone {
+export function outcomeTone(
+  outcome: string | null | undefined,
+  stage: string | null | undefined,
+  evalRef?: EvalRef | null,
+): Tone {
   const value = outcome ?? stage;
+  if (value === "eval-done" || evalFinished({ stage, eval: evalRef })) return "success";
   if (value === "done") return "success";
   if (value === "failed") return "danger";
   return stage ? "running" : "muted";

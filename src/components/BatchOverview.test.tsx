@@ -62,4 +62,30 @@ describe("BatchOverview", () => {
     await waitFor(() => expect(calls.overview).toHaveBeenCalled());
     expect(container.querySelector("[data-testid=batches]")).toBeNull();
   });
+
+  it("reads an eval group as 'k of n finished', never waiting for you, with a Results link", async () => {
+    const onEvalResults = vi.fn();
+    const eval_: Batch = {
+      id: "b-eval",
+      createdAt: "t",
+      waitingForYou: 0,
+      eval: { n: 3, source: "r-0", finished: 2 },
+      rows: [
+        { entryId: "e-1", label: "Eval run 1 of 3", ticketIds: [], removed: false, runDir: "/r/e1", stage: "ship-approval", waitingFor: null, prUrl: null, ci: null },
+        { entryId: "e-2", label: "Eval run 2 of 3", ticketIds: [], removed: false, runDir: "/r/e2", stage: "failed", waitingFor: null, prUrl: null, ci: null },
+        { entryId: "e-3", label: "Eval run 3 of 3", ticketIds: [], removed: false, runDir: "/r/e3", stage: "building", waitingFor: null, prUrl: null, ci: null },
+      ],
+    };
+    calls.overview.mockResolvedValue([eval_]);
+    render(<BatchOverview onEvalResults={onEvalResults} />);
+    expect((await screen.findByTestId("eval-group-b-eval")).textContent).toBe("Eval group · 2 of 3 finished");
+    const done = screen.getByTestId("batch-row-e-1");
+    expect(done.textContent).toContain("Eval run finished");
+    expect(done.textContent).not.toContain("waiting for you");
+    expect(done.textContent).not.toContain("Waiting for your go");
+    expect(screen.getByTestId("batch-row-e-3").textContent).toContain("Building");
+    expect(screen.queryByTestId("batch-waiting")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Results" }));
+    expect(onEvalResults).toHaveBeenCalledWith("b-eval");
+  });
 });

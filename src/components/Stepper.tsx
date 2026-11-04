@@ -9,6 +9,8 @@ type Props = {
   mode?: string | null;
   /** For a failed run: the last step it reached. */
   reached?: string | null;
+  /** A finished eval run: every step is done. */
+  finished?: boolean;
   /** `compact`: one line, the current step named; `vertical`: dots only (the collapsed rail). */
   variant?: "default" | "compact" | "vertical";
 };
@@ -30,8 +32,8 @@ function stepTitle(step: RunStep): string {
  * a ringed dot with "waiting for you" in its tooltip, so it never relies on hue alone. Null when the stage is not a
  * step (the stage sentence stands alone).
  */
-export function Stepper({ stage, waitingFor, prs, mode, reached, variant = "default" }: Props) {
-  const result = runSteps(stage, waitingFor, prs, { mode, reached });
+export function Stepper({ stage, waitingFor, prs, mode, reached, finished, variant = "default" }: Props) {
+  const result = runSteps(stage, waitingFor, prs, { mode, reached, finished });
   if (!result) return null;
   const dotsOnly = variant === "vertical";
   return (

@@ -18,7 +18,7 @@ import {
 } from "../run/api";
 import { WorktreeSetup } from "./WorktreeSetup";
 import { estimate, estimateText } from "../run/estimate";
-import { relativeDate, stageText } from "../run/words";
+import { evalFinished, relativeDate, stageText } from "../run/words";
 import { TextDialog } from "./RunPanel";
 import { Dialog } from "./Dialog";
 import { RecentFolderOptions, useRecentFolders } from "./RecentFolders";
@@ -38,6 +38,8 @@ type Props = {
   onPlainTab: () => void;
   /** Open the Runs view (every run, with search). */
   onShowAllRuns?: () => void;
+  /** An eval run's "Results" link: open the results of its group. */
+  onEvalResults?: (group: string) => void;
   /** Claude's limit windows, for the near-limit warning (never blocks starting). */
   usageWindows?: RateWindow[] | null;
 };
@@ -135,7 +137,7 @@ function rememberBmadMode(folder: string, mode: BmadMode): void {
  * New run: a folder, what to do, and Start Eagle-Eye. One role on its own
  * is one tile. Earlier runs can be resumed.
  */
-export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, onShowAllRuns, usageWindows }: Props) {
+export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, onShowAllRuns, onEvalResults, usageWindows }: Props) {
   const [folder, setFolder] = useState(initialFolder);
   const [found, setFound] = useState<FolderRepos | null>(null);
   const [request, setRequest] = useState("");
@@ -566,11 +568,11 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
                 {run.adopted && <span className="hint"> (from the dev app)</span>}
                 <span className="hint">
                   {" "}
-                  — {stageText(run.stage)}
+                  — {stageText(run.stage, run.eval)}
                   {run.folder ? ` · ${run.folder}` : ""}
                   {relativeDate(run.createdAt ?? run.updatedAt) ? ` · ${relativeDate(run.createdAt ?? run.updatedAt)}` : ""}
                 </span>
-                {run.stage === "done" && (
+                {(run.stage === "done" || evalFinished(run)) && (
                   <>
                     {run.hasReport && (
                       <button type="button" className="link-button" onClick={() => void showReport(run)}>
@@ -586,7 +588,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
                     </button>
                   </>
                 )}
-                {run.stage !== "done" && (
+                {run.stage !== "done" && !evalFinished(run) && (
                   <button
                     type="button"
                     className="link-button"
@@ -594,6 +596,11 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
                     onClick={() => void resume(run.runDir)}
                   >
                     Resume
+                  </button>
+                )}
+                {run.eval && onEvalResults && (
+                  <button type="button" className="link-button" onClick={() => onEvalResults(run.eval!.group)}>
+                    Results
                   </button>
                 )}
               </li>

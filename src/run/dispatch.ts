@@ -59,7 +59,9 @@ export type BatchRow = {
   prUrl: string | null;
   ci: string | null;
 };
-export type Batch = { id: string; createdAt: string; rows: BatchRow[]; waitingForYou: number };
+/** An eval group in the overview: k of n runs have ended. */
+export type EvalBatch = { n: number; source: string; finished: number };
+export type Batch = { id: string; createdAt: string; rows: BatchRow[]; waitingForYou: number; eval?: EvalBatch | null };
 export const batchOverview = () => invoke<Batch[]>("batch_overview");
 export const batchRemoveRun = (batchId: string, entryId: string) => invoke<void>("batch_remove_run", { batchId, entryId });
 
