@@ -17,7 +17,8 @@ pub mod hooks;
 pub mod notify;
 pub mod price;
 pub mod push;
-pub mod tail;
+// The tailer moved to `flight::tail`; the old path keeps working.
+pub use crate::flight::tail;
 pub mod transcript;
 pub mod trim;
 pub mod version;

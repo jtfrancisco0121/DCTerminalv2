@@ -5,6 +5,7 @@ mod commands;
 mod crash_log;
 mod data_dir;
 mod drafts;
+mod flight;
 mod import_dev;
 #[cfg(target_os = "macos")]
 mod macos_terminate;
