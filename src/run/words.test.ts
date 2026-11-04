@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import pushRs from "../../src-tauri/src/observe/push.rs?raw";
+import attentionRs from "../../src-tauri/src/observe/attention.rs?raw";
 import {
   ATTENTION_KINDS,
   checkTone,
@@ -91,6 +92,17 @@ describe("attention kinds", () => {
     const body = /PUSH_KINDS: \[&str; \d+\] = \[([^\]]*)\]/.exec(pushRs)?.[1] ?? "";
     const rust = [...body.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]).sort();
     expect(PUSH_KINDS.map((k) => k.key).sort()).toEqual(rust);
+  });
+});
+
+describe("attention kind keys", () => {
+  it("lists every Kind::ALL key of attention.rs, including eval-finished, in Settings and the phone list", () => {
+    const body = /=> "([a-z-]+)",/g;
+    const keyFn = /pub fn key\(self\)[\s\S]*?\n    }\n/.exec(attentionRs)?.[0] ?? "";
+    const rust = [...keyFn.matchAll(body)].map((m) => m[1]).sort();
+    expect(rust).toContain("eval-finished");
+    expect(ATTENTION_KINDS.map((k) => k.key).sort()).toEqual(rust);
+    expect(PUSH_KINDS.map((k) => k.key)).toContain("eval-finished");
   });
 });
 

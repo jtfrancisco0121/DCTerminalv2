@@ -22,7 +22,7 @@ pub const TIMEOUT: Duration = Duration::from_secs(10);
 const RETRY_AFTER: Duration = Duration::from_secs(2);
 /// The events that go to the phone: the ones that matter when nobody is
 /// at the Mac.
-pub const PUSH_KINDS: [&str; 8] = [
+pub const PUSH_KINDS: [&str; 9] = [
     "stall",
     "check-failed",
     "ci-failed",
@@ -31,6 +31,7 @@ pub const PUSH_KINDS: [&str; 8] = [
     "batch-planned",
     "batch-ready",
     "wave-ready",
+    "eval-finished",
 ];
 /// The secret slots (the item's account field in the keychain).
 pub const SECRET_NAMES: [&str; 4] = [

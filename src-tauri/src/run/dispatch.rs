@@ -81,9 +81,21 @@ pub struct Batch {
     pub id: String,
     pub created_at: String,
     pub runs: Vec<BatchRun>,
-    /// Milestones already announced (`batch-planned`, `batch-ready`): each fires once.
+    /// Milestones already announced (`batch-planned`, `batch-ready`, `eval-finished`): each fires once.
     #[serde(default)]
     pub notified: Vec<String>,
+    /// `eval` for an eval group (the same task N times); missing is a ticket batch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// An eval group: the run id it repeats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// An eval group: how many runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
+    /// Fields a later version adds are kept when this one rewrites the file.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -649,6 +661,28 @@ pub fn batch_milestone(stages: &[Option<&str>], notified: &[String]) -> Option<&
     None
 }
 
+/// An eval group: `kind` says so, or (when an older build dropped `kind` on a rewrite) any of its runs'
+/// meta.json has `eval`. Such a batch never raises `batch-ready`.
+pub fn is_eval_batch(batch: &Batch) -> bool {
+    batch.kind.as_deref() == Some("eval")
+        || batch.runs.iter().any(|r| {
+            r.run_dir
+                .as_deref()
+                .is_some_and(|d| super::folder::eval_of(Path::new(d)).is_some())
+        })
+}
+
+/// The one milestone of an eval group: `eval-finished`, once, when every counted run has ended (at
+/// `ship-approval`, which only an eval run's end writes, or `failed`). A run still queued (no stage) holds
+/// it back. An eval group never gets `batch-planned` or `batch-ready`.
+pub fn eval_milestone(stages: &[Option<&str>], notified: &[String]) -> Option<&'static str> {
+    let ended = |s: &Option<&str>| matches!(s, Some("ship-approval" | "failed"));
+    (!stages.is_empty()
+        && stages.iter().all(ended)
+        && !notified.iter().any(|n| n == "eval-finished"))
+    .then_some("eval-finished")
+}
+
 fn stage_of(run_dir: &str) -> Option<String> {
     std::fs::read_to_string(Path::new(run_dir).join("status.json"))
         .ok()
@@ -677,7 +711,12 @@ pub fn milestone_events(app: &AppHandle) -> Vec<crate::observe::attention::Event
                 .map(|r| r.run_dir.as_deref().and_then(stage_of))
                 .collect();
             let refs: Vec<Option<&str>> = stages.iter().map(|s| s.as_deref()).collect();
-            if let Some(name) = batch_milestone(&refs, &batch.notified) {
+            if is_eval_batch(batch) {
+                if let Some(name) = eval_milestone(&refs, &batch.notified) {
+                    batch.notified.push(name.to_string());
+                    fired.push((batch.id.clone(), name));
+                }
+            } else if let Some(name) = batch_milestone(&refs, &batch.notified) {
                 batch.notified.push(name.to_string());
                 // Reaching ready also covers planned: the earlier announcement is not made late.
                 if name == "batch-ready" && !batch.notified.iter().any(|n| n == "batch-planned") {
@@ -690,10 +729,10 @@ pub fn milestone_events(app: &AppHandle) -> Vec<crate::observe::attention::Event
     })
     .unwrap_or_default();
     let batch_events = fired.into_iter().map(|(id, name)| Event {
-        kind: if name == "batch-ready" {
-            Kind::BatchReady
-        } else {
-            Kind::BatchPlanned
+        kind: match name {
+            "batch-ready" => Kind::BatchReady,
+            "eval-finished" => Kind::EvalFinished,
+            _ => Kind::BatchPlanned,
         },
         subject: id.clone(),
         tab_id: None,
@@ -946,6 +985,10 @@ pub fn plan_batch(
             created_at: now_iso(),
             runs,
             notified: vec![],
+            kind: None,
+            source: None,
+            n: None,
+            extra: Map::new(),
         },
         entries,
     )
@@ -1318,6 +1361,10 @@ mod tests {
                 removed: false,
             }],
             notified: vec![],
+            kind: None,
+            source: None,
+            n: None,
+            extra: Map::new(),
         });
         finish(&mut state, &second, Ok(Some("/runs/r-2".into())));
         assert_eq!(state.queue.len(), 1);
@@ -1477,6 +1524,69 @@ mod tests {
             "a failed member holds both back"
         );
         assert_eq!(batch_milestone(&[], &none), None);
+    }
+
+    #[test]
+    fn an_eval_batch_gets_one_eval_finished_and_never_batch_ready() {
+        let none: Vec<String> = vec![];
+        // Held back by a run still queued, or still working.
+        assert_eq!(eval_milestone(&[None, Some("ship-approval")], &none), None);
+        assert_eq!(
+            eval_milestone(&[Some("building"), Some("ship-approval")], &none),
+            None
+        );
+        assert_eq!(eval_milestone(&[], &none), None);
+        // Every run ended (a failed one counts): once.
+        assert_eq!(
+            eval_milestone(&[Some("ship-approval"), Some("failed")], &none),
+            Some("eval-finished")
+        );
+        assert_eq!(
+            eval_milestone(
+                &[Some("ship-approval"), Some("ship-approval")],
+                &["eval-finished".to_string()]
+            ),
+            None,
+            "once only"
+        );
+        // The ticket-batch rule would have said batch-ready for the same stages; an eval batch never asks it.
+        assert_eq!(
+            batch_milestone(&[Some("ship-approval"), Some("ship-approval")], &none),
+            Some("batch-ready")
+        );
+        let (mut batch, _) = plan_batch(&params("x"), &[group("t1"), group("t2")], "a", "b-1");
+        assert!(
+            !is_eval_batch(&batch),
+            "a ticket batch keeps today's behaviour"
+        );
+        batch.kind = Some("eval".into());
+        assert!(is_eval_batch(&batch));
+    }
+
+    #[test]
+    fn a_batch_whose_kind_was_dropped_is_still_an_eval_batch_by_its_runs_meta() {
+        let dir = crate::test_support::TempDir::new("eval_batch_meta");
+        let run = dir.join("r-1");
+        std::fs::create_dir_all(&run).unwrap();
+        let (mut batch, _) = plan_batch(&params("x"), &[group("t1"), group("t2")], "a", "b-1");
+        batch.runs[0].run_dir = Some(run.display().to_string());
+        assert!(!is_eval_batch(&batch), "no meta.json eval yet");
+        std::fs::write(
+            run.join("meta.json"),
+            r#"{"eval":{"group":"b-1","index":1,"of":2,"source":"r-0"}}"#,
+        )
+        .unwrap();
+        assert!(
+            is_eval_batch(&batch),
+            "kind missing, but the run is an eval run"
+        );
+        // A batch written by a newer build keeps its unknown fields through a rewrite.
+        let text = r#"{"id":"b","createdAt":"t","runs":[],"kind":"eval","source":"r-0","n":3,"later":{"x":1}}"#;
+        let parsed: Batch = serde_json::from_str(text).unwrap();
+        assert_eq!((parsed.kind.as_deref(), parsed.n), (Some("eval"), Some(3)));
+        let back: Value = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(back["later"]["x"], 1);
+        assert_eq!(back["source"], "r-0");
     }
 
     #[test]

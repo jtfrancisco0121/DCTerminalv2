@@ -66,6 +66,8 @@ pub enum Kind {
     BatchReady,
     /// An epic: the next wave is ready to start (the subject is the epic run id).
     WaveReady,
+    /// An eval group: every run has ended (the subject is the batch id).
+    EvalFinished,
 }
 
 impl Kind {
@@ -74,7 +76,7 @@ impl Kind {
         Kind::ALL.into_iter().find(|kind| kind.key() == key)
     }
 
-    pub const ALL: [Kind; 13] = [
+    pub const ALL: [Kind; 14] = [
         Kind::NeedsYou,
         Kind::ApprovalWait,
         Kind::Stall,
@@ -88,6 +90,7 @@ impl Kind {
         Kind::BatchPlanned,
         Kind::BatchReady,
         Kind::WaveReady,
+        Kind::EvalFinished,
     ];
 
     /// Needs-you and approval-wait are the ones that count in the badge and
@@ -112,6 +115,7 @@ impl Kind {
             Kind::BatchPlanned => "batch-planned",
             Kind::BatchReady => "batch-ready",
             Kind::WaveReady => "wave-ready",
+            Kind::EvalFinished => "eval-finished",
         }
     }
 }
@@ -150,6 +154,7 @@ impl Event {
                 _ => format!("dcv2: plan ready for approval{run}"),
             },
             Kind::Stall => format!("dcv2: no progress in {tab}"),
+            Kind::RunDone if detail == "eval" => format!("dcv2: eval run finished{run}"),
             Kind::RunDone => format!("dcv2: run finished{run}"),
             Kind::RunFailed => format!("dcv2: run failed{run}"),
             Kind::CheckFailed => format!("dcv2: {detail} check failed{run}"),
@@ -162,6 +167,7 @@ impl Event {
             }
             Kind::BatchReady => format!("dcv2: every run of the batch is ready to ship{run}"),
             Kind::WaveReady => format!("dcv2: the next wave is ready to start{run}"),
+            Kind::EvalFinished => format!("dcv2: eval group finished{run}"),
         }
     }
 }
@@ -198,6 +204,10 @@ pub struct RunFacts {
     pub waiting_since: Option<String>,
     /// meta.json's `mode` (`epic-plan`); `None` is a normal run.
     pub run_mode: Option<String>,
+    /// meta.json's `eval` (one run of an eval group); `None` is a normal run.
+    pub eval: Option<folder::EvalRef>,
+    /// An eval run that has ended (`folder::finished_eval`): it is finished, not waiting.
+    pub eval_finished: bool,
     pub prs_done: u32,
     pub prs_total: u32,
     /// PRs whose app check failed, timed out or errored.
@@ -278,8 +288,13 @@ impl Detector {
                         detail,
                     });
                 };
-                if prev.waiting_for.is_none() && run.waiting_for.is_some() {
+                // An eval run never asks for an approval stop of the user: it ends at ship-approval with
+                // nothing to wait for, which reads as finished.
+                if prev.waiting_for.is_none() && run.waiting_for.is_some() && run.eval.is_none() {
                     push(Kind::ApprovalWait, run.waiting_for.clone());
+                }
+                if !prev.eval_finished && run.eval_finished {
+                    push(Kind::RunDone, Some("eval".into()));
                 }
                 let was = prev.stage.as_deref();
                 if was != Some("done") && run.stage.as_deref() == Some("done") {
@@ -528,6 +543,8 @@ pub struct TabSnap {
     pub waiting_since: Option<String>,
     /// The run's mode (`epic-plan`); `None` is a normal run.
     pub run_mode: Option<String>,
+    /// The run's `eval` (one run of an eval group); `None` is a normal run.
+    pub eval: Option<folder::EvalRef>,
     pub stalled: bool,
     pub prs_done: u32,
     pub prs_total: u32,
@@ -578,6 +595,7 @@ impl Snapshot {
                         waiting_for: run.and_then(|r| r.waiting_for.clone()),
                         waiting_since: run.and_then(|r| r.waiting_since.clone()),
                         run_mode: run.and_then(|r| r.run_mode.clone()),
+                        eval: run.and_then(|r| r.eval.clone()),
                         stalled: t.stalled,
                         prs_done: run.map_or(0, |r| r.prs_done),
                         prs_total: run.map_or(0, |r| r.prs_total),
@@ -604,6 +622,7 @@ impl Snapshot {
         self.run_tabs()
             .into_iter()
             .filter(|t| !matches!(t.stage.as_deref(), Some("done") | Some("failed")))
+            .filter(|t| !folder::finished_eval(t.eval.as_ref(), t.stage.as_deref()))
             .collect()
     }
 
@@ -822,14 +841,18 @@ impl Reader {
             .as_ref()
             .and_then(|v| v.waiting_for.clone())
             .filter(|w| !w.is_empty());
+        let eval = folder::eval_of(run_dir);
+        let stage = view.as_ref().and_then(|v| v.stage.clone());
         Some(RunFacts {
             run_dir: run_dir.display().to_string(),
-            stage: view.as_ref().and_then(|v| v.stage.clone()),
+            stage: stage.clone(),
             waiting_for: waiting_for.clone(),
             waiting_since: waiting_for
                 .as_ref()
                 .and_then(|_| view.as_ref().and_then(|v| v.updated_at.clone())),
             run_mode: folder::run_mode_of(run_dir),
+            eval: eval.clone(),
+            eval_finished: folder::finished_eval(eval.as_ref(), stage.as_deref()),
             prs_done: prs
                 .iter()
                 .filter(|pr| {
@@ -1664,10 +1687,10 @@ mod tests {
             Kind::MergedCleaned,
         ];
         want.sort();
-        // Every kind is here but RunFailed (its own transition below) and the three milestone kinds
-        // (`batch-planned`, `batch-ready`, `wave-ready`), which `dispatch::milestone_events` raises.
+        // Every kind is here but RunFailed (its own transition below) and the four milestone kinds
+        // (`batch-planned`, `batch-ready`, `wave-ready`, `eval-finished`), which `dispatch::milestone_events` raises.
         assert_eq!(
-            want.len() + 1 + 3,
+            want.len() + 1 + 4,
             Kind::ALL.len(),
             "every kind is in this test"
         );
@@ -1905,6 +1928,70 @@ mod tests {
         assert_eq!(snap.tabs[0].waiting_for.as_deref(), Some("plan-approval"));
         assert_eq!(snap.tabs[2].activity, TabActivity::NeedsYou);
         assert_eq!((snap.tabs[0].prs_done, snap.tabs[0].prs_total), (1, 3));
+    }
+
+    #[test]
+    fn an_eval_run_at_ship_approval_is_finished_not_waiting() {
+        let eval = folder::EvalRef {
+            group: "b-1".into(),
+            index: 1,
+            of: 2,
+            source: "r-0".into(),
+            bases: None,
+        };
+        let mut building = run("r-1");
+        building.eval = Some(eval.clone());
+        let mut d = Detector::default();
+        let tabs = vec![run_tab("t1", "r-1")];
+        d.diff(observed(tabs.clone(), vec![building.clone()]), T);
+        // The end: ship-approval with waitingFor null.
+        let mut ended = building.clone();
+        ended.stage = Some("ship-approval".into());
+        ended.eval_finished = true;
+        let fired = d.diff(observed(tabs.clone(), vec![ended.clone()]), T + 2_000);
+        assert_eq!(
+            kinds(&fired),
+            [Kind::RunDone],
+            "one finished event, no ApprovalWait"
+        );
+        assert_eq!(fired[0].detail.as_deref(), Some("eval"));
+        assert_eq!(fired[0].text(), "dcv2: eval run finished (r-1)");
+        // Nothing more on the next ticks (no reminder: waitingFor is null).
+        assert!(d
+            .diff(observed(tabs.clone(), vec![ended.clone()]), T + 120_000)
+            .is_empty());
+
+        // Even a stray waitingFor on an eval run raises no ApprovalWait.
+        let mut stray = ended.clone();
+        stray.waiting_for = Some("ship-approval".into());
+        assert!(d
+            .diff(observed(tabs.clone(), vec![stray]), T + 240_000)
+            .is_empty());
+
+        // The snapshot: the finished eval run is not an active run; a normal run at ship-approval is.
+        let mut normal = run("r-2");
+        normal.stage = Some("ship-approval".into());
+        normal.waiting_for = Some("ship-approval".into());
+        let runs: HashMap<String, RunFacts> = [ended, normal]
+            .into_iter()
+            .map(|r| (r.run_id.clone(), r))
+            .collect();
+        let snap = Snapshot::build(&[run_tab("t1", "r-1"), run_tab("t2", "r-2")], &runs);
+        assert_eq!(snap.tabs[0].eval.as_ref(), Some(&eval));
+        let active = snap.active_runs();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].tab_id, "t2");
+        assert_eq!(snap.summary().active_runs, 1);
+        assert_eq!(
+            snap.summary().needs_you,
+            1,
+            "only the normal run waits for you"
+        );
+        assert_eq!(
+            snap.run_tabs().len(),
+            2,
+            "run_tabs keeps the finished eval run"
+        );
     }
 
     #[test]

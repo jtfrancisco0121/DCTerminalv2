@@ -135,11 +135,12 @@ export const ATTENTION_KINDS: ReadonlyArray<{ key: string; label: string }> = [
   { key: "batch-planned", label: "Every plan of a batch is ready for approval" },
   { key: "batch-ready", label: "Every run of a batch is ready to ship" },
   { key: "wave-ready", label: "An epic's next wave is ready to start" },
+  { key: "eval-finished", label: "Every run of an eval group has finished" },
 ];
 
 /** The events the phone gets (src-tauri/src/observe/push.rs PUSH_KINDS). */
 export const PUSH_KINDS: ReadonlyArray<{ key: string; label: string }> = ATTENTION_KINDS.filter((kind) =>
-  ["stall", "check-failed", "ci-failed", "merged-cleaned", "autopost-failed", "batch-planned", "batch-ready", "wave-ready"].includes(kind.key),
+  ["stall", "check-failed", "ci-failed", "merged-cleaned", "autopost-failed", "batch-planned", "batch-ready", "wave-ready", "eval-finished"].includes(kind.key),
 );
 
 const PR_STATES: Record<string, string> = {
