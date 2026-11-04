@@ -1,0 +1,10 @@
+{
+  "session_id": "0840ac34-4c9c-45a5-88fd-1ef1292ba855",
+  "transcript_path": "/config/projects/-work-toy/0840ac34-4c9c-45a5-88fd-1ef1292ba855.jsonl",
+  "cwd": "/work/toy/sub",
+  "scratchpad_dir": "/tmp/scratchpad",
+  "prompt_id": "6a79ebad-8ccb-48f1-8038-f34f8557f650",
+  "hook_event_name": "CwdChanged",
+  "old_cwd": "/work/toy",
+  "new_cwd": "/work/toy/sub"
+}

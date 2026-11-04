@@ -1,0 +1,28 @@
+{
+  "session_id": "b2fc5f13-019c-4596-9850-8ddce86b32df",
+  "transcript_path": "/config/projects/-work-toy/b2fc5f13-019c-4596-9850-8ddce86b32df.jsonl",
+  "cwd": "/work/toy",
+  "prompt_id": "a2b63a33-09bd-4a47-adbc-a2d0a9d78374",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolBatch",
+  "tool_calls": [
+    {
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "ls",
+        "description": "List files in current directory"
+      },
+      "tool_use_id": "toolu_01LWymyXPSRKWHvpns78GG1a",
+      "tool_response": "README.md\nsub"
+    },
+    {
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "pwd",
+        "description": "Print working directory"
+      },
+      "tool_use_id": "toolu_01STyhDjZ2bqijyzaa7E1BRC",
+      "tool_response": "/work/toy"
+    }
+  ]
+}

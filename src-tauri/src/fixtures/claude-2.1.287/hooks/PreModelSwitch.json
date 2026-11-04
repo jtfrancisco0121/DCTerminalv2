@@ -1,0 +1,17 @@
+{
+  "session_id": "0840ac34-4c9c-45a5-88fd-1ef1292ba855",
+  "transcript_path": "/config/projects/-work-toy/0840ac34-4c9c-45a5-88fd-1ef1292ba855.jsonl",
+  "cwd": "/work/toy",
+  "scratchpad_dir": "/tmp/scratchpad",
+  "prompt_id": "d3b5f006-609f-40db-8cb3-e2f614ca6483",
+  "hook_event_name": "PreModelSwitch",
+  "from_model": "claude-opus-5-5",
+  "to_model": "claude-haiku-4-5-20251001",
+  "requested_model": "haiku",
+  "source": "picker",
+  "context_tokens": 0,
+  "prompt_cache_warm": false,
+  "cache_ttl": "1h",
+  "estimated_cache_write_usd": 0,
+  "pricing": "catalog"
+}
