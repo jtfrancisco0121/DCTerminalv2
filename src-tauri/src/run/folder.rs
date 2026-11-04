@@ -5,7 +5,7 @@
 use super::repos::Repo;
 use crate::store::settings_store::MAX_IMPLEMENTERS_LIMIT;
 use crate::store::write_json_atomic;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -123,6 +123,93 @@ pub struct RunMeta {
     pub mode: Option<String>,
     /// The queue entry (dispatch.json) that started this run; a restart reads it to tell the entry started.
     pub dispatch_entry_id: Option<String>,
+    /// Set for one run of an eval group (the same task N times); `None` is a normal run.
+    pub eval: Option<EvalRef>,
+}
+
+/// One run of an eval group, as meta.json's `eval` records it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalRef {
+    /// The batch id (dispatch.json) of the group.
+    pub group: String,
+    /// This run's place in the group, 1..=of.
+    pub index: u32,
+    /// The group size, 2..=10.
+    pub of: u32,
+    /// The run id the group repeats.
+    pub source: String,
+    /// Per repo path, what the source run built on (from its status.json `prs[]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bases: Option<std::collections::BTreeMap<String, EvalBase>>,
+}
+
+/// The base a source run built a repo on.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalBase {
+    pub base: String,
+    pub base_commit: String,
+}
+
+/// The group sizes an eval can have.
+pub const EVAL_SIZES: std::ops::RangeInclusive<u32> = 2..=10;
+
+/// meta.json's `eval`: the one reader. A ref that is malformed (group or
+/// source not a non-empty string, `of` outside 2..=10, `index` outside
+/// 1..=of, `bases` not an object) is not an eval run; a `bases` entry with
+/// no string `baseCommit` is dropped. Mirrors `state.sh eval_of`.
+pub fn eval_of(run_dir: &Path) -> Option<EvalRef> {
+    let value = read_json_value(&run_dir.join("meta.json"))?;
+    let e = value.get("eval")?.as_object()?;
+    let text = |key: &str| {
+        e.get(key)
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    };
+    let num = |key: &str| {
+        e.get(key)
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+    };
+    let of = num("of").filter(|n| EVAL_SIZES.contains(n))?;
+    let index = num("index").filter(|n| (1..=of).contains(n))?;
+    let bases = match e.get("bases") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(map)) => Some(
+            map.iter()
+                .filter_map(|(repo, b)| {
+                    let commit = b.get("baseCommit")?.as_str()?.to_string();
+                    let base = b.get("base").and_then(Value::as_str).unwrap_or("");
+                    (!commit.is_empty()).then(|| {
+                        (
+                            repo.clone(),
+                            EvalBase {
+                                base: base.to_string(),
+                                base_commit: commit,
+                            },
+                        )
+                    })
+                })
+                .collect(),
+        ),
+        Some(_) => return None,
+    };
+    Some(EvalRef {
+        group: text("group")?,
+        index,
+        of,
+        source: text("source")?,
+        bases,
+    })
+}
+
+/// An eval run that has ended: it stops at `ship-approval` (with no one to
+/// wait for) and is never shipped. The one Rust predicate for it; the TS
+/// twin is `evalFinished` in `src/run/words.ts`.
+pub fn finished_eval(eval: Option<&EvalRef>, stage: Option<&str>) -> bool {
+    eval.is_some() && stage == Some("ship-approval")
 }
 
 /// The run modes meta.json can record (`mode`); a normal run has none.
@@ -279,6 +366,9 @@ pub fn create_run(
     if let Some(n) = meta.max_implementers {
         meta_json["maxImplementers"] = json!(n.clamp(1, MAX_IMPLEMENTERS_LIMIT));
     }
+    if let Some(eval) = meta.eval.as_ref() {
+        meta_json["eval"] = serde_json::to_value(eval).map_err(|e| format!("eval: {e}"))?;
+    }
     write_json_atomic(&dir.join("meta.json"), &meta_json)?;
     Ok(CreatedRun {
         run_id,
@@ -423,6 +513,9 @@ pub struct RunListItem {
     /// mode `on` is true and `off` is false (None for `auto` not yet decided).
     #[serde(default)]
     pub bmad_applied: Option<bool>,
+    /// meta.json's `eval` (one run of an eval group); `None` is a normal run.
+    #[serde(default)]
+    pub eval: Option<EvalRef>,
 }
 
 /// The repos of a run: request.md's `repos:` names, else repos.json's.
@@ -585,6 +678,7 @@ pub fn list_runs(data_dir: &Path) -> Vec<RunListItem> {
                     repo_count: repos.as_ref().map(|r| r.len() as u32),
                     repos: repos.unwrap_or_default(),
                     bmad_applied: bmad_applied_of(&dir, &status),
+                    eval: eval_of(&dir),
                     run_id,
                     run_dir: dir.display().to_string(),
                     adopted,
@@ -865,6 +959,7 @@ mod tests {
             max_implementers: None,
             mode: None,
             dispatch_entry_id: None,
+            eval: None,
         };
         assert!(create_run(dir.path(), Path::new("/w"), &repos, &[], "  ", &meta).is_err());
         let one = create_run(
@@ -1156,5 +1251,92 @@ mod tests {
             "over the cap"
         );
         assert_eq!(std::fs::read(old.join("app-usage.json")).unwrap(), before);
+    }
+
+    #[test]
+    fn eval_of_accepts_a_valid_ref_and_rejects_out_of_range_ones() {
+        let dir = TempDir::new("eval_of");
+        let run = dir.join("r-1");
+        std::fs::create_dir_all(&run).unwrap();
+        let write = |eval: &str| {
+            std::fs::write(
+                run.join("meta.json"),
+                format!(r#"{{"schema":1,"eval":{eval}}}"#),
+            )
+            .unwrap();
+        };
+        assert_eq!(eval_of(&run), None, "no meta.json");
+        write(r#"{"group":"b","index":2,"of":3,"source":"r-0"}"#);
+        let plain = eval_of(&run).unwrap();
+        assert_eq!((plain.index, plain.of), (2, 3));
+        assert!(plain.bases.is_none());
+        write(
+            r#"{"group":"b","index":1,"of":2,"source":"r-0","bases":{"/repo":{"base":"main","baseCommit":"abc"},"/bad":{"base":"main"}}}"#,
+        );
+        let with = eval_of(&run).unwrap();
+        let bases = with.bases.unwrap();
+        assert_eq!(bases.len(), 1, "an entry with no baseCommit is dropped");
+        assert_eq!(bases["/repo"].base_commit, "abc");
+        for bad in [
+            r#"{"group":"b","index":1,"of":11,"source":"r-0"}"#,
+            r#"{"group":"b","index":1,"of":1,"source":"r-0"}"#,
+            r#"{"group":"b","index":0,"of":3,"source":"r-0"}"#,
+            r#"{"group":"b","index":4,"of":3,"source":"r-0"}"#,
+            r#"{"group":"","index":1,"of":3,"source":"r-0"}"#,
+            r#"{"group":"b","index":1,"of":3}"#,
+            r#"{"group":"b","index":1,"of":3,"source":"r-0","bases":[]}"#,
+            r#""eval""#,
+        ] {
+            write(bad);
+            assert_eq!(eval_of(&run), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn create_run_writes_eval_and_a_finished_eval_run_is_one_predicate() {
+        let dir = TempDir::new("eval_create");
+        let eval = EvalRef {
+            group: "b-1".into(),
+            index: 2,
+            of: 3,
+            source: "r-0".into(),
+            bases: Some(
+                [(
+                    "/repo".to_string(),
+                    EvalBase {
+                        base: "main".into(),
+                        base_commit: "abc".into(),
+                    },
+                )]
+                .into(),
+            ),
+        };
+        let meta = RunMeta {
+            eval: Some(eval.clone()),
+            ..Default::default()
+        };
+        let created = create_run(dir.path(), dir.path(), &[], &[], "Do it", &meta).unwrap();
+        let run = Path::new(&created.run_dir);
+        assert_eq!(eval_of(run), Some(eval.clone()));
+        let written = read_json_value(&run.join("meta.json")).unwrap();
+        assert_eq!(written["eval"]["bases"]["/repo"]["baseCommit"], "abc");
+        assert!(finished_eval(Some(&eval), Some("ship-approval")));
+        assert!(!finished_eval(Some(&eval), Some("building")));
+        assert!(!finished_eval(None, Some("ship-approval")));
+        let plain = create_run(
+            dir.path(),
+            dir.path(),
+            &[],
+            &[],
+            "Do it",
+            &RunMeta::default(),
+        )
+        .unwrap();
+        assert!(
+            read_json_value(&Path::new(&plain.run_dir).join("meta.json"))
+                .unwrap()
+                .get("eval")
+                .is_none()
+        );
     }
 }

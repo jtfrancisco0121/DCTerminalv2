@@ -76,6 +76,7 @@ fn ticket_set(run_dir: &Path) -> BTreeSet<String> {
 /// Every run in the list, read for the match.
 pub fn earlier_runs(runs: &[super::folder::RunListItem]) -> Vec<Earlier> {
     runs.iter()
+        .filter(|run| run.eval.is_none()) // an eval run repeats a task on purpose and stays at ship-approval
         .filter_map(|run| {
             let dir = Path::new(&run.run_dir);
             let text = std::fs::read_to_string(dir.join("request.md")).ok()?;
@@ -212,5 +213,26 @@ mod tests {
         assert_eq!(earlier[0].request, "Add multiply()");
         assert_eq!(earlier[0].tickets, set(&["t1", "t2"]));
         assert!(find(&earlier, "Add multiply()", dir.path(), &set(&["t1", "t2"])).is_some());
+    }
+
+    #[test]
+    fn an_eval_run_never_matches_a_later_normal_start() {
+        let dir = TempDir::new("dup_eval");
+        let meta = crate::run::folder::RunMeta {
+            eval: Some(crate::run::folder::EvalRef {
+                group: "b-1".into(),
+                index: 1,
+                of: 2,
+                source: "r-0".into(),
+                bases: None,
+            }),
+            ..Default::default()
+        };
+        crate::run::folder::create_run(dir.path(), dir.path(), &[], &[], "Add multiply()", &meta)
+            .unwrap();
+        let listed = crate::run::folder::list_runs(dir.path());
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].eval.is_some());
+        assert!(earlier_runs(&listed).is_empty());
     }
 }

@@ -753,8 +753,9 @@ mod tests {
             let ok = ["/work/toy", "/config", "/app/plugin"]
                 .iter()
                 .any(|root| p == *root || p.starts_with(&format!("{root}/")));
-            // The recorded self-test stream names this one scratch folder.
-            if !ok && p != "/tmp/scratch" {
+            // The recorded self-test stream names one scratch folder, and the
+            // hook payloads recorded on 2.1.287 (AF11) name Claude Code's own.
+            if !ok && p != "/tmp/scratch" && p != "/tmp/scratchpad" {
                 found.push(format!(
                     "absolute path {p:?} outside /work/toy, /config, /app/plugin"
                 ));

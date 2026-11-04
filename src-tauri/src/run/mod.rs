@@ -592,6 +592,7 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
             max_implementers,
             mode: run_mode.filter(|m| folder::RUN_MODES.contains(&m.as_str())),
             dispatch_entry_id,
+            eval: None,
         };
         if meta.mode.is_some() && clickup.as_ref().is_none_or(|c| c.ticket_ids.is_empty()) {
             return Err(
@@ -659,6 +660,19 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
     })
 }
 
+/// A finished eval run cannot be opened again: it ended at `ship-approval` on
+/// purpose and has no stop #2 (the skill reports "eval run finished" too).
+fn refuse_finished_eval(run_dir: &Path) -> Result<(), String> {
+    let stage = folder::read_json_value(&run_dir.join("status.json"))
+        .and_then(|v| v.get("stage").and_then(|s| s.as_str()).map(str::to_string));
+    if folder::finished_eval(folder::eval_of(run_dir).as_ref(), stage.as_deref()) {
+        return Err(
+            "Eval run finished: it is never shipped, so there is nothing to resume.".into(),
+        );
+    }
+    Ok(())
+}
+
 /// `/dcv2:eagle-eye resume run=<dir>` in a new tab, with the same env.
 #[tauri::command]
 pub async fn resume_run(
@@ -669,6 +683,7 @@ pub async fn resume_run(
     blocking(move || {
         let data = data_dir(&app);
         let run_dir = checked_run_dir(&data, &run_dir)?;
+        refuse_finished_eval(&run_dir)?;
         if let Some(tab) = focus_live_run_tab(&app, &run_dir)? {
             return Ok(StartedRun {
                 tab,
@@ -866,6 +881,30 @@ pub async fn read_memory_file(app: AppHandle, path: String) -> Result<String, St
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
+
+    #[test]
+    fn resume_of_a_finished_eval_run_is_refused_and_a_normal_run_is_not() {
+        let dir = TempDir::new("resume_eval");
+        let run = dir.join("runs/r-1");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("status.json"), r#"{"stage":"ship-approval"}"#).unwrap();
+        assert!(
+            refuse_finished_eval(&run).is_ok(),
+            "a normal run waits at ship-approval"
+        );
+        std::fs::write(
+            run.join("meta.json"),
+            r#"{"eval":{"group":"b","index":1,"of":2,"source":"r-0"}}"#,
+        )
+        .unwrap();
+        let err = refuse_finished_eval(&run).unwrap_err();
+        assert!(err.starts_with("Eval run finished"), "{err}");
+        std::fs::write(run.join("status.json"), r#"{"stage":"building"}"#).unwrap();
+        assert!(
+            refuse_finished_eval(&run).is_ok(),
+            "an eval run still building can resume"
+        );
+    }
 
     #[test]
     fn a_second_resume_finds_the_live_tab_of_that_run_in_any_window() {
