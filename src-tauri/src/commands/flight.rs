@@ -75,6 +75,8 @@ pub struct SessionRequest {
     pub agent: Option<String>,
     pub cursor: Option<String>,
     pub page_size: Option<usize>,
+    /// An event id: with no cursor, the first page is the one holding it (a search result opens there).
+    pub focus: Option<String>,
 }
 
 /// One run's (or one session's) trace: the agent tree, the failures and one
@@ -94,6 +96,7 @@ pub async fn flight_session(
             agent: request.agent,
             cursor: request.cursor,
             page_size: request.page_size,
+            focus: request.focus,
         };
         host::session_view(&claude, &query, &page, &cache, &Opens::default())
     })

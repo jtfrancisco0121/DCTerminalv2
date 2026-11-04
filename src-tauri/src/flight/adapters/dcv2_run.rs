@@ -51,6 +51,8 @@ pub struct RunEvents {
     pub notices: Vec<String>,
     /// The files the events' refs point into: what `flight_content` may open for this run.
     pub files: Vec<String>,
+    /// Each PR's current `state` in status.json: the fallback phase of a run with no `pr` lines.
+    pub status_now: BTreeMap<String, String>,
 }
 
 struct Loaded {
@@ -201,6 +203,7 @@ struct Run<'a> {
 #[derive(Default)]
 struct PrInfo {
     repo_path: Option<String>,
+    state: Option<String>,
 }
 
 fn check_status(result: &str) -> Option<&'static str> {
@@ -268,7 +271,7 @@ impl Run<'_> {
         }
     }
 
-    fn run_all(&mut self) {
+    fn run_all(&mut self) -> BTreeMap<String, String> {
         let prs = self.status_json();
         self.log_md(&prs);
         self.approvals();
@@ -277,6 +280,9 @@ impl Run<'_> {
         self.app_github();
         self.requests();
         self.guard_log();
+        prs.into_iter()
+            .filter_map(|(id, info)| Some((id, info.state?)))
+            .collect()
     }
 
     /// status.json: the PR check events; returns the PRs' repo paths for the stop-check names.
@@ -294,6 +300,7 @@ impl Run<'_> {
                 id.to_string(),
                 PrInfo {
                     repo_path: pr["repoPath"].as_str().map(str::to_string),
+                    state: pr["state"].as_str().map(str::to_string),
                 },
             );
             let check = &pr["check"];
@@ -385,7 +392,7 @@ impl Run<'_> {
                         .cloned()
                         .unwrap_or_else(|| "stop-check".into());
                     let output = (*result == "fail")
-                        .then(|| pr_id.as_ref())
+                        .then_some(pr_id.as_ref())
                         .flatten()
                         .and_then(|p| self.load(&format!("logs/{p}-stop-check.txt")));
                     let src = output.map_or(src, |o| whole_ref(&o));
@@ -801,11 +808,12 @@ pub fn events_for(inputs: &RunInputs) -> RunEvents {
         },
         cache: HashMap::new(),
     };
-    run.run_all();
+    let status_now = run.run_all();
     RunEvents {
         events: run.make.events,
         notices: run.make.notices,
         files: run.make.used.into_iter().collect(),
+        status_now,
     }
 }
 

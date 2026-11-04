@@ -3,7 +3,7 @@
 //! account and capture policy before any file is opened, resolves the files of
 //! a run or session, and reads a line's content (always redacted) on request.
 
-use super::adapters::dcv2_run::{self, ApprovalIn, RunInputs};
+use super::adapters::dcv2_run::{self, ApprovalIn, RunEvents, RunInputs};
 use super::adapters::{AgentMeta, SubagentFile};
 use super::redact::{first_hit, redact};
 use super::schema::{sha256_hex, CapturePolicy, SourceRef};
@@ -150,6 +150,8 @@ pub struct SessionSet {
     pub sessions: Vec<SessionFiles>,
     /// A recorded session whose transcript is gone, and the like.
     pub notices: Vec<String>,
+    /// The run folder, for a run query: its own files join the Trace.
+    pub run_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -179,20 +181,48 @@ fn load_meta(path: &Path) -> Option<AgentMeta> {
     ))
 }
 
+/// The account folders that decide a run's capture policy: its recorded sessions' folders plus the
+/// account the run was started with (meta.json `account.configDir`), so a run with no recorded
+/// session yet still has its account's policy.
+pub fn run_policy_dirs(run_dir: &Path) -> Vec<String> {
+    let mut dirs: Vec<String> = crate::run::record::read_record(run_dir)
+        .into_iter()
+        .flat_map(|r| r.sessions)
+        .map(|s| s.config_dir)
+        .collect();
+    let meta = crate::run::folder::read_json_value(&run_dir.join("meta.json"));
+    if let Some(dir) = meta
+        .as_ref()
+        .and_then(|m| m["account"]["configDir"].as_str())
+        .filter(|d| !d.trim().is_empty())
+    {
+        dirs.push(dir.to_string());
+    }
+    dirs
+}
+
+/// Shown when a run has neither a recorded session nor a started-with account.
+pub const NO_RUN_ACCOUNT: &str = "no account for this run";
+
 /// Checks the policy for every folder first, and only then looks for files.
 pub fn resolve(claude: &ClaudeSettings, query: &Query, opens: &Opens) -> Access {
     let mut wanted: Vec<(String, String)> = Vec::new();
+    let mut dirs: Vec<String> = Vec::new();
     let mut meta: Option<Value> = None;
     if let Some(run) = &query.run_dir {
         let record = crate::run::record::read_record(run);
         for s in record.into_iter().flat_map(|r| r.sessions) {
             wanted.push((s.config_dir, s.session_id));
         }
+        dirs = run_policy_dirs(run);
+        if dirs.is_empty() {
+            return Access::Refused(NO_RUN_ACCOUNT.to_string());
+        }
         meta = crate::run::folder::read_json_value(&run.join("meta.json"));
     } else if let (Some(dir), Some(id)) = (&query.config_dir, &query.session_id) {
         wanted.push((dir.clone(), id.clone()));
+        dirs = vec![dir.clone()];
     }
-    let dirs: Vec<String> = wanted.iter().map(|(d, _)| d.clone()).collect();
     let policy = match policy_for_files(claude, &dirs, meta.as_ref()) {
         Ok(CapturePolicy::Off) => return Access::Off,
         Ok(policy) => policy,
@@ -222,10 +252,19 @@ pub fn resolve(claude: &ClaudeSettings, query: &Query, opens: &Opens) -> Access 
         policy,
         sessions,
         notices,
+        run_dir: query.run_dir.clone(),
     })
 }
 
 impl SessionSet {
+    /// Whether `file` is one of the run's own files the adapter reads (`run_file_list`).
+    pub fn contains_run_file(&self, file: &str) -> bool {
+        let wanted = ident(Path::new(file));
+        self.run_dir
+            .as_deref()
+            .is_some_and(|run| run_file_list(run).iter().any(|(_, p)| ident(p) == wanted))
+    }
+
     /// Whether `file` is one of this set's transcripts.
     pub fn contains(&self, file: &str) -> bool {
         let wanted = ident(Path::new(file));
@@ -234,6 +273,9 @@ impl SessionSet {
         })
     }
 }
+
+/// Picks the names of one run subfolder the adapter reads.
+type NameFilter = fn(&str) -> bool;
 
 /// A run folder's own files the adapter may read: a fixed set of names, never a link.
 const RUN_FILES: [&str; 5] = [
@@ -259,7 +301,7 @@ pub fn run_file_list(run_dir: &Path) -> Vec<(String, PathBuf)> {
         .map(|n| (n.to_string(), run_dir.join(n)))
         .filter(|(_, p)| regular_file(p))
         .collect();
-    let dirs: [(&str, fn(&str) -> bool); 4] = [
+    let dirs: [(&str, NameFilter); 4] = [
         ("reviews", |n| n.ends_with(".md")),
         ("gates", |n| n.ends_with(".yml")),
         ("requests", |n| n.ends_with(".json")),
@@ -355,12 +397,22 @@ fn stamp(path: &Path) -> Stamp {
     )
 }
 
+/// A run's identity, the stamps of its listed files and its events.
+type RunCacheEntry = (String, Vec<Stamp>, Arc<RunEvents>);
+
+/// How many runs' own events the cache keeps.
+const CACHE_RUNS: usize = 8;
+
 #[derive(Debug, Default)]
 struct CacheInner {
     /// Oldest first; a session is keyed by the stamps of all its files.
     entries: Mutex<Vec<(CacheKey, Arc<Parsed>)>>,
+    /// Oldest first; a run's events are keyed by the run folder and the stamps of its listed files.
+    runs: Mutex<Vec<RunCacheEntry>>,
     hits: AtomicUsize,
     misses: AtomicUsize,
+    /// How many times a run's own events were built (not served from the cache).
+    run_misses: AtomicUsize,
 }
 
 /// Parsed sessions, so paging does not parse again. Separate from the stores:
@@ -377,6 +429,33 @@ impl FlightCache {
     #[cfg(test)]
     pub fn misses(&self) -> usize {
         self.0.misses.load(Ordering::SeqCst)
+    }
+    #[cfg(test)]
+    pub fn run_misses(&self) -> usize {
+        self.0.run_misses.load(Ordering::SeqCst)
+    }
+
+    /// The run's own events, from the cache while none of its listed files changed.
+    fn run_events(&self, run_dir: &Path, opens: &Opens) -> Arc<RunEvents> {
+        let files = run_file_list(run_dir);
+        let stamps: Vec<Stamp> = files.iter().map(|(_, p)| stamp(p)).collect();
+        let run = ident(run_dir);
+        if let Ok(runs) = self.0.runs.lock() {
+            if let Some((_, _, hit)) = runs.iter().find(|(r, k, _)| *r == run && *k == stamps) {
+                return hit.clone();
+            }
+        }
+        self.0.run_misses.fetch_add(1, Ordering::SeqCst);
+        opens.add(files.len());
+        let events = Arc::new(dcv2_run::events_for(&run_inputs(run_dir)));
+        if let Ok(mut runs) = self.0.runs.lock() {
+            runs.retain(|(r, _, _)| *r != run);
+            runs.push((run, stamps, events.clone()));
+            while runs.len() > CACHE_RUNS {
+                runs.remove(0);
+            }
+        }
+        events
     }
 
     fn parsed(&self, files: &SessionFiles, exact: bool) -> Arc<Parsed> {
@@ -427,7 +506,18 @@ pub fn session_view(
         .iter()
         .map(|s| cache.parsed(s, exact))
         .collect();
-    session::view(&parsed, trace.as_deref(), set.policy, request, set.notices)
+    let run = set
+        .run_dir
+        .as_deref()
+        .map(|dir| cache.run_events(dir, opens));
+    session::view(
+        &parsed,
+        run.as_deref(),
+        trace.as_deref(),
+        set.policy,
+        request,
+        set.notices,
+    )
 }
 
 /// What `flight_content` returns.
@@ -556,6 +646,43 @@ pub fn render_line(bytes: &[u8]) -> (String, u32) {
     (out, redactions)
 }
 
+/// A run file's text, redacted line by line like a transcript line, cut at [`MAX_TEXT`]. The ref is a
+/// line of the file or the whole file (offset 0, its length); the sha256 must still match.
+fn read_run_file(
+    source: &SourceRef,
+    policy: CapturePolicy,
+    opens: &Opens,
+) -> Result<ContentOut, String> {
+    if source.len > dcv2_run::MAX_FILE {
+        return Err("that file is too large to show".into());
+    }
+    opens.add(1);
+    let mut file = std::fs::File::open(&source.file).map_err(|e| format!("cannot read: {e}"))?;
+    file.seek(SeekFrom::Start(source.offset))
+        .map_err(|e| format!("cannot read: {e}"))?;
+    let mut bytes = Vec::new();
+    file.take(source.len)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("cannot read: {e}"))?;
+    if bytes.len() as u64 != source.len || sha256_hex(&bytes) != source.sha256 {
+        return Err("source changed".into());
+    }
+    let (mut text, redactions) = redact(&String::from_utf8_lossy(&bytes));
+    if text.len() > MAX_TEXT {
+        let mut cut = MAX_TEXT;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+        text.push_str("\n[truncated]\n");
+    }
+    Ok(ContentOut {
+        text,
+        redactions: redactions as u32,
+        policy,
+    })
+}
+
 /// The content behind one event ref: policy first, then the file check, the
 /// read, the sha256 check and the redaction.
 pub fn read_content(
@@ -575,8 +702,16 @@ pub fn read_content(
         }
         Access::Ready(set) => set,
     };
+    if set.contains_run_file(&source.file) {
+        return read_run_file(source, set.policy, opens);
+    }
     if !set.contains(&source.file) {
-        return Err("that file is not part of this session".into());
+        return Err(if set.run_dir.is_some() {
+            "that file is not part of this run"
+        } else {
+            "that file is not part of this session"
+        }
+        .into());
     }
     if source.len > MAX_LINE {
         return Err("that line is too large to show".into());
@@ -603,6 +738,8 @@ pub fn read_content(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flight::derive;
+    use crate::flight::schema::{kind, AgentNode, Event, Failure, Phase};
     use crate::flight::testkit::*;
     use crate::test_support::TempDir;
     use serde_json::json;
@@ -1381,6 +1518,588 @@ mod tests {
         .unwrap();
         view(&cache);
         assert_eq!(cache.misses(), 2, "the other flag is a different parse");
+    }
+
+    // ---- a run's own events (S6): the wave 1 fixture ----
+
+    const WAVE1_SID: &str = "aaaa1111-2222-4333-8444-555555555555";
+    const CARGO: &str = "cargo test --manifest-path src-tauri/Cargo.toml";
+
+    /// The wave 1 fixture in a temp folder with one account `a` of `policy`.
+    fn wave1(name: &str, policy: CapturePolicy) -> (TempDir, PathBuf, ClaudeSettings) {
+        let dir = TempDir::new(name);
+        let (run, config) = wave1_run(&dir);
+        let claude = settings(vec![account("a", &config, policy)]);
+        (dir, run, claude)
+    }
+
+    fn run_query(run: &Path) -> Query {
+        Query {
+            run_dir: Some(run.to_path_buf()),
+            ..Default::default()
+        }
+    }
+
+    fn run_view(claude: &ClaudeSettings, run: &Path, req: &PageRequest) -> SessionView {
+        session_view(
+            claude,
+            &run_query(run),
+            req,
+            &FlightCache::default(),
+            &Opens::default(),
+        )
+        .unwrap()
+    }
+
+    fn all_events(claude: &ClaudeSettings, run: &Path) -> SessionView {
+        run_view(
+            claude,
+            run,
+            &PageRequest {
+                page_size: Some(1000),
+                ..Default::default()
+            },
+        )
+    }
+
+    fn event_by<'a>(view: &'a SessionView, f: impl Fn(&Event) -> bool) -> &'a Event {
+        view.page.events.iter().find(|e| f(e)).expect("event")
+    }
+
+    #[test]
+    fn a_runs_view_interleaves_orchestration_events_with_the_transcript_in_time_order() {
+        let (_d, run, claude) = wave1("flight_wave1_view", CapturePolicy::Full);
+        let v = all_events(&claude, &run);
+        let events = &v.page.events;
+        let lanes: std::collections::HashSet<&str> =
+            events.iter().map(|e| e.agent.id.as_str()).collect();
+        assert!(lanes.contains("orchestration") && lanes.contains("main"));
+        assert!(lanes.contains("a1pr2impl0000000001") && lanes.contains("a2pr2review00000002"));
+        let keys: Vec<_> = events
+            .iter()
+            .map(|e| {
+                (
+                    e.at.clone(),
+                    e.content.source.file.clone(),
+                    e.content.source.offset,
+                )
+            })
+            .collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted, "one keyed order across both sources");
+        // A transcript event sits between two orchestration events of the same run.
+        let pos = |f: &dyn Fn(&Event) -> bool| events.iter().position(|e| f(e)).unwrap();
+        let spawn = pos(&|e| e.kind == "agent.spawn" && e.at.starts_with("2026-11-05T10:08"));
+        let building = pos(&|e| e.kind == kind::PR_STATE && e.at.starts_with("2026-11-05T10:07"));
+        let reviewing = pos(&|e| e.kind == kind::PR_STATE && e.at.starts_with("2026-11-05T10:20"));
+        assert!(building < spawn && spawn < reviewing);
+        assert!(events.iter().all(|e| e.trace == "r-20261105-100000-fa17"));
+        assert_eq!(v.policy, CapturePolicy::Full);
+    }
+
+    #[test]
+    fn paging_a_runs_view_over_the_boundaries_drops_and_repeats_nothing() {
+        let (_d, run, claude) = wave1("flight_wave1_paging", CapturePolicy::Full);
+        let everything = ids(&all_events(&claude, &run));
+        assert!(everything.len() > 40, "{}", everything.len());
+        for size in [1usize, 3, 7, 16] {
+            let cache = FlightCache::default();
+            let mut paged = Vec::new();
+            let mut cursor = None;
+            loop {
+                let v = session_view(
+                    &claude,
+                    &run_query(&run),
+                    &PageRequest {
+                        page_size: Some(size),
+                        cursor: cursor.clone(),
+                        ..Default::default()
+                    },
+                    &cache,
+                    &Opens::default(),
+                )
+                .unwrap();
+                paged.extend(ids(&v));
+                cursor = v.page.next_cursor;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            assert_eq!(paged, everything, "page size {size}");
+        }
+        // An agent filter still pages by the same keys.
+        let only = run_view(
+            &claude,
+            &run,
+            &PageRequest {
+                agent: Some("orchestration".into()),
+                page_size: Some(1000),
+                ..Default::default()
+            },
+        );
+        assert!(only
+            .page
+            .events
+            .iter()
+            .all(|e| e.agent.id == "orchestration"));
+        assert!(only.page.events.len() < everything.len());
+    }
+
+    #[test]
+    fn a_session_query_gets_no_run_events() {
+        let (_d, run, claude) = wave1("flight_wave1_session_only", CapturePolicy::Full);
+        let config = PathBuf::from(claude.accounts[0].config_dir.clone().unwrap());
+        let v = page(
+            &claude,
+            &config,
+            WAVE1_SID,
+            &PageRequest {
+                page_size: Some(1000),
+                ..Default::default()
+            },
+            &FlightCache::default(),
+        );
+        assert!(!v.page.events.is_empty());
+        assert!(v.page.events.iter().all(|e| e.provider.name != "dcv2"));
+        assert!(v.phases.values().all(|p| p.stage.is_none()));
+        assert!(run.is_dir());
+    }
+
+    #[test]
+    fn off_opens_no_run_file_and_no_account_refuses() {
+        let (dir, run, _claude) = wave1("flight_wave1_off", CapturePolicy::Off);
+        let (_, config) = (dir.path(), dir.join("config"));
+        let off = settings(vec![account("a", &config, CapturePolicy::Off)]);
+        let opens = Opens::default();
+        let v = session_view(
+            &off,
+            &run_query(&run),
+            &PageRequest::default(),
+            &FlightCache::default(),
+            &opens,
+        )
+        .unwrap();
+        assert_eq!(v.status, "off");
+        assert!(v.page.events.is_empty());
+        assert_eq!(opens.count(), 0);
+        // No sessions recorded: the account of meta.json decides.
+        std::fs::remove_file(run.join("app-usage.json")).unwrap();
+        let opens = Opens::default();
+        assert!(matches!(
+            resolve(&off, &run_query(&run), &opens),
+            Access::Off
+        ));
+        let out = read_content(
+            &off,
+            &run_query(&run),
+            &SourceRef {
+                file: run.join("log.md").display().to_string(),
+                offset: 0,
+                len: 5,
+                sha256: "x".into(),
+            },
+            &opens,
+        )
+        .unwrap();
+        assert!(out.text.is_empty() && out.policy == CapturePolicy::Off);
+        assert_eq!(opens.count(), 0, "not one run file was opened");
+        // No sessions and no account in meta.json: refused, nothing opened.
+        std::fs::write(run.join("meta.json"), json!({"schema": 1}).to_string()).unwrap();
+        let opens = Opens::default();
+        assert!(matches!(
+            resolve(&off, &run_query(&run), &opens),
+            Access::Refused(why) if why == NO_RUN_ACCOUNT
+        ));
+        assert!(session_view(
+            &off,
+            &run_query(&run),
+            &PageRequest::default(),
+            &FlightCache::default(),
+            &opens
+        )
+        .is_err());
+        assert_eq!(opens.count(), 0);
+        // A folder of meta.json that matches no account refuses like an unmatched session folder.
+        std::fs::write(
+            run.join("meta.json"),
+            json!({"account": {"configDir": dir.join("elsewhere").display().to_string()}})
+                .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(
+            resolve(&off, &run_query(&run), &opens),
+            Access::Refused(why) if why == UNKNOWN_FOLDER
+        ));
+        assert_eq!(opens.count(), 0);
+    }
+
+    #[test]
+    fn a_run_with_no_recorded_sessions_follows_its_meta_account_policy() {
+        for (policy, events) in [
+            (CapturePolicy::Full, true),
+            (CapturePolicy::Redacted, true),
+            (CapturePolicy::Metadata, true),
+        ] {
+            let (_d, run, claude) = wave1("flight_wave1_no_sessions", policy);
+            std::fs::remove_file(run.join("app-usage.json")).unwrap();
+            let v = all_events(&claude, &run);
+            assert_eq!(v.status, "ok");
+            assert_eq!(v.policy, policy);
+            assert_eq!(
+                v.page.events.iter().any(|e| e.agent.id == "orchestration"),
+                events
+            );
+            assert!(
+                v.page.events.iter().all(|e| e.agent.id == "orchestration"),
+                "no recorded session: only the run's own events"
+            );
+            // Content of a run file opens through flight_content with the same redaction.
+            let log = v
+                .page
+                .events
+                .iter()
+                .find(|e| e.content.source.file.ends_with("log.md"))
+                .unwrap();
+            let out = read_content(
+                &claude,
+                &run_query(&run),
+                &log.content.source,
+                &Opens::default(),
+            )
+            .unwrap();
+            assert_eq!(out.policy, policy);
+            assert!(!out.text.is_empty());
+        }
+    }
+
+    #[test]
+    fn the_guard_block_is_one_failure_carrying_the_rule_id_and_the_other_line_is_a_row() {
+        let (_d, run, claude) = wave1("flight_wave1_guard", CapturePolicy::Full);
+        let v = all_events(&claude, &run);
+        let blocked: Vec<&Event> = v
+            .page
+            .events
+            .iter()
+            .filter(|e| e.kind == kind::TOOL_BLOCKED)
+            .collect();
+        assert_eq!(
+            blocked.len(),
+            2,
+            "the transcript block (with the rule) and the unmatched line"
+        );
+        let merged = blocked
+            .iter()
+            .find(|e| e.span.as_deref() == Some("toolu_guard01"))
+            .unwrap();
+        assert_eq!(merged.attrs["rule"], "run-file-write");
+        assert_eq!(
+            merged.provider.name, "claude-code",
+            "the transcript row carries the rule"
+        );
+        let unmatched = blocked.iter().find(|e| e.provider.name == "dcv2").unwrap();
+        assert_eq!(unmatched.attrs["rule"], "git-push");
+        let guard: Vec<&Failure> = v
+            .failures
+            .iter()
+            .filter(|f| f.kind == kind::TOOL_BLOCKED)
+            .collect();
+        assert_eq!(guard.len(), 1);
+        assert_eq!(guard[0].id, merged.id);
+        assert_eq!(guard[0].rule.as_deref(), Some("run-file-write"));
+        assert_eq!(guard[0].derived.label, derive::HOOK_DENIAL_GUARD);
+    }
+
+    #[test]
+    fn a_failed_app_check_and_a_failed_stop_check_are_failures() {
+        let (_d, run, claude) = wave1("flight_wave1_check_failures", CapturePolicy::Full);
+        let v = all_events(&claude, &run);
+        let checks: Vec<&Failure> = v
+            .failures
+            .iter()
+            .filter(|f| f.kind == kind::CHECK_END)
+            .collect();
+        // skill (status.json), app and stop-check all failed in the fixture.
+        assert_eq!(checks.len(), 3);
+        assert!(checks.iter().all(|f| f.derived.label == derive::CHECK_FAIL));
+        assert!(checks.iter().all(|f| f.name.as_deref() == Some(CARGO)));
+        let sorted: Vec<&String> = v.failures.iter().map(|f| &f.at).collect();
+        assert!(sorted.windows(2).all(|w| w[0] <= w[1]));
+    }
+
+    #[test]
+    fn run_file_content_is_redacted_and_an_unlisted_path_is_refused() {
+        let (dir, run, claude) = wave1("flight_wave1_content", CapturePolicy::Full);
+        let v = all_events(&claude, &run);
+        let opens = Opens::default();
+        for (suffix, kept) in [
+            ("reviews/PR2-round1.md", "add() subtracts"),
+            ("logs/PR2-app-check.txt", "test result: FAILED"),
+        ] {
+            let ev = v
+                .page
+                .events
+                .iter()
+                .find(|e| e.content.source.file.ends_with(suffix))
+                .unwrap_or_else(|| panic!("{suffix}"));
+            let out = read_content(&claude, &run_query(&run), &ev.content.source, &opens).unwrap();
+            assert!(out.text.contains(kept), "{}", out.text);
+            assert_eq!(out.redactions, 1, "{}", out.text);
+            assert!(!out.text.contains("Hunter2"), "{}", out.text);
+            assert!(out.text.contains("[redacted: "), "{}", out.text);
+        }
+        // A changed byte is noticed.
+        let ev = v
+            .page
+            .events
+            .iter()
+            .find(|e| e.content.source.file.ends_with("reviews/PR2-round1.md"))
+            .unwrap();
+        let mut stale = ev.content.source.clone();
+        stale.sha256 = sha256_hex(b"other");
+        assert_eq!(
+            read_content(&claude, &run_query(&run), &stale, &opens).unwrap_err(),
+            "source changed"
+        );
+        // Not in the adapter's list: meta.json, a stranger file, a path that climbs out of the run.
+        let secret = dir.join("secret.txt");
+        std::fs::write(&secret, "x").unwrap();
+        for file in [
+            run.join("meta.json"),
+            run.join("repos.json"),
+            secret.clone(),
+            run.join("reviews/../meta.json"),
+        ] {
+            let source = SourceRef {
+                file: file.display().to_string(),
+                offset: 0,
+                len: 1,
+                sha256: sha256_hex(b"x"),
+            };
+            assert_eq!(
+                read_content(&claude, &run_query(&run), &source, &opens).unwrap_err(),
+                "that file is not part of this run",
+                "{}",
+                file.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_whole_file_ref_is_cut_at_the_text_limit_and_a_huge_one_is_refused() {
+        let (_d, run, claude) = wave1("flight_wave1_big_content", CapturePolicy::Full);
+        let big = "line of output\n".repeat(30_000);
+        std::fs::write(run.join("logs/PR2-app-check.txt"), &big).unwrap();
+        let v = all_events(&claude, &run);
+        let ev = v
+            .page
+            .events
+            .iter()
+            .find(|e| e.content.source.file.ends_with("logs/PR2-app-check.txt"))
+            .unwrap();
+        let out = read_content(
+            &claude,
+            &run_query(&run),
+            &ev.content.source,
+            &Opens::default(),
+        )
+        .unwrap();
+        assert!(out.text.len() <= MAX_TEXT + 20 && out.text.ends_with("[truncated]\n"));
+        let mut huge = ev.content.source.clone();
+        huge.len = dcv2_run::MAX_FILE + 1;
+        assert!(
+            read_content(&claude, &run_query(&run), &huge, &Opens::default())
+                .unwrap_err()
+                .contains("too large")
+        );
+    }
+
+    #[test]
+    fn the_adapters_approval_wait_minutes_equal_the_timeline_rule() {
+        let (_d, run, claude) = wave1("flight_wave1_wait_minutes", CapturePolicy::Full);
+        let v = all_events(&claude, &run);
+        let at = |k: &str| -> i64 {
+            let e = event_by(&v, |e| e.kind == k);
+            chrono::DateTime::parse_from_rfc3339(&e.at)
+                .unwrap()
+                .timestamp_millis()
+        };
+        let waited_ms = at(kind::APPROVAL_DECISION) - at(kind::APPROVAL_WAIT);
+        let log = std::fs::read_to_string(run.join("log.md")).unwrap();
+        let (wait, _) = crate::run::timeline::wait_and_span(&log);
+        assert_eq!(wait, Some((waited_ms as f64 / 6_000.0).round() / 10.0));
+        assert_eq!(wait, Some(3.0));
+    }
+
+    fn phase<'a>(v: &'a SessionView, e: &Event) -> &'a Phase {
+        &v.phases[&e.id]
+    }
+
+    #[test]
+    fn every_event_has_a_phase_from_the_stage_and_the_pr_lines() {
+        let (_d, run, claude) = wave1("flight_wave1_phases", CapturePolicy::Full);
+        let v = all_events(&claude, &run);
+        assert_eq!(v.phases.len(), v.page.events.len(), "one phase per event");
+        let named = |source: &str| {
+            event_by(&v, |e| {
+                e.kind == kind::CHECK_END
+                    && e.attrs.get("source").and_then(|s| s.as_str()) == Some(source)
+                    && e.status.as_deref() == Some("fail")
+            })
+        };
+        let app = phase(&v, named("app"));
+        assert_eq!(app.pr_state.as_deref(), Some("reviewing"));
+        assert_eq!(app.label.as_deref(), Some("exact:log-line"));
+        assert_eq!(app.stage.as_deref(), Some("building"));
+        assert_eq!(
+            phase(&v, named("stop-check")).pr_state.as_deref(),
+            Some("fixing")
+        );
+        assert_eq!(
+            phase(&v, named("skill")).pr_state.as_deref(),
+            Some("reviewing")
+        );
+        let reviewer = v
+            .page
+            .events
+            .iter()
+            .filter(|e| e.agent.id == "a2pr2review00000002");
+        for e in reviewer {
+            assert_eq!(
+                phase(&v, e).pr_state.as_deref(),
+                Some("reviewing"),
+                "{}",
+                e.kind
+            );
+        }
+        let implementer = event_by(&v, |e| {
+            e.agent.id == "a1pr2impl0000000001" && e.kind == kind::TOOL_START
+        });
+        assert_eq!(phase(&v, implementer).pr_state.as_deref(), Some("building"));
+        let change = event_by(&v, |e| {
+            e.kind == kind::STAGE_CHANGE && e.name.as_deref() == Some("plan-approval")
+        });
+        assert_eq!(phase(&v, change).stage.as_deref(), Some("plan-approval"));
+        assert_eq!(
+            phase(&v, change).pr_state,
+            None,
+            "a stage change has no PR state"
+        );
+        let main = event_by(&v, |e| e.agent.id == "main" && e.kind == kind::TURN_START);
+        assert_eq!(phase(&v, main).pr_state, None, "the main session has no PR");
+    }
+
+    #[test]
+    fn a_run_without_pr_lines_falls_back_to_status_json_and_says_heuristic() {
+        let (_d, run, claude) = wave1("flight_wave1_phases_old", CapturePolicy::Full);
+        let log = std::fs::read_to_string(run.join("log.md")).unwrap();
+        let old: String = log
+            .lines()
+            .filter(|l| !l.contains(" pr PR2 "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        std::fs::write(run.join("log.md"), old).unwrap();
+        let v = all_events(&claude, &run);
+        let app = event_by(&v, |e| {
+            e.kind == kind::CHECK_END && e.attrs["source"] == "app"
+        });
+        let p = phase(&v, app);
+        assert_eq!(
+            p.pr_state.as_deref(),
+            Some("fixing"),
+            "status.json's state now"
+        );
+        assert_eq!(p.label.as_deref(), Some("heuristic:status-now"));
+    }
+
+    #[test]
+    fn exact_and_heuristic_pr_labels_follow_the_runs_plugin_version() {
+        let (_d, run, claude) = wave1("flight_wave1_labels", CapturePolicy::Full);
+        let labels = |v: &SessionView| -> Vec<String> {
+            fn walk(n: &AgentNode, out: &mut Vec<String>) {
+                out.extend(n.pr_derived.iter().map(|d| d.label.clone()));
+                n.children.iter().for_each(|c| walk(c, out));
+            }
+            let mut out = Vec::new();
+            v.agents.iter().for_each(|a| walk(a, &mut out));
+            out
+        };
+        let v = all_events(&claude, &run);
+        assert_eq!(labels(&v), ["exact:pr-description", "exact:pr-description"]);
+        let mut meta: Value =
+            serde_json::from_str(&std::fs::read_to_string(run.join("meta.json")).unwrap()).unwrap();
+        meta["pluginVersion"] = json!("0.6.0");
+        std::fs::write(run.join("meta.json"), meta.to_string()).unwrap();
+        let v = all_events(&claude, &run);
+        assert_eq!(
+            labels(&v),
+            [
+                "heuristic:description-prefix",
+                "heuristic:description-prefix"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_run_events_come_from_the_cache_until_a_listed_file_changes() {
+        let (_d, run, claude) = wave1("flight_wave1_run_cache", CapturePolicy::Full);
+        let cache = FlightCache::default();
+        let view = || {
+            session_view(
+                &claude,
+                &run_query(&run),
+                &PageRequest::default(),
+                &cache,
+                &Opens::default(),
+            )
+            .unwrap()
+        };
+        view();
+        view();
+        assert_eq!(cache.run_misses(), 1);
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(run.join("log.md"))
+            .unwrap();
+        writeln!(f, "2026-11-05T11:00:00Z building later line").unwrap();
+        drop(f);
+        view();
+        assert_eq!(cache.run_misses(), 2);
+    }
+
+    #[test]
+    fn the_first_page_can_start_at_a_focused_event() {
+        let (_d, run, claude) = wave1("flight_wave1_focus", CapturePolicy::Full);
+        let everything = ids(&all_events(&claude, &run));
+        let target = &everything[everything.len() - 3];
+        let v = run_view(
+            &claude,
+            &run,
+            &PageRequest {
+                page_size: Some(10),
+                focus: Some(target.clone()),
+                ..Default::default()
+            },
+        );
+        let got = ids(&v);
+        assert!(got.contains(target));
+        let at = everything.iter().position(|i| i == target).unwrap();
+        assert_eq!(got[0], everything[at / 10 * 10]);
+        let unknown = run_view(
+            &claude,
+            &run,
+            &PageRequest {
+                page_size: Some(10),
+                focus: Some("ev_nope".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            ids(&unknown)[0],
+            everything[0],
+            "an unknown focus starts at the top"
+        );
     }
 
     #[test]
