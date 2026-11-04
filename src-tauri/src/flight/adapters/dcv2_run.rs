@@ -13,7 +13,7 @@ use super::schema::{
 };
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 /// A run file larger than this is skipped with a notice.
@@ -49,8 +49,6 @@ pub struct RunInputs {
 pub struct RunEvents {
     pub events: Vec<Event>,
     pub notices: Vec<String>,
-    /// The files the events' refs point into: what `flight_content` may open for this run.
-    pub files: Vec<String>,
     /// Each PR's current `state` in status.json: the fallback phase of a run with no `pr` lines.
     pub status_now: BTreeMap<String, String>,
 }
@@ -64,7 +62,6 @@ struct Maker {
     run_id: String,
     events: Vec<Event>,
     notices: Vec<String>,
-    used: BTreeSet<String>,
     seqs: HashMap<(String, u64), usize>,
 }
 
@@ -158,7 +155,6 @@ impl Maker {
         let n = self.seqs.entry((src.file.clone(), src.offset)).or_insert(0);
         let id = event_id_seq(&src.file, src.offset, &src.sha256, *n);
         *n += 1;
-        self.used.insert(src.file.clone());
         self.events.push(Event {
             schema: SCHEMA,
             id,
@@ -803,7 +799,6 @@ pub fn events_for(inputs: &RunInputs) -> RunEvents {
             run_id,
             events: Vec::new(),
             notices: Vec::new(),
-            used: BTreeSet::new(),
             seqs: HashMap::new(),
         },
         cache: HashMap::new(),
@@ -812,7 +807,6 @@ pub fn events_for(inputs: &RunInputs) -> RunEvents {
     RunEvents {
         events: run.make.events,
         notices: run.make.notices,
-        files: run.make.used.into_iter().collect(),
         status_now,
     }
 }
@@ -872,7 +866,6 @@ mod tests {
         let first: Vec<&str> = out.events.iter().map(|e| e.id.as_str()).collect();
         let second: Vec<&str> = again.events.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(first, second, "the same files give the same ids");
-        assert!(out.files.iter().all(|f| std::path::Path::new(f).is_file()));
     }
 
     #[test]
@@ -1183,7 +1176,7 @@ mod tests {
         assert_eq!(listing(&run), before);
         let empty = TempDir::new("dcv2_run_empty");
         let out = events_for(&run_inputs(empty.path()));
-        assert!(out.events.is_empty() && out.notices.is_empty() && out.files.is_empty());
+        assert!(out.events.is_empty() && out.notices.is_empty());
     }
 
     #[test]

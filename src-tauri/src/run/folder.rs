@@ -427,7 +427,7 @@ pub struct RunListItem {
 
 /// The repos of a run: request.md's `repos:` names, else repos.json's.
 /// None when neither is readable.
-fn repo_names_of(run_dir: &Path) -> Option<Vec<String>> {
+pub fn repo_names_of(run_dir: &Path) -> Option<Vec<String>> {
     let limited = std::fs::read_to_string(run_dir.join("request.md"))
         .ok()
         .and_then(|text| {
@@ -633,7 +633,7 @@ pub fn fill_wait_span(runs: &mut [RunListItem]) {
     }
 }
 
-fn request_title(run_dir: &Path) -> Option<String> {
+pub fn request_title(run_dir: &Path) -> Option<String> {
     let text = std::fs::read_to_string(run_dir.join("request.md")).ok()?;
     let body = text.split("## What to do").nth(1).unwrap_or(&text);
     let line = body

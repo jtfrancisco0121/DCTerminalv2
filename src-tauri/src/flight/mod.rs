@@ -18,6 +18,7 @@ pub mod adapters;
 pub mod correlate;
 pub mod derive;
 pub mod host;
+pub mod index;
 pub mod redact;
 pub mod schema;
 pub mod session;

@@ -5,6 +5,7 @@
 
 use super::adapters::dcv2_run::{self, ApprovalIn, RunEvents, RunInputs};
 use super::adapters::{AgentMeta, SubagentFile};
+use super::index::{self, Exclusion, Limits, PassStats, RunInput, SessionInput, SourceStamp};
 use super::redact::{first_hit, redact};
 use super::schema::{sha256_hex, CapturePolicy, SourceRef};
 use super::session::{self, PageRequest, Parsed, SessionView};
@@ -152,6 +153,8 @@ pub struct SessionSet {
     pub notices: Vec<String>,
     /// The run folder, for a run query: its own files join the Trace.
     pub run_dir: Option<PathBuf>,
+    /// Recorded sessions whose transcript is gone (their ids, in record order).
+    pub gone: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -230,11 +233,13 @@ pub fn resolve(claude: &ClaudeSettings, query: &Query, opens: &Opens) -> Access 
     };
     let mut sessions = Vec::new();
     let mut notices = Vec::new();
+    let mut gone = Vec::new();
     for (config_dir, session_id) in wanted {
         let Some(main) =
             crate::claude_session_log::find_session_log(Path::new(&config_dir), &session_id)
         else {
             notices.push(format!("transcript gone: {session_id}"));
+            gone.push(session_id);
             continue;
         };
         let subagents: Vec<SubagentFile> = subagent_files(&main)
@@ -253,6 +258,7 @@ pub fn resolve(claude: &ClaudeSettings, query: &Query, opens: &Opens) -> Access 
         sessions,
         notices,
         run_dir: query.run_dir.clone(),
+        gone,
     })
 }
 
@@ -520,6 +526,272 @@ pub fn session_view(
     )
 }
 
+/// The file of the trace index, in the app's data folder.
+pub const INDEX_FILE: &str = "flight.db";
+/// The index thread's first pass waits this long, and every pass after it.
+const INDEX_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn read_prefix(path: &Path, max: usize) -> Option<Vec<u8>> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; max];
+    let mut got = 0;
+    while got < max {
+        match file.read(&mut buf[got..]) {
+            Ok(0) => break,
+            Ok(n) => got += n,
+            Err(_) => return None,
+        }
+    }
+    buf.truncate(got);
+    Some(buf)
+}
+
+/// The end of the last complete line: the file length unless it ends in a partial line (read from the
+/// last 64 KiB).
+fn complete_len(path: &Path, size: u64) -> u64 {
+    const TAIL: u64 = 64 * 1024;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return size;
+    };
+    let from = size.saturating_sub(TAIL);
+    if file.seek(SeekFrom::Start(from)).is_err() {
+        return size;
+    }
+    let mut buf = Vec::new();
+    if file.take(TAIL).read_to_end(&mut buf).is_err() {
+        return size;
+    }
+    match buf.iter().rposition(|b| *b == b'\n') {
+        Some(i) if i + 1 < buf.len() => from + i as u64 + 1,
+        Some(_) => size,
+        None if from == 0 => 0,
+        None => size,
+    }
+}
+
+/// A file's watermark: size, mtime, the hash of its first 4 KiB and the end of its last complete line.
+fn source_stamp(path: &Path) -> Option<SourceStamp> {
+    let meta = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as i64);
+    Some(SourceStamp {
+        file: path.display().to_string(),
+        offset: complete_len(path, meta.len()),
+        size: meta.len(),
+        mtime_ms,
+        head_sha: sha256_hex(&read_prefix(path, 4096)?),
+    })
+}
+
+/// One run's inputs for the index, loaded only when the run changed.
+struct HostLoader {
+    run_dir: PathBuf,
+    exact: bool,
+    sessions: Vec<Option<SessionFiles>>,
+}
+
+impl index::Loader for HostLoader {
+    fn session(&self, index: usize) -> Arc<Parsed> {
+        match self.sessions.get(index).and_then(Option::as_ref) {
+            Some(files) => Arc::new(session::parse(&files.main, &files.subagents, self.exact)),
+            None => Arc::new(Parsed::from_events(Vec::new())),
+        }
+    }
+    fn run(&self) -> RunEvents {
+        dcv2_run::events_for(&run_inputs(&self.run_dir))
+    }
+    fn exact(&self) -> bool {
+        self.exact
+    }
+}
+
+struct Prepared {
+    run_id: String,
+    dir: String,
+    title: String,
+    repo: String,
+    outcome: String,
+    exclusion: Option<Exclusion>,
+    sessions: Vec<SessionInput>,
+    run_stamps: Vec<SourceStamp>,
+    loader: HostLoader,
+}
+
+fn session_id_of(main: &Path) -> String {
+    main.file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+fn prepare_run(claude: &ClaudeSettings, dir: &Path) -> Option<Prepared> {
+    let run_id = dir.file_name()?.to_str()?.to_string();
+    let status = crate::run::folder::read_json_value(&dir.join("status.json"));
+    let usage = crate::run::folder::read_json_value(&dir.join("app-usage.json"));
+    let repos: Vec<String> = status
+        .as_ref()
+        .and_then(|s| s["prs"].as_array())
+        .map(|prs| {
+            let mut names: Vec<String> = prs
+                .iter()
+                .filter_map(|p| p["repo"].as_str().map(str::to_string))
+                .collect();
+            names.sort();
+            names.dedup();
+            names
+        })
+        .filter(|n| !n.is_empty())
+        .or_else(|| crate::run::folder::repo_names_of(dir))
+        .unwrap_or_default();
+    let mut prepared = Prepared {
+        run_id,
+        dir: dir.display().to_string(),
+        title: crate::run::folder::request_title(dir).unwrap_or_default(),
+        repo: repos.join(", "),
+        outcome: usage
+            .as_ref()
+            .and_then(|u| u["outcome"].as_str())
+            .or_else(|| status.as_ref().and_then(|s| s["stage"].as_str()))
+            .unwrap_or("")
+            .to_string(),
+        exclusion: None,
+        sessions: Vec::new(),
+        run_stamps: Vec::new(),
+        loader: HostLoader {
+            run_dir: dir.to_path_buf(),
+            exact: exact_pr(dir),
+            sessions: Vec::new(),
+        },
+    };
+    let query = Query {
+        run_dir: Some(dir.to_path_buf()),
+        ..Default::default()
+    };
+    // The same resolver as the Trace: an `off` run opens no file here either.
+    let set = match resolve(claude, &query, &Opens::default()) {
+        Access::Off => {
+            prepared.exclusion = Some(Exclusion::Off);
+            return Some(prepared);
+        }
+        Access::Refused(_) => {
+            prepared.exclusion = Some(Exclusion::Refused);
+            return Some(prepared);
+        }
+        Access::Ready(set) => set,
+    };
+    for files in &set.sessions {
+        let stamps: Vec<SourceStamp> = std::iter::once(files.main.as_path())
+            .chain(files.subagents.iter().map(|s| s.path.as_path()))
+            .filter_map(source_stamp)
+            .collect();
+        prepared.sessions.push(SessionInput {
+            id: session_id_of(&files.main),
+            stamps,
+        });
+        prepared.loader.sessions.push(Some(files.clone()));
+    }
+    for id in &set.gone {
+        prepared.sessions.push(SessionInput {
+            id: id.clone(),
+            stamps: Vec::new(),
+        });
+        prepared.loader.sessions.push(None);
+    }
+    let mut names: Vec<(String, PathBuf)> = run_file_list(dir);
+    for extra in ["meta.json", "repos.json", "app-usage.json"] {
+        let path = dir.join(extra);
+        if regular_file(&path) {
+            names.push((extra.to_string(), path));
+        }
+    }
+    prepared.run_stamps = names.iter().filter_map(|(_, p)| source_stamp(p)).collect();
+    Some(prepared)
+}
+
+/// The app's run folders: those under `<data>/runs` and the adopted ones, each checked.
+pub fn app_run_dirs(data: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(crate::run::folder::runs_dir(data))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    dirs.extend(crate::run::folder::adopted_runs(data));
+    dirs.sort();
+    dirs.dedup();
+    dirs.into_iter()
+        .filter(|d| {
+            d.is_dir()
+                && !d
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+        })
+        .filter_map(|d| crate::run::checked_run_dir(data, &d.display().to_string()).ok())
+        .collect()
+}
+
+/// One index pass over `run_dirs`: every run is resolved through the same policy as the Trace, its sources
+/// stamped, and `index::pass` re-derives what changed. Nothing here is called from the run list or the
+/// sweeps: only [`spawn_index`] reaches it.
+pub fn index_pass(
+    conn: &mut rusqlite::Connection,
+    claude: &ClaudeSettings,
+    run_dirs: &[PathBuf],
+    limits: &Limits,
+) -> Result<PassStats, String> {
+    let prepared: Vec<Prepared> = run_dirs
+        .iter()
+        .filter_map(|dir| prepare_run(claude, dir))
+        .collect();
+    let inputs: Vec<RunInput<'_>> = prepared
+        .iter()
+        .map(|p| RunInput {
+            run_id: p.run_id.clone(),
+            dir: p.dir.clone(),
+            title: p.title.clone(),
+            repo: p.repo.clone(),
+            outcome: p.outcome.clone(),
+            exclusion: p.exclusion,
+            sessions: p.sessions.clone(),
+            run_stamps: p.run_stamps.clone(),
+            loader: &p.loader,
+        })
+        .collect();
+    index::pass(conn, &inputs, limits)
+}
+
+/// Starts the one thread that keeps `<data>/flight.db` current: it waits 30 s, then runs a pass every 30 s.
+/// It is spawned from the app's setup, never from the run list, `record_totals` or the 2 s sweeps, and it
+/// is the only opener of the database for writing (it keeps its connection for the app's lifetime). The
+/// settings are copied under a short lock that is released before any file is read.
+pub fn spawn_index(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let app = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("flight-index".into())
+        .spawn(move || {
+            let mut conn: Option<rusqlite::Connection> = None;
+            loop {
+                std::thread::sleep(INDEX_EVERY);
+                let data = crate::data_dir::app_data_dir(&app).path;
+                if conn.is_none() {
+                    conn = index::open_writer(&data.join(INDEX_FILE)).ok();
+                }
+                let state = app.state::<Mutex<crate::store::SettingsStore>>();
+                let claude = state.lock().map(|s| s.claude().clone()).ok();
+                if let (Some(conn), Some(claude)) = (conn.as_mut(), claude) {
+                    let dirs = app_run_dirs(&data);
+                    // A bad run must not end the thread: the next pass tries again.
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        index_pass(conn, &claude, &dirs, &Limits::default())
+                    }));
+                }
+            }
+        });
+}
+
 /// What `flight_content` returns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -739,6 +1011,7 @@ pub fn read_content(
 mod tests {
     use super::*;
     use crate::flight::derive;
+    use crate::flight::index;
     use crate::flight::schema::{kind, AgentNode, Event, Failure, Phase};
     use crate::flight::testkit::*;
     use crate::test_support::TempDir;
@@ -1562,7 +1835,7 @@ mod tests {
         )
     }
 
-    fn event_by<'a>(view: &'a SessionView, f: impl Fn(&Event) -> bool) -> &'a Event {
+    fn event_by(view: &SessionView, f: impl Fn(&Event) -> bool) -> &Event {
         view.page.events.iter().find(|e| f(e)).expect("event")
     }
 
@@ -2100,6 +2373,260 @@ mod tests {
             everything[0],
             "an unknown focus starts at the top"
         );
+    }
+
+    // ---- the trace index (S7) ----
+
+    /// Every row that matters for equality, in a fixed order.
+    fn dump(conn: &rusqlite::Connection) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT run_id, id, session, agent_id, parent, role, pr, pr_exact, kind, status, name, at, stage,
+                        pr_state, phase_label, failure, paths, src_file, src_offset, src_len, src_sha256, event_json
+                 FROM events ORDER BY run_id, id",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                (0..22)
+                    .map(|i| {
+                        r.get::<_, rusqlite::types::Value>(i)
+                            .map(|v| format!("{v:?}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|v| v.join("|"))
+            })
+            .unwrap();
+        out.extend(rows.map(|r| r.unwrap()));
+        let mut stmt = conn
+            .prepare("SELECT span, run_id, agent, name, start_at, end_at, status, duration_ms FROM spans ORDER BY run_id, span, agent")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                (0..8)
+                    .map(|i| {
+                        r.get::<_, rusqlite::types::Value>(i)
+                            .map(|v| format!("{v:?}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|v| format!("span {}", v.join("|")))
+            })
+            .unwrap();
+        out.extend(rows.map(|r| r.unwrap()));
+        out
+    }
+
+    fn pass_over(
+        conn: &mut rusqlite::Connection,
+        claude: &ClaudeSettings,
+        run: &Path,
+    ) -> index::PassStats {
+        index_pass(conn, claude, &[run.to_path_buf()], &Limits::default()).unwrap()
+    }
+
+    #[test]
+    fn a_two_pass_index_equals_a_one_pass_index_on_the_same_final_files() {
+        let dir = TempDir::new("flight_index_two_pass");
+        let (run, config) = wave1_run(&dir);
+        let claude = settings(vec![account("a", &config, CapturePolicy::Full)]);
+        let proj = config.join("projects/-work-toy");
+        let main = proj.join(format!("{WAVE1_SID}.jsonl"));
+        let subs = proj.join(WAVE1_SID).join("subagents");
+        let imp = subs.join("agent-a1pr2impl0000000001.jsonl");
+        let rev = subs.join("agent-a2pr2review00000002.jsonl");
+        let rev_meta = subs.join("agent-a2pr2review00000002.meta.json");
+        let lines = |p: &Path| -> Vec<String> {
+            std::fs::read_to_string(p)
+                .unwrap()
+                .lines()
+                .map(str::to_string)
+                .collect()
+        };
+        let join = |l: &[String]| l.iter().map(|x| format!("{x}\n")).collect::<String>();
+        // The main log gets a repeated assistant message (streamed twice), as Claude writes them.
+        let mut full_main = lines(&main);
+        full_main.insert(2, full_main[1].clone());
+        let full_imp = lines(&imp);
+        let full_rev = std::fs::read_to_string(&rev).unwrap();
+        let full_rev_meta = std::fs::read_to_string(&rev_meta).unwrap();
+
+        // Pass 1: cut between the spawn tool_use and its result, part-way through the sub-agent
+        // file (a tool_use with no result), and the reviewer not started.
+        std::fs::write(&main, join(&full_main[..3])).unwrap();
+        std::fs::write(&imp, join(&full_imp[..2])).unwrap();
+        std::fs::remove_file(&rev).unwrap();
+        std::fs::remove_file(&rev_meta).unwrap();
+        let db = dir.join("flight.db");
+        let mut conn = index::open_writer(&db).unwrap();
+        let first = pass_over(&mut conn, &claude, &run);
+        assert_eq!((first.rebuilt, first.sessions_parsed), (1, 1));
+        let partial = dump(&conn);
+        assert!(!partial.is_empty());
+
+        // Pass 2: the rest arrives.
+        std::fs::write(&main, join(&full_main)).unwrap();
+        std::fs::write(&imp, join(&full_imp)).unwrap();
+        std::fs::write(&rev, &full_rev).unwrap();
+        std::fs::write(&rev_meta, &full_rev_meta).unwrap();
+        let second = pass_over(&mut conn, &claude, &run);
+        assert_eq!((second.rebuilt, second.sessions_parsed), (1, 1));
+        let two_pass = dump(&conn);
+        assert_ne!(two_pass, partial);
+
+        // One pass over the final files, into a fresh database.
+        let mut fresh = index::open_writer(&dir.join("fresh.db")).unwrap();
+        pass_over(&mut fresh, &claude, &run);
+        let one_pass = dump(&fresh);
+        assert_eq!(two_pass.len(), one_pass.len());
+        assert_eq!(
+            two_pass, one_pass,
+            "ids, kinds, names, parents, statuses, failures, phases and refs"
+        );
+        let kinds: String = two_pass.join("\n");
+        assert!(kinds.contains("check.end") && kinds.contains("agent.spawn"));
+
+        // Deleting flight.db and running again gives the same results.
+        drop(conn);
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", db.display()));
+        }
+        let mut again = index::open_writer(&db).unwrap();
+        pass_over(&mut again, &claude, &run);
+        assert_eq!(dump(&again), one_pass);
+    }
+
+    #[test]
+    fn a_run_is_indexed_once_per_change_and_not_parsed_again_when_nothing_changed() {
+        let dir = TempDir::new("flight_index_unchanged");
+        let (run, config) = wave1_run(&dir);
+        let claude = settings(vec![account("a", &config, CapturePolicy::Full)]);
+        let mut conn = index::open_writer(&dir.join("flight.db")).unwrap();
+        let first = pass_over(&mut conn, &claude, &run);
+        assert_eq!((first.rebuilt, first.skipped), (1, 0));
+        let again = pass_over(&mut conn, &claude, &run);
+        assert_eq!(
+            (again.rebuilt, again.skipped, again.sessions_parsed),
+            (0, 1, 0)
+        );
+        // A run file changing re-derives the run but not the unchanged transcript.
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(run.join("log.md"))
+            .unwrap();
+        writeln!(f, "2026-11-05T11:00:00Z building later line").unwrap();
+        drop(f);
+        let third = pass_over(&mut conn, &claude, &run);
+        assert_eq!(
+            (third.rebuilt, third.sessions_parsed),
+            (1, 0),
+            "stored Events reused for the session"
+        );
+        let cols = dump(&conn);
+        let transcript = cols
+            .iter()
+            .filter(|r| r.contains("a1pr2impl0000000001"))
+            .count();
+        assert!(transcript > 0);
+        // pr_exact: the PR2 agents are exact in a 0.7.0 run.
+        let exact: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events WHERE role = 'implementer' AND pr = 'PR2' AND pr_exact = 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(exact > 0);
+    }
+
+    #[test]
+    fn a_run_with_no_recorded_sessions_follows_its_meta_account_in_the_index() {
+        for (policy, indexed) in [
+            (CapturePolicy::Off, false),
+            (CapturePolicy::Full, true),
+            (CapturePolicy::Metadata, true),
+        ] {
+            let dir = TempDir::new("flight_index_meta_account");
+            let (run, config) = wave1_run(&dir);
+            std::fs::remove_file(run.join("app-usage.json")).unwrap();
+            let claude = settings(vec![account("a", &config, policy)]);
+            let mut conn = index::open_writer(&dir.join("flight.db")).unwrap();
+            let stats = pass_over(&mut conn, &claude, &run);
+            let events: i64 = conn
+                .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(events > 0, indexed, "{policy:?}");
+            assert_eq!(stats.excluded, usize::from(!indexed));
+            let excluded: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM runs WHERE excluded_off = 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(excluded, i64::from(!indexed));
+            if indexed {
+                // Only the run's own events: no session is recorded.
+                let others: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM events WHERE agent_id <> 'orchestration'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(others, 0);
+            }
+        }
+        // No account at all: refused, no rows, not counted as excluded.
+        let dir = TempDir::new("flight_index_no_account");
+        let (run, config) = wave1_run(&dir);
+        std::fs::remove_file(run.join("app-usage.json")).unwrap();
+        std::fs::write(run.join("meta.json"), json!({"schema": 1}).to_string()).unwrap();
+        let claude = settings(vec![account("a", &config, CapturePolicy::Full)]);
+        let mut conn = index::open_writer(&dir.join("flight.db")).unwrap();
+        let stats = pass_over(&mut conn, &claude, &run);
+        assert_eq!((stats.excluded, stats.rebuilt), (0, 0));
+        let runs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(runs, 0);
+    }
+
+    #[test]
+    fn only_the_index_thread_reaches_the_index_pass() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&src, &mut files);
+        for file in files {
+            let name = file.file_name().unwrap().to_string_lossy().to_string();
+            let text = std::fs::read_to_string(&file).unwrap();
+            let live = crate::test_support::without_test_items(&text);
+            for call in ["index_pass(", "spawn_index(", "app_run_dirs("] {
+                let allowed = matches!(name.as_str(), "host.rs" | "lib.rs");
+                assert!(
+                    allowed || !live.contains(call),
+                    "{} calls {call}",
+                    file.display()
+                );
+            }
+            // The index is opened for writing in one place, and only host.rs names the writer.
+            if live.contains("open_writer(") {
+                assert!(
+                    matches!(name.as_str(), "host.rs" | "index.rs"),
+                    "{} opens the index writer",
+                    file.display()
+                );
+            }
+        }
+        let lib = std::fs::read_to_string(src.join("lib.rs")).unwrap();
+        assert!(lib.contains("flight::host::spawn_index(app.handle())"));
     }
 
     #[test]
