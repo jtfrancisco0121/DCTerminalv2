@@ -168,6 +168,7 @@ vi.mock("./flight/api", () => ({
     notices: [],
   })),
   flightContent: vi.fn(),
+  flightSearch: vi.fn(),
 }));
 
 const running = new Set<string>();
@@ -598,6 +599,58 @@ describe("App run pages", () => {
       fireEvent.keyDown(window, { key: "Escape" });
     });
     expect(screen.queryByRole("region", { name: "Trace" })).toBeNull();
+    expect(screen.getByTestId("terminal")).toBeTruthy();
+    expect(terminalLife.mounts).toBe(1);
+    expect(terminalLife.unmounts).toBe(0);
+    vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
+    cleanup();
+    endState();
+  });
+
+  it("opens Search traces from the palette; a result opens the Trace on its first match; Escape returns to the same results", async () => {
+    await openApp();
+    await waitFor(() => expect(screen.getByTestId("tab-progress-tab_run")).toBeTruthy());
+    const { flightSession, flightSearch } = await import("./flight/api");
+    vi.mocked(flightSearch).mockResolvedValue({
+      runs: [
+        { runId: "r-1", runDir: "/d/runs/r-1", title: "Add multiply()", outcome: "done", matches: 2, firstEventId: "ev_first" },
+      ],
+      excludedOff: 0,
+      progress: { current: 1, total: 1 },
+    });
+
+    await paletteOpen(/Search traces/);
+    const search = await screen.findByRole("region", { name: "Trace search" });
+    expect(screen.getByTestId("terminal")).toBeTruthy();
+    fireEvent.change(within(search).getByLabelText("Name contains"), { target: { value: "cargo test" } });
+    fireEvent.submit(within(search).getByRole("form", { name: "Trace filters" }));
+    const result = await within(search).findByRole("option", { name: /Add multiply\(\)/ });
+    fireEvent.click(result);
+
+    expect(await screen.findByRole("region", { name: "Trace" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Trace search" })).toBeNull();
+    expect(vi.mocked(flightSession)).toHaveBeenLastCalledWith(
+      expect.objectContaining({ runDir: "/d/runs/r-1", focus: "ev_first" }),
+    );
+
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(screen.queryByRole("region", { name: "Trace" })).toBeNull();
+    const again = await screen.findByRole("region", { name: "Trace search" });
+    expect((within(again).getByLabelText("Name contains") as HTMLInputElement).value).toBe("cargo test");
+    expect(within(within(again).getByRole("listbox", { name: "Matching runs" })).getAllByRole("option")).toHaveLength(1);
+    expect(vi.mocked(flightSearch)).toHaveBeenCalledTimes(1);
+
+    // The header's Search button on a Trace opens the page too; Escape closes the page.
+    fireEvent.click(within(again).getByRole("option", { name: /Add multiply\(\)/ }));
+    await screen.findByRole("region", { name: "Trace" });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await screen.findByRole("region", { name: "Trace search" });
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(screen.queryByRole("region", { name: "Trace search" })).toBeNull();
     expect(screen.getByTestId("terminal")).toBeTruthy();
     expect(terminalLife.mounts).toBe(1);
     expect(terminalLife.unmounts).toBe(0);

@@ -36,6 +36,7 @@ import { InlineNotice } from "./components/InlineNotice";
 import { NewTabForm } from "./components/NewTabForm";
 import { RunPanel } from "./components/RunPanel";
 import { TracePanel } from "./components/TracePanel";
+import { TraceSearch, type SearchState } from "./components/TraceSearch";
 import type { TraceTarget } from "./flight/types";
 import { PreviewHost } from "./components/PreviewPane";
 import { RunAnalytics } from "./components/RunAnalytics";
@@ -116,9 +117,11 @@ function App() {
   const [attention, setAttention] = useState<AttentionSummary | null>(null);
   const [activeRunsOpen, setActiveRunsOpen] = useState(false);
   // A window-level page drawn over the workspace; the terminals stay mounted underneath.
-  const [page, setPage] = useState<"dashboard" | "analytics" | null>(null);
+  const [page, setPage] = useState<"dashboard" | "analytics" | "trace-search" | null>(null);
+  // The last trace search (form and results), kept while the app runs so Escape from a Trace returns to it.
+  const [traceSearch, setTraceSearch] = useState<SearchState | null>(null);
   // The Session Inspector, another page over the workspace; focus returns to whatever opened it.
-  const [trace, setTrace] = useState<{ target: TraceTarget; agent?: string } | null>(null);
+  const [trace, setTrace] = useState<{ target: TraceTarget; agent?: string; focus?: string; fromSearch?: boolean } | null>(null);
   const traceOpener = useRef<HTMLElement | null>(null);
   const [dialog, setDialog] = useState<"new-tab" | "new-window" | "pick-account" | "settings" | "runs" | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
@@ -214,12 +217,23 @@ function App() {
 
   const active = state?.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
 
-  const openTrace = (target: TraceTarget, agent?: string) => {
+  const openTrace = (target: TraceTarget, agent?: string, focus?: string, fromSearch?: boolean) => {
     traceOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setPage(null);
-    setTrace({ target, agent });
+    setTrace({ target, agent, focus, fromSearch });
+  };
+  const openTraceSearch = () => {
+    setTrace(null);
+    setPage("trace-search");
   };
   const closeTrace = () => {
+    // A Trace opened from the search page goes back to it, with the same results.
+    if (trace?.fromSearch) {
+      traceOpener.current = null;
+      setTrace(null);
+      setPage("trace-search");
+      return;
+    }
     setTrace(null);
     const opener = traceOpener.current;
     traceOpener.current = null;
@@ -635,6 +649,13 @@ function App() {
         },
       });
     }
+    items.push({
+      id: "page:trace-search",
+      group: "Runs",
+      label: "Search traces",
+      detail: "Find runs by what happened in them",
+      run: openTraceSearch,
+    });
     if (active?.runDir) {
       const runDir = active.runDir;
       items.push({
@@ -806,7 +827,24 @@ function App() {
         )}
         {page === "dashboard" && <RunDashboard runs={runTabReadings} onClose={() => setPage(null)} />}
         {page === "analytics" && <RunAnalytics onClose={() => setPage(null)} />}
-        {trace && <TracePanel target={trace.target} agent={trace.agent} onClose={closeTrace} />}
+        {page === "trace-search" && (
+          <TraceSearch
+            initial={traceSearch}
+            onChange={setTraceSearch}
+            onOpen={(hit) => openTrace({ runDir: hit.runDir }, undefined, hit.firstEventId, true)}
+            onClose={() => setPage(null)}
+          />
+        )}
+        {trace && (
+          <TracePanel
+            key={`${JSON.stringify(trace.target)}:${trace.focus ?? ""}`}
+            target={trace.target}
+            agent={trace.agent}
+            focus={trace.focus}
+            onClose={closeTrace}
+            onSearch={openTraceSearch}
+          />
+        )}
       </section>
       <AttentionNotices />
       {activeRunsOpen && (
