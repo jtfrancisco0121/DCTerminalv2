@@ -10,7 +10,13 @@ export type QueueEntry = {
   accountId: string;
   queuedAt: string;
   batchId: string | null;
-  params: { folder: string; request: string; clickup?: { ticketIds: string[] } | null };
+  params: {
+    folder: string;
+    request: string;
+    clickup?: { ticketIds: string[] } | null;
+    /** One run of an eval group; its usage hold is never skipped, not even by Start now. */
+    eval?: { group: string; index: number; of: number; source: string } | null;
+  };
 };
 export type Holder = { runDir: string; runId: string; stage: string | null; why: string };
 export type DispatchOverview = { cap: number; usageHoldPercent: number | null; queue: QueueEntry[]; holders: Holder[]; atCap: boolean };
@@ -36,6 +42,9 @@ export type StartParams = {
 /** One run per ticket group: a new batch of queue entries (the dispatcher starts them as slots allow). */
 export const dispatchRuns = (base: StartParams, groups: { clickup: { refs: unknown[]; ticketIds: string[] }; label: string }[]) =>
   invoke<string>("dispatch_runs", { base, groups });
+/** "Evaluate N times": a new eval batch of N queue entries from a finished run (refused with the reason). */
+export const dispatchEvalStart = (windowId: string | null, sourceRunDir: string, n: number) =>
+  invoke<string>("dispatch_eval_start", { windowId, sourceRunDir, n });
 export const dispatchEnqueue = (params: StartParams, label: string) => invoke<string>("dispatch_enqueue", { params, label });
 
 export type BatchRow = {

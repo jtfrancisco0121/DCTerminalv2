@@ -264,6 +264,22 @@ pub fn usage_hold(
     ))
 }
 
+/// The usage hold of an eval entry. Eval is the one feature that spends usage on purpose, so with a hold set
+/// and no five-hour reading at all it holds ("not known"); a reading past its `resets_at` is clear (the
+/// window has reset, so usage is near 0%, the same rule as `usage_hold`); else it is `usage_hold`. With no
+/// hold set it is clear.
+pub fn eval_hold(
+    hold: Option<u32>,
+    reading: Option<(f64, Option<i64>)>,
+    now_s: i64,
+) -> Option<String> {
+    hold?;
+    if reading.is_none() {
+        return Some("the five-hour usage is not known".into());
+    }
+    usage_hold(hold, reading, now_s)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pick {
     /// Start this entry now.
@@ -273,8 +289,13 @@ pub enum Pick {
     Nothing,
 }
 
-/// The next start: only the head of the queue, never while a start is in flight, and never past the cap
-/// (held slots plus entries that are `starting`). `hold` gives an entry's usage hold reason.
+/// The next start, never while a start is in flight, and never past the cap (held slots plus entries that
+/// are `starting`). It looks at the head of the queue, with one exception: an eval entry whose hold applies
+/// is passed over, so a held eval group cannot stall normal, wave or other-account entries behind it.
+/// The first entry that is not a held eval entry gets today's rules (the cap, `bypass_cap`, the usage hold);
+/// a normal head is never passed over. For an eval entry the hold is never skipped, not even by `bypass_cap`.
+/// With only held eval entries queued the answer is `Wait` with the first one's reason. `hold` gives an
+/// entry's usage hold reason (`eval_hold` for an entry with `params.eval`, `usage_hold` for the others).
 pub fn pick(
     state: &Dispatch,
     held: usize,
@@ -282,21 +303,46 @@ pub fn pick(
     in_flight: bool,
     hold: impl Fn(&Entry) -> Option<String>,
 ) -> Pick {
-    let Some(head) = state.queue.iter().find(|e| e.state == "queued") else {
+    if !state.queue.iter().any(|e| e.state == "queued") {
         return Pick::Nothing;
-    };
+    }
     if in_flight || state.queue.iter().any(|e| e.state == "starting") {
         return Pick::Nothing;
     }
-    if !head.bypass_cap && held >= cap as usize {
-        return Pick::Wait(format!("{held} of {cap} slots are in use"));
-    }
-    if !head.bypass_cap {
-        if let Some(why) = hold(head) {
-            return Pick::Wait(why);
+    let mut first_held: Option<String> = None;
+    for entry in state.queue.iter().filter(|e| e.state == "queued") {
+        let is_eval = entry.params.eval.is_some();
+        if is_eval {
+            if let Some(why) = hold(entry) {
+                first_held.get_or_insert(why);
+                continue;
+            }
         }
+        if !entry.bypass_cap && held >= cap as usize {
+            return Pick::Wait(format!("{held} of {cap} slots are in use"));
+        }
+        if !entry.bypass_cap && !is_eval {
+            if let Some(why) = hold(entry) {
+                return Pick::Wait(why);
+            }
+        }
+        return Pick::Start(entry.id.clone());
     }
-    Pick::Start(head.id.clone())
+    Pick::Wait(first_held.unwrap_or_default())
+}
+
+/// Each queued eval entry whose hold applies, with the reason (shown on the queue while entries behind it
+/// start).
+pub fn held_eval_entries(
+    state: &Dispatch,
+    hold: impl Fn(&Entry) -> Option<String>,
+) -> Vec<(String, String)> {
+    state
+        .queue
+        .iter()
+        .filter(|e| e.state == "queued" && e.params.eval.is_some())
+        .filter_map(|e| hold(e).map(|why| (e.id.clone(), why)))
+        .collect()
 }
 
 pub fn enqueue(
@@ -462,21 +508,44 @@ pub fn on_tick(app: &AppHandle, tab_run_dirs: &HashSet<String>) {
     let facts = run_facts(&data, tab_run_dirs);
     let held = holders(&facts, &state.released, watchdog).len();
     let now_s = chrono::Utc::now().timestamp();
-    let decision = pick(&state, held, cap, false, |e| {
-        usage_hold(hold, usage_reading(app, &e.account_id), now_s)
-    });
+    let entry_hold = |e: &Entry| {
+        let reading = usage_reading(app, &e.account_id);
+        if e.params.eval.is_some() {
+            eval_hold(hold, reading, now_s)
+        } else {
+            usage_hold(hold, reading, now_s)
+        }
+    };
+    let decision = pick(&state, held, cap, false, entry_hold);
+    // A held eval entry shows its own wait reason, whatever starts behind it.
+    let held_eval = held_eval_entries(&state, entry_hold);
+    let set_reason = |id: &str, why: &str| {
+        if state
+            .queue
+            .iter()
+            .find(|e| e.id == id)
+            .is_some_and(|e| e.reason.as_deref() != Some(why))
+        {
+            let _ = with(&data, |d| {
+                if let Some(e) = d.queue.iter_mut().find(|e| e.id == id) {
+                    e.reason = Some(why.to_string());
+                }
+            });
+        }
+    };
+    for (id, why) in &held_eval {
+        set_reason(id, why);
+    }
     match decision {
         Pick::Nothing => {}
         Pick::Wait(why) => {
-            if let Some(head) = state.queue.iter().find(|e| e.state == "queued") {
-                if head.reason.as_deref() != Some(why.as_str()) {
-                    let id = head.id.clone();
-                    let _ = with(&data, |d| {
-                        if let Some(e) = d.queue.iter_mut().find(|e| e.id == id) {
-                            e.reason = Some(why.clone());
-                        }
-                    });
-                }
+            // The entry that waits is the first one that is not a held eval entry (the head, as today).
+            if let Some(waiting) = state
+                .queue
+                .iter()
+                .find(|e| e.state == "queued" && !held_eval.iter().any(|(id, _)| *id == e.id))
+            {
+                set_reason(&waiting.id, &why);
             }
         }
         Pick::Start(id) => spawn_start(app, &id),
@@ -931,6 +1000,8 @@ pub async fn dispatch_enqueue(
     label: String,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let mut params = params;
+        params.eval = None; // only `dispatch_eval_start` makes an eval entry
         let account_id = account_of(&app, params.window_id.as_deref())?;
         with(&data_dir(&app), |d| {
             enqueue(d, params, &account_id, &label, None)
@@ -1006,10 +1077,261 @@ pub async fn dispatch_runs(
         if groups.is_empty() {
             return Err("No tickets to start.".to_string());
         }
+        let mut base = base;
+        base.eval = None; // only `dispatch_eval_start` makes an eval entry
         let account_id = account_of(&app, base.window_id.as_deref())?;
         let batch_id = new_id("b");
         let (batch, entries) = plan_batch(&base, &groups, &account_id, &batch_id);
         with(&data_dir(&app), |d| {
+            d.queue.extend(entries);
+            d.batches.push(batch);
+        })?;
+        Ok(batch_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---- eval groups (AF14): the same task N times, on the dispatch queue --------------------------
+
+/// Why an eval group cannot start from this source run, or `Ok`. Pure: the settings, the window's account,
+/// the hold and the clock come in as values.
+pub fn eval_refusal(
+    source: &Path,
+    n: u32,
+    eval_enabled: bool,
+    window_account: &str,
+    hold: Option<u32>,
+    reading: Option<(f64, Option<i64>)>,
+    now_s: i64,
+) -> Result<(), String> {
+    use super::folder;
+    if !eval_enabled {
+        return Err("Eval mode is off: turn it on in Settings > Activity.".into());
+    }
+    if !folder::EVAL_SIZES.contains(&n) {
+        return Err("An eval group has 2 to 10 runs.".into());
+    }
+    let stage = folder::read_json_value(&source.join("status.json"))
+        .and_then(|v| v["stage"].as_str().map(String::from));
+    if !matches!(stage.as_deref(), Some("done" | "failed")) {
+        return Err("Only a finished run (done or failed) can be evaluated.".into());
+    }
+    if folder::eval_of(source).is_some() {
+        return Err("An eval run is not evaluated again.".into());
+    }
+    if folder::read_json_value(&source.join("meta.json"))
+        .is_some_and(|m| m.get("mode").is_some_and(|mode| !mode.is_null()))
+    {
+        return Err(
+            "An epic-plan run builds nothing, so there is no task to repeat: evaluate a wave run."
+                .into(),
+        );
+    }
+    let source_account = folder::read_json_value(&source.join("meta.json"))
+        .and_then(|m| m["account"]["id"].as_str().map(String::from));
+    if source_account.as_deref() != Some(window_account) {
+        return Err(
+            "This window's account is not the account of the source run: open the run's account."
+                .into(),
+        );
+    }
+    match eval_hold(hold, reading, now_s) {
+        Some(why) => Err(format!("Not started: {why}.")),
+        None => Ok(()),
+    }
+}
+
+/// What a source run built each repo on: its status.json `prs[]` (`repoPath`, `base`, `baseCommit`), the
+/// entries with a `baseCommit` only; the first PR of a repo wins.
+fn source_bases(
+    source: &Path,
+) -> Option<std::collections::BTreeMap<String, super::folder::EvalBase>> {
+    let status = super::folder::read_json_value(&source.join("status.json"))?;
+    let mut bases = std::collections::BTreeMap::new();
+    for pr in status.get("prs")?.as_array()? {
+        let (Some(path), Some(commit)) = (
+            pr["repoPath"].as_str().filter(|p| !p.is_empty()),
+            pr["baseCommit"].as_str().filter(|c| !c.is_empty()),
+        ) else {
+            continue;
+        };
+        bases
+            .entry(path.to_string())
+            .or_insert_with(|| super::folder::EvalBase {
+                base: pr["base"].as_str().unwrap_or("").to_string(),
+                base_commit: commit.to_string(),
+            });
+    }
+    (!bases.is_empty()).then_some(bases)
+}
+
+/// The words of a source run's request.md for a new run: the body after `## What to do`, cut before the
+/// `Tickets from ClickUp (` block (the start re-adds it from the fresh snapshot), not normalised.
+fn eval_request_words(text: &str) -> String {
+    let body = super::folder::request_md_body(text);
+    let kept: Vec<&str> = body
+        .lines()
+        .take_while(|line| !line.starts_with("Tickets from ClickUp ("))
+        .collect();
+    kept.join("\n").trim().to_string()
+}
+
+/// request.md's `repos:` limit, when it has one.
+fn request_repos_limit(text: &str) -> Option<Vec<String>> {
+    let names: Vec<String> = text
+        .lines()
+        .take_while(|line| !line.starts_with("## "))
+        .find_map(|line| line.strip_prefix("repos:"))?
+        .split(',')
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .collect();
+    (!names.is_empty()).then_some(names)
+}
+
+/// The `n` starts of an eval group, read from the source run's folder: the same start folder, request words,
+/// repos limit and tickets, the source's BMAD mode and Implementer cap, `local` review, `force` (a
+/// finished source is not a duplicate), and `eval` {group, index, of, source, bases}.
+pub fn eval_params(
+    source: &Path,
+    window_id: Option<&str>,
+    group: &str,
+    n: u32,
+) -> Result<Vec<StartParams>, String> {
+    use super::folder;
+    let folder_path = folder::run_folder_of(source).ok_or("The source run has no start folder.")?;
+    let text = std::fs::read_to_string(source.join("request.md"))
+        .map_err(|e| format!("The source run's request.md: {e}"))?;
+    let request = eval_request_words(&text);
+    if request.is_empty() {
+        return Err("The source run has no request to repeat.".into());
+    }
+    let clickup = folder::read_json_value(&source.join("tickets.json")).and_then(|t| {
+        let refs: Vec<crate::clickup::intake::IntakeRef> =
+            serde_json::from_value(t["source"]["refs"].clone()).ok()?;
+        let ticket_ids: Vec<String> = t["tasks"]
+            .as_array()?
+            .iter()
+            .filter_map(|task| task["id"].as_str().map(String::from))
+            .collect();
+        (!ticket_ids.is_empty()).then_some(super::ClickUpStart { refs, ticket_ids })
+    });
+    let bases = source_bases(source);
+    let source_id = source
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("The source run has no id.")?
+        .to_string();
+    Ok((1..=n)
+        .map(|index| StartParams {
+            window_id: window_id.map(String::from),
+            folder: folder_path.clone(),
+            request: request.clone(),
+            role: "eagle-eye".into(),
+            clickup: clickup.clone(),
+            review_mode: Some("local".into()),
+            bmad_mode: Some(folder::bmad_mode_of(source)),
+            force: Some(true),
+            repos: request_repos_limit(&text),
+            max_implementers: folder::max_implementers_of(source),
+            run_mode: None,
+            dispatch_entry_id: None,
+            eval: Some(folder::EvalRef {
+                group: group.to_string(),
+                index,
+                of: n,
+                source: source_id.clone(),
+                bases: bases.clone(),
+            }),
+        })
+        .collect())
+}
+
+/// The batch and queue entries of an eval group, in order.
+pub fn plan_eval_batch(
+    params: Vec<StartParams>,
+    account_id: &str,
+    batch_id: &str,
+    source_id: &str,
+) -> (Batch, Vec<Entry>) {
+    let n = params.len() as u32;
+    let mut scratch = Dispatch::default();
+    let mut runs = Vec::new();
+    for (i, p) in params.into_iter().enumerate() {
+        let ticket_ids = p
+            .clickup
+            .as_ref()
+            .map(|c| c.ticket_ids.clone())
+            .unwrap_or_default();
+        let label = format!("Eval run {} of {n}", i + 1);
+        let id = enqueue(
+            &mut scratch,
+            p,
+            account_id,
+            &label,
+            Some(batch_id.to_string()),
+        );
+        runs.push(BatchRun {
+            entry_id: id,
+            ticket_ids,
+            label,
+            run_dir: None,
+            removed: false,
+        });
+    }
+    (
+        Batch {
+            id: batch_id.to_string(),
+            created_at: now_iso(),
+            runs,
+            notified: vec![],
+            kind: Some("eval".into()),
+            source: Some(source_id.to_string()),
+            n: Some(n),
+            extra: Map::new(),
+        },
+        scratch.queue,
+    )
+}
+
+/// "Evaluate N times…": records one eval batch and queues its n entries on the window's account. Refused with
+/// the reason unless Eval mode is on, the source is a finished normal run of that account and no usage hold
+/// applies (see `eval_refusal`). Returns the batch id.
+#[tauri::command]
+pub async fn dispatch_eval_start(
+    app: AppHandle,
+    window_id: Option<String>,
+    source_run_dir: String,
+    n: u32,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = data_dir(&app);
+        let source = super::checked_run_dir(&data, &source_run_dir)?;
+        let account_id = account_of(&app, window_id.as_deref())?;
+        let eval_enabled = app
+            .try_state::<Mutex<crate::store::SettingsStore>>()
+            .and_then(|s| s.lock().ok().map(|s| s.observe().eval_enabled))
+            .unwrap_or(false);
+        let (_, hold, _) = limits(&app);
+        eval_refusal(
+            &source,
+            n,
+            eval_enabled,
+            &account_id,
+            hold,
+            usage_reading(&app, &account_id),
+            chrono::Utc::now().timestamp(),
+        )?;
+        let batch_id = new_id("b");
+        let params = eval_params(&source, window_id.as_deref(), &batch_id, n)?;
+        let source_id = source
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let (batch, entries) = plan_eval_batch(params, &account_id, &batch_id, &source_id);
+        with(&data, |d| {
             d.queue.extend(entries);
             d.batches.push(batch);
         })?;
@@ -1103,6 +1425,7 @@ mod tests {
             max_implementers: None,
             run_mode: None,
             dispatch_entry_id: None,
+            eval: None,
         }
     }
 
@@ -1524,6 +1847,313 @@ mod tests {
             "a failed member holds both back"
         );
         assert_eq!(batch_milestone(&[], &none), None);
+    }
+
+    fn eval_ref(index: u32) -> super::super::folder::EvalRef {
+        super::super::folder::EvalRef {
+            group: "b-1".into(),
+            index,
+            of: 3,
+            source: "r-0".into(),
+            bases: None,
+        }
+    }
+
+    fn eval_queue(names: &[&str]) -> Dispatch {
+        let mut d = Dispatch::default();
+        for (i, n) in names.iter().enumerate() {
+            let mut p = params(n);
+            if n.starts_with("eval") {
+                p.eval = Some(eval_ref(i as u32 + 1));
+            }
+            enqueue(&mut d, p, "acct", n, None);
+        }
+        d
+    }
+
+    #[test]
+    fn eval_hold_fails_closed_only_with_no_reading_at_all() {
+        let now = 1_000_000;
+        assert_eq!(eval_hold(None, None, now), None, "no hold set is clear");
+        assert_eq!(eval_hold(None, Some((99.0, None)), now), None);
+        assert_eq!(
+            eval_hold(Some(80), None, now).as_deref(),
+            Some("the five-hour usage is not known")
+        );
+        assert_eq!(
+            eval_hold(Some(80), Some((95.0, Some(now - 1))), now),
+            None,
+            "a reading past its reset is clear: the window has reset"
+        );
+        assert!(eval_hold(Some(80), Some((80.0, Some(now + 600))), now).is_some());
+        assert_eq!(
+            eval_hold(Some(80), Some((79.0, Some(now + 600))), now),
+            None
+        );
+        // A normal entry still starts on unknown usage, as today.
+        assert_eq!(usage_hold(Some(80), None, now), None);
+    }
+
+    #[test]
+    fn pick_never_skips_the_hold_of_an_eval_entry_even_on_start_now() {
+        let mut d = eval_queue(&["eval-1"]);
+        d.queue[0].bypass_cap = true;
+        let held = |e: &Entry| {
+            e.params
+                .eval
+                .as_ref()
+                .map(|_| "usage is not known".to_string())
+        };
+        assert_eq!(
+            pick(&d, 5, 2, false, held),
+            Pick::Wait("usage is not known".into()),
+            "Start now skips the cap but not the hold"
+        );
+        // Not held: bypass_cap skips the cap.
+        assert_eq!(
+            pick(&d, 5, 2, false, |_| None),
+            Pick::Start(d.queue[0].id.clone())
+        );
+        // A normal entry with bypass_cap still bypasses both, as today.
+        let mut n = queue_of(&["normal"]);
+        n.queue[0].bypass_cap = true;
+        assert_eq!(
+            pick(&n, 5, 2, false, |_| Some("held".into())),
+            Pick::Start(n.queue[0].id.clone())
+        );
+    }
+
+    #[test]
+    fn a_held_eval_entry_at_the_head_does_not_stop_the_queue_behind_it() {
+        let d = eval_queue(&["eval-1", "normal", "eval-3"]);
+        let hold = |e: &Entry| {
+            e.params
+                .eval
+                .as_ref()
+                .map(|_| "usage is not known".to_string())
+        };
+        // The normal entry behind the held eval head starts.
+        assert_eq!(
+            pick(&d, 0, 2, false, hold),
+            Pick::Start(d.queue[1].id.clone())
+        );
+        // A wave entry and another account's entry behind it start too.
+        let mut w = eval_queue(&["eval-1", "wave"]);
+        w.queue[1].wave = Some(WaveRef {
+            epic_run: "/e".into(),
+            n: 2,
+        });
+        assert_eq!(
+            pick(&w, 0, 2, false, hold),
+            Pick::Start(w.queue[1].id.clone())
+        );
+        let mut other = eval_queue(&["eval-1", "other"]);
+        other.queue[1].account_id = "second".into();
+        assert_eq!(
+            pick(&other, 0, 2, false, hold),
+            Pick::Start(other.queue[1].id.clone())
+        );
+        // Today's rules still apply to the entry behind: it waits on the cap.
+        assert_eq!(
+            pick(&d, 2, 2, false, hold),
+            Pick::Wait("2 of 2 slots are in use".into())
+        );
+        // Only held eval entries: Wait with the first one's reason.
+        let only = eval_queue(&["eval-1", "eval-2"]);
+        assert_eq!(
+            pick(&only, 0, 2, false, hold),
+            Pick::Wait("usage is not known".into())
+        );
+        // A normal head waiting on the cap is never passed over for an eval entry behind it.
+        let normal_head = eval_queue(&["normal", "eval-2"]);
+        assert_eq!(
+            pick(&normal_head, 2, 2, false, |_| None),
+            Pick::Wait("2 of 2 slots are in use".into())
+        );
+        // A normal head with its own hold waits, and nothing behind it starts.
+        let held_normal = eval_queue(&["normal", "eval-2"]);
+        assert_eq!(
+            pick(&held_normal, 0, 2, false, |e| e
+                .params
+                .eval
+                .is_none()
+                .then(|| "hold".to_string())),
+            Pick::Wait("hold".into())
+        );
+        // Held eval entries each get their reason.
+        let reasons = held_eval_entries(&d, hold);
+        assert_eq!(reasons.len(), 2);
+    }
+
+    fn eval_source(dir: &crate::test_support::TempDir, account: &str, stage: &str) -> PathBuf {
+        let meta = super::super::folder::RunMeta {
+            account_id: account.into(),
+            account_name: "A".into(),
+            bmad_mode: Some("off".into()),
+            max_implementers: Some(2),
+            ..Default::default()
+        };
+        let created = super::super::folder::create_run(
+            dir.path(),
+            Path::new("/ws"),
+            &[],
+            &["r1".to_string()],
+            "Add  multiply()\n\nTickets from ClickUp (1; their details are in tickets.json):\n- t1 (K-1) Title",
+            &meta,
+        )
+        .unwrap();
+        let run = PathBuf::from(created.run_dir);
+        std::fs::write(
+            run.join("status.json"),
+            serde_json::json!({"schema":1,"stage":stage,"prs":[
+                {"id":"PR1","repoPath":"/ws/r1","base":"main","baseCommit":"abc123"},
+                {"id":"PR2","repoPath":"/ws/r2","base":"main","baseCommit":""},
+                {"id":"PR3","repoPath":"/ws/r1","base":"dev","baseCommit":"zzz"}]})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            run.join("tickets.json"),
+            r#"{"schema":1,"source":{"kind":"clickup","refs":[{"kind":"task","id":"t1"}]},"tasks":[{"id":"t1","custom_id":"K-1","name":"T"}]}"#,
+        )
+        .unwrap();
+        run
+    }
+
+    #[test]
+    fn eval_start_is_refused_with_the_reason_and_allowed_when_everything_holds() {
+        let dir = crate::test_support::TempDir::new("eval_refusal");
+        let run = eval_source(&dir, "acct", "done");
+        let now = 1_000_000;
+        let ok = |n, enabled, account: &str, hold, reading| {
+            eval_refusal(&run, n, enabled, account, hold, reading, now)
+        };
+        assert!(
+            ok(3, true, "acct", None, None).is_ok(),
+            "no hold set: clear"
+        );
+        assert!(ok(3, false, "acct", None, None)
+            .unwrap_err()
+            .contains("Eval mode is off"));
+        assert!(ok(1, true, "acct", None, None)
+            .unwrap_err()
+            .contains("2 to 10"));
+        assert!(ok(11, true, "acct", None, None)
+            .unwrap_err()
+            .contains("2 to 10"));
+        assert!(ok(3, true, "other", None, None)
+            .unwrap_err()
+            .contains("account"));
+        let past = ok(3, true, "acct", Some(80), Some((90.0, Some(now + 100)))).unwrap_err();
+        assert!(
+            past.contains("90%") && past.contains("hold of 80%"),
+            "{past}"
+        );
+        let unknown = ok(3, true, "acct", Some(80), None).unwrap_err();
+        assert!(unknown.contains("not known"), "{unknown}");
+        assert!(ok(3, true, "acct", Some(80), Some((90.0, Some(now - 5)))).is_ok());
+
+        // The source must be finished, not an eval run and not an epic-plan run.
+        let running = eval_source(&dir, "acct", "building");
+        assert!(eval_refusal(&running, 3, true, "acct", None, None, now)
+            .unwrap_err()
+            .contains("finished run"));
+        let failed = eval_source(&dir, "acct", "failed");
+        assert!(eval_refusal(&failed, 3, true, "acct", None, None, now).is_ok());
+        let meta_path = run.join("meta.json");
+        let mut meta: Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        meta["mode"] = "epic-plan".into();
+        std::fs::write(&meta_path, meta.to_string()).unwrap();
+        assert!(ok(3, true, "acct", None, None)
+            .unwrap_err()
+            .contains("epic-plan"));
+        meta.as_object_mut().unwrap().remove("mode");
+        meta["eval"] = serde_json::json!({"group":"b","index":1,"of":2,"source":"r-0"});
+        std::fs::write(&meta_path, meta.to_string()).unwrap();
+        assert!(ok(3, true, "acct", None, None)
+            .unwrap_err()
+            .contains("eval run"));
+    }
+
+    #[test]
+    fn the_eval_params_come_from_the_source_run_without_a_second_ticket_block() {
+        let dir = crate::test_support::TempDir::new("eval_params");
+        let run = eval_source(&dir, "acct", "done");
+        let all = eval_params(&run, Some("w1"), "b-9", 3).unwrap();
+        assert_eq!(all.len(), 3);
+        let p = all[1].clone();
+        let p = &p;
+        assert_eq!(p.folder, "/ws");
+        assert_eq!(
+            p.request, "Add  multiply()",
+            "words only, not normalised, no ticket block"
+        );
+        assert!(!p.request.contains("Tickets from ClickUp"));
+        assert_eq!(p.review_mode.as_deref(), Some("local"));
+        assert_eq!(p.force, Some(true));
+        assert_eq!(p.role, "eagle-eye");
+        assert_eq!(p.window_id.as_deref(), Some("w1"));
+        assert_eq!(p.repos.as_deref(), Some(&["r1".to_string()][..]));
+        assert_eq!(p.max_implementers, Some(2));
+        assert_eq!(p.bmad_mode.as_deref(), Some("off"));
+        let tickets = p.clickup.as_ref().unwrap();
+        assert_eq!(tickets.ticket_ids, ["t1"]);
+        assert_eq!(tickets.refs.len(), 1);
+        let eval = p.eval.as_ref().unwrap();
+        assert_eq!((eval.group.as_str(), eval.index, eval.of), ("b-9", 2, 3));
+        assert_eq!(eval.source, run.file_name().unwrap().to_str().unwrap());
+        let bases = eval.bases.as_ref().unwrap();
+        assert_eq!(
+            bases.len(),
+            1,
+            "only a repo with a baseCommit; the first PR of a repo wins"
+        );
+        assert_eq!(bases["/ws/r1"].base_commit, "abc123");
+        assert_eq!(bases["/ws/r1"].base, "main");
+        assert_eq!(
+            all.iter()
+                .map(|p| p.eval.as_ref().unwrap().index)
+                .collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+
+        // The batch and entries: kind eval, in order, each tied to the batch.
+        let (batch, entries) = plan_eval_batch(all, "acct", "b-9", "r-src");
+        assert_eq!(
+            (batch.kind.as_deref(), batch.n, batch.source.as_deref()),
+            (Some("eval"), Some(3), Some("r-src"))
+        );
+        assert_eq!(batch.runs.len(), 3);
+        assert_eq!(entries.len(), 3);
+        assert!(entries
+            .iter()
+            .all(|e| e.batch_id.as_deref() == Some("b-9") && e.account_id == "acct"));
+        assert_eq!(entries[0].label, "Eval run 1 of 3");
+        assert!(is_eval_batch(&batch));
+
+        // The created run folder's meta.json carries the eval ref and review mode local.
+        let meta = super::super::folder::RunMeta {
+            review_mode: p.review_mode.clone(),
+            eval: p.eval.clone(),
+            ..Default::default()
+        };
+        let created = super::super::folder::create_run(
+            dir.path(),
+            Path::new("/ws"),
+            &[],
+            &[],
+            &p.request,
+            &meta,
+        )
+        .unwrap();
+        let written: Value = serde_json::from_str(
+            &std::fs::read_to_string(Path::new(&created.run_dir).join("meta.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(written["reviewMode"], "local");
+        assert_eq!(written["eval"]["index"], 2);
+        assert_eq!(written["eval"]["bases"]["/ws/r1"]["baseCommit"], "abc123");
     }
 
     #[test]

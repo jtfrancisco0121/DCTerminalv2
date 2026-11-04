@@ -210,6 +210,7 @@ pub fn run() {
             run::dispatch::dispatch_overview,
             run::dispatch::dispatch_enqueue,
             run::dispatch::dispatch_runs,
+            run::dispatch::dispatch_eval_start,
             run::dispatch::batch_overview,
             run::dispatch::batch_remove_run,
             run::epics::epics_overview,

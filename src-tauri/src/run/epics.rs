@@ -336,6 +336,7 @@ pub fn queue_wave(data: &Path, epic_dir: &Path, n: u32) -> Result<String, String
         max_implementers: None,
         run_mode: None,
         dispatch_entry_id: None,
+        eval: None,
     };
     let label = format!("Wave {n}: {}", spec.title);
     dispatch::with(data, |d| {

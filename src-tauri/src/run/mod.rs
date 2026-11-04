@@ -481,6 +481,9 @@ pub struct StartParams {
     /// The queue entry that started this run (recorded in meta.json, so a restart can tell it started).
     #[serde(default)]
     pub dispatch_entry_id: Option<String>,
+    /// One run of an eval group: recorded in meta.json `eval` (only the dispatcher sets it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval: Option<folder::EvalRef>,
 }
 
 #[tauri::command]
@@ -512,6 +515,7 @@ pub async fn start_run(
         max_implementers,
         run_mode,
         dispatch_entry_id: None,
+        eval: None,
     };
     blocking(move || start_run_inner(&app, params)).await
 }
@@ -532,6 +536,7 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
         max_implementers,
         run_mode,
         dispatch_entry_id,
+        eval,
     } = params;
     let folder = start_folder(&folder)?;
     let ctx = launch_context(app, window_id.as_deref())?;
@@ -592,7 +597,7 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
             max_implementers,
             mode: run_mode.filter(|m| folder::RUN_MODES.contains(&m.as_str())),
             dispatch_entry_id,
-            eval: None,
+            eval,
         };
         if meta.mode.is_some() && clickup.as_ref().is_none_or(|c| c.ticket_ids.is_empty()) {
             return Err(
