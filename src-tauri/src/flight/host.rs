@@ -1049,6 +1049,7 @@ mod tests {
             name: id.to_uppercase(),
             config_dir: Some(dir.display().to_string()),
             capture_policy: policy,
+            keep_run_traces: false,
         }
     }
 

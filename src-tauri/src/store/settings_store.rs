@@ -78,6 +78,10 @@ pub struct ClaudeAccount {
     /// An old settings file has none: `metadata`.
     #[serde(default)]
     pub capture_policy: crate::flight::schema::CapturePolicy,
+    /// "Keep run traces": a finished run of this account gets `<run>/flight/`, a snapshot of its
+    /// session events that outlives Claude's transcript cleanup. Off by default; an old file loads off.
+    #[serde(default)]
+    pub keep_run_traces: bool,
 }
 
 /// Claude Code: where `claude` is (empty: looked up) and the accounts.
@@ -145,6 +149,7 @@ pub fn normalize_claude_accounts(claude: &mut ClaudeSettings) -> Result<(), Stri
             name: "Claude".to_string(),
             config_dir: None,
             capture_policy: Default::default(),
+            keep_run_traces: false,
         });
     }
     Ok(())
@@ -283,12 +288,17 @@ pub struct ObserveSettings {
     /// to plain Claude tabs too, not only to tabs a run launched.
     #[serde(default = "default_true")]
     pub hooks_all_tabs: bool,
+    /// "Eval mode": a finished run can be repeated N times to compare outcomes (it spends usage on
+    /// purpose). Off by default; an old file loads off.
+    #[serde(default)]
+    pub eval_enabled: bool,
 }
 
 impl Default for ObserveSettings {
     fn default() -> Self {
         Self {
             hooks_all_tabs: true,
+            eval_enabled: false,
         }
     }
 }
@@ -759,6 +769,7 @@ mod tests {
         store
             .set_observe(ObserveSettings {
                 hooks_all_tabs: false,
+                ..Default::default()
             })
             .unwrap();
         let again = SettingsStore::open(dir.path()).unwrap();
@@ -883,6 +894,7 @@ mod tests {
             name: name.into(),
             config_dir: dir.map(str::to_string),
             capture_policy: Default::default(),
+            keep_run_traces: false,
         }
     }
 
@@ -909,6 +921,39 @@ mod tests {
             store.claude().accounts[0].capture_policy,
             CapturePolicy::Metadata
         );
+    }
+
+    #[test]
+    fn keep_run_traces_and_eval_mode_default_off_for_old_files_and_round_trip() {
+        let dir = TempDir::new("settings_wave2_optins");
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"claude":{"accounts":[{"id":"default","name":"Claude"}]},"observe":{"hooksAllTabs":true}}"#,
+        )
+        .unwrap();
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        assert!(!store.claude().accounts[0].keep_run_traces);
+        assert!(!store.observe().eval_enabled);
+        assert!(
+            store.observe().hooks_all_tabs,
+            "the other setting is untouched"
+        );
+
+        let mut claude = store.claude().clone();
+        claude.accounts[0].keep_run_traces = true;
+        store.set_claude(claude).unwrap();
+        store
+            .set_observe(ObserveSettings {
+                hooks_all_tabs: true,
+                eval_enabled: true,
+            })
+            .unwrap();
+        let again = SettingsStore::open(dir.path()).unwrap();
+        assert!(again.claude().accounts[0].keep_run_traces);
+        assert!(again.observe().eval_enabled);
+        let json = serde_json::to_value(&again.claude().accounts[0]).unwrap();
+        assert_eq!(json["keepRunTraces"], true);
+        assert!(!ObserveSettings::default().eval_enabled);
     }
 
     #[test]

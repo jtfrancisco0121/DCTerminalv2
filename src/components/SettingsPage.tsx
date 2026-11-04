@@ -20,6 +20,7 @@ import {
   type ClaudeStatus,
   type LoginStatus,
   type NotifySettings,
+  type ObserveSettings,
   type PushSettings,
   type RunSettings,
   type SettingsView,
@@ -79,6 +80,7 @@ const accountsKey = (claudePath: string, accounts: ClaudeAccount[]) =>
       name: a.name,
       configDir: a.configDir || null,
       capturePolicy: a.capturePolicy ?? "metadata",
+      keepRunTraces: a.keepRunTraces ?? false,
     })),
   });
 const terminalKey = (t: TerminalSettings) => JSON.stringify(t, Object.keys(t).sort());
@@ -307,10 +309,14 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
     }
   };
 
-  const saveHooksAllTabs = async (hooksAllTabs: boolean) => {
+  const saveObserve = async (patch: Partial<ObserveSettings>, text: string) => {
     try {
-      const observe = await setObserveSettings({ hooksAllTabs });
-      setNotice({ tone: "info", text: "Saved. New Claude tabs use it; open ones keep what they started with." });
+      const observe = await setObserveSettings({
+        hooksAllTabs: view.observe?.hooksAllTabs ?? true,
+        evalEnabled: view.observe?.evalEnabled ?? false,
+        ...patch,
+      });
+      setNotice({ tone: "info", text });
       onSaved({ ...view, observe });
     } catch (err) {
       setNotice({ tone: "error", text: errorText(err) });
@@ -684,34 +690,70 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
           <input
             type="checkbox"
             checked={view.observe?.hooksAllTabs ?? true}
-            onChange={(event) => void saveHooksAllTabs(event.target.checked)}
+            onChange={(event) =>
+              void saveObserve(
+                { hooksAllTabs: event.target.checked },
+                "Saved. New Claude tabs use it; open ones keep what they started with.",
+              )
+            }
           />{" "}
           Track activity in every Claude tab
         </label>
         <p className="hint">
           Adds a small hook to every Claude tab so its dot shows working, waiting or needs you.
         </p>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={view.observe?.evalEnabled ?? false}
+            onChange={(event) =>
+              void saveObserve(
+                { evalEnabled: event.target.checked },
+                event.target.checked ? "Eval mode is on." : "Eval mode is off.",
+              )
+            }
+          />{" "}
+          Eval mode
+        </label>
+        <p className="hint">Runs the same request several times on your own subscription. Nothing is pushed or posted.</p>
         <h3>Session Inspector</h3>
         <p className="hint">
           What the trace may read from each account&apos;s session logs. Content is shown only when you open an event
           and is always secret-scanned; Off reads nothing. Saved with the accounts.
         </p>
         {accounts.map((account, index) => (
-          <label key={account.id} className="field-label">
-            Capture policy of {account.name}
-            <select
-              className="text-input"
-              aria-label={`Capture policy of ${account.name}`}
-              value={account.capturePolicy ?? "metadata"}
-              onChange={(event) => edit(index, { capturePolicy: event.target.value as ClaudeAccount["capturePolicy"] })}
-            >
-              <option value="off">Off (read nothing)</option>
-              <option value="metadata">Metadata (default)</option>
-              <option value="redacted">Redacted</option>
-              <option value="full">Full</option>
-            </select>
-          </label>
+          <div key={account.id}>
+            <label className="field-label">
+              Capture policy of {account.name}
+              <select
+                className="text-input"
+                aria-label={`Capture policy of ${account.name}`}
+                value={account.capturePolicy ?? "metadata"}
+                onChange={(event) => edit(index, { capturePolicy: event.target.value as ClaudeAccount["capturePolicy"] })}
+              >
+                <option value="off">Off (read nothing)</option>
+                <option value="metadata">Metadata (default)</option>
+                <option value="redacted">Redacted</option>
+                <option value="full">Full</option>
+              </select>
+            </label>
+            <label className="check-label">
+              <input
+                type="checkbox"
+                aria-label={`Keep run traces of ${account.name}`}
+                checked={account.capturePolicy !== "off" && (account.keepRunTraces ?? false)}
+                disabled={account.capturePolicy === "off"}
+                onChange={(event) => edit(index, { keepRunTraces: event.target.checked })}
+              />{" "}
+              Keep run traces
+            </label>
+            {account.capturePolicy === "off" && <p className="hint">AgentFlight is off for this account.</p>}
+          </div>
         ))}
+        <p className="hint">
+          Keep run traces saves a finished run&apos;s session events with the run, so its Trace still opens after
+          Claude deletes its logs. It applies to runs that finish after you turn it on.
+        </p>
         <div className="button-row">
           <button
             type="button"
