@@ -58,6 +58,8 @@ export function rankItems(items: readonly PaletteItem[], query: string): Palette
 
 type Props = {
   items: readonly PaletteItem[];
+  /** Rows made from the typed query itself (a pasted link): listed first, never filtered, none for an empty query. */
+  queryItems?: (query: string) => PaletteItem[];
   onClose: () => void;
 };
 
@@ -66,11 +68,14 @@ type Props = {
  * roles and Settings sections; Enter runs the active row through the same
  * handler as the rest of the UI. A failure is reported and closes it.
  */
-export function CommandPalette({ items, onClose }: Props) {
+export function CommandPalette({ items, queryItems, onClose }: Props) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const listId = useId();
-  const rows = useMemo(() => rankItems(items, query), [items, query]);
+  const rows = useMemo(
+    () => [...(query.trim() ? (queryItems?.(query) ?? []) : []), ...rankItems(items, query)],
+    [items, queryItems, query],
+  );
   const activeRef = useRef<HTMLLIElement | null>(null);
   const at = rows.length === 0 ? -1 : Math.min(active, rows.length - 1);
 

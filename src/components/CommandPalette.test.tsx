@@ -42,6 +42,22 @@ describe("CommandPalette", () => {
     item("s1", "Settings", "Settings: Terminal"),
   ];
 
+  it("lists queryItems first and unfiltered, and none for an empty query", () => {
+    const link = vi.fn();
+    const queryItems = (query: string) => [item("link", "Runs", "Open run link…", link), { ...item("detail", "Runs", "Never matches the typed text"), detail: query }];
+    render(<CommandPalette items={items()} queryItems={queryItems} onClose={() => {}} />);
+    expect(screen.getAllByRole("option")).toHaveLength(3);
+    expect(screen.queryByRole("option", { name: /Open run link/ })).toBeNull();
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "Shell" } });
+    const names = screen.getAllByRole("option").map((row) => row.textContent);
+    expect(names[0]).toContain("Open run link…");
+    expect(names[1]).toContain("Never matches the typed text");
+    expect(names[2]).toContain("Shell · api");
+    expect(names).toHaveLength(3);
+    fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+    return Promise.resolve().then(() => expect(link).toHaveBeenCalledOnce());
+  });
+
   it("has the combobox and listbox roles and filters as you type", () => {
     render(<CommandPalette items={items()} onClose={() => {}} />);
     expect(screen.getByRole("dialog", { name: "Command palette" })).toBeTruthy();
