@@ -16,11 +16,13 @@ env CLAUDE_CONFIG_DIR=<account dir> \
   claude --plugin-dir <plugin> \
          --settings <launch settings file> \
          --append-system-prompt-file <memory prompt file> \
-         [--model <m>] \
+         [--model <m>] [--permission-mode <mode>] \
          "/dcv2:eagle-eye run=<run dir>"   |  "/dcv2:eagle-eye resume run=<run dir>"  |  "/dcv2:<role> <request>"
 ```
 
 `<plugin>` is the plugin folder shipped in the app bundle (dev: `<repo>/plugin`).
+
+`--model` and `--permission-mode` are added to **Eagle-Eye tabs only** (start, queue, wave, eval and resume: the launches with a run folder), by `run/launch.rs` `launch_spec`; role, plain and plain-resume tabs never get them. The model is the account's `orchestratorModel` override, else `run.orchestratorModel` (default `opus`); the mode is `run.orchestratorPermissionMode` (default `auto`; `auto`, `acceptEdits` or `default`, never `bypassPermissions`). An empty or invalid stored value adds no flag (the account's own model or mode applies). A save of an invalid changed value is refused and the old value kept. Both are recorded in the run's meta.json `orchestrator`; a resume uses the recorded pair when the run has one, else the current settings. They ride in the tab's launch record, so a reopened tab keeps them.
 
 ## Files the plugin provides (P2b)
 

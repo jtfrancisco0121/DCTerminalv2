@@ -11,7 +11,9 @@
 //!
 //! Never passed: `--dangerously-skip-permissions`, `--allowedTools`,
 //! `--disallowedTools`, `--permission-mode`, `--cloud`, `--bg`, `--continue`:
-//! a tab is a plain `claude` you drive yourself.
+//! a tab is a plain `claude` you drive yourself. The one exception is an
+//! Eagle-Eye run tab: its `--model` and `--permission-mode` arrive through the
+//! tab's launch record (`run/launch.rs`), never from this file.
 
 use super::claude_config::{claude_env, ConfigDirInfo};
 use super::claude_detect::{read_claude_version, resolve_claude, unwrap_windows_shim, ResolvedCli};

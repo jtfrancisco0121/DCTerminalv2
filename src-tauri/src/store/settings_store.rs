@@ -753,7 +753,10 @@ impl SettingsStore {
         // Only a changed override is refused; an unchanged bad stored one is coerced, so it never
         // blocks an unrelated save.
         for account in &mut next.accounts {
-            let model = account.orchestrator_model.take().map(|m| m.trim().to_string());
+            let model = account
+                .orchestrator_model
+                .take()
+                .map(|m| m.trim().to_string());
             let model = model.filter(|m| !m.is_empty());
             let stored = self
                 .data
