@@ -916,16 +916,20 @@ fn read_snapshot_text(path: &Path, cap: u64) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "not UTF-8".to_string())
 }
 
-/// The three files of a run's snapshot, read without following links; `None` when it is absent or damaged.
-fn read_snapshot(run_dir: &Path) -> Option<snapshot::Old> {
+/// Only the manifest of a run's snapshot (a small file); `None` when it is absent, damaged or of another schema.
+fn read_snapshot_manifest(run_dir: &Path) -> Option<snapshot::Manifest> {
     let dir = snapshot_dir(run_dir)?;
     let manifest: snapshot::Manifest = serde_json::from_str(
         &read_snapshot_text(&dir.join("manifest.json"), SNAPSHOT_MANIFEST_MAX).ok()?,
     )
     .ok()?;
-    if manifest.schema != snapshot::SCHEMA {
-        return None;
-    }
+    (manifest.schema == snapshot::SCHEMA).then_some(manifest)
+}
+
+/// The three files of a run's snapshot, read without following links; `None` when it is absent or damaged.
+fn read_snapshot(run_dir: &Path) -> Option<snapshot::Old> {
+    let dir = snapshot_dir(run_dir)?;
+    let manifest = read_snapshot_manifest(run_dir)?;
     Some(snapshot::Old {
         events_jsonl: read_snapshot_text(&dir.join("events.jsonl"), SNAPSHOT_FILE_MAX).ok()?,
         content_jsonl: read_snapshot_text(&dir.join("content.jsonl"), SNAPSHOT_FILE_MAX).ok(),
@@ -1220,8 +1224,9 @@ fn snapshot_candidate(
     {
         return None;
     }
-    if let Some(old) = read_snapshot(run_dir) {
-        if old.manifest.outcome == outcome && old.manifest.record_status_updated_at == updated {
+    // Only the manifest: this runs for every kept run on every pass, so it must not read the big files.
+    if let Some(old) = read_snapshot_manifest(run_dir) {
+        if old.outcome == outcome && old.record_status_updated_at == updated {
             return None;
         }
     }
@@ -1274,15 +1279,21 @@ pub fn snapshot_pass(
             continue;
         };
         let old = read_snapshot(dir);
-        let result = build_snapshot(
-            dir,
-            &set,
-            &outcome,
-            updated,
-            old.as_ref(),
-            snapshot::MAX_BYTES,
-        )
-        .and_then(|built| write_snapshot(dir, &built));
+        // A snapshot whose manifest is fine but whose Events cannot be read: replacing it would drop the
+        // Events of sessions whose transcripts are gone, so keep it and fail with a reason.
+        let result = if old.is_none() && read_snapshot_manifest(dir).is_some() {
+            Err("the previous snapshot's events cannot be read".to_string())
+        } else {
+            build_snapshot(
+                dir,
+                &set,
+                &outcome,
+                updated,
+                old.as_ref(),
+                snapshot::MAX_BYTES,
+            )
+            .and_then(|built| write_snapshot(dir, &built))
+        };
         match result {
             Ok(()) => {
                 state.tried.remove(dir);
@@ -3900,6 +3911,32 @@ mod tests {
         // The snapshot is a regular tree of three files at most.
         let names = entries_named(&run.join("flight"), "");
         assert_eq!(names.len(), 2, "{names:?}");
+    }
+
+    #[test]
+    fn a_pass_reads_only_the_manifest_of_a_current_snapshot_and_keeps_one_whose_events_are_unreadable(
+    ) {
+        let dir = TempDir::new("flight_snapshot_manifest_only");
+        let (run, config) = wave1_run(&dir);
+        finish(&run, &config, &[WAVE1_SID], Some("done"), "t1");
+        let claude = keeping(vec![account("a", &config, CapturePolicy::Metadata)]);
+        let dirs = std::slice::from_ref(&run);
+        let mut state = SnapshotState::default();
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 1);
+        // Damage the events: a current snapshot is skipped without reading them.
+        let events = run.join("flight/events.jsonl");
+        std::fs::write(&events, [0xff, 0xfe]).unwrap();
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 0);
+        assert!(state.tried.is_empty());
+        // A new record with unreadable old events keeps the old snapshot and fails with a reason.
+        finish(&run, &config, &[WAVE1_SID], Some("done"), "t2");
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 0);
+        assert_eq!(std::fs::read(&events).unwrap(), vec![0xff, 0xfe]);
+        assert_eq!(
+            manifest_of(&run).record_status_updated_at.as_deref(),
+            Some("t1")
+        );
+        assert_eq!(state.tried.get(&run).map(|t| t.0), Some(1));
     }
 
     #[test]
