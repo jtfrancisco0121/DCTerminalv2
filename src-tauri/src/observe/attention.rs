@@ -44,6 +44,17 @@ pub const LANDING_TTL_MS: u64 = 120_000;
 /// had it for at least this long. A switch between two of the app's windows
 /// is faster.
 pub const ACTIVATION_GAP_MS: u64 = 250;
+/// A launch tab made while the app runs must have spawned its terminal within this long.
+pub const LAUNCH_START_GRACE_MS: u64 = 60_000;
+
+/// Whether a launch tab is overdue: made since app start (`fresh`; restored tabs open lazily on
+/// first show, by design), never spawned (`started`) and at least the grace old.
+pub fn launch_overdue(fresh: bool, created_ms: Option<u64>, started: bool, now_ms: u64) -> bool {
+    fresh
+        && !started
+        && created_ms.is_some_and(|at| now_ms.saturating_sub(at) >= LAUNCH_START_GRACE_MS)
+}
+
 /// The background set: runs changed within this many days.
 pub const BACKGROUND_DAYS: i64 = 30;
 
@@ -68,6 +79,8 @@ pub enum Kind {
     WaveReady,
     /// An eval group: every run has ended (the subject is the batch id).
     EvalFinished,
+    /// A run tab made while the app runs whose terminal never started (the subject is the tab id).
+    NotStarted,
 }
 
 impl Kind {
@@ -76,7 +89,7 @@ impl Kind {
         Kind::ALL.into_iter().find(|kind| kind.key() == key)
     }
 
-    pub const ALL: [Kind; 14] = [
+    pub const ALL: [Kind; 15] = [
         Kind::NeedsYou,
         Kind::ApprovalWait,
         Kind::Stall,
@@ -91,12 +104,12 @@ impl Kind {
         Kind::BatchReady,
         Kind::WaveReady,
         Kind::EvalFinished,
+        Kind::NotStarted,
     ];
 
-    /// Needs-you and approval-wait are the ones that count in the badge and
-    /// ring the dock harder.
+    /// Needs-you, approval-wait and not-started ring the dock harder.
     pub fn is_urgent(self) -> bool {
-        matches!(self, Kind::NeedsYou | Kind::ApprovalWait)
+        matches!(self, Kind::NeedsYou | Kind::ApprovalWait | Kind::NotStarted)
     }
 
     /// The name in settings.json and in the `attention` event.
@@ -116,6 +129,7 @@ impl Kind {
             Kind::BatchReady => "batch-ready",
             Kind::WaveReady => "wave-ready",
             Kind::EvalFinished => "eval-finished",
+            Kind::NotStarted => "not-started",
         }
     }
 }
@@ -168,6 +182,7 @@ impl Event {
             Kind::BatchReady => format!("dcv2: every run of the batch is ready to ship{run}"),
             Kind::WaveReady => format!("dcv2: the next wave is ready to start{run}"),
             Kind::EvalFinished => format!("dcv2: eval group finished{run}"),
+            Kind::NotStarted => format!("dcv2: {tab} was created but not started{run}"),
         }
     }
 }
@@ -183,6 +198,9 @@ pub struct TabFacts {
     pub run_dir: Option<String>,
     pub activity: TabActivity,
     pub stalled: bool,
+    /// A launch tab made while the app runs whose terminal never started within
+    /// [`LAUNCH_START_GRACE_MS`] of its creation.
+    pub not_started: bool,
     /// The wait is past the watchdog minutes: when it began (the episode).
     pub waiting_since_ms: Option<u64>,
     /// A tool runs (hook state); part of the `tab-state` push.
@@ -331,6 +349,7 @@ impl Detector {
                 .get(&tab.tab_id)
                 .map_or(TabActivity::Unknown, |p| p.activity);
             let prev_stalled = self.tabs.get(&tab.tab_id).is_some_and(|p| p.stalled);
+            let prev_not_started = self.tabs.get(&tab.tab_id).is_some_and(|p| p.not_started);
             let event = |kind: Kind| Event {
                 kind,
                 subject: tab.tab_id.clone(),
@@ -346,6 +365,9 @@ impl Detector {
             }
             if !prev_stalled && tab.stalled {
                 out.push(event(Kind::Stall));
+            }
+            if !prev_not_started && tab.not_started {
+                out.push(event(Kind::NotStarted));
             }
             if let Some(episode) = tab.waiting_since_ms {
                 if self.reminded.insert((tab.tab_id.clone(), episode)) {
@@ -1038,6 +1060,7 @@ fn tab_facts(
     tab: &TabRecord,
     minutes: u32,
     hook: Option<&TabHookState>,
+    not_started: bool,
 ) -> TabFacts {
     let run_dir = tab
         .launch
@@ -1079,6 +1102,7 @@ fn tab_facts(
         run_dir: run_dir.map(|d| d.display().to_string()),
         activity,
         stalled,
+        not_started,
         waiting_since_ms,
     }
 }
@@ -1090,10 +1114,26 @@ fn collect(
     keys: &dyn KeySource,
     background: bool,
 ) -> Observed {
-    let tabs: Vec<TabRecord> = match app.state::<Mutex<StateStore>>().lock() {
-        Ok(state) => state.sorted_tabs().into_iter().cloned().collect(),
-        Err(_) => return Observed::default(),
-    };
+    // The fresh flags are copied with the tabs; the store is released before the registry is read.
+    let (tabs, fresh): (Vec<TabRecord>, HashSet<String>) =
+        match app.state::<Mutex<StateStore>>().lock() {
+            Ok(state) => {
+                let tabs: Vec<TabRecord> = state.sorted_tabs().into_iter().cloned().collect();
+                let fresh = tabs
+                    .iter()
+                    .filter(|t| state.is_fresh_launch(&t.id))
+                    .map(|t| t.id.clone())
+                    .collect();
+                (tabs, fresh)
+            }
+            Err(_) => return Observed::default(),
+        };
+    let started = app
+        .state::<Mutex<crate::pty::PtyRegistry>>()
+        .lock()
+        .map(|r| r.started_ids())
+        .unwrap_or_default();
+    let now = now_ms();
     let minutes = app
         .state::<Mutex<crate::store::SettingsStore>>()
         .lock()
@@ -1109,7 +1149,19 @@ fn collect(
 
     let facts: Vec<TabFacts> = tabs
         .iter()
-        .map(|tab| tab_facts(app, tab, minutes, hooks.get(&tab.id)))
+        .map(|tab| {
+            let created = chrono::DateTime::parse_from_rfc3339(&tab.created_at)
+                .ok()
+                .and_then(|t| u64::try_from(t.timestamp_millis()).ok());
+            let overdue = tab.launch.is_some()
+                && launch_overdue(
+                    fresh.contains(&tab.id),
+                    created,
+                    started.contains(&tab.id),
+                    now,
+                );
+            tab_facts(app, tab, minutes, hooks.get(&tab.id), overdue)
+        })
         .collect();
 
     let mut seen_runs: HashSet<String> = HashSet::new();
@@ -1227,6 +1279,7 @@ mod tests {
             run_dir: None,
             activity: TabActivity::Working,
             stalled: false,
+            not_started: false,
             waiting_since_ms: None,
             tool_running: false,
             subagents_running: 0,
@@ -1655,6 +1708,45 @@ mod tests {
     }
 
     #[test]
+    fn a_launch_tab_is_overdue_only_when_fresh_unstarted_and_a_minute_old() {
+        let created = Some(1_000_000);
+        let at = |ago: u64| 1_000_000 + ago;
+        assert!(!launch_overdue(true, created, false, at(59_000)));
+        assert!(launch_overdue(true, created, false, at(60_000)));
+        assert!(!launch_overdue(true, created, true, at(120_000)), "started");
+        assert!(
+            !launch_overdue(false, created, false, at(120_000)),
+            "restored"
+        );
+        assert!(
+            !launch_overdue(true, None, false, at(120_000)),
+            "no createdAt"
+        );
+    }
+
+    #[test]
+    fn a_tab_that_goes_overdue_fires_not_started_once_and_one_overdue_at_the_start_none() {
+        let mut d = Detector::default();
+        let mut late = tab("late");
+        late.not_started = true;
+        assert!(d
+            .diff(observed(vec![tab("a"), late.clone()], vec![]), T)
+            .is_empty());
+        let mut a = tab("a");
+        a.not_started = true;
+        let fired = d.diff(observed(vec![a.clone(), late.clone()], vec![]), T + 2_000);
+        assert_eq!(kinds(&fired), [Kind::NotStarted]);
+        assert_eq!(fired[0].subject, "a");
+        for n in 2..6 {
+            let again = d.diff(
+                observed(vec![a.clone(), late.clone()], vec![]),
+                T + n * 2_000,
+            );
+            assert!(again.is_empty());
+        }
+    }
+
+    #[test]
     fn every_kind_reaches_a_fake_notifier_exactly_once() {
         let mut d = Detector::default();
         let tabs = vec![run_tab("t1", "r-1")];
@@ -1662,6 +1754,7 @@ mod tests {
         let mut t = tabs[0].clone();
         t.activity = TabActivity::NeedsYou;
         t.stalled = true;
+        t.not_started = true;
         t.waiting_since_ms = Some(7);
         let mut r = run("r-1");
         r.waiting_for = Some("plan-approval".into());
@@ -1679,6 +1772,7 @@ mod tests {
             Kind::NeedsYou,
             Kind::ApprovalWait,
             Kind::Stall,
+            Kind::NotStarted,
             Kind::RunDone,
             Kind::CheckFailed,
             Kind::CiFailed,
