@@ -69,7 +69,7 @@ import json, sys
 json.dump({"schema": 1, "repos": [
   {"name": "r", "path": sys.argv[2], "check": "true", "setup": None, "copyFiles": []},
   {"name": "rr", "path": sys.argv[3], "check": "true", "setup": "echo ran > .setup-marker && echo setup-done",
-   "copyFiles": [".env", ".env.local", "tracked.txt", "../outside/x.env", "/etc/hosts", "secret-link.env"]}]}, open(sys.argv[1], "w"))
+   "copyFiles": [".env", ".env.local", "tracked.txt", "../outside/x.env", "/etc/hosts", "secret-link.env"], "receipt": True}]}, open(sys.argv[1], "w"))
 PY
 export DCV2_RUN_DIR="$RUN"
 
@@ -200,6 +200,7 @@ grep -q "pr create --draft --base main --head dcv2/r-g-pr2 --title PR 2 title" "
 grep -q "review in progress" "$RUN/pr-bodies/PR2.md" && ok "  body says review in progress" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
 grep -q "^## Why" "$RUN/pr-bodies/PR2.md" && ok "  draft body has the Why section" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
 grep -q "S2: Prefix results" "$RUN/pr-bodies/PR2.md" && ok "  body lists the stories" || bad "  body: $(cat "$RUN/pr-bodies/PR2.md")"
+grep -q "Receipt" "$RUN/pr-bodies/PR2.md" && bad "  a draft body has a Receipt (the repo has receipt: true)" || ok "  a draft body never has a Receipt"
 grep -q "draft PR opened" "$RUN/log.md" && ok "  logged" || bad "  not logged"
 expect 0 "draft-pr again" S draft-pr "$RUN" PR2; has "  exists" "draft=exists"
 python3 - "$RUN/status.json" <<'PY'
@@ -307,6 +308,8 @@ python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))[0]; sys.exit(0 if no
   && ok "  marked ready with the final body (review round links)" || bad "  shim: $(cat "$GH_SHIM_DIR/prs.json")"
 python3 -c 'import json,re,sys; b=json.load(open(sys.argv[1]))[0]["body"]; h=re.findall(r"^## (.+)$", b, re.M); sys.exit(0 if h[:2]==["Why","What it adds"] and h.index("Review") < h.index("Verification") and "None" not in b and "null" not in b else 1)' "$GH_SHIM_DIR/prs.json" \
   && ok "  final body: sections in order, no None or null" || bad "  shim: $(cat "$GH_SHIM_DIR/prs.json")"
+python3 -c 'import json,re,sys; b=json.load(open(sys.argv[1]))[0]["body"]; sys.exit(0 if re.search(r"## Tickets|## Verification", b) and "## Receipt\n\n<details>\n<summary>Eagle-Eye receipt</summary>" in b and "dcterminalv2://run/r-g" in b and b.index("## Receipt") < b.index("Plan: Eagle-Eye run") else 1)' "$GH_SHIM_DIR/prs.json" \
+  && ok "  final body: a collapsed Receipt with the trace link, before the footer" || bad "  shim: $(cat "$GH_SHIM_DIR/prs.json")"
 expect 0 "ready PR2 again" S ready "$RUN" PR2; has "  already" "PR2 already opened"
 expect 0 "ready PR1 (no remote)" S ready "$RUN" PR1; is "  local-only" "$RUN/status.json" prs.0.state '"local-only"'
 
