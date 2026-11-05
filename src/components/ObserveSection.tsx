@@ -53,6 +53,8 @@ export function ObserveView({ seen, nudging, onNudge, onResume, onOpenTrace }: V
         <p className={`run-activity run-activity-${seen.hook?.activity}`} data-testid="tab-activity">
           Claude: {activity}
           {seen.hook && seen.hook.subagentsRunning > 0 && ` · ${seen.hook.subagentsRunning} sub-agents running`}
+          {seen.hook?.compacting && " · compacting"}
+          {seen.hook?.model && <span className="activity-muted"> · model {seen.hook.model}</span>}
         </p>
       )}
       {seen.waiting && (

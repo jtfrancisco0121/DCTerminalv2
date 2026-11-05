@@ -62,6 +62,18 @@ describe("ObserveView", () => {
     expect(screen.getByTestId("run-cost").textContent).not.toMatch(/run total/i);
   });
 
+  it("appends compacting and the switched model to the activity line, and drops them when cleared", () => {
+    const hook = { ...seen.hook!, activity: "working" as const, subagentsRunning: 0 };
+    const { rerender } = render(
+      <ObserveView seen={{ ...seen, hook: { ...hook, compacting: true, model: "claude-haiku-4-5" } }} nudging={false} onNudge={vi.fn()} onResume={vi.fn()} />,
+    );
+    const line = screen.getByTestId("tab-activity").textContent;
+    expect(line).toContain("working · compacting");
+    expect(line).toContain("model claude-haiku-4-5");
+    rerender(<ObserveView seen={{ ...seen, hook: { ...hook, compacting: false, model: null } }} nudging={false} onNudge={vi.fn()} onResume={vi.fn()} />);
+    expect(screen.getByTestId("tab-activity").textContent).not.toMatch(/compacting|model/);
+  });
+
   it("draws the context meter with a marker at the backend threshold, and no hint when it is not over", () => {
     const { rerender } = render(<ObserveView seen={seen} nudging={false} onNudge={vi.fn()} onResume={vi.fn()} />);
     const meter = screen.getByTestId("context-bar");

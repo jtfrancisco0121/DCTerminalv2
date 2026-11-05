@@ -3108,3 +3108,7 @@ body,
   padding-left: var(--space-4);
   font-size: var(--text-sm);
 }
+
+.activity-muted {
+  color: var(--fg-muted);
+}

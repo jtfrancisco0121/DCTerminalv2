@@ -40,7 +40,12 @@ pub const KEPT_FIELDS: &[&str] = &[
     "tool_use_id",
     "source",
     "reason",
+    "trigger",
+    "to_model",
 ];
+
+/// `PostToolBatch` ids forwarded at most, and the length of each.
+const MAX_BATCH_IDS: usize = 64;
 
 /// The fields kept from a hook payload. `background_running` counts the
 /// background tasks Claude reports as running (Stop, SubagentStop).
@@ -60,6 +65,15 @@ pub fn reduce(payload: &Value) -> Value {
             .filter(|t| t.get("status").and_then(Value::as_str) == Some("running"))
             .count();
         out.insert("background_running".into(), json!(running));
+    }
+    if let Some(Value::Array(calls)) = payload.get("tool_calls") {
+        let ids: Vec<Value> = calls
+            .iter()
+            .filter_map(|c| c.get("tool_use_id").and_then(Value::as_str))
+            .take(MAX_BATCH_IDS)
+            .map(|id| Value::String(id.chars().take(200).collect()))
+            .collect();
+        out.insert("batch_tool_ids".into(), Value::Array(ids));
     }
     Value::Object(out)
 }

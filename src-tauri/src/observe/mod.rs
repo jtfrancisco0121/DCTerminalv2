@@ -196,6 +196,7 @@ pub fn observe(
         transcript_written: tracker.last_write,
         activity: hook.map(|h| h.activity),
         tool_running: hook.is_some_and(|h| h.tool_running),
+        compacting: hook.is_some_and(|h| h.compacting),
         hook_updated: hook.and_then(|h| h.updated_ms).map(at),
         activity_since: hook.and_then(|h| h.activity_since_ms).map(at),
         ..Default::default()
@@ -684,5 +685,46 @@ mod tests {
         assert!(observe(&mut tracker, Some(&run), None, 10, later)
             .stall
             .is_none());
+    }
+
+    #[test]
+    fn a_compacting_tab_is_held_off_until_twice_the_threshold() {
+        let dir = TempDir::new("observe_compacting");
+        let run = dir.join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(
+            run.join("status.json"),
+            r#"{"stage":"building","waitingFor":null}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            run.join("log.md"),
+            "2026-10-22T10:00:00Z building PR1 started\n",
+        )
+        .unwrap();
+        let now = SystemTime::now();
+        let ms = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let mut state = hooks::TabHookState::default();
+        state.apply(&json!({"hook_event_name": "PreCompact"}), ms);
+        assert!(state.compacting);
+        let mut tracker = transcript::SessionTracker::default();
+        let min = |m: u64| now + Duration::from_secs(m * 60);
+        assert!(observe(&mut tracker, Some(&run), Some(&state), 10, min(11))
+            .stall
+            .is_none());
+        assert!(observe(&mut tracker, Some(&run), Some(&state), 10, min(19))
+            .stall
+            .is_none());
+        assert!(observe(&mut tracker, Some(&run), Some(&state), 10, min(21))
+            .stall
+            .is_some());
+        // A Stop with no PostCompact clears it: the hold-off is gone.
+        state.apply(&json!({"hook_event_name": "Stop"}), ms);
+        assert!(!state.compacting);
+        let seen = observe(&mut tracker, Some(&run), Some(&state), 10, min(11));
+        assert!(seen.stall.is_some(), "no longer held off");
     }
 }
