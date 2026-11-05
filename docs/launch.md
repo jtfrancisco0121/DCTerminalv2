@@ -95,6 +95,7 @@ The guard blocks Edit/Write into `DCV2_MEMORY_DIR` (agents use `memory.sh write`
 - A tab resumed with `claude --resume` gets the same env and flags but no prompt; an Eagle-Eye tab started fresh again on a run that has a `status.json` sends `/dcv2:eagle-eye resume run=<dir>` instead of `run=`.
 - The app drops an inherited `DCV2_TEST_MODE` from every dcv2 tab.
 - The plugin folder: `DCTV2_PLUGIN_DIR`, else (debug builds) the repo's `plugin/`, else the bundled resource `<resources>/plugin`.
+- Background starts: after a dispatcher start (queue, wave, eval, Start now) the app emits `tabs-changed` with `emit_to` to the new tab's window label only (payload: the tab id). It never focuses, unminimizes or raises a window, and it does not change the window's active tab when the window already has one (a window with none gets the new tab). The window reloads its tabs. `get_app_state` also reports `pendingStart` on a launch tab created while the app runs whose terminal has not spawned yet (it is empty after a restart, so restored tabs never count). The window opens every pending tab's terminal in the background after each load of its tab list, so a start does not depend on the event arriving. The user's own start and resume are unchanged: the new tab becomes active.
 
 ## Observability as built (P3b)
 

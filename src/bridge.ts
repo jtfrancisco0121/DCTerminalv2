@@ -26,6 +26,8 @@ export type TabSummary = {
   role?: string | null;
   /** The second pane (a Shell) when the tab is split. */
   split?: SplitSummary | null;
+  /** A launch tab made while the app runs whose terminal has not spawned: open it in the background. */
+  pendingStart?: boolean;
 };
 
 export type SplitDirection = "right" | "down";

@@ -23,7 +23,7 @@ use crate::store::settings_store::{known_account_config, ACCOUNT_REMOVED};
 use crate::store::{SettingsStore, StateStore, TabKind};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::Mutex;
@@ -49,6 +49,9 @@ pub struct PtyRegistry {
     /// A replaced or closed program that may still be stopping, so every
     /// open of that id waits for it, not only the one that replaced it.
     stopping: HashMap<String, crate::process_tree::PtyGroup>,
+    /// Ids whose program spawned at least once while the app ran. Kept after
+    /// `kill`: a launch tab that never spawned is the one still pending.
+    started: HashSet<String>,
 }
 
 fn data_packet(bytes: &[u8]) -> PtyPacket {
@@ -80,7 +83,26 @@ impl PtyRegistry {
             opening: HashMap::new(),
             next_open: 0,
             stopping: HashMap::new(),
+            started: HashSet::new(),
         }
+    }
+
+    /// Keep a spawned session under `id` and remember that it started.
+    fn add_session(&mut self, id: &str, session: PtySession) {
+        self.started.insert(id.to_string());
+        self.sessions.insert(id.to_string(), session);
+    }
+
+    /// True once `id` has spawned a program since the app started. The app reads
+    /// `started_ids` (one copy per pass); this is the single-id form for tests.
+    #[cfg(all(test, unix))]
+    pub fn ever_started(&self, id: &str) -> bool {
+        self.started.contains(id)
+    }
+
+    /// A copy of every id that has spawned since the app started.
+    pub fn started_ids(&self) -> HashSet<String> {
+        self.started.clone()
     }
 
     /// Close the terminal `id`. Its program keeps stopping for up to
@@ -380,7 +402,7 @@ fn open_session_with(
             .spawn(move || forward(rx, on_output, on_exit))
             .map_err(|err| err.to_string())?;
     }
-    registry.sessions.insert(id.to_string(), session);
+    registry.add_session(id, session);
     Ok(Some(pid))
 }
 
@@ -978,6 +1000,21 @@ mod tests {
             left.is_empty(),
             "an exited, reaped terminal is not signalled or waited on"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_terminal_that_spawned_stays_started_after_kill() {
+        let dir = crate::test_support::TempDir::new("pty_started");
+        let session = PtySession::spawn(sh_spec(dir.path(), "exit 0")).expect("spawn sh");
+        let mut registry = PtyRegistry::new();
+        assert!(!registry.ever_started("t"));
+        registry.add_session("t", session);
+        assert!(registry.ever_started("t"));
+        registry.kill("t");
+        assert!(registry.ever_started("t"), "kept after kill");
+        assert!(registry.started_ids().contains("t"));
+        assert!(!registry.ever_started("other"));
     }
 
     /// `sh -c script` in a PTY under `dir`.

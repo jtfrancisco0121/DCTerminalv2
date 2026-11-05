@@ -27,6 +27,9 @@ pub struct TabSummary {
     pub role: Option<String>,
     /// The second pane, when the tab is split.
     pub split: Option<SplitSummary>,
+    /// A launch tab made while the app runs whose terminal has not spawned
+    /// yet: the window opens it in the background. Set by `get_app_state`.
+    pub pending_start: bool,
 }
 
 /// A split tab's second pane, as the page needs it to draw and open it.
@@ -79,6 +82,19 @@ pub(crate) fn summary(tab: &TabRecord) -> TabSummary {
             cwd: split.cwd.clone(),
             folder_status: folder_status_code(&split.cwd),
         }),
+        pending_start: false,
+    }
+}
+
+/// Sets `pending_start` on each tab that is a fresh launch (`fresh`) whose terminal never spawned
+/// (`started`).
+pub(crate) fn mark_pending(
+    snapshot: &mut AppStateSnapshot,
+    fresh: impl Fn(&str) -> bool,
+    started: &std::collections::HashSet<String>,
+) {
+    for tab in &mut snapshot.tabs {
+        tab.pending_start = fresh(&tab.id) && !started.contains(&tab.id);
     }
 }
 
@@ -126,10 +142,15 @@ pub(crate) fn add_tab(
 pub fn get_app_state(
     window_id: Option<String>,
     store: State<Mutex<StateStore>>,
+    registry: State<Mutex<crate::pty::PtyRegistry>>,
 ) -> Result<AppStateSnapshot, String> {
+    // The registry lock is dropped before the store's: never both at once.
+    let started = registry.lock().map_err(|e| e.to_string())?.started_ids();
     let mut store = store.lock().map_err(|e| e.to_string())?;
     store.bind_window(window_id.as_deref());
-    Ok(snapshot(&store))
+    let mut snap = snapshot(&store);
+    mark_pending(&mut snap, |id| store.is_fresh_launch(id), &started);
+    Ok(snap)
 }
 
 #[tauri::command]
@@ -445,6 +466,33 @@ pub fn reopen_closed_tab(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_fresh_launch_that_never_started_is_pending() {
+        let mk = |id: &str| TabSummary {
+            id: id.into(),
+            label: String::new(),
+            custom_label: false,
+            cwd: String::new(),
+            kind: TabKind::Claude,
+            folder_status: "ok".into(),
+            has_session: false,
+            run_dir: None,
+            role: None,
+            split: None,
+            pending_start: false,
+        };
+        let mut snap = AppStateSnapshot {
+            window_id: "main".into(),
+            active_tab_id: None,
+            tabs: vec![mk("new"), mk("started"), mk("restored")],
+            closed_tabs: vec![],
+        };
+        let started: std::collections::HashSet<String> = ["started".to_string()].into();
+        mark_pending(&mut snap, |id| id != "restored", &started);
+        let flags: Vec<bool> = snap.tabs.iter().map(|t| t.pending_start).collect();
+        assert_eq!(flags, vec![true, false, false]);
+    }
+
     use super::*;
     use crate::test_support::TempDir;
 
