@@ -70,7 +70,7 @@ for who in "" dcv2:implementer dcv2:planner dcv2:pr-reviewer; do
 done
 b 2 "" 'echo x > "$HOME/x/run-trust/r-x/trust.json"'
 expect 0 "user session (no run) may write run-trust" "$(payload "" Write file_path "$TRUST/trust.json")" -u DCV2_RUN_DIR
-for f in tickets.json meta.json writeback-posted.json tickets-pulls.json tickets-update.md app-checks.json; do
+for f in tickets.json meta.json writeback-posted.json tickets-pulls.json tickets-update.md app-checks.json app-receipt.json; do
   w 2 "" "$RUN/$f"
   w 2 dcv2:planner "$RUN/$f"
   b 2 dcv2:implementer "echo x > $RUN/$f"

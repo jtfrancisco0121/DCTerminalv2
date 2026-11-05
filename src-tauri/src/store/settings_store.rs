@@ -483,6 +483,10 @@ pub struct RepoSetup {
     /// Implementer and PR Reviewer may run scripts/skill-e2e/golden.sh.
     #[serde(default)]
     pub live_tests: bool,
+    /// "Receipts in PR bodies" (repos.json `receipt`): Eagle-Eye adds a
+    /// collapsed Receipt to this repo's PR bodies. Off by default.
+    #[serde(default)]
+    pub receipt: bool,
 }
 
 pub const MAX_COPY_FILES: usize = 20;
@@ -535,6 +539,7 @@ pub fn clean_repo_setup(next: RepoSetup) -> Result<RepoSetup, String> {
         setup,
         copy_files: files,
         live_tests: next.live_tests,
+        receipt: next.receipt,
     })
 }
 
@@ -1041,6 +1046,14 @@ mod tests {
     }
 
     #[test]
+    fn an_old_repo_setup_without_receipt_loads_as_off() {
+        let old: RepoSetup =
+            serde_json::from_str(r#"{"setup":"npm ci","copyFiles":[],"liveTests":true}"#).unwrap();
+        assert!(!old.receipt);
+        assert!(old.live_tests);
+    }
+
+    #[test]
     fn worktree_setup_is_checked_and_auto_post_defaults_off() {
         let dir = TempDir::new("settings_setup");
         let mut store = SettingsStore::open(dir.path()).unwrap();
@@ -1063,6 +1076,7 @@ mod tests {
                 setup: None,
                 copy_files: vec![bad.into()],
                 live_tests: false,
+                receipt: false,
             };
             assert!(store.set_repo_setup("/w/a", next).is_err(), "{bad}");
         }
@@ -1078,12 +1092,14 @@ mod tests {
                         "cfg/.env.local".into(),
                     ],
                     live_tests: true,
+                    receipt: true,
                 },
             )
             .unwrap();
         assert_eq!(saved.setup.as_deref(), Some("pnpm i"));
         assert_eq!(saved.copy_files, [".env", "cfg/.env.local"]);
         assert!(saved.live_tests);
+        assert!(saved.receipt);
         assert!(store
             .set_repo_setup(
                 "/w/a",
@@ -1091,6 +1107,7 @@ mod tests {
                     setup: Some("a\nb".into()),
                     copy_files: vec![],
                     live_tests: false,
+                    receipt: false,
                 }
             )
             .is_err());

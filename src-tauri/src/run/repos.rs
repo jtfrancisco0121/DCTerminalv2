@@ -29,6 +29,10 @@ pub struct Repo {
     /// written only when true.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub live_tests: bool,
+    /// Receipts in this repo's PR bodies (app setting); written only when
+    /// true.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub receipt: bool,
 }
 
 impl Repo {
@@ -39,6 +43,7 @@ impl Repo {
             self.setup = s.setup.clone();
             self.copy_files = s.copy_files.clone();
             self.live_tests = s.live_tests;
+            self.receipt = s.receipt;
         }
         self
     }
@@ -97,6 +102,7 @@ fn repo_entry(path: &Path) -> Repo {
         setup: None,
         copy_files: Vec::new(),
         live_tests: false,
+        receipt: false,
     }
 }
 
@@ -160,6 +166,27 @@ mod tests {
     use super::*;
     use crate::run::git::testing::repo_at;
     use crate::test_support::TempDir;
+
+    #[test]
+    fn receipt_is_written_only_when_true_and_comes_from_the_setup() {
+        let plain = repo_entry(Path::new("/w/api"));
+        assert!(plain.to_json_for_test().get("receipt").is_none());
+        let setup = crate::store::RepoSetup {
+            receipt: true,
+            ..Default::default()
+        };
+        let on = repo_entry(Path::new("/w/api")).with_setup(Some(&setup));
+        assert!(on.receipt);
+        assert_eq!(on.to_json_for_test()["receipt"], true);
+        let off = on.with_setup(Some(&crate::store::RepoSetup::default()));
+        assert!(off.to_json_for_test().get("receipt").is_none());
+    }
+
+    impl Repo {
+        fn to_json_for_test(&self) -> serde_json::Value {
+            serde_json::to_value(self).unwrap()
+        }
+    }
 
     #[test]
     fn a_repo_folder_is_one_repo_and_a_folder_of_repos_lists_its_children() {

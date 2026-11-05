@@ -38,15 +38,17 @@ function RepoRow({ repo, onSaved }: { repo: Repo; onSaved?: () => void }) {
   const [setup, setSetup] = useState(repo.setup ?? "");
   const [files, setFiles] = useState((repo.copyFiles ?? []).join("\n"));
   const [liveTests, setLiveTests] = useState(repo.liveTests ?? false);
+  const [receipt, setReceipt] = useState(repo.receipt ?? false);
   const [note, setNote] = useState<{ tone: "hint" | "error"; text: string } | null>(null);
   const save = async () => {
     setNote(null);
-    const next: RepoSetup = { setup: setup.trim() || null, copyFiles: parseCopyFiles(files), liveTests };
+    const next: RepoSetup = { setup: setup.trim() || null, copyFiles: parseCopyFiles(files), liveTests, receipt };
     try {
       const saved = await setRepoSetup(repo.path, next);
       setSetup(saved.setup ?? "");
       setFiles(saved.copyFiles.join("\n"));
       setLiveTests(saved.liveTests ?? false);
+      setReceipt(saved.receipt ?? false);
       setNote({ tone: "hint", text: "Saved." });
       onSaved?.();
     } catch (err) {
@@ -86,6 +88,16 @@ function RepoRow({ repo, onSaved }: { repo: Repo; onSaved?: () => void }) {
         />{" "}
         Allow live Claude tests in checks (the Implementer and PR Reviewer may run{" "}
         <code>scripts/skill-e2e/golden.sh</code>; they use your Claude usage)
+      </label>
+      <label className="check-label">
+        <input
+          type="checkbox"
+          aria-label={`Receipts in PR bodies for ${repo.name}`}
+          checked={receipt}
+          onChange={(event) => setReceipt(event.target.checked)}
+        />{" "}
+        Receipts in PR bodies (a collapsed section with agents, minutes, tokens and the five-hour window share; a
+        public PR body shows this usage)
       </label>
       <div className="button-row">
         <button type="button" className="secondary-button" onClick={() => void save()}>
