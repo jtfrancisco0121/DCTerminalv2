@@ -136,6 +136,8 @@ export type ObserveSettings = {
   hooksAllTabs: boolean;
   /** "Eval mode": a finished run can be repeated N times to compare outcomes (default off). */
   evalEnabled?: boolean;
+  /** Where a Trace Export is sent by default (an http or https OTLP address). */
+  exportEndpoint?: string;
 };
 
 /** Notifications: a master switch and one switch per event kind (missing: on). */

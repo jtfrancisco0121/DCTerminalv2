@@ -1087,11 +1087,21 @@ mod af11_tests {
     #[test]
     fn the_registered_events_are_the_old_twelve_plus_the_four_recorded() {
         assert_eq!(EVENTS.len(), 16);
-        for name in ["PreCompact", "PostCompact", "PostToolBatch", "PostModelSwitch"] {
+        for name in [
+            "PreCompact",
+            "PostCompact",
+            "PostToolBatch",
+            "PostModelSwitch",
+        ] {
             assert!(EVENTS.contains(&name), "{name}");
             assert!(fixture(&format!("{name}.json"))["hook_event_name"] == name);
         }
-        for name in ["PreModelSwitch", "FileChanged", "CwdChanged", "PermissionDenied"] {
+        for name in [
+            "PreModelSwitch",
+            "FileChanged",
+            "CwdChanged",
+            "PermissionDenied",
+        ] {
             assert!(!EVENTS.contains(&name), "{name} is not registered");
         }
     }
@@ -1127,13 +1137,22 @@ mod af11_tests {
         assert!(!ids.is_empty());
         let mut state = TabHookState::default();
         for id in &ids {
-            state.apply(&json!({"hook_event_name": "PreToolUse", "tool_use_id": id}), 1);
+            state.apply(
+                &json!({"hook_event_name": "PreToolUse", "tool_use_id": id}),
+                1,
+            );
         }
-        state.apply(&json!({"hook_event_name": "PreToolUse", "tool_use_id": "other"}), 1);
+        state.apply(
+            &json!({"hook_event_name": "PreToolUse", "tool_use_id": "other"}),
+            1,
+        );
         state.apply(&batch, 2);
         assert!(state.tool_running, "the unlisted tool still runs");
         assert_eq!(state.running_tools.len(), 1);
-        state.apply(&json!({"hook_event_name": "PostToolUse", "tool_use_id": "other"}), 3);
+        state.apply(
+            &json!({"hook_event_name": "PostToolUse", "tool_use_id": "other"}),
+            3,
+        );
         assert!(!state.tool_running);
     }
 
@@ -1144,7 +1163,10 @@ mod af11_tests {
         );
         assert!(cut.get("batch_tool_ids").is_none());
         let mut state = TabHookState::default();
-        state.apply(&json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1"}), 1);
+        state.apply(
+            &json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1"}),
+            1,
+        );
         state.apply(&cut, 2);
         assert!(state.tool_running, "nothing was removed");
     }

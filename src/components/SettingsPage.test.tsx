@@ -191,6 +191,30 @@ describe("SettingsPage activity", () => {
     await waitFor(() => expect(setObserveSettings).toHaveBeenCalledWith({ hooksAllTabs: true, evalEnabled: true }));
   });
 
+  it("the Export endpoint saves a valid address and shows why an invalid one is refused", async () => {
+    setObserveSettings.mockClear();
+    const onSaved = vi.fn();
+    render(<SettingsPage view={view()} onSaved={onSaved} onClose={() => {}} />);
+    const input = screen.getByRole("textbox", { name: "Export endpoint" }) as HTMLInputElement;
+    expect(input.value).toBe("http://127.0.0.1:6006/v1/traces");
+    fireEvent.change(input, { target: { value: "http://localhost:4318/v1/traces" } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(setObserveSettings).toHaveBeenCalledWith({
+        hooksAllTabs: true,
+        evalEnabled: false,
+        exportEndpoint: "http://localhost:4318/v1/traces",
+      }),
+    );
+    setObserveSettings.mockImplementationOnce(async () => {
+      throw new Error("Only http:// and https:// addresses are used.");
+    });
+    fireEvent.change(input, { target: { value: "ftp://x" } });
+    fireEvent.blur(input);
+    expect(await screen.findByText("Only http:// and https:// addresses are used.")).toBeTruthy();
+    expect(input.value).toBe("http://127.0.0.1:6006/v1/traces");
+  });
+
   it("Keep run traces is off by default, saves with the accounts and is disabled when the policy is off", async () => {
     setClaudeSettings.mockClear();
     render(<SettingsPage view={view()} onSaved={() => {}} onClose={() => {}} />);

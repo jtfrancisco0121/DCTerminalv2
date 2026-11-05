@@ -4,6 +4,10 @@ import type {
   CompareOut,
   ContentOut,
   EvalResults,
+  ExportEncoding,
+  ExportPolicy,
+  ExportPreview,
+  ExportSent,
   SearchFilter,
   SearchOut,
   SessionView,
@@ -30,3 +34,17 @@ export const flightEvalResults = (group: string) => invoke<EvalResults>("flight_
 
 /** What one finished run used of the account's five-hour window (an estimate in percent points); null when not known. */
 export const flightRunShare = (runDir: string) => invoke<number | null>("flight_run_share", { runDir });
+
+/** The Export Preview of a Trace: counts and the fields that would leave. The host keeps the previewed bytes. */
+export const flightExportPreview = (
+  target: TraceTarget,
+  options: { policy: ExportPolicy; encoding: ExportEncoding; confirmFull: boolean; endpoint?: string },
+) => invoke<ExportPreview>("flight_export_preview", { request: { ...target, ...options } });
+
+/** Posts exactly the previewed bytes (`digest` names them) to `endpoint`. */
+export const flightExportSend = (digest: string, endpoint: string) =>
+  invoke<ExportSent>("flight_export_send", { request: { digest, endpoint } });
+
+/** Writes exactly the previewed bytes to the picked path. */
+export const flightExportSave = (digest: string, path: string) =>
+  invoke<void>("flight_export_save", { request: { digest, path } });

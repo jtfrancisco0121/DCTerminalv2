@@ -2153,6 +2153,222 @@ pub fn export_input(
     )))
 }
 
+// ---- Export (AF12): Preview, Send, Save ----
+
+/// The one refusal for bytes that are no longer the previewed ones. `src/run/words.ts` holds the same text.
+pub const CHANGED_SINCE_PREVIEW: &str = "the trace changed since the preview";
+/// Shown when the account's capture policy is `off`.
+pub const EXPORT_OFF: &str = "AgentFlight is off for this account (Settings › Activity).";
+/// The export POST takes at most this long.
+const EXPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The bytes of the last Preview, one entry, replaced by the next Preview. Send and Save take exactly
+/// these bytes, so what leaves is what the user saw (a Trace that grew in between is not re-read).
+#[derive(Debug, Clone, Default)]
+pub struct ExportState {
+    previewed: Arc<Mutex<Option<Previewed>>>,
+}
+
+#[derive(Debug)]
+struct Previewed {
+    digest: String,
+    bytes: Arc<Vec<u8>>,
+    content_type: &'static str,
+    spans: usize,
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportRequest {
+    pub policy: export::ExportPolicy,
+    pub encoding: export::Encoding,
+    /// The per-export tick that `full` needs.
+    #[serde(default)]
+    pub confirm_full: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPreview {
+    /// The policy actually used (`full` is clamped to `metadata` without its conditions).
+    pub policy: export::ExportPolicy,
+    pub encoding: export::Encoding,
+    pub endpoint: String,
+    pub spans: usize,
+    pub events: usize,
+    pub bytes: usize,
+    pub digest: String,
+    pub fields: Vec<export::FieldCount>,
+    pub warnings: Vec<String>,
+    /// The endpoint is on this machine.
+    pub loopback: bool,
+    /// The Trace's capture policy: the dialog lists `full` only for `full`.
+    pub capture_policy: CapturePolicy,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSent {
+    pub endpoint: String,
+    pub spans: usize,
+    pub status: u16,
+}
+
+/// An export endpoint: `http://` or `https://` with a host. Returns it trimmed.
+pub fn check_endpoint(text: &str) -> Result<String, String> {
+    crate::store::settings_store::check_export_endpoint(text)
+}
+
+/// The endpoint's host is this machine (`localhost`, `127.x.x.x`, `::1`).
+pub fn is_loopback(endpoint: &str) -> bool {
+    let Ok(uri) = endpoint.trim().parse::<ureq::http::Uri>() else {
+        return false;
+    };
+    let host = uri
+        .host()
+        .unwrap_or("")
+        .trim_matches(|c| c == '[' || c == ']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// The agent that sends an export: http or https, no redirect (a redirect could carry the body to
+/// another host), no proxy (the environment's proxy variables are not read, so a loopback export stays
+/// on loopback), 30 s, status codes are replies to read.
+pub fn export_agent() -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(EXPORT_TIMEOUT))
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .proxy(None)
+        .user_agent(concat!("DCTerminalv2/", env!("CARGO_PKG_VERSION")))
+        .build();
+    ureq::Agent::new_with_config(config)
+}
+
+/// Builds the payload for a Trace and keeps its bytes for Send and Save.
+pub fn export_preview(
+    claude: &ClaudeSettings,
+    query: &Query,
+    cache: &FlightCache,
+    opens: &Opens,
+    state: &ExportState,
+    request: &ExportRequest,
+    endpoint: &str,
+) -> Result<ExportPreview, String> {
+    let endpoint = check_endpoint(endpoint)?;
+    // The policy first: nothing is read for `off`.
+    let capture = match resolve(claude, query, opens) {
+        Access::Refused(why) => return Err(why),
+        Access::Off => return Err(EXPORT_OFF.into()),
+        Access::Ready(set) => set.policy,
+    };
+    let mut warnings = Vec::new();
+    let mut policy = export::ExportPolicy::Metadata;
+    if request.policy == export::ExportPolicy::Full {
+        if capture != CapturePolicy::Full {
+            warnings.push(
+                "The account's capture policy is not full, so no tool text is exported."
+                    .to_string(),
+            );
+        } else if !request.confirm_full {
+            warnings.push("Tool text is not exported until you confirm it.".to_string());
+        } else {
+            policy = export::ExportPolicy::Full;
+        }
+    }
+    let Some((_, input)) = export_input(
+        claude,
+        query,
+        cache,
+        opens,
+        policy == export::ExportPolicy::Full,
+    )?
+    else {
+        return Err(EXPORT_OFF.into());
+    };
+    let payload = export::build(&input, policy, request.encoding)?;
+    let loopback = is_loopback(&endpoint);
+    let preview = ExportPreview {
+        policy,
+        encoding: request.encoding,
+        endpoint,
+        spans: payload.spans,
+        events: payload.events,
+        bytes: payload.bytes.len(),
+        digest: payload.digest.clone(),
+        fields: payload.fields,
+        warnings,
+        loopback,
+        capture_policy: capture,
+    };
+    *state.previewed.lock().map_err(|e| e.to_string())? = Some(Previewed {
+        digest: payload.digest,
+        bytes: Arc::new(payload.bytes),
+        content_type: payload.content_type,
+        spans: preview.spans,
+    });
+    Ok(preview)
+}
+
+fn previewed(
+    state: &ExportState,
+    digest: &str,
+) -> Result<(Arc<Vec<u8>>, &'static str, usize), String> {
+    let guard = state.previewed.lock().map_err(|e| e.to_string())?;
+    match guard.as_ref() {
+        Some(p) if p.digest == digest => Ok((p.bytes.clone(), p.content_type, p.spans)),
+        _ => Err(CHANGED_SINCE_PREVIEW.into()),
+    }
+}
+
+/// Posts exactly the previewed bytes (one request, no retry, no redirect).
+pub fn export_send(
+    state: &ExportState,
+    agent: &ureq::Agent,
+    digest: &str,
+    endpoint: &str,
+) -> Result<ExportSent, String> {
+    let endpoint = check_endpoint(endpoint)?;
+    let (bytes, content_type, spans) = previewed(state, digest)?;
+    let response = agent
+        .post(&endpoint)
+        .header("Content-Type", content_type)
+        .send(&bytes[..])
+        .map_err(|e| format!("could not reach {endpoint}: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "{endpoint} answered {} {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or("")
+        )
+        .trim_end()
+        .to_string());
+    }
+    Ok(ExportSent {
+        endpoint,
+        spans,
+        status: status.as_u16(),
+    })
+}
+
+/// Writes exactly the previewed bytes to `path` (created or truncated, never through a link).
+pub fn export_save(state: &ExportState, digest: &str, path: &Path) -> Result<(), String> {
+    use std::io::Write;
+    let (bytes, _, _) = previewed(state, digest)?;
+    if !path.is_absolute() {
+        return Err("choose a full path to save to".into());
+    }
+    let mut file = crate::store::create_run_log(path)
+        .map_err(|e| format!("cannot save to {}: {e}", path.display()))?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("cannot save to {}: {e}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3042,6 +3258,214 @@ mod tests {
             assert!(text.contains(name), "{name}");
         }
         assert!(!text.contains("gen_ai.tool.call.arguments"));
+    }
+
+    fn preview_of(
+        claude: &ClaudeSettings,
+        run: &Path,
+        state: &ExportState,
+        policy: export::ExportPolicy,
+        confirm: bool,
+    ) -> Result<ExportPreview, String> {
+        export_preview(
+            claude,
+            &run_query(run),
+            &FlightCache::default(),
+            &Opens::default(),
+            state,
+            &ExportRequest {
+                policy,
+                encoding: export::Encoding::Protobuf,
+                confirm_full: confirm,
+            },
+            "http://127.0.0.1:6006/v1/traces",
+        )
+    }
+
+    #[test]
+    fn export_is_refused_for_policy_off_and_full_is_clamped_without_its_conditions() {
+        let state = ExportState::default();
+        let (_d, run, claude) = wave1("export_off", CapturePolicy::Off);
+        assert_eq!(
+            preview_of(&claude, &run, &state, export::ExportPolicy::Metadata, false).unwrap_err(),
+            EXPORT_OFF
+        );
+        // Capture policy metadata: `full` is clamped.
+        let (_d, run, claude) = wave1("export_meta", CapturePolicy::Metadata);
+        let p = preview_of(&claude, &run, &state, export::ExportPolicy::Full, true).unwrap();
+        assert_eq!(p.policy, export::ExportPolicy::Metadata);
+        assert!(!p.warnings.is_empty());
+        // Capture policy full but no confirmation: clamped. With it: full, and the text is in the bytes.
+        let (_d, run, claude) = wave1("export_full", CapturePolicy::Full);
+        let p = preview_of(&claude, &run, &state, export::ExportPolicy::Full, false).unwrap();
+        assert_eq!(p.policy, export::ExportPolicy::Metadata);
+        let p = preview_of(&claude, &run, &state, export::ExportPolicy::Full, true).unwrap();
+        assert_eq!(p.policy, export::ExportPolicy::Full);
+        assert!(p
+            .fields
+            .iter()
+            .any(|f| f.field == "gen_ai.tool.call.arguments"));
+        assert!(p.loopback && p.bytes > 0 && p.spans > 0);
+    }
+
+    #[test]
+    fn an_unknown_digest_is_refused_by_send_and_save_with_the_one_message() {
+        let state = ExportState::default();
+        let agent = export_agent();
+        let err = export_send(&state, &agent, "nope", "http://127.0.0.1:1/v1/traces").unwrap_err();
+        assert_eq!(err, CHANGED_SINCE_PREVIEW);
+        let dir = TempDir::new("export_unknown");
+        let err = export_save(&state, "nope", &dir.join("x.pb")).unwrap_err();
+        assert_eq!(err, CHANGED_SINCE_PREVIEW);
+        assert!(!dir.join("x.pb").exists());
+    }
+
+    #[test]
+    fn only_http_and_https_with_a_host_are_endpoints_and_loopback_is_told_apart() {
+        for bad in [
+            "",
+            "  ",
+            "ftp://x/y",
+            "file:///etc/passwd",
+            "http://",
+            "localhost:6006",
+            "javascript:1",
+        ] {
+            assert!(check_endpoint(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            check_endpoint(" https://example.com/v1/traces ").unwrap(),
+            "https://example.com/v1/traces"
+        );
+        assert!(is_loopback("http://127.0.0.1:6006/v1/traces"));
+        assert!(is_loopback("http://localhost:4318/v1/traces"));
+        assert!(is_loopback("http://[::1]:4318/x"));
+        assert!(!is_loopback("http://10.0.0.5:6006/v1/traces"));
+        assert!(!is_loopback("https://example.com/x"));
+    }
+
+    #[test]
+    fn the_export_agent_has_no_proxy_and_follows_no_redirect() {
+        let agent = export_agent();
+        assert!(agent.config().proxy().is_none());
+        assert_eq!(agent.config().max_redirects(), 0);
+    }
+
+    /// A one-shot server: answers the first request with `reply`, returns its body, and says whether a
+    /// second request ever arrived.
+    fn serve_once(reply: &'static str) -> (String, std::thread::JoinHandle<(Vec<u8>, bool)>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 8192];
+            let (head_end, length) = loop {
+                let n = stream.read(&mut chunk).unwrap();
+                buf.extend_from_slice(&chunk[..n]);
+                if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&buf[..at]).to_lowercase();
+                    let length = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    break (at + 4, length);
+                }
+                assert!(n > 0, "closed before the head");
+            };
+            while buf.len() < head_end + length {
+                let n = stream.read(&mut chunk).unwrap();
+                assert!(n > 0, "closed before the body");
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            stream.write_all(reply.as_bytes()).unwrap();
+            drop(stream);
+            listener.set_nonblocking(true).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let second = listener.accept().is_ok();
+            (buf[head_end..head_end + length].to_vec(), second)
+        });
+        (format!("http://{addr}/v1/traces"), handle)
+    }
+
+    #[test]
+    fn send_posts_exactly_the_previewed_bytes_even_after_new_events_and_follows_no_redirect() {
+        let state = ExportState::default();
+        let (_d, run, claude) = wave1("export_send", CapturePolicy::Metadata);
+        let p = preview_of(&claude, &run, &state, export::ExportPolicy::Metadata, false).unwrap();
+        let want = state
+            .previewed
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .bytes
+            .clone();
+        assert_eq!(want.len(), p.bytes);
+        // The Trace grows after the Preview.
+        let log = run.join("log.md");
+        let mut text = std::fs::read_to_string(&log).unwrap();
+        text.push_str("2026-11-05T11:59:00Z building PR1 later line\n");
+        std::fs::write(&log, text).unwrap();
+        let (url, server) =
+            serve_once("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        let sent = export_send(&state, &export_agent(), &p.digest, &url).unwrap();
+        assert_eq!((sent.status, sent.spans), (200, p.spans));
+        let (body, second) = server.join().unwrap();
+        assert_eq!(body, *want, "the previewed bytes, not a re-read Trace");
+        assert!(!second);
+        // A redirect is an error and is not followed.
+        let (url, server) = serve_once(
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let err = export_send(&state, &export_agent(), &p.digest, &url).unwrap_err();
+        assert!(err.contains("302"), "{err}");
+        let (_, second) = server.join().unwrap();
+        assert!(!second, "no second request");
+        // A non-2xx reply carries its status.
+        let (url, server) = serve_once(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let err = export_send(&state, &export_agent(), &p.digest, &url).unwrap_err();
+        assert!(err.contains("500"), "{err}");
+        server.join().unwrap();
+        // A non-http endpoint never reaches the network.
+        assert!(export_send(&state, &export_agent(), &p.digest, "ftp://127.0.0.1/x").is_err());
+    }
+
+    #[test]
+    fn save_writes_exactly_the_previewed_bytes_and_never_through_a_link() {
+        let state = ExportState::default();
+        let (dir, run, claude) = wave1("export_save", CapturePolicy::Metadata);
+        let p = preview_of(&claude, &run, &state, export::ExportPolicy::Metadata, false).unwrap();
+        let want = state
+            .previewed
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .bytes
+            .clone();
+        let out = dir.join("trace.otlp.pb");
+        std::fs::write(&out, vec![7u8; want.len() + 50]).unwrap();
+        export_save(&state, &p.digest, &out).unwrap();
+        assert_eq!(
+            std::fs::read(&out).unwrap(),
+            *want,
+            "truncated and rewritten"
+        );
+        assert!(export_save(&state, &p.digest, Path::new("relative.pb")).is_err());
+        #[cfg(unix)]
+        {
+            let target = dir.join("victim.txt");
+            std::fs::write(&target, "keep").unwrap();
+            let link = dir.join("link.pb");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(export_save(&state, &p.digest, &link).is_err());
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+        }
     }
 
     #[test]

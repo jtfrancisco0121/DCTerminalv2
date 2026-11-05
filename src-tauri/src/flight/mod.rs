@@ -21,7 +21,6 @@ pub mod adapters;
 pub mod compare;
 pub mod correlate;
 pub mod derive;
-#[allow(dead_code)] // used by the host's Export commands (S3)
 pub mod export;
 pub mod host;
 pub mod index;

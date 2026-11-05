@@ -129,6 +129,19 @@ const open = async () => {
   await screen.findByRole("listbox", { name: "Events" });
 };
 
+describe("TracePanel export", () => {
+  it("has an Export button before Search that is disabled when the policy is off", async () => {
+    await open();
+    const names = screen.getAllByRole("button").map((b) => b.textContent);
+    expect(names.indexOf("Export")).toBeGreaterThan(-1);
+    expect((screen.getByRole("button", { name: "Export" }) as HTMLButtonElement).disabled).toBe(false);
+    cleanup();
+    flightSession.mockResolvedValue(sessionView({ status: "off", policy: "off" }));
+    render(<TracePanel target={{ runDir: "/runs/r-1" }} onClose={() => {}} />);
+    await waitFor(() => expect((screen.getByRole("button", { name: "Export" }) as HTMLButtonElement).disabled).toBe(true));
+  });
+});
+
 describe("TracePanel snapshot", () => {
   it("shows the Snapshot pill with its time and whether content was kept", async () => {
     flightSession.mockResolvedValue(

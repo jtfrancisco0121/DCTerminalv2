@@ -359,3 +359,36 @@ export interface EvalResults {
   running: number;
   failed: number;
 }
+
+/** What `flight_export_preview` returns (host.rs `ExportPreview`): the payload's counts, never its text. */
+export type ExportPolicy = "metadata" | "full";
+export type ExportEncoding = "json" | "protobuf";
+
+export interface ExportField {
+  field: string;
+  /** How many spans or events carry the attribute. */
+  count: number;
+  leaves: number;
+}
+
+export interface ExportPreview {
+  /** The policy actually used (`full` is clamped to `metadata` without its conditions). */
+  policy: ExportPolicy;
+  encoding: ExportEncoding;
+  endpoint: string;
+  spans: number;
+  events: number;
+  bytes: number;
+  digest: string;
+  fields: ExportField[];
+  warnings: string[];
+  /** The endpoint is on this machine. */
+  loopback: boolean;
+  capturePolicy: CapturePolicy;
+}
+
+export interface ExportSent {
+  endpoint: string;
+  spans: number;
+  status: number;
+}

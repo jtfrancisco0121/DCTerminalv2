@@ -207,3 +207,99 @@ pub async fn flight_run_share(
     .await
     .map_err(|e| e.to_string())
 }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPreviewRequest {
+    #[serde(flatten)]
+    pub target: Target,
+    #[serde(flatten)]
+    pub export: host::ExportRequest,
+    /// Empty or missing: the endpoint of Settings.
+    pub endpoint: Option<String>,
+}
+
+/// Builds the Export payload for a Trace and keeps its bytes. Reads on a worker thread, holds no store lock.
+#[tauri::command]
+pub async fn flight_export_preview(
+    app: AppHandle,
+    settings: State<'_, Mutex<SettingsStore>>,
+    cache: State<'_, FlightCache>,
+    export: State<'_, host::ExportState>,
+    request: ExportPreviewRequest,
+) -> Result<host::ExportPreview, String> {
+    let (claude, default_endpoint) = {
+        let guard = settings.lock().map_err(|e| e.to_string())?;
+        (
+            guard.claude().clone(),
+            guard.observe().export_endpoint.clone(),
+        )
+    };
+    let query = query_for(&app, &request.target)?;
+    let cache = cache.inner().clone();
+    let state = export.inner().clone();
+    let endpoint = request
+        .endpoint
+        .filter(|e| !e.trim().is_empty())
+        .unwrap_or(default_endpoint);
+    tauri::async_runtime::spawn_blocking(move || {
+        host::export_preview(
+            &claude,
+            &query,
+            &cache,
+            &Opens::default(),
+            &state,
+            &request.export,
+            &endpoint,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSendRequest {
+    pub digest: String,
+    pub endpoint: String,
+}
+
+/// Posts the previewed bytes. An unknown digest is refused.
+#[tauri::command]
+pub async fn flight_export_send(
+    export: State<'_, host::ExportState>,
+    request: ExportSendRequest,
+) -> Result<host::ExportSent, String> {
+    let state = export.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        host::export_send(
+            &state,
+            &host::export_agent(),
+            &request.digest,
+            &request.endpoint,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSaveRequest {
+    pub digest: String,
+    pub path: String,
+}
+
+/// Writes the previewed bytes to the picked file.
+#[tauri::command]
+pub async fn flight_export_save(
+    export: State<'_, host::ExportState>,
+    request: ExportSaveRequest,
+) -> Result<(), String> {
+    let state = export.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        host::export_save(&state, &request.digest, &PathBuf::from(request.path))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

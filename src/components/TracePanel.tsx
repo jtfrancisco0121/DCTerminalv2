@@ -22,6 +22,7 @@ import {
   orchestrationTone,
 } from "../run/words";
 import { errorText } from "./InlineNotice";
+import { ExportDialog } from "./ExportDialog";
 import { Pill } from "./Pill";
 
 /** At most this many pages are fetched to bring a failure's event into the list. */
@@ -237,6 +238,7 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
   const [copied, setCopied] = useState(false);
   const [lane, setLane] = useState<Lane>("both");
   const [prFilter, setPrFilter] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
   const focusRef = useRef<string | undefined>(focus);
   const scrollTo = useRef<string | null>(null);
   const page = useRef<HTMLElement>(null);
@@ -441,6 +443,15 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
         <span className="trace-actions">
           {view && !off && <span className="hint">{view.trace}</span>}
           {view?.snapshot && !off && <SnapshotPill info={view.snapshot} />}
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={!view || off}
+            title={off ? "AgentFlight is off for this account (Settings › Activity)." : undefined}
+            onClick={() => setExporting(true)}
+          >
+            Export
+          </button>
           {onSearch && (
             <button type="button" className="secondary-button" onClick={onSearch}>
               Search
@@ -742,6 +753,9 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
             </div>
           </div>
         </>
+      )}
+      {exporting && view && !off && (
+        <ExportDialog target={target} capturePolicy={view.policy} trace={view.trace} onClose={() => setExporting(false)} />
       )}
     </section>
   );

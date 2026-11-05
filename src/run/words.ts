@@ -810,3 +810,21 @@ export function evalDistText(
   if (dist.min === null || dist.median === null || dist.max === null) return "no figures";
   return `min ${format(dist.min)} · median ${format(dist.median)} · max ${format(dist.max)} (over ${dist.of} ${dist.of === 1 ? "run" : "runs"})`;
 }
+
+/** Phoenix's local OTLP/HTTP traces address (the host default, `settings_store.rs`). */
+export const DEFAULT_EXPORT_ENDPOINT = "http://127.0.0.1:6006/v1/traces";
+
+/** Export refusals the host words (the host and this file hold the same text). */
+export const EXPORT_CHANGED = "the trace changed since the preview";
+export const EXPORT_TOO_LARGE = "This trace is larger than 32 MiB; export a single session instead.";
+
+/** "412 spans, 38 events, 61.2 KiB". */
+export function exportSizeText(spans: number, events: number, bytes: number): string {
+  const size = bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MiB` : `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${spans} spans, ${events} events, ${size}`;
+}
+
+/** The warning above Send when the endpoint is not on this machine. */
+export function exportLeavesText(spans: number, endpoint: string): string {
+  return `This export leaves the machine: ${spans} spans to ${endpoint}`;
+}

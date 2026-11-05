@@ -3112,3 +3112,16 @@ body,
 .activity-muted {
   color: var(--fg-muted);
 }
+
+.export-dialog .export-fields {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.export-dialog .export-fields th,
+.export-dialog .export-fields td {
+  text-align: left;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border);
+}
