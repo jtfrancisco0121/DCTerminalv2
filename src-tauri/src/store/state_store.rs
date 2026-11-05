@@ -5,7 +5,7 @@ use crate::store::state_types::{
     MIN_SPLIT_RATIO, STATE_SCHEMA_VERSION,
 };
 use chrono::Utc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use tauri::AppHandle;
 
@@ -23,6 +23,9 @@ pub struct StateStore {
     /// Window the command in progress is acting for. Not saved. Set at the
     /// start of each command so two windows do not share a sticky focus.
     pub draft_window: String,
+    /// Launch tabs made while the app runs. Not saved, so empty after a
+    /// restart: restored tabs open lazily on first show, by design.
+    fresh_launch: HashSet<String>,
 }
 
 impl StateStore {
@@ -46,6 +49,7 @@ impl StateStore {
             path,
             data,
             draft_window: MAIN_WINDOW_ID.to_string(),
+            fresh_launch: HashSet::new(),
         })
     }
 
@@ -384,20 +388,33 @@ impl StateStore {
     }
 
     /// A new Claude tab that starts the dcv2 plugin (`launch`), labelled
-    /// `label`, made active.
+    /// `label`. It becomes the window's active tab when `activate` is true or
+    /// the window had none; otherwise the previous active tab stays.
     pub fn create_launch_tab(
         &mut self,
         cwd: &str,
         label: &str,
         launch: super::state_types::TabLaunch,
+        activate: bool,
     ) -> Result<String, String> {
+        let window_id = self.draft_window.clone();
+        let previous = self.active_for_window(&window_id);
         let tab_id = self.create_tab(cwd, TabKind::Claude)?;
+        if !activate && previous.is_some() {
+            self.remember_active(&window_id, previous);
+        }
+        self.fresh_launch.insert(tab_id.clone());
         let tab = self.tab_mut(&tab_id)?;
         tab.label = label.chars().take(MAX_LABEL_CHARS).collect();
         tab.custom_label = true;
         tab.launch = Some(launch);
         self.save()?;
         Ok(tab_id)
+    }
+
+    /// True for a launch tab made since the app started.
+    pub fn is_fresh_launch(&self, id: &str) -> bool {
+        self.fresh_launch.contains(id)
     }
 
     pub fn set_active_tab(&mut self, tab_id: &str) -> Result<(), String> {
@@ -565,6 +582,7 @@ impl StateStore {
     /// save and no trim: callers do both.
     fn close_tab_record(&mut self, idx: usize) -> TabRecord {
         let mut tab = self.data.tabs.remove(idx);
+        self.fresh_launch.remove(&tab.id);
         tab.closed_at = Some(Utc::now().to_rfc3339());
         let window_id = tab.window_id.clone();
         let current = self
@@ -746,6 +764,56 @@ mod tests {
     }
 
     #[test]
+    fn a_background_launch_tab_keeps_the_active_tab() {
+        let dir = TempDir::new("state_launch_bg");
+        let mut store = store_in(&dir);
+        let current = store.create_tab("/w/app", TabKind::Claude).unwrap();
+        let launch = crate::store::TabLaunch::default;
+        let bg = store
+            .create_launch_tab("/w/ws", "Run", launch(), false)
+            .unwrap();
+        assert!(store.tab_by_id(&bg).is_some());
+        assert_eq!(
+            store.active_for_window(MAIN_WINDOW_ID).as_deref(),
+            Some(current.as_str())
+        );
+        let fg = store
+            .create_launch_tab("/w/ws", "Run", launch(), true)
+            .unwrap();
+        assert_eq!(
+            store.active_for_window(MAIN_WINDOW_ID).as_deref(),
+            Some(fg.as_str())
+        );
+        let dir2 = TempDir::new("state_launch_bg_empty");
+        let mut empty = store_in(&dir2);
+        let first = empty
+            .create_launch_tab("/w/ws", "Run", launch(), false)
+            .unwrap();
+        assert_eq!(
+            empty.active_for_window(MAIN_WINDOW_ID).as_deref(),
+            Some(first.as_str()),
+            "a window with no active tab gets the new one"
+        );
+    }
+
+    #[test]
+    fn a_launch_tab_is_fresh_until_closed_or_restarted() {
+        let dir = TempDir::new("state_launch_fresh");
+        let mut store = store_in(&dir);
+        let plain = store.create_tab("/w/app", TabKind::Claude).unwrap();
+        let run = store
+            .create_launch_tab("/w/ws", "Run", crate::store::TabLaunch::default(), false)
+            .unwrap();
+        assert!(store.is_fresh_launch(&run));
+        assert!(!store.is_fresh_launch(&plain));
+        let reopened = StateStore::open_path(store.path.clone()).unwrap();
+        assert!(reopened.tab_by_id(&run).is_some());
+        assert!(!reopened.is_fresh_launch(&run), "empty after a restart");
+        store.close_tab(&run).unwrap();
+        assert!(!store.is_fresh_launch(&run));
+    }
+
+    #[test]
     fn closing_the_first_pane_makes_the_shell_the_tab_but_never_for_a_run() {
         let dir = TempDir::new("state_promote");
         let mut store = store_in(&dir);
@@ -771,6 +839,7 @@ mod tests {
                 "/w/ws",
                 "Eagle-Eye · ws",
                 crate::store::TabLaunch::default(),
+                true,
             )
             .unwrap();
         store.split_tab(&run, SplitDirection::Down).unwrap();

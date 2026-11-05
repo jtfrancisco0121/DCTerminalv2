@@ -58,6 +58,7 @@ import { destroyTerminal, TerminalView } from "./components/TerminalView";
 import { newTabDefaults, type NewTabDraft } from "./newTab";
 import { detectPlatform, SCRATCHPAD_EVENT } from "./terminal/keys";
 import { ACCOUNT_REMOVED, accountProblem } from "./terminal/openPlan";
+import { openInBackground } from "./terminal/background";
 import { dropLivePty, ptyExitCode, ptyRunning, subscribeLivePty, subscribePtyExit } from "./terminal/live";
 import { focusParkedTerminal, refitTerminal, requestTerminalSearch, setCompactPaste, setCopyOnSelect, setFileLinkEditor, setOptionAsMeta, setTerminalTheme } from "./terminal/park";
 import { applyTheme, watchSystemTheme } from "./theme";
@@ -192,6 +193,22 @@ function App() {
       (err: unknown) => reportError("Claude usage", err, { once: true }),
     );
   }, [windowId]);
+
+  // A start made while nobody looked (a queued or wave run) leaves a tab the event may not have
+  // announced. Reload on focus and visibility too, so the next load finds it.
+  useEffect(() => {
+    const load = () => reloadRef.current().catch((err: unknown) => reportError("Tabs", err, { once: true }));
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    const onFocus = () => void load();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
 
   useEffect(() => {
     refreshUsage();
@@ -603,6 +620,8 @@ function App() {
       keep(win.listen("new-window", () => runRef.current({ kind: "new-window" })));
       // Resume of a run whose tab is live in this window focuses that tab.
       keep(win.listen<string>("focus-tab", () => void reloadRef.current()));
+      // A background start made a tab here: reload only. The effect on `state` opens it.
+      keep(win.listen<string>("tabs-changed", () => void reloadRef.current()));
       keep(
         win.listen<string>("menu", (event) => {
           if (event.payload === "import-dev") {
@@ -782,6 +801,15 @@ function App() {
 
   const exited = new Set((state?.tabs ?? []).filter((tab) => ptyExitCode(tab.id) != null).map((tab) => tab.id));
   const fontSize = settings?.terminal.fontSize ?? 14;
+
+  // After every load of the tab list: start each launch tab no view has opened (a background
+  // start), without selecting it. Idempotent, so repeated loads never start a second program.
+  useEffect(() => {
+    if (!state || !ctx) return;
+    for (const pending of state.tabs) {
+      if (pending.pendingStart) openInBackground(pending, fontSize, accountMissing);
+    }
+  }, [state, ctx, fontSize, accountMissing]);
 
   return (
     <main className="workspace">

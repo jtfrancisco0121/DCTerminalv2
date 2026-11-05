@@ -286,6 +286,25 @@ pub struct StartedRun {
 /// Window event: select this tab (it was focused from another window).
 pub const FOCUS_TAB_EVENT: &str = "focus-tab";
 
+/// Window event: the tab list changed (a dispatcher start made a tab).
+/// Payload: the tab id. Reload only: it never selects, focuses or raises.
+pub const TABS_CHANGED_EVENT: &str = "tabs-changed";
+
+/// Tells the tab's window (only) to reload its tabs. A missing tab or
+/// window is ignored. The start never depends on this arriving.
+pub fn announce_tab(app: &AppHandle, tab_id: &str) {
+    let window_id = {
+        let state = app.state::<Mutex<StateStore>>();
+        let Ok(state) = state.lock() else { return };
+        let Some(tab) = state.tab_by_id(tab_id) else {
+            return;
+        };
+        tab.window_id.clone()
+    };
+    let label = crate::store::window_label(&window_id).to_string();
+    let _ = tauri::Emitter::emit_to(app, label.as_str(), TABS_CHANGED_EVENT, tab_id.to_string());
+}
+
 /// The open tab (any window) whose launch is `run_dir` and whose terminal
 /// is running, so a second orchestrator is never started on one run.
 pub fn live_run_tab<'a>(
@@ -391,11 +410,12 @@ fn add_launch_tab(
     cwd: &Path,
     label: &str,
     spec: crate::store::TabLaunch,
+    activate: bool,
 ) -> Result<TabSummary, String> {
     let state = app.state::<Mutex<StateStore>>();
     let mut state = state.lock().map_err(|e| e.to_string())?;
     state.bind_window(window_id);
-    let id = state.create_launch_tab(&cwd.display().to_string(), label, spec)?;
+    let id = state.create_launch_tab(&cwd.display().to_string(), label, spec, activate)?;
     state
         .tab_by_id(&id)
         .map(tab_summary)
@@ -539,6 +559,9 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
         dispatch_entry_id,
         eval,
     } = params;
+    // A dispatcher start (queue, wave, eval) runs in the background: it must
+    // not switch the tab the user is looking at.
+    let activate = dispatch_entry_id.is_none();
     let folder = start_folder(&folder)?;
     let ctx = launch_context(app, window_id.as_deref())?;
     let plugin = plugin_dir(app).ok_or(NO_PLUGIN)?;
@@ -642,7 +665,7 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
             ..base
         });
         let label = format!("Eagle-Eye · {}", folder_name(&folder));
-        let tab = add_launch_tab(app, window_id.as_deref(), &folder, &label, spec)?;
+        let tab = add_launch_tab(app, window_id.as_deref(), &folder, &label, spec, activate)?;
         return Ok(StartedRun {
             tab,
             run_dir: Some(created.run_dir),
@@ -658,7 +681,7 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
         ..base
     });
     let label = format!("{label} · {}", folder_name(&folder));
-    let tab = add_launch_tab(app, window_id.as_deref(), &folder, &label, spec)?;
+    let tab = add_launch_tab(app, window_id.as_deref(), &folder, &label, spec, activate)?;
     Ok(StartedRun {
         tab,
         run_dir: None,
@@ -726,7 +749,7 @@ pub async fn resume_run(
             memory_prompt: prompt_file,
         });
         let label = format!("Eagle-Eye · {}", folder_name(&folder));
-        let tab = add_launch_tab(&app, window_id.as_deref(), &folder, &label, spec)?;
+        let tab = add_launch_tab(&app, window_id.as_deref(), &folder, &label, spec, true)?;
         Ok(StartedRun {
             tab,
             run_dir: Some(run_dir.display().to_string()),
@@ -1171,7 +1194,12 @@ mod tests {
             .unwrap();
         store.bind_window(Some("win-2"));
         let a = store
-            .create_launch_tab(dir.path().to_str().unwrap(), "Eagle-Eye", launch.clone())
+            .create_launch_tab(
+                dir.path().to_str().unwrap(),
+                "Eagle-Eye",
+                launch.clone(),
+                true,
+            )
             .unwrap();
         let tabs: Vec<_> = store.sorted_tabs().into_iter().cloned().collect();
         assert_eq!(live_run_tab(&tabs, &run, |_| true).unwrap().id, a);

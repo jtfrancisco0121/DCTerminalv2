@@ -73,8 +73,20 @@ vi.mock("./bridge", () => ({
   attentionSummary: vi.fn(async () => ({ needsYou: 0, activeRuns: 0 })),
   activeRuns: vi.fn(async () => []),
   runTabs: vi.fn(async () => []),
+  terminalResumeId: vi.fn(async () => null),
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
+// The window's own event handlers, by name, so a test can fire `tabs-changed`.
+const windowEvents = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({
+    label: "main",
+    listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
+      windowEvents.set(name, handler);
+      return () => windowEvents.delete(name);
+    },
+  }),
+}));
 // The terminal itself is xterm in a real webview; here it is a marker.
 const terminalLife = vi.hoisted(() => ({ mounts: 0, unmounts: 0 }));
 vi.mock("./components/TerminalView", () => ({
@@ -99,6 +111,8 @@ vi.mock("./terminal/park", () => ({
   setFileLinkEditor: vi.fn(),
   setOptionAsMeta: vi.fn(),
   setTerminalTheme: vi.fn(),
+  ensureParkedTerminal: vi.fn(),
+  measuredTerminalSize: () => ({ cols: 80, rows: 24 }),
 }));
 vi.mock("./run/observe", async () => {
   const actual = await vi.importActual<typeof import("./run/observe")>("./run/observe");
@@ -173,9 +187,11 @@ vi.mock("./flight/api", () => ({
 }));
 
 const running = new Set<string>();
+const openLive = vi.hoisted(() => vi.fn(async () => "opened"));
 vi.mock("./terminal/live", async (original) => ({
   ...(await original<typeof import("./terminal/live")>()),
   ptyRunning: (id: string) => running.has(id),
+  openLivePty: (...args: unknown[]) => (openLive as (...a: unknown[]) => unknown)(...args),
 }));
 
 const { default: App } = await import("./App");
@@ -770,5 +786,86 @@ describe("App run pages", () => {
     vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
     cleanup();
     endState();
+  });
+});
+
+describe("App background starts", () => {
+  const pending: TabSummary = { ...runTab, id: "tab_bg", label: "Eagle-Eye · queued", pendingStart: true };
+  const opened = () => openLive.mock.calls.map((call) => (call as unknown as [string])[0]);
+
+  const setup = (tabs: TabSummary[]) => {
+    cleanup();
+    openLive.mockClear();
+    windowEvents.clear();
+    state = { windowId: "main", activeTabId: tab.id, tabs, closedTabs: [] };
+  };
+  const selectedLabel = () => screen.getByRole("tab", { selected: true }).textContent ?? "";
+
+  it("tabs-changed reloads, shows the new tab and opens its terminal without selecting it", async () => {
+    setup([tab]);
+    render(<App />);
+    await screen.findByTestId("terminal");
+    await waitFor(() => expect(windowEvents.has("tabs-changed")).toBe(true));
+    expect(opened()).toEqual([]);
+    state = { ...state, tabs: [tab, pending] };
+    await act(async () => {
+      windowEvents.get("tabs-changed")!({ payload: pending.id });
+    });
+    expect(await screen.findByRole("tab", { name: /Eagle-Eye · queued/ })).toBeTruthy();
+    await waitFor(() => expect(opened()).toEqual(["tab_bg"]));
+    expect(selectedLabel()).toContain("Claude · app");
+  });
+
+  it("a pending tab present at the first load opens with no event, and the active tab stays", async () => {
+    setup([tab, pending]);
+    render(<App />);
+    await screen.findByTestId("terminal");
+    await waitFor(() => expect(opened()).toEqual(["tab_bg"]));
+    expect(selectedLabel()).toContain("Claude · app");
+  });
+
+  it("a window focus or visibility load opens a tab whose event was missed", async () => {
+    setup([tab]);
+    render(<App />);
+    await screen.findByTestId("terminal");
+    state = { ...state, tabs: [tab, pending] };
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(opened()).toEqual(["tab_bg"]));
+    expect(selectedLabel()).toContain("Claude · app");
+
+    const second: TabSummary = { ...pending, id: "tab_bg2", label: "Eagle-Eye · wave" };
+    state = { ...state, tabs: [tab, pending, second] };
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await waitFor(() => expect(opened()).toContain("tab_bg2"));
+    expect(selectedLabel()).toContain("Claude · app");
+  });
+
+  it("a restored tab (not pending) is never opened by a load", async () => {
+    setup([tab, { ...runTab, id: "tab_restored", pendingStart: false }]);
+    render(<App />);
+    await screen.findByTestId("terminal");
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(opened()).toEqual([]);
+  });
+
+  it("no background open while the window's account is missing", async () => {
+    setup([tab, pending]);
+    context = { ...personal, accountMissing: true };
+    try {
+      render(<App />);
+      await screen.findByTestId("status-account");
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(opened()).toEqual([]);
+    } finally {
+      context = personal;
+    }
   });
 });

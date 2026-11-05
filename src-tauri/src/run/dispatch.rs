@@ -580,7 +580,9 @@ fn spawn_start(app: &AppHandle, id: &str) {
         .spawn({
             let (app, id) = (app.clone(), id.clone());
             move || {
-                run_entry(&app, &id, &|app, params| start_run_inner(app, params));
+                run_entry(&app, &id, &|app, params| {
+                    start_and_announce(app, params, start_run_inner, super::announce_tab)
+                });
                 finish_start();
             }
         });
@@ -588,6 +590,19 @@ fn spawn_start(app: &AppHandle, id: &str) {
         let _ = requeue(&data_dir(&app), &id, "could not start a thread");
         IN_FLIGHT.store(false, Ordering::SeqCst);
     }
+}
+
+/// A dispatcher start: `launcher`, then one `announce` of the new tab on success (none on failure), so
+/// the tab's window reloads and opens it. Generic over the app handle so a test can pass a fake.
+pub fn start_and_announce<A>(
+    app: &A,
+    params: StartParams,
+    launcher: impl Fn(&A, StartParams) -> Result<super::StartedRun, StartError>,
+    announce: impl Fn(&A, &str),
+) -> Result<super::StartedRun, StartError> {
+    let started = launcher(app, params)?;
+    announce(app, &started.tab.id);
+    Ok(started)
 }
 
 fn requeue(data: &Path, id: &str, why: &str) -> Result<(), String> {
@@ -1619,6 +1634,45 @@ pub async fn dispatch_release(app: AppHandle, run_dir: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn started_run(tab_id: &str) -> super::super::StartedRun {
+        super::super::StartedRun {
+            tab: crate::commands::tab_summary(&crate::store::TabRecord {
+                id: tab_id.into(),
+                label: "Run".into(),
+                custom_label: true,
+                cwd: "/w".into(),
+                kind: crate::store::TabKind::Claude,
+                window_id: String::new(),
+                order: 0,
+                created_at: String::new(),
+                claude_session_id: None,
+                claude_config_dir: None,
+                closed_at: None,
+                launch: None,
+                split: None,
+            }),
+            run_dir: None,
+            focused: false,
+        }
+    }
+
+    #[test]
+    fn a_dispatcher_start_announces_its_tab_once_and_a_failure_none() {
+        let seen = std::cell::RefCell::new(Vec::<String>::new());
+        let announce = |_: &(), id: &str| seen.borrow_mut().push(id.to_string());
+        let ok = start_and_announce(&(), params("a"), |_, _| Ok(started_run("tab-1")), announce);
+        assert!(ok.is_ok());
+        assert_eq!(*seen.borrow(), vec!["tab-1".to_string()]);
+        let err = start_and_announce(
+            &(),
+            params("b"),
+            |_, _| Err(StartError::Message("no".into())),
+            announce,
+        );
+        assert!(matches!(err, Err(StartError::Message(m)) if m == "no"));
+        assert_eq!(seen.borrow().len(), 1, "no announce on failure");
+    }
 
     fn params(name: &str) -> StartParams {
         StartParams {

@@ -22,8 +22,9 @@ pub const TIMEOUT: Duration = Duration::from_secs(10);
 const RETRY_AFTER: Duration = Duration::from_secs(2);
 /// The events that go to the phone: the ones that matter when nobody is
 /// at the Mac.
-pub const PUSH_KINDS: [&str; 9] = [
+pub const PUSH_KINDS: [&str; 10] = [
     "stall",
+    "not-started",
     "check-failed",
     "ci-failed",
     "merged-cleaned",
@@ -525,6 +526,7 @@ mod tests {
         let on = settings("ntfy");
         for kind in [
             Kind::Stall,
+            Kind::NotStarted,
             Kind::CheckFailed,
             Kind::CiFailed,
             Kind::MergedCleaned,
@@ -551,6 +553,16 @@ mod tests {
         let mut off = on.clone();
         off.events.insert("stall".into(), false);
         assert!(Payload::for_event(&event(Kind::Stall, Some("r")), &off).is_none());
+    }
+
+    #[test]
+    fn a_not_started_tab_is_one_push_with_the_run_and_the_kind() {
+        let payload =
+            Payload::for_event(&event(Kind::NotStarted, Some("r-9")), &settings("ntfy")).unwrap();
+        assert_eq!(
+            serde_json::to_string(&payload).unwrap(),
+            r#"{"run":"r-9","event":"not-started"}"#
+        );
     }
 
     #[test]

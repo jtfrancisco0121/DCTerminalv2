@@ -118,6 +118,8 @@ describe("attention kind keys", () => {
     expect(rust).toContain("eval-finished");
     expect(ATTENTION_KINDS.map((k) => k.key).sort()).toEqual(rust);
     expect(PUSH_KINDS.map((k) => k.key)).toContain("eval-finished");
+    expect(ATTENTION_KINDS.map((k) => k.key)).toContain("not-started");
+    expect(PUSH_KINDS.map((k) => k.key)).toContain("not-started");
   });
 });
 

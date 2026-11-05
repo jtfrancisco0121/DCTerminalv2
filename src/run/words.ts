@@ -147,6 +147,7 @@ export const ATTENTION_KINDS: ReadonlyArray<{ key: string; label: string }> = [
   { key: "approval-wait", label: "A run waits for your approval" },
   { key: "waiting-reminder", label: "Reminder: still waiting for you" },
   { key: "stall", label: "A run has made no progress" },
+  { key: "not-started", label: "A run tab was created but did not start" },
   { key: "run-done", label: "A run finished" },
   { key: "run-failed", label: "A run failed" },
   { key: "check-failed", label: "A PR's check failed" },
@@ -161,7 +162,7 @@ export const ATTENTION_KINDS: ReadonlyArray<{ key: string; label: string }> = [
 
 /** The events the phone gets (src-tauri/src/observe/push.rs PUSH_KINDS). */
 export const PUSH_KINDS: ReadonlyArray<{ key: string; label: string }> = ATTENTION_KINDS.filter((kind) =>
-  ["stall", "check-failed", "ci-failed", "merged-cleaned", "autopost-failed", "batch-planned", "batch-ready", "wave-ready", "eval-finished"].includes(kind.key),
+  ["stall", "not-started", "check-failed", "ci-failed", "merged-cleaned", "autopost-failed", "batch-planned", "batch-ready", "wave-ready", "eval-finished"].includes(kind.key),
 );
 
 const PR_STATES: Record<string, string> = {
