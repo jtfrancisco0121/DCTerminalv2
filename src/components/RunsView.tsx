@@ -96,7 +96,7 @@ export function RunsView({ windowId, onClose, onStarted, onAnalytics, onEvalResu
   return (
     <Dialog title="Runs" onClose={onClose} className="runs-dialog">
       <QueueSection />
-      <BatchOverview />
+      <BatchOverview onEvalResults={onEvalResults} />
       <EpicsSection />
       <div className="runs-filters">
         <input

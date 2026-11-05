@@ -79,4 +79,33 @@ describe("QueueSection", () => {
     await waitFor(() => expect(calls.overview).toHaveBeenCalled());
     expect(container.querySelector("[data-testid=queue]")).toBeNull();
   });
+
+  it("tells that the usage hold still applies to Start now for an eval entry, and shows a held entry's reason", async () => {
+    calls.overview.mockResolvedValue({
+      ...overview,
+      queue: [
+        {
+          id: "q-e1",
+          label: "Eval run 1 of 3",
+          state: "queued",
+          reason: "the five-hour usage is not known",
+          accountId: "a",
+          queuedAt: "t",
+          batchId: "b-1",
+          params: { folder: "/w", request: "x", eval: { group: "b-1", index: 1, of: 3, source: "r-0" } },
+        },
+        overview.queue[1]!,
+      ],
+    });
+    render(<QueueSection />);
+    expect((await screen.findByTestId("queue-q-e1")).textContent).toContain("the five-hour usage is not known");
+    fireEvent.click(screen.getAllByText("Start now")[0]!);
+    expect((await screen.findByRole("alert")).textContent).toContain("The usage hold still applies to an eval run.");
+    cleanup();
+    calls.overview.mockResolvedValue(overview);
+    render(<QueueSection />);
+    await screen.findByTestId("queue-q-1");
+    fireEvent.click(screen.getAllByText("Start now")[0]!);
+    expect((await screen.findByRole("alert")).textContent).not.toContain("usage hold");
+  });
 });

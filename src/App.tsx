@@ -37,6 +37,8 @@ import { NewTabForm } from "./components/NewTabForm";
 import { RunPanel } from "./components/RunPanel";
 import { TracePanel } from "./components/TracePanel";
 import { ComparePage } from "./components/ComparePage";
+import { EvalDialog } from "./components/EvalDialog";
+import { EvalResults } from "./components/EvalResults";
 import { TraceSearch, type SearchState } from "./components/TraceSearch";
 import type { TraceTarget } from "./flight/types";
 import { PreviewHost } from "./components/PreviewPane";
@@ -118,7 +120,10 @@ function App() {
   const [attention, setAttention] = useState<AttentionSummary | null>(null);
   const [activeRunsOpen, setActiveRunsOpen] = useState(false);
   // A window-level page drawn over the workspace; the terminals stay mounted underneath.
-  const [page, setPage] = useState<"dashboard" | "analytics" | "trace-search" | "compare" | null>(null);
+  const [page, setPage] = useState<"dashboard" | "analytics" | "trace-search" | "compare" | "eval-results" | null>(null);
+  // The eval group whose results page is open, and the run the Eval setup dialog was opened for.
+  const [evalGroup, setEvalGroup] = useState<string | null>(null);
+  const [evalSource, setEvalSource] = useState<string | null>(null);
   // The two runs on the Compare page, kept while a Trace opened from it is shown.
   const [compare, setCompare] = useState<{ a: string | null; b: string | null }>({ a: null, b: null });
   // The last trace search (form and results), kept while the app runs so Escape from a Trace returns to it.
@@ -130,6 +135,7 @@ function App() {
     focus?: string;
     fromSearch?: boolean;
     fromCompare?: boolean;
+    fromEval?: boolean;
   } | null>(null);
   const traceOpener = useRef<HTMLElement | null>(null);
   const [dialog, setDialog] = useState<"new-tab" | "new-window" | "pick-account" | "settings" | "runs" | null>(null);
@@ -226,10 +232,24 @@ function App() {
 
   const active = state?.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
 
-  const openTrace = (target: TraceTarget, agent?: string, focus?: string, fromSearch?: boolean, fromCompare?: boolean) => {
+  const openTrace = (
+    target: TraceTarget,
+    agent?: string,
+    focus?: string,
+    fromSearch?: boolean,
+    fromCompare?: boolean,
+    fromEval?: boolean,
+  ) => {
     traceOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setPage(null);
-    setTrace({ target, agent, focus, fromSearch, fromCompare });
+    setTrace({ target, agent, focus, fromSearch, fromCompare, fromEval });
+  };
+  const openEvalResults = (group: string) => {
+    setTrace(null);
+    setDialog(null);
+    setActiveRunsOpen(false);
+    setEvalGroup(group);
+    setPage("eval-results");
   };
   const openCompare = (a: string | null, b: string | null) => {
     setTrace(null);
@@ -253,6 +273,13 @@ function App() {
       traceOpener.current = null;
       setTrace(null);
       setPage("compare");
+      return;
+    }
+    // A Trace opened from the eval results goes back to them.
+    if (trace?.fromEval) {
+      traceOpener.current = null;
+      setTrace(null);
+      setPage("eval-results");
       return;
     }
     setTrace(null);
@@ -815,6 +842,7 @@ function App() {
                 onStarted={(run) => void started(run)}
                 onPlainTab={() => setPlainTab(true)}
                 onShowAllRuns={() => setDialog("runs")}
+                onEvalResults={openEvalResults}
                 usageWindows={usage}
               />
             )}
@@ -858,6 +886,7 @@ function App() {
               onTabsChanged={() => void reload()}
               onLayoutChange={() => refitTerminal(active.id)}
               onOpenTrace={(agent) => openTrace({ runDir: active.runDir! }, agent)}
+              onEvaluate={settings?.observe?.evalEnabled ? (runDir) => setEvalSource(runDir) : undefined}
             />
           </div>
         )}
@@ -881,6 +910,13 @@ function App() {
             onClose={() => setPage(null)}
           />
         )}
+        {page === "eval-results" && evalGroup && (
+          <EvalResults
+            group={evalGroup}
+            onOpenTrace={(runDir) => openTrace({ runDir }, undefined, undefined, false, false, true)}
+            onClose={() => setPage(null)}
+          />
+        )}
         {trace && (
           <TracePanel
             key={`${JSON.stringify(trace.target)}:${trace.focus ?? ""}`}
@@ -892,12 +928,13 @@ function App() {
           />
         )}
       </section>
-      <AttentionNotices />
+      <AttentionNotices onEvalResults={openEvalResults} />
       {activeRunsOpen && (
         <ActiveRuns
           onClose={() => setActiveRunsOpen(false)}
           onAllRuns={() => setDialog("runs")}
           onDashboard={() => setPage("dashboard")}
+          onEvalResults={openEvalResults}
         />
       )}
       <StatusBar
@@ -931,6 +968,7 @@ function App() {
               onStarted={(run) => void started(run)}
               onPlainTab={() => setPlainTab(true)}
                 onShowAllRuns={() => setDialog("runs")}
+                onEvalResults={openEvalResults}
                 usageWindows={usage}
             />
           )}
@@ -979,6 +1017,18 @@ function App() {
           onAnalytics={() => {
             setDialog(null);
             setPage("analytics");
+          }}
+          onEvalResults={openEvalResults}
+        />
+      )}
+      {evalSource && (
+        <EvalDialog
+          windowId={windowId}
+          runDir={evalSource}
+          onClose={() => setEvalSource(null)}
+          onQueued={(n) => {
+            setEvalSource(null);
+            setMessage(`Queued ${n} runs`);
           }}
         />
       )}

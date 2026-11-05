@@ -1437,6 +1437,73 @@ pub fn plan_eval_batch(
     )
 }
 
+/// What the Eval setup dialog shows before it starts anything.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalPreview {
+    /// The source run's request title.
+    pub title: String,
+    /// `run.usageHoldPercent`; `None` when no hold is set.
+    pub hold_percent: Option<u32>,
+    /// The latest five-hour reading of the window's account: percent used and when the window resets.
+    pub five_hour: Option<FiveHourReading>,
+    /// Repos the runs build on the source run's base commits.
+    pub based_repos: Vec<String>,
+    /// Repos the source has no base for (a run that failed before its worktrees): they use the default branch.
+    pub default_branch_repos: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FiveHourReading {
+    pub percent: f64,
+    pub resets_at: Option<i64>,
+}
+
+/// Which repos of a source run an eval builds on its recorded base, and which fall back to the default branch.
+pub fn eval_preview_repos(source: &Path) -> (Vec<String>, Vec<String>) {
+    let bases = source_bases(source).unwrap_or_default();
+    let mut all: Vec<String> = super::folder::read_json_value(&source.join("status.json"))
+        .and_then(|v| v["prs"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|pr| {
+            pr["repoPath"]
+                .as_str()
+                .filter(|p| !p.is_empty())
+                .map(String::from)
+        })
+        .collect();
+    all.sort();
+    all.dedup();
+    all.into_iter().partition(|repo| bases.contains_key(repo))
+}
+
+#[tauri::command]
+pub async fn dispatch_eval_preview(
+    app: AppHandle,
+    window_id: Option<String>,
+    source_run_dir: String,
+) -> Result<EvalPreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = data_dir(&app);
+        let source = super::checked_run_dir(&data, &source_run_dir)?;
+        let account_id = account_of(&app, window_id.as_deref())?;
+        let (_, hold, _) = limits(&app);
+        let (based_repos, default_branch_repos) = eval_preview_repos(&source);
+        Ok(EvalPreview {
+            title: super::folder::request_title(&source).unwrap_or_default(),
+            hold_percent: hold,
+            five_hour: usage_reading(&app, &account_id)
+                .map(|(percent, resets_at)| FiveHourReading { percent, resets_at }),
+            based_repos,
+            default_branch_repos,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// "Evaluate N times…": records one eval batch and queues its n entries on the window's account. Refused with
 /// the reason unless Eval mode is on, the source is a finished normal run of that account and no usage hold
 /// applies (see `eval_refusal`). Returns the batch id.
@@ -2253,6 +2320,11 @@ mod tests {
         );
         assert_eq!(bases["/ws/r1"].base_commit, "abc123");
         assert_eq!(bases["/ws/r1"].base, "main");
+        // The dialog's base line: r1 has a recorded base, r2 (no baseCommit) falls back to the default branch.
+        assert_eq!(
+            eval_preview_repos(&run),
+            (vec!["/ws/r1".to_string()], vec!["/ws/r2".to_string()])
+        );
         assert_eq!(
             all.iter()
                 .map(|p| p.eval.as_ref().unwrap().index)

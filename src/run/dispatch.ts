@@ -81,3 +81,18 @@ export function queueCount(o: Pick<DispatchOverview, "cap" | "holders" | "queue"
   const free = Math.max(0, o.cap - o.holders.length - o.queue.length);
   return Math.max(0, count - free);
 }
+
+/** What the Eval setup dialog shows before it starts anything (dispatch.rs `EvalPreview`). */
+export type EvalPreview = {
+  title: string;
+  /** `run.usageHoldPercent`; null when no hold is set. */
+  holdPercent: number | null;
+  /** The latest five-hour reading of the window's account; null when there is none. */
+  fiveHour: { percent: number; resetsAt: number | null } | null;
+  /** Repos the runs build on the source run's base commits. */
+  basedRepos: string[];
+  /** Repos the source has no base for: they use the default branch. */
+  defaultBranchRepos: string[];
+};
+export const dispatchEvalPreview = (windowId: string | null, sourceRunDir: string) =>
+  invoke<EvalPreview>("dispatch_eval_preview", { windowId, sourceRunDir });

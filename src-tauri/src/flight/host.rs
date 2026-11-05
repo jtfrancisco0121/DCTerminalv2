@@ -1449,6 +1449,18 @@ fn index_reader(data: &Path) -> Option<rusqlite::Connection> {
     })
 }
 
+/// The share of the account's five-hour window one finished run used (an estimate in percent points), from the
+/// readings inside its span; `None` when there are not enough readings ("not known"). For the Eval dialog's
+/// estimate (N times this).
+pub fn run_five_hour_share(
+    claude: &ClaudeSettings,
+    run_dir: &Path,
+    usage: &dyn Fn(&str) -> UsageHistory,
+) -> Option<f64> {
+    let record = crate::run::record::read_record(run_dir)?;
+    share_of(claude, run_dir, &record, usage).five_hour
+}
+
 /// `flight_compare`: two run folders, each already through `checked_run_dir`. Reads the trace index through a
 /// read-only connection and each run's record; it never writes `flight.db` and never indexes on demand. The
 /// same folder twice is refused.

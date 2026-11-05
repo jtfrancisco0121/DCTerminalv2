@@ -27,3 +27,6 @@ export const flightCompare = (a: string, b: string) => invoke<CompareOut>("fligh
 
 /** The runs of one eval group with their measures and min / median / max over the finished ones (read-only). */
 export const flightEvalResults = (group: string) => invoke<EvalResults>("flight_eval_results", { group });
+
+/** What one finished run used of the account's five-hour window (an estimate in percent points); null when not known. */
+export const flightRunShare = (runDir: string) => invoke<number | null>("flight_run_share", { runDir });

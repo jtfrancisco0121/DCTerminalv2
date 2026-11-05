@@ -4,6 +4,12 @@ import attentionRs from "../../src-tauri/src/observe/attention.rs?raw";
 import {
   ATTENTION_KINDS,
   checkTone,
+  evalBaseText,
+  evalCheckText,
+  evalDistText,
+  evalEstimateText,
+  evalHoldReason,
+  evalUsageLine,
   evalFinished,
   outcomeText,
   runFinished,
@@ -467,5 +473,43 @@ describe("a finished eval run", () => {
     expect(steps?.steps.some((s) => s.you)).toBe(false);
     const running = runSteps("building", null, { done: 0, total: 1 }, { mode: "eval" });
     expect(running?.steps.map((s) => s.status)).toEqual(["done", "done", "current", "todo"]);
+  });
+});
+
+describe("eval words", () => {
+  const NOW = 1_800_000_000;
+  it("holds like the backend: no reading with a hold set holds, a reading past its reset is clear", () => {
+    const reading = (percent: number, resetsAt: number | null = NOW + 100) => ({ percent, resetsAt });
+    expect(evalHoldReason(null, null, NOW)).toBeNull();
+    expect(evalHoldReason(undefined, reading(99), NOW)).toBeNull();
+    expect(evalHoldReason(80, null, NOW)).toContain("not known");
+    expect(evalHoldReason(80, reading(95, NOW - 1), NOW)).toBeNull();
+    expect(evalHoldReason(80, reading(95, NOW), NOW)).toBeNull();
+    expect(evalHoldReason(80, reading(80), NOW)).toBe("Five-hour usage is 80%, at or past your hold of 80%.");
+    expect(evalHoldReason(80, reading(79.4), NOW)).toBeNull();
+    expect(evalHoldReason(80, reading(90, null), NOW)).toContain("90%");
+  });
+
+  it("words the usage, estimate, base and check lines", () => {
+    expect(evalUsageLine(null, null, NOW)).toBe("No usage hold is set");
+    expect(evalUsageLine(80, null, NOW)).toBe("Five-hour usage is not known");
+    expect(evalUsageLine(80, { percent: 90, resetsAt: NOW - 5 }, NOW)).toBe("The five-hour window has reset (hold 80%)");
+    expect(evalUsageLine(80, { percent: 42.4, resetsAt: NOW + 5 }, NOW)).toBe("Five-hour usage 42% · hold 80%");
+    expect(evalEstimateText(3, 4)).toBe("Estimate: about 12 points of the five-hour window (3 × 4)");
+    expect(evalEstimateText(3, null)).toBe("Estimate: not known");
+    expect(evalEstimateText(3, undefined)).toBe("Estimate: not known");
+    expect(evalBaseText(["/w/app"], [])).toBe("Builds on the source run's commits");
+    expect(evalBaseText([], [])).toBe("Builds on the current default branch");
+    expect(evalBaseText(["/w/app"], ["/w/docs"])).toContain("default branch for docs");
+    expect(evalCheckText("checking", null)).toBe("checking…");
+    expect(evalCheckText("not checked", null)).toBe("not checked");
+    expect(evalCheckText("checked", 0.5)).toBe("50% pass");
+    expect(evalCheckText("checked", 0)).toBe("0% pass");
+  });
+
+  it("words a distribution, and a missing one as no figures", () => {
+    expect(evalDistText({ min: 1, median: 2.5, max: 4, of: 3 })).toBe("min 1 · median 2.5 · max 4 (over 3 runs)");
+    expect(evalDistText({ min: 1, median: 1, max: 1, of: 1 }, (v) => `${v}x`)).toBe("min 1x · median 1x · max 1x (over 1 run)");
+    expect(evalDistText({ min: null, median: null, max: null, of: 0 })).toBe("no figures");
   });
 });

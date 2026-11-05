@@ -64,4 +64,23 @@ describe("AttentionNotices", () => {
     });
     expect(screen.queryAllByRole("status")).toHaveLength(0);
   });
+
+  it("offers Results on an eval-finished notice, with the group's batch id", async () => {
+    const onEvalResults = vi.fn();
+    render(<AttentionNotices onEvalResults={onEvalResults} />);
+    await act(async () => {});
+    await send({
+      kind: "eval-finished",
+      tabId: null,
+      windowLabel: null,
+      runId: "b-20261105-100000-ab12",
+      text: "dcv2: eval group finished (b-20261105-100000-ab12)",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Results" }));
+    expect(onEvalResults).toHaveBeenCalledWith("b-20261105-100000-ab12");
+    expect(screen.queryByText(/eval group finished/)).toBeNull();
+    // No Results link on another kind of notice.
+    await send(event(1));
+    expect(screen.queryByRole("button", { name: "Results" })).toBeNull();
+  });
 });

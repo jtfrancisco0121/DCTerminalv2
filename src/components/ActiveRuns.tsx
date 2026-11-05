@@ -15,10 +15,12 @@ type Props = {
   onAllRuns: () => void;
   /** The footer button: open the run dashboard page. */
   onDashboard?: () => void;
+  /** An eval group's "Results" link in the batch overview. */
+  onEvalResults?: (group: string) => void;
 };
 
 /** Every unfinished run tab of every window, with its stage, flags and PR progress. */
-export function ActiveRuns({ onClose, onAllRuns, onDashboard }: Props) {
+export function ActiveRuns({ onClose, onAllRuns, onDashboard, onEvalResults }: Props) {
   const [runs, setRuns] = useState<ActiveRun[] | null>(null);
 
   // Events from the detector; polls at POLL_MS when none arrive.
@@ -77,7 +79,7 @@ export function ActiveRuns({ onClose, onAllRuns, onDashboard }: Props) {
           </li>
         ))}
       </ul>
-      <BatchOverview compact />
+      <BatchOverview compact onEvalResults={onEvalResults} />
       <div className="active-runs-footer">
         <button
           type="button"

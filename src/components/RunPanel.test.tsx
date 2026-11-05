@@ -644,4 +644,38 @@ describe("JanitorDialog", () => {
     fireEvent.click(screen.getByText("Remove"));
     expect(onRemove).toHaveBeenCalledWith(["PR1"]);
   });
+
+  it("offers Evaluate N times… only with Eval mode on, on a finished normal run (never an eval or epic-plan run)", () => {
+    const onEvaluate = vi.fn();
+    const panel = (over: Partial<RunView>, withHandler = true) => {
+      cleanup();
+      render(
+        <RunPanelView
+          view={{ ...view, ...over }}
+          checking={false}
+          onRerunChecks={vi.fn()}
+          onOpenFile={vi.fn()}
+          onOpenUrl={vi.fn()}
+          onCleanUp={vi.fn()}
+          onEvaluate={withHandler ? onEvaluate : undefined}
+        />,
+      );
+    };
+    const button = () => screen.queryByRole("button", { name: "Evaluate N times…" });
+    panel({ stage: "done" });
+    fireEvent.click(button()!);
+    expect(onEvaluate).toHaveBeenCalledOnce();
+    panel({ stage: "failed" });
+    expect(button()).toBeTruthy();
+    // Eval mode off: the owner passes no handler.
+    panel({ stage: "done" }, false);
+    expect(button()).toBeNull();
+    // Not finished, an eval run, an epic-plan run.
+    panel({ stage: "building" });
+    expect(button()).toBeNull();
+    panel({ stage: "done", eval: { group: "b-1", index: 1, of: 2, source: "r-0" } });
+    expect(button()).toBeNull();
+    panel({ stage: "done", runMode: "epic-plan" });
+    expect(button()).toBeNull();
+  });
 });

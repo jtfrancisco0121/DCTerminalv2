@@ -743,3 +743,70 @@ export function compareOpensTrace(group: string): boolean {
   return group !== "tokens" && group !== "windowShare" && group !== "stages";
 }
 
+
+// ---- Eval (AF14): the usage hold, the estimate and the distribution texts -------------------
+
+/** The latest five-hour reading of an account: percent used, and when that window resets (Unix seconds). */
+export type FiveHourReading = { percent: number; resetsAt: number | null };
+
+/**
+ * Why an eval start is held now, or null. The twin of dispatch.rs `eval_hold`: with a hold set and no reading at all
+ * it holds ("not known"); a reading past its reset is clear (the window has reset); otherwise the hold applies at or
+ * past its percent. With no hold set it is clear.
+ */
+export function evalHoldReason(
+  hold: number | null | undefined,
+  reading: FiveHourReading | null | undefined,
+  nowSec: number,
+): string | null {
+  if (hold === null || hold === undefined) return null;
+  if (!reading) return "Five-hour usage is not known: Start waits until a Claude tab reports it.";
+  if (reading.resetsAt !== null && reading.resetsAt <= nowSec) return null;
+  if (reading.percent >= hold) {
+    return `Five-hour usage is ${Math.round(reading.percent)}%, at or past your hold of ${hold}%.`;
+  }
+  return null;
+}
+
+/** The usage line of the Eval dialog: the current five-hour percent and the hold, or why neither is known. */
+export function evalUsageLine(
+  hold: number | null | undefined,
+  reading: FiveHourReading | null | undefined,
+  nowSec: number,
+): string {
+  if (hold === null || hold === undefined) return "No usage hold is set";
+  if (!reading) return "Five-hour usage is not known";
+  if (reading.resetsAt !== null && reading.resetsAt <= nowSec) return `The five-hour window has reset (hold ${hold}%)`;
+  return `Five-hour usage ${Math.round(reading.percent)}% · hold ${hold}%`;
+}
+
+/** N times the source run's Window share (percent points of the five-hour window), or that it is not known. */
+export function evalEstimateText(n: number, share: number | null | undefined): string {
+  if (share === null || share === undefined || !Number.isFinite(share)) return "Estimate: not known";
+  const total = Math.round(n * share * 10) / 10;
+  return `Estimate: about ${total} points of the five-hour window (${n} × ${Math.round(share * 10) / 10})`;
+}
+
+/** The base line of the Eval dialog. */
+export function evalBaseText(based: ReadonlyArray<string>, fallback: ReadonlyArray<string>): string {
+  const name = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  if (based.length === 0) return "Builds on the current default branch";
+  if (fallback.length === 0) return "Builds on the source run's commits";
+  return `Builds on the source run's commits, and on the current default branch for ${fallback.map(name).join(", ")}`;
+}
+
+/** What a check state reads as in the Eval results' Checks column. */
+export function evalCheckText(state: string, passRate: number | null | undefined): string {
+  if (state === "checking") return "checking…";
+  if (passRate === null || passRate === undefined) return "not checked";
+  return `${Math.round(passRate * 100)}% pass`;
+}
+
+/** "min 1 · median 2 · max 4 (over 3 runs)" for one measure; "no figures" when no finished run has it. */
+export function evalDistText(
+  dist: { min: number | null; median: number | null; max: number | null; of: number },
+  format: (value: number) => string = (v) => String(Math.round(v * 100) / 100),
+): string {
+  if (dist.min === null || dist.median === null || dist.max === null) return "no figures";
+  return `min ${format(dist.min)} · median ${format(dist.median)} · max ${format(dist.max)} (over ${dist.of} ${dist.of === 1 ? "run" : "runs"})`;
+}

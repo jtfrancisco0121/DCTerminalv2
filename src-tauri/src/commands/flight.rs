@@ -175,3 +175,35 @@ pub async fn flight_eval_results(
     .await
     .map_err(|e| e.to_string())?
 }
+
+/// What one finished run used of the account's five-hour window (an estimate), or null when not known.
+#[tauri::command]
+pub async fn flight_run_share(
+    app: AppHandle,
+    settings: State<'_, Mutex<SettingsStore>>,
+    usage: State<'_, Mutex<crate::usage::UsageStore>>,
+    run_dir: String,
+) -> Result<Option<f64>, String> {
+    let data = crate::data_dir::app_data_dir(&app).path;
+    let dir = crate::run::checked_run_dir(&data, &run_dir)?;
+    let claude = settings.lock().map_err(|e| e.to_string())?.claude().clone();
+    let account = crate::run::folder::read_json_value(&dir.join("meta.json"))
+        .and_then(|m| m["account"]["id"].as_str().map(str::to_string));
+    let history = match account {
+        Some(account) => {
+            let config =
+                crate::store::settings_store::resolved_account_config(&claude, &account).path;
+            let snapshot = usage.lock().map_err(|e| e.to_string())?.snapshot(&config);
+            Some((config, snapshot.history))
+        }
+        None => None,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        host::run_five_hour_share(&claude, &dir, &|config| match &history {
+            Some((known, history)) if known == config => history.clone(),
+            _ => Vec::new(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}

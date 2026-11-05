@@ -83,6 +83,11 @@ type ViewProps = {
   onSlopCheck?: (prId: string) => Promise<SlopReport>;
   /** "While you were away": the timeline lines since the panel was last seen, with its Dismiss. */
   away?: { lines: LogLine[]; dismiss: () => void } | null;
+  /**
+   * "Evaluate N times…": offered only when this is given (Eval mode is on) and the run is done or failed, is not an
+   * eval run and has no run mode (an epic-plan run builds nothing, so there is no task to repeat).
+   */
+  onEvaluate?: () => void;
 };
 
 type PrActionProps = Pick<ViewProps, "worktrees" | "onPrAction" | "onCopyBranch">;
@@ -397,7 +402,7 @@ function BmadSection({
 }
 
 /** The progress panel for one run, drawn from a read of its folder. */
-export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch, onSlopCheck, away }: ViewProps) {
+export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch, onSlopCheck, away, onEvaluate }: ViewProps) {
   const timeline = groupTimeline(view.timeline, 30, view.eval);
   return (
     <aside className="run-panel" aria-label="Run progress">
@@ -490,6 +495,11 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
         <button type="button" className="secondary-button" onClick={onCleanUp}>
           {runFinished(view) ? "Clean up worktrees" : "Stop and clean up…"}
         </button>
+        {onEvaluate && (view.stage === "done" || view.stage === "failed") && !view.eval && !view.runMode && (
+          <button type="button" className="secondary-button" onClick={onEvaluate}>
+            Evaluate N times…
+          </button>
+        )}
       </div>
       {extra}
       {timeline.length > 0 && (
@@ -597,8 +607,11 @@ export function RunPanel({
   onTabsChanged,
   onLayoutChange,
   onOpenTrace,
+  onEvaluate,
 }: {
   runDir: string;
+  /** Eval mode is on: open the Eval setup dialog for this run. */
+  onEvaluate?: (runDir: string) => void;
   tabId?: string;
   onResume?: () => void;
   /** Open the Session Inspector on this run (on one agent when given). Works without a tab. */
@@ -764,6 +777,7 @@ export function RunPanel({
         onPrAction={prAction}
         onCopyBranch={copyBranch}
         onSlopCheck={(prId) => slopCheck(runDir, prId)}
+        onEvaluate={onEvaluate ? () => onEvaluate(runDir) : undefined}
         away={away}
         session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} onOpenTrace={onOpenTrace ? () => onOpenTrace() : undefined} /> : undefined}
         extra={
