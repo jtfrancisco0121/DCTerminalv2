@@ -20,6 +20,52 @@ function renderPanel(overrides: Partial<RunView> = {}) {
   return handlers;
 }
 
+describe("a finished eval run", () => {
+  const evalRef = { group: "b-1", index: 1, of: 2, source: "r-0" };
+
+  it("reads as finished in the header and stepper, offers Clean up worktrees and asks for no approval", () => {
+    renderPanel({ stage: "ship-approval", waitingFor: null, eval: evalRef, shipApproved: false });
+    expect(screen.getByTestId("run-stage").textContent).toBe("Eval run finished");
+    const labels = [...screen.getByRole("list", { name: "Run steps" }).querySelectorAll("li")].map(
+      (li) => li.querySelector(".step-label")?.textContent,
+    );
+    expect(labels).toEqual(["Planning", "Plan approval", "Building", "Eval finished"]);
+    expect(screen.queryByText(/Waiting for your go/)).toBeNull();
+    expect(screen.queryByText(/\(you\)/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Clean up worktrees" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Stop and clean up/ })).toBeNull();
+  });
+
+  it("still reads as running while the eval run builds, and a normal ship-approval run keeps its words", () => {
+    renderPanel({ stage: "building", eval: evalRef });
+    expect(screen.getByTestId("run-stage").textContent).toBe("Building");
+    expect(screen.getByRole("button", { name: "Stop and clean up…" })).toBeTruthy();
+    cleanup();
+    renderPanel({ stage: "ship-approval", waitingFor: "ship-approval" });
+    expect(screen.getByTestId("run-stage").textContent).toBe("Waiting for your go to open the PRs");
+  });
+});
+
+describe("trace snapshot failures", () => {
+  it("shows the latest failure reason once, and nothing after a later 'written' line", () => {
+    const line = (text: string) => ({ time: "2026-11-05T10:00:00Z", stage: "done", text });
+    renderPanel({ timeline: [...view.timeline, line("app: trace snapshot failed: flight is not a folder")] });
+    expect(screen.getByTestId("snapshot-failed").textContent).toBe("Trace snapshot failed: flight is not a folder");
+    cleanup();
+    renderPanel({
+      timeline: [
+        ...view.timeline,
+        line("app: trace snapshot failed: flight is not a folder"),
+        line("app: trace snapshot written"),
+      ],
+    });
+    expect(screen.queryByTestId("snapshot-failed")).toBeNull();
+    cleanup();
+    renderPanel();
+    expect(screen.queryByTestId("snapshot-failed")).toBeNull();
+  });
+});
+
 describe("PR card actions", () => {
   const handlers = () => ({
     onRerunChecks: vi.fn(),
@@ -597,5 +643,39 @@ describe("JanitorDialog", () => {
     expect(onRemove).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText("Remove"));
     expect(onRemove).toHaveBeenCalledWith(["PR1"]);
+  });
+
+  it("offers Evaluate N times… only with Eval mode on, on a finished normal run (never an eval or epic-plan run)", () => {
+    const onEvaluate = vi.fn();
+    const panel = (over: Partial<RunView>, withHandler = true) => {
+      cleanup();
+      render(
+        <RunPanelView
+          view={{ ...view, ...over }}
+          checking={false}
+          onRerunChecks={vi.fn()}
+          onOpenFile={vi.fn()}
+          onOpenUrl={vi.fn()}
+          onCleanUp={vi.fn()}
+          onEvaluate={withHandler ? onEvaluate : undefined}
+        />,
+      );
+    };
+    const button = () => screen.queryByRole("button", { name: "Evaluate N times…" });
+    panel({ stage: "done" });
+    fireEvent.click(button()!);
+    expect(onEvaluate).toHaveBeenCalledOnce();
+    panel({ stage: "failed" });
+    expect(button()).toBeTruthy();
+    // Eval mode off: the owner passes no handler.
+    panel({ stage: "done" }, false);
+    expect(button()).toBeNull();
+    // Not finished, an eval run, an epic-plan run.
+    panel({ stage: "building" });
+    expect(button()).toBeNull();
+    panel({ stage: "done", eval: { group: "b-1", index: 1, of: 2, source: "r-0" } });
+    expect(button()).toBeNull();
+    panel({ stage: "done", runMode: "epic-plan" });
+    expect(button()).toBeNull();
   });
 });

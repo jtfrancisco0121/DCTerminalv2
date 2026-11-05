@@ -36,6 +36,9 @@ import { InlineNotice } from "./components/InlineNotice";
 import { NewTabForm } from "./components/NewTabForm";
 import { RunPanel } from "./components/RunPanel";
 import { TracePanel } from "./components/TracePanel";
+import { ComparePage } from "./components/ComparePage";
+import { EvalDialog } from "./components/EvalDialog";
+import { EvalResults } from "./components/EvalResults";
 import { TraceSearch, type SearchState } from "./components/TraceSearch";
 import type { TraceTarget } from "./flight/types";
 import { PreviewHost } from "./components/PreviewPane";
@@ -45,7 +48,7 @@ import { RunsView } from "./components/RunsView";
 import { StartScreen } from "./components/StartScreen";
 import { resumeRun, runOverview, startRun, type RunOverview, type StartedRun } from "./run/api";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
-import { stageText, tabProgress, type TabProgress } from "./run/words";
+import { runFinished, stageText, tabProgress, type TabProgress } from "./run/words";
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
 import { TabBar } from "./components/TabBar";
@@ -117,11 +120,23 @@ function App() {
   const [attention, setAttention] = useState<AttentionSummary | null>(null);
   const [activeRunsOpen, setActiveRunsOpen] = useState(false);
   // A window-level page drawn over the workspace; the terminals stay mounted underneath.
-  const [page, setPage] = useState<"dashboard" | "analytics" | "trace-search" | null>(null);
+  const [page, setPage] = useState<"dashboard" | "analytics" | "trace-search" | "compare" | "eval-results" | null>(null);
+  // The eval group whose results page is open, and the run the Eval setup dialog was opened for.
+  const [evalGroup, setEvalGroup] = useState<string | null>(null);
+  const [evalSource, setEvalSource] = useState<string | null>(null);
+  // The two runs on the Compare page, kept while a Trace opened from it is shown.
+  const [compare, setCompare] = useState<{ a: string | null; b: string | null }>({ a: null, b: null });
   // The last trace search (form and results), kept while the app runs so Escape from a Trace returns to it.
   const [traceSearch, setTraceSearch] = useState<SearchState | null>(null);
   // The Session Inspector, another page over the workspace; focus returns to whatever opened it.
-  const [trace, setTrace] = useState<{ target: TraceTarget; agent?: string; focus?: string; fromSearch?: boolean } | null>(null);
+  const [trace, setTrace] = useState<{
+    target: TraceTarget;
+    agent?: string;
+    focus?: string;
+    fromSearch?: boolean;
+    fromCompare?: boolean;
+    fromEval?: boolean;
+  } | null>(null);
   const traceOpener = useRef<HTMLElement | null>(null);
   const [dialog, setDialog] = useState<"new-tab" | "new-window" | "pick-account" | "settings" | "runs" | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
@@ -217,10 +232,29 @@ function App() {
 
   const active = state?.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
 
-  const openTrace = (target: TraceTarget, agent?: string, focus?: string, fromSearch?: boolean) => {
+  const openTrace = (
+    target: TraceTarget,
+    agent?: string,
+    focus?: string,
+    fromSearch?: boolean,
+    fromCompare?: boolean,
+    fromEval?: boolean,
+  ) => {
     traceOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setPage(null);
-    setTrace({ target, agent, focus, fromSearch });
+    setTrace({ target, agent, focus, fromSearch, fromCompare, fromEval });
+  };
+  const openEvalResults = (group: string) => {
+    setTrace(null);
+    setDialog(null);
+    setActiveRunsOpen(false);
+    setEvalGroup(group);
+    setPage("eval-results");
+  };
+  const openCompare = (a: string | null, b: string | null) => {
+    setTrace(null);
+    setCompare({ a, b });
+    setPage("compare");
   };
   const openTraceSearch = () => {
     setTrace(null);
@@ -232,6 +266,20 @@ function App() {
       traceOpener.current = null;
       setTrace(null);
       setPage("trace-search");
+      return;
+    }
+    // A Trace opened from a Compare cell goes back to Compare, with the same two runs.
+    if (trace?.fromCompare) {
+      traceOpener.current = null;
+      setTrace(null);
+      setPage("compare");
+      return;
+    }
+    // A Trace opened from the eval results goes back to them.
+    if (trace?.fromEval) {
+      traceOpener.current = null;
+      setTrace(null);
+      setPage("eval-results");
       return;
     }
     setTrace(null);
@@ -620,12 +668,12 @@ function App() {
       run: () => select(tab.id),
     }));
     for (const item of paletteRuns?.runs ?? []) {
-      if (item.stage === "done" || item.stage === "failed") continue;
+      if (runFinished(item)) continue;
       items.push({
         id: `run:${item.runDir}`,
         group: "Runs",
         label: `Resume: ${item.title ?? item.runId}`,
-        detail: stageText(item.stage),
+        detail: stageText(item.stage, item.eval),
         run: () =>
           resumeRun(windowId, item.runDir).then((started_) => {
             void started(started_);
@@ -655,6 +703,21 @@ function App() {
       label: "Search traces",
       detail: "Find runs by what happened in them",
       run: openTraceSearch,
+    });
+    items.push({
+      id: "page:compare",
+      group: "Runs",
+      label: "Compare runs",
+      detail: "The two most recent finished runs of this folder",
+      run: () => {
+        // Finished runs of the active folder, newest first (the list is newest first).
+        const finished = (paletteRuns?.runs ?? []).filter(
+          (item) =>
+            (!active || item.folder === active.cwd) &&
+            ["done", "failed", "eval-done"].includes(item.record?.outcome ?? item.stage ?? ""),
+        );
+        openCompare(finished[0]?.runDir ?? null, finished[1]?.runDir ?? null);
+      },
     });
     if (active?.runDir) {
       const runDir = active.runDir;
@@ -779,6 +842,7 @@ function App() {
                 onStarted={(run) => void started(run)}
                 onPlainTab={() => setPlainTab(true)}
                 onShowAllRuns={() => setDialog("runs")}
+                onEvalResults={openEvalResults}
                 usageWindows={usage}
               />
             )}
@@ -822,6 +886,7 @@ function App() {
               onTabsChanged={() => void reload()}
               onLayoutChange={() => refitTerminal(active.id)}
               onOpenTrace={(agent) => openTrace({ runDir: active.runDir! }, agent)}
+              onEvaluate={settings?.observe?.evalEnabled ? (runDir) => setEvalSource(runDir) : undefined}
             />
           </div>
         )}
@@ -832,6 +897,23 @@ function App() {
             initial={traceSearch}
             onChange={setTraceSearch}
             onOpen={(hit) => openTrace({ runDir: hit.runDir }, undefined, hit.firstEventId, true)}
+            onCompare={(a, b) => openCompare(a, b)}
+            onClose={() => setPage(null)}
+          />
+        )}
+        {page === "compare" && (
+          <ComparePage
+            initialA={compare.a}
+            initialB={compare.b}
+            onChange={(a, b) => setCompare({ a, b })}
+            onOpenTrace={(runDir, eventId) => openTrace({ runDir }, undefined, eventId, false, true)}
+            onClose={() => setPage(null)}
+          />
+        )}
+        {page === "eval-results" && evalGroup && (
+          <EvalResults
+            group={evalGroup}
+            onOpenTrace={(runDir) => openTrace({ runDir }, undefined, undefined, false, false, true)}
             onClose={() => setPage(null)}
           />
         )}
@@ -846,12 +928,13 @@ function App() {
           />
         )}
       </section>
-      <AttentionNotices />
+      <AttentionNotices onEvalResults={openEvalResults} />
       {activeRunsOpen && (
         <ActiveRuns
           onClose={() => setActiveRunsOpen(false)}
           onAllRuns={() => setDialog("runs")}
           onDashboard={() => setPage("dashboard")}
+          onEvalResults={openEvalResults}
         />
       )}
       <StatusBar
@@ -885,6 +968,7 @@ function App() {
               onStarted={(run) => void started(run)}
               onPlainTab={() => setPlainTab(true)}
                 onShowAllRuns={() => setDialog("runs")}
+                onEvalResults={openEvalResults}
                 usageWindows={usage}
             />
           )}
@@ -933,6 +1017,18 @@ function App() {
           onAnalytics={() => {
             setDialog(null);
             setPage("analytics");
+          }}
+          onEvalResults={openEvalResults}
+        />
+      )}
+      {evalSource && (
+        <EvalDialog
+          windowId={windowId}
+          runDir={evalSource}
+          onClose={() => setEvalSource(null)}
+          onQueued={(n) => {
+            setEvalSource(null);
+            setMessage(`Queued ${n} runs`);
           }}
         />
       )}

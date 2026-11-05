@@ -25,6 +25,7 @@ import {
   checkTone,
   ciChip,
   draftBadge,
+  evalFinished,
   gateTone,
   groupTimeline,
   localTime,
@@ -36,6 +37,7 @@ import {
   reviewTone,
   runFinished,
   safeUrl,
+  snapshotFailure,
   stageText,
   storiesText,
   wantsAppChecks,
@@ -81,6 +83,11 @@ type ViewProps = {
   onSlopCheck?: (prId: string) => Promise<SlopReport>;
   /** "While you were away": the timeline lines since the panel was last seen, with its Dismiss. */
   away?: { lines: LogLine[]; dismiss: () => void } | null;
+  /**
+   * "Evaluate N times…": offered only when this is given (Eval mode is on) and the run is done or failed, is not an
+   * eval run and has no run mode (an epic-plan run builds nothing, so there is no task to repeat).
+   */
+  onEvaluate?: () => void;
 };
 
 type PrActionProps = Pick<ViewProps, "worktrees" | "onPrAction" | "onCopyBranch">;
@@ -395,25 +402,31 @@ function BmadSection({
 }
 
 /** The progress panel for one run, drawn from a read of its folder. */
-export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch, onSlopCheck, away }: ViewProps) {
-  const timeline = groupTimeline(view.timeline);
+export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch, onSlopCheck, away, onEvaluate }: ViewProps) {
+  const timeline = groupTimeline(view.timeline, 30, view.eval);
   return (
     <aside className="run-panel" aria-label="Run progress">
       {away && <AwayNotice lines={away.lines} onDismiss={away.dismiss} />}
       <header className="run-panel-head">
         <div className="run-stage" data-testid="run-stage">
-          {stageText(view.stage)}
+          {stageText(view.stage, view.eval)}
         </div>
         <Stepper
           stage={view.stage}
           waitingFor={view.waitingFor}
           prs={{ done: prsDone(view.prs), total: view.prs.length }}
-          mode={view.runMode}
-          reached={reachedStep(view.timeline, view.runMode)}
+          mode={view.eval ? "eval" : view.runMode}
+          reached={reachedStep(view.timeline, view.eval ? "eval" : view.runMode)}
+          finished={evalFinished(view)}
         />
         <div className="hint run-id">{view.runId}</div>
       </header>
       {view.statusProblem && <p className="hint warn">{view.statusProblem}</p>}
+      {snapshotFailure(view.timeline) !== null && (
+        <p className="hint warn" data-testid="snapshot-failed">
+          Trace snapshot failed: {snapshotFailure(view.timeline)}
+        </p>
+      )}
       {session}
       {!view.hasStatus && !view.statusProblem && <p className="hint">Claude is starting the run in the tab.</p>}
       {view.waitingFor && (
@@ -482,6 +495,11 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
         <button type="button" className="secondary-button" onClick={onCleanUp}>
           {runFinished(view) ? "Clean up worktrees" : "Stop and clean up…"}
         </button>
+        {onEvaluate && (view.stage === "done" || view.stage === "failed") && !view.eval && !view.runMode && (
+          <button type="button" className="secondary-button" onClick={onEvaluate}>
+            Evaluate N times…
+          </button>
+        )}
       </div>
       {extra}
       {timeline.length > 0 && (
@@ -589,8 +607,11 @@ export function RunPanel({
   onTabsChanged,
   onLayoutChange,
   onOpenTrace,
+  onEvaluate,
 }: {
   runDir: string;
+  /** Eval mode is on: open the Eval setup dialog for this run. */
+  onEvaluate?: (runDir: string) => void;
   tabId?: string;
   onResume?: () => void;
   /** Open the Session Inspector on this run (on one agent when given). Works without a tab. */
@@ -733,13 +754,14 @@ export function RunPanel({
     <>
       <RunPanelShell
         windowId={windowId ?? "main"}
-        stageLabel={stageText(view.stage)}
+        stageLabel={stageText(view.stage, view.eval)}
         attention={Boolean(view.waitingFor)}
         stage={view.stage}
         waitingFor={view.waitingFor}
         prs={{ done: prsDone(view.prs), total: view.prs.length }}
-        mode={view.runMode}
-        reached={reachedStep(view.timeline, view.runMode)}
+        mode={view.eval ? "eval" : view.runMode}
+        reached={reachedStep(view.timeline, view.eval ? "eval" : view.runMode)}
+        finished={evalFinished(view)}
         onLayoutChange={onLayoutChange}
       >
       <div className="run-panel-clicks" onClickCapture={(event) => { altClick.current = event.altKey; }}>
@@ -755,6 +777,7 @@ export function RunPanel({
         onPrAction={prAction}
         onCopyBranch={copyBranch}
         onSlopCheck={(prId) => slopCheck(runDir, prId)}
+        onEvaluate={onEvaluate ? () => onEvaluate(runDir) : undefined}
         away={away}
         session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} onOpenTrace={onOpenTrace ? () => onOpenTrace() : undefined} /> : undefined}
         extra={

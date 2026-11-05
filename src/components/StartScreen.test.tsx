@@ -86,6 +86,40 @@ describe("StartScreen earlier runs", () => {
   });
 });
 
+describe("StartScreen finished eval runs", () => {
+  afterEach(cleanup);
+
+  it("shows an eval run as finished with Results and no Resume", async () => {
+    const onEvalResults = vi.fn();
+    const evalRun = run(11, {
+      stage: "ship-approval",
+      hasReport: false,
+      title: "Eval 11",
+      createdAt: day(0),
+      eval: { group: "b-5", index: 1, of: 2, source: "r-0" },
+    });
+    const waiting = run(12, { stage: "ship-approval", hasReport: false, title: "Waits 12", createdAt: day(0) });
+    runs.unshift(evalRun, waiting);
+    try {
+      render(
+        <StartScreen windowId="main" initialFolder="" onStarted={() => {}} onPlainTab={() => {}} onShowAllRuns={() => {}} onEvalResults={onEvalResults} />,
+      );
+      const list = await screen.findByRole("region", { name: "Earlier runs" });
+      const finished = within(within(list).getByText("Eval 11").closest("li")!);
+      expect(finished.getByText(/Eval run finished/)).toBeTruthy();
+      expect(finished.queryByText("Resume")).toBeNull();
+      expect(finished.queryByText(/Waiting for your go/)).toBeNull();
+      fireEvent.click(finished.getByText("Results"));
+      expect(onEvalResults).toHaveBeenCalledWith("b-5");
+      const normal = within(within(list).getByText("Waits 12").closest("li")!);
+      expect(normal.getByText(/Waiting for your go to open the PRs/)).toBeTruthy();
+      expect(normal.getByText("Resume")).toBeTruthy();
+    } finally {
+      runs.splice(0, 2);
+    }
+  });
+});
+
 describe("StartScreen duplicate start", () => {
   afterEach(cleanup);
 

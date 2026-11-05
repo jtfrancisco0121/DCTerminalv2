@@ -561,6 +561,7 @@ for c in "git -C $R worktree remove $WT" "git -C $R worktree remove --force $WT"
 done
 b 0 "" "git -C $R worktree list && git -C $R branch --list 'dcv2/*' && git -C $WT branch --show-current"
 b 0 "" "bash $STATE cleanup $RUN"
+b 0 "" "bash $STATE base $R $RUN"                                            # an eval run asks for its source run's base (0.8.0)
 b 0 "" "bash $STATE request $RUN recheck && bash $STATE request-wait $RUN 20261027T100000Z-recheck"
 for who in dcv2:implementer dcv2:pr-reviewer dcv2:planner dcv2:plan-reviewer dcv2:risk-reviewer; do
   b 2 "$who" "bash $STATE cleanup $RUN"
@@ -584,6 +585,16 @@ for who in "" dcv2:implementer; do                                  # the app's 
   b 2 "$who" "cp /dev/null $RUN/app-usage.json"
 done
 b 0 "" "cat $RUN/requests/20261027T100000Z-recheck.result.json"
+for who in "" dcv2:implementer; do                                  # the trace snapshot subtree and its temp folders (0.8.0)
+  w 2 "$who" "$RUN/flight/events.jsonl"
+  w 2 "$who" "$RUN/flight/manifest.json"
+  w 2 "$who" "$RUN/.flight.tmp-ab/x"
+  b 2 "$who" "echo '{}' > $RUN/flight/events.jsonl"
+  b 2 "$who" "cp /dev/null $RUN/flight/content.jsonl"
+  b 2 "$who" "mkdir -p $RUN/.flight.tmp-ab"
+  b 2 "$who" "echo x > $RUN/.flight.tmp-ab/x"
+done
+b 0 "" "cat $RUN/flight/manifest.json"
 
 echo "# BMAD runtime: path forms are normalised"
 bx 2 dcv2:implementer "cd \"$PLUG/bmad\" && node ./runtime.mjs memlog init --workspace x"

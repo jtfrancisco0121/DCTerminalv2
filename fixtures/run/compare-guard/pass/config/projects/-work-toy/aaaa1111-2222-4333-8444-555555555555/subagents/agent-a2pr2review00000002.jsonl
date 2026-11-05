@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-11-05T10:21:05Z","sessionId":"aaaa1111-2222-4333-8444-555555555555","message":{"role":"user","content":"Review PR2."},"agentId":"a2pr2review00000002","isSidechain":true}
+{"type":"assistant","timestamp":"2026-11-05T10:25:00Z","sessionId":"aaaa1111-2222-4333-8444-555555555555","message":{"id":"r1","model":"m","role":"assistant","content":[{"type":"text","text":"REQUEST CHANGES"}],"usage":{"input_tokens":1,"output_tokens":1}},"agentId":"a2pr2review00000002","isSidechain":true}

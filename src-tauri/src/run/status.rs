@@ -191,6 +191,8 @@ pub struct RunView {
     pub review_mode: String,
     /// meta.json's `mode` (`epic-plan`); `None` is a normal run.
     pub run_mode: Option<String>,
+    /// meta.json's `eval` (one run of an eval group); `None` is a normal run.
+    pub eval: Option<super::folder::EvalRef>,
     /// status.json has `shipApproval` (the yes at stop #2).
     pub ship_approved: bool,
     /// BMAD planning, when the run's mode is auto or on.
@@ -629,6 +631,7 @@ pub fn read_run(run_dir: &Path, checks_running: bool) -> RunView {
     view.run_dir = run_dir.display().to_string();
     view.review_mode = super::folder::review_mode_of(run_dir);
     view.run_mode = super::folder::run_mode_of(run_dir);
+    view.eval = super::folder::eval_of(run_dir);
     // BMAD: shown only for a run started with auto or on; an old run (no
     // `bmad` in meta.json) shows nothing.
     let bmad_mode = super::folder::bmad_mode_of(run_dir);

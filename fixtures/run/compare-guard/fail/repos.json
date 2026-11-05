@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "repos": [
+    {
+      "name": "toy",
+      "path": "/work/toy",
+      "check": "cargo test --manifest-path src-tauri/Cargo.toml"
+    }
+  ]
+}

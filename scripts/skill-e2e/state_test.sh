@@ -1210,6 +1210,93 @@ expect 1 "normal: waves refused" bash "$STATE" waves "$B"
 expect 0 "normal: writeback is not skipped" bash "$STATE" writeback "$B"
 [[ -f "$B/writeback.json" ]] && ok "  writeback.json written in a normal run" || bad "  no writeback.json"
 
+echo "# eval runs (meta.json eval): the ship gate, the plan approval and the base pin (AD-42)"
+E="$d/Eval Dir/runs/r-e"; mkdir -p "$E"; export DCV2_RUN_DIR="$E"
+R3="$WS/r3"; mkdir -p "$R3"; git -C "$R3" init -q -b main; git -C "$R3" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+EBASE="$(git -C "$R3" rev-parse HEAD)"
+git -C "$R3" -c user.name=t -c user.email=t@t commit -q --allow-empty -m moved-on     # the default branch moves on after the source run
+NOW="$(git -C "$R3" rev-parse HEAD)"
+printf 'folder: %s\n' "$WS" > "$E/request.md"
+printf '{"schema":1,"repos":[{"name":"r3","path":"%s","check":null}]}\n' "$R3" > "$E/repos.json"
+printf '# Plan\n## Stories\n### S1: x\n## Pull requests\n### PR1: x\n- Repo: r3\n- Stories: S1\n' > "$E/plan.md"
+emeta() { python3 -c 'import json,sys; print(json.dumps({"schema":1,"eval":json.loads(sys.argv[1])}))' "$1" > "$E/meta.json"; }
+EVAL_OK="{\"group\":\"g1\",\"index\":1,\"of\":2,\"source\":\"r-src\",\"bases\":{\"$R3\":{\"base\":\"main\",\"baseCommit\":\"$EBASE\"}}}"
+emeta "$EVAL_OK"
+eput() { bash "$STATE" put "$E/status.json"; }
+# estatus <stage> [waitingFor] [extra python]
+estatus() {
+  python3 - "$E" "$1" "${2:-null}" "${3:-}" <<'PY'
+import json, os, sys
+run, stage, wf, extra = sys.argv[1:5]
+doc = {"schema": 1, "runId": os.path.basename(run), "stage": stage, "waitingFor": None if wf == "null" else wf,
+       "folder": "/x", "plan": {"path": "plan.md", "reviewRound": 1, "verdict": "APPROVED", "openFindings": 0, "approved": False},
+       "prs": [], "ship": None, "writeback": None, "error": None}
+exec(extra)
+print(json.dumps(doc))
+PY
+}
+expect 0 "eval: preflight" bash "$STATE" preflight "$E"
+has "  prints the eval line" "eval=1/2 group=g1"
+expect 0 "eval: put planning" eput < <(estatus planning)
+expect 0 "eval: put plan-approval with waitingFor null" eput < <(estatus plan-approval)
+expect 1 "eval: approve plan test refused" bash "$STATE" approve "$E" plan test
+expect 0 "eval: approve plan eval" bash "$STATE" approve "$E" plan eval
+is "  plan.approval.by eval" "$E/status.json" plan.approval.by '"eval"'
+grep -q "plan approved for eval (eval mode)" "$E/log.md" && ok "  log.md has the eval approval" || bad "  log.md has no eval approval line"
+expect 1 "eval: approve ship refused" bash "$STATE" approve "$E" ship user
+has "  says eval run" "eval run"
+expect 1 "eval: approve ship eval refused" bash "$STATE" approve "$E" ship eval
+expect 1 "eval: put waitingFor ship-approval refused" eput < <(estatus ship-approval ship-approval)
+expect 1 "eval: put shipping refused" eput < <(estatus shipping)
+expect 1 "eval: put done refused" eput < <(estatus done)
+expect 0 "eval: put building" eput < <(estatus building)
+expect 0 "eval: put ship-approval with waitingFor null" eput < <(estatus ship-approval)
+is "  stage ship-approval" "$E/status.json" stage '"ship-approval"'
+is "  waitingFor null" "$E/status.json" waitingFor null
+cp "$E/status.json" "$d/eval-status.before"
+expect 1 "eval: ship-pr refused" bash "$STATE" ship-pr "$E" PR1
+has "  eval refusal" "eval run"
+expect 1 "eval: draft-pr refused" bash "$STATE" draft-pr "$E" PR1
+has "  eval refusal" "eval run"
+expect 1 "eval: push refused" bash "$STATE" push "$E" PR1
+has "  eval refusal" "eval run"
+expect 1 "eval: ready refused" bash "$STATE" ready "$E" PR1
+has "  eval refusal" "eval run"
+expect 1 "eval: post-review refused" bash "$STATE" post-review "$E" PR1 1
+has "  eval refusal" "eval run"
+expect 1 "eval: comment refused" bash "$STATE" comment "$E" PR1 fixes 1
+has "  eval refusal" "eval run"
+expect 1 "eval: writeback refused" bash "$STATE" writeback "$E"
+has "  eval refusal" "eval run"
+cmp -s "$E/status.json" "$d/eval-status.before" && ok "  status.json unchanged by the refusals" || bad "  status.json changed"
+[[ -f "$E/writeback.json" ]] && bad "  writeback.json written for an eval run" || ok "  no writeback.json"
+expect 0 "eval: a forged shipApproval.by eval in put is not kept" eput < <(estatus ship-approval null 'doc["shipApproval"]={"by":"eval","at":"2026-11-05T00:00:00Z"}')
+is "  shipApproval stays null" "$E/status.json" shipApproval null
+echo "# eval runs: the base pin"
+expect 0 "eval: base <repo> <run> prints the source commit" bash "$STATE" base "$R3" "$E"
+has "  source baseCommit" "baseCommit=$EBASE"
+expect 0 "eval: base <repo> alone is today's default branch" bash "$STATE" base "$R3"
+has "  the moved-on commit" "baseCommit=$NOW"
+expect 1 "eval: worktree on another base commit refused" bash "$STATE" worktree "$E" "$R3" PR1 "$NOW"
+has "  says the eval builds on the source commit" "eval run builds on $EBASE"
+expect 0 "eval: worktree on the source base commit" bash "$STATE" worktree "$E" "$R3" PR1 "$EBASE"
+echo "# eval runs: a repo not in bases, a malformed eval and a normal run keep today's behaviour"
+emeta "{\"group\":\"g1\",\"index\":1,\"of\":2,\"source\":\"r-src\",\"bases\":{\"$R\":{\"base\":\"main\",\"baseCommit\":\"$BASE\"}}}"
+expect 0 "eval: a repo not in bases uses the default branch" bash "$STATE" base "$R3" "$E"
+has "  default branch commit" "baseCommit=$NOW"
+for bad_eval in '{"group":"g1","index":1,"of":11,"source":"s"}' '{"group":"g1","index":0,"of":3,"source":"s"}' '{"group":"g1","index":4,"of":3,"source":"s"}' '{"group":"g1","index":1,"of":3}'; do
+  emeta "$bad_eval"
+  expect 0 "malformed eval is a normal run: preflight" bash "$STATE" preflight "$E"
+  hasnt "  no eval line" "eval="
+  expect 1 "malformed eval: approve plan eval refused" bash "$STATE" approve "$E" plan eval
+done
+printf '{"schema":1}\n' > "$E/meta.json"
+expect 1 "normal run: approve plan eval refused" bash "$STATE" approve "$E" plan eval
+has "  says it is for eval runs" "meta.json has eval"
+expect 1 "normal run: a recorded plan.approval.by eval no longer validates" eput < <(estatus planning)
+has "  names the allowed values" "by: user|test"
+unset DCV2_RUN_DIR
+
 echo "# no usable Python (W2)"
 nopy="$d/nopy"; mkdir -p "$nopy"; ln -sf "$(command -v bash)" "$nopy/bash"
 expect 1 "state.sh preflight with no Python 3.8+ says so" env PATH="$nopy" "$BASH" "$STATE" preflight "$RUN"

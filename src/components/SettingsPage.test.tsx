@@ -175,8 +175,38 @@ describe("SettingsPage activity", () => {
     const box = screen.getByRole("checkbox", { name: /Track activity in every Claude tab/ }) as HTMLInputElement;
     expect(box.checked).toBe(true);
     fireEvent.click(box);
-    await waitFor(() => expect(setObserveSettings).toHaveBeenCalledWith({ hooksAllTabs: false }));
+    await waitFor(() => expect(setObserveSettings).toHaveBeenCalledWith({ hooksAllTabs: false, evalEnabled: false }));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  });
+
+  it("Eval mode is off by default with its caption and saves without touching the other setting", async () => {
+    setObserveSettings.mockClear();
+    render(<SettingsPage view={view()} onSaved={() => {}} onClose={() => {}} />);
+    const box = screen.getByRole("checkbox", { name: /Eval mode/ }) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    expect(
+      screen.getByText("Runs the same request several times on your own subscription. Nothing is pushed or posted."),
+    ).toBeTruthy();
+    fireEvent.click(box);
+    await waitFor(() => expect(setObserveSettings).toHaveBeenCalledWith({ hooksAllTabs: true, evalEnabled: true }));
+  });
+
+  it("Keep run traces is off by default, saves with the accounts and is disabled when the policy is off", async () => {
+    setClaudeSettings.mockClear();
+    render(<SettingsPage view={view()} onSaved={() => {}} onClose={() => {}} />);
+    const keep = screen.getByRole("checkbox", { name: "Keep run traces of Personal" }) as HTMLInputElement;
+    expect(keep.checked).toBe(false);
+    expect(keep.disabled).toBe(false);
+    fireEvent.click(keep);
+    fireEvent.click(screen.getByRole("button", { name: "Save capture policy" }));
+    await waitFor(() => expect(setClaudeSettings).toHaveBeenCalled());
+    expect(setClaudeSettings.mock.calls[0]![0].accounts[0]!.keepRunTraces).toBe(true);
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Capture policy of Personal" }), { target: { value: "off" } });
+    const again = screen.getByRole("checkbox", { name: "Keep run traces of Personal" }) as HTMLInputElement;
+    expect(again.disabled).toBe(true);
+    expect(again.checked).toBe(false);
+    expect(screen.getByText("AgentFlight is off for this account.")).toBeTruthy();
   });
 });
 

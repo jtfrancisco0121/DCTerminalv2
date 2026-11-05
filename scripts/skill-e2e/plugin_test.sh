@@ -140,6 +140,15 @@ else
 fi
 [[ -z "$(find "$P" -name __pycache__ -o -name '*.pyc' | head -1)" ]] && ok "plugin/ holds no __pycache__ or .pyc" || bad "bytecode under plugin/: $(find "$P" -name __pycache__ -o -name '*.pyc' | head -3)"
 
+echo "# eval runs in the eagle-eye skill (0.8.0)"
+SK="$P/skills/eagle-eye/SKILL.md"
+grep -q '^## Eval runs' "$SK" && ok "SKILL.md has the Eval runs section" || bad "SKILL.md: no Eval runs section"
+grep -qF 'S approve <run> plan eval' "$SK" && ok "  eval plan approval" || bad "  SKILL.md: no S approve <run> plan eval"
+grep -qF 'S base <repoPath> <run>' "$SK" && ok "  step 2 passes the run to S base" || bad "  SKILL.md: Step 2 does not call S base <repoPath> <run>"
+grep -qF 'with an `eval=` line from preflight: report "eval run finished" and stop' "$SK" && ok "  resume rule for ship-approval with eval=" || bad "  SKILL.md: no eval resume rule"
+grep -qF 'S request <run> cleanup' "$SK" && ok "  eval clean-up routing through S request <run> cleanup" || bad "  SKILL.md: no eval clean up routing"
+grep -qF 'There is **no stop #2**' "$SK" && ok "  no stop #2 for an eval run" || bad "  SKILL.md: the eval end does not say there is no stop #2"
+
 echo "# scripts parse"
 for f in "$P"/scripts/*.sh "$P"/scripts/lib/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do
   bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"

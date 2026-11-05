@@ -169,6 +169,7 @@ vi.mock("./flight/api", () => ({
   })),
   flightContent: vi.fn(),
   flightSearch: vi.fn(),
+  flightCompare: vi.fn(),
 }));
 
 const running = new Set<string>();
@@ -654,6 +655,86 @@ describe("App run pages", () => {
     expect(screen.getByTestId("terminal")).toBeTruthy();
     expect(terminalLife.mounts).toBe(1);
     expect(terminalLife.unmounts).toBe(0);
+    vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
+    cleanup();
+    endState();
+  });
+
+  it("opens Compare runs from the palette on the folder's two newest finished runs; a value opens its Trace and Escape returns", async () => {
+    await openApp();
+    await waitFor(() => expect(screen.getByTestId("tab-progress-tab_run")).toBeTruthy());
+    const { flightCompare, flightSession } = await import("./flight/api");
+    const side = (id: string) => ({ runId: id, runDir: `/d/runs/${id}`, title: id, outcome: "done", indexed: true, off: false });
+    vi.mocked(flightCompare).mockResolvedValue({
+      a: side("r-a"),
+      b: side("r-b"),
+      rows: [{ group: "failures", key: "tool.blocked:run-file-write", a: 0, b: 1, differs: true, bEvent: "ev_block" }],
+      divergence: 0,
+      progress: { current: 2, total: 2 },
+    });
+
+    await paletteOpen(/Compare runs/);
+    const compare = await screen.findByRole("region", { name: "Compare runs" });
+    expect(screen.getByTestId("terminal")).toBeTruthy();
+    await waitFor(() => expect(vi.mocked(flightCompare)).toHaveBeenCalledWith("/d/runs/r-a", "/d/runs/r-b"));
+    fireEvent.click(await within(compare).findByRole("button", { name: /Open the trace of r-b/ }));
+    expect(await screen.findByRole("region", { name: "Trace" })).toBeTruthy();
+    expect(vi.mocked(flightSession)).toHaveBeenLastCalledWith(
+      expect.objectContaining({ runDir: "/d/runs/r-b", focus: "ev_block" }),
+    );
+    // Escape returns to Compare with the same two runs.
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(screen.queryByRole("region", { name: "Trace" })).toBeNull();
+    const again = await screen.findByRole("region", { name: "Compare runs" });
+    expect((within(again).getByLabelText("Run A") as HTMLSelectElement).value).toBe("/d/runs/r-a");
+    expect((within(again).getByLabelText("Run B") as HTMLSelectElement).value).toBe("/d/runs/r-b");
+    // Escape on the page closes it; the terminal was never unmounted.
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(screen.queryByRole("region", { name: "Compare runs" })).toBeNull();
+    expect(terminalLife.mounts).toBe(1);
+    expect(terminalLife.unmounts).toBe(0);
+    vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
+    cleanup();
+    endState();
+  });
+
+  it("offers Resume in the palette for an unfinished run but not for a finished eval run", async () => {
+    await openApp();
+    await waitFor(() => expect(screen.getByTestId("tab-progress-tab_run")).toBeTruthy());
+    const api = await import("./run/api");
+    const open = (id: string, title: string, over: object) => ({ ...finishedRun(id, 20, 1), title, ...over });
+    vi.mocked(api.runOverview).mockResolvedValue({
+      pluginDir: "/app/plugin",
+      pluginVersion: "abc123",
+      roles: [],
+      runs: [
+        open("r-wait", "Waits for ship", { stage: "ship-approval", record: null }),
+        open("r-eval", "Eval finished", {
+          stage: "ship-approval",
+          record: null,
+          eval: { group: "b-1", index: 1, of: 2, source: "r-0" },
+        }),
+      ],
+    } as never);
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "K", ctrlKey: true, shiftKey: true });
+    });
+    await screen.findAllByRole("option");
+    await waitFor(() => {
+      const texts = screen.getAllByRole("option").map((o) => o.textContent ?? "");
+      expect(texts.some((t) => t.includes("Resume: Waits for ship"))).toBe(true);
+    });
+    const all = screen.getAllByRole("option").map((o) => o.textContent ?? "");
+    expect(all.some((t) => t.includes("Resume: Eval finished"))).toBe(false);
+    const waiting = all.find((t) => t.includes("Resume: Waits for ship"))!;
+    expect(waiting).toContain("Waiting for your go to open the PRs");
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
     vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
     cleanup();
     endState();

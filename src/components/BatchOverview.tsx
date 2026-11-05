@@ -10,7 +10,14 @@ const ciText = (ci: string | null) =>
   ci === "pass" ? "CI passing" : ci === "fail" ? "CI failing" : ci === "pending" ? "CI running" : ci === "unknown" ? "CI unknown" : "";
 
 /** One row per run of each batch: stage, what it waits for, its PR and CI; a waiting-for-you badge; a filter by batch. */
-export function BatchOverview({ compact = false }: { compact?: boolean }) {
+export function BatchOverview({
+  compact = false,
+  onEvalResults,
+}: {
+  compact?: boolean;
+  /** An eval group's "Results" link: open the results of the group. */
+  onEvalResults?: (group: string) => void;
+}) {
   const [batches, setBatches] = useState<Batch[] | null>(null);
   const [only, setOnly] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +60,22 @@ export function BatchOverview({ compact = false }: { compact?: boolean }) {
       )}
       {shown.map((batch) => (
         <div key={batch.id} className="batch" data-testid={`batch-${batch.id}`}>
-          <p className="hint">{batch.id}</p>
+          <p className="hint">
+            {batch.id}
+            {batch.eval && (
+              <>
+                {" "}
+                · <span data-testid={`eval-group-${batch.id}`}>
+                  Eval group · {batch.eval.finished} of {batch.eval.n} finished
+                </span>
+                {onEvalResults && (
+                  <button type="button" className="link-button" onClick={() => onEvalResults(batch.id)}>
+                    Results
+                  </button>
+                )}
+              </>
+            )}
+          </p>
           <ul>
             {batch.rows.map((row) => {
               const url = safeUrl(row.prUrl);
@@ -61,7 +83,9 @@ export function BatchOverview({ compact = false }: { compact?: boolean }) {
                 <li key={row.entryId} data-testid={`batch-row-${row.entryId}`} style={row.removed ? { textDecoration: "line-through", opacity: 0.6 } : undefined}>
                   <strong>{row.ticketIds.join(", ") || row.label}</strong>{" "}
                   <span className="hint">
-                    {row.stage === "queued" || row.stage === "starting" ? row.stage : stageText(row.stage)}
+                    {row.stage === "queued" || row.stage === "starting"
+                      ? row.stage
+                      : stageText(row.stage, batch.eval ? { group: batch.id, index: 0, of: batch.eval.n, source: batch.eval.source } : null)}
                     {row.removed ? " · removed from the batch" : ""}
                   </span>
                   {!row.removed && row.waitingFor && <span className="active-flag active-flag-wait"> waiting for you ({row.waitingFor === "ship-approval" ? "ship" : "plan"})</span>}

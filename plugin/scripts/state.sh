@@ -11,7 +11,7 @@
 #   state.sh log <run> [<stage>]    < text    append "<UTC time> <stage> <text>" to log.md (text on stdin;
 #                                             stage defaults to status.json's)
 #   state.sh now                              print the UTC time (ISO-8601)
-#   state.sh approve <run> plan|ship user|test
+#   state.sh approve <run> plan|ship user|test   (plan eval: eval runs only, see below)
 #                                             record the user's yes at stop #1 / #2 (test: only when
 #                                             DCV2_TEST_MODE has auto-approve); ship also sets stage shipping
 #   state.sh plan <run> prs|tickets|stories   print only that part of plan.md
@@ -20,7 +20,8 @@
 #                                             waves.json and record status.json waves {digest, at}
 #   state.sh scope <run> <pr id>              print the PR's Scope: areas touched with file counts and dependency
 #                                             changes (added / removed / bumped; lock files and unknown manifests: changed)
-#   state.sh base <repo path>                 print "base=<b> baseCommit=<sha> remote=<name|none>"
+#   state.sh base <repo path> [<run>]         print "base=<b> baseCommit=<sha> remote=<name|none>"; for an eval run whose
+#                                             meta.json eval.bases names the repo: the source run's base commit
 #   state.sh worktree <run> <repo path> <pr id> <base commit>
 #                                             make (or reuse / re-make) the PR's worktree beside the
 #                                             repo, record it in <run>/.guard.json, print
@@ -261,6 +262,43 @@ def epic_refuse(run, what):
             "Each wave is started as its own run after the plan is approved.")
 
 
+def eval_of(run):
+    """meta.json `eval` (written by the app at Start): {group, index, of, source, bases?} of an eval run.
+    Anything malformed (of outside 2..10, index outside 1..of, a non-string group or source, bases not an object) is
+    not an eval run, so a bad file never makes a normal run refuse its ship."""
+    m = load_json(os.path.join(run, "meta.json"))
+    e = m.get("eval") if isinstance(m, dict) else None
+    if not isinstance(e, dict):
+        return None
+    def num(v):
+        return isinstance(v, int) and not isinstance(v, bool)
+    if not (isinstance(e.get("group"), str) and e["group"] and isinstance(e.get("source"), str) and e["source"]
+            and num(e.get("of")) and 2 <= e["of"] <= 10 and num(e.get("index")) and 1 <= e["index"] <= e["of"]):
+        return None
+    b = e.get("bases")
+    if b is not None and not isinstance(b, dict):
+        return None
+    return e
+
+
+def eval_refuse(run, what):
+    if eval_of(run):
+        die(f"{what}: eval run: it builds and reviews locally and is never shipped (no push, PR, comment or ClickUp write). "
+            "It ends at ship-approval with waitingFor null.")
+
+
+def eval_base(run, repo):
+    """The {base, baseCommit} an eval run must build on for this repo, or None (a normal run, or a repo with no source base)."""
+    e = eval_of(run)
+    if not e or not isinstance(e.get("bases"), dict):
+        return None
+    want = portable.real_path(repo)
+    for k, v in e["bases"].items():
+        if isinstance(v, dict) and isinstance(v.get("baseCommit"), str) and v["baseCommit"] and portable.real_path(k) == want:
+            return v
+    return None
+
+
 def waves_digest(run):
     import hashlib
     t = read(os.path.join(run, "waves.md"))
@@ -447,11 +485,12 @@ def check_risk(r, p):
         p.append("plan.risk.path must be null or reviews/risk-round<n>.md (relative to the run)")
 
 
-def check_approval(v, name, problems):
+def check_approval(v, name, problems, run=None):
     if v is None:
         return
-    if not (isinstance(v, dict) and v.get("by") in ("user", "test") and ISO.match(str(v.get("at")))):
-        problems.append(f"{name} must be null or {{by: user|test, at: <UTC>}}")
+    by = ("user", "test") + (("eval",) if name == "plan.approval" and run and eval_of(run) else ())
+    if not (isinstance(v, dict) and v.get("by") in by and ISO.match(str(v.get("at")))):
+        problems.append(f"{name} must be null or {{by: {'|'.join(by)}, at: <UTC>}}")
 
 
 def validate_status(doc, run):
@@ -471,7 +510,7 @@ def validate_status(doc, run):
     if plan is not None and not isinstance(plan, dict):
         p.append("plan must be null or an object")
         plan = None
-    check_approval((plan or {}).get("approval"), "plan.approval", p)
+    check_approval((plan or {}).get("approval"), "plan.approval", p, run)
     check_risk((plan or {}).get("risk"), p)
     check_approval(doc.get("shipApproval"), "shipApproval", p)
     if doc.get("bmad") is not None and not isinstance(doc.get("bmad"), dict):
@@ -484,6 +523,11 @@ def validate_status(doc, run):
             p.append(f"stage {stage} is not allowed in an epic-plan run (it only plans waves: planning, plan-approval, done)")
         if doc.get("prs"):
             p.append("prs must stay empty in an epic-plan run (no PR is made)")
+    if eval_of(run):
+        if doc.get("waitingFor") == "ship-approval":
+            p.append("an eval run never waits for ship approval: it ends at ship-approval with waitingFor null")
+        if stage in ("shipping", "done"):
+            p.append(f"stage {stage} is not allowed in an eval run (it ends at ship-approval with waitingFor null, or failed)")
     paused = doc.get("paused")
     if paused is not None and not (isinstance(paused, dict) and isinstance(paused.get("reason"), str) and paused["reason"]):
         p.append("paused must be null or {reason: <one line>, at: <UTC>}")
@@ -888,6 +932,9 @@ def cmd_preflight(run, resume=False):
     print(f"bmad={bmad_mode(run)}")
     if epic_mode(run):
         print("mode=epic-plan")
+    ev = eval_of(run)
+    if ev:
+        print(f"eval={ev['index']}/{ev['of']} group={ev['group']}")
     print(f"node={node_major()[1] or 'missing'}")
     if resume:
         st = load_json(os.path.join(run, "status.json"))
@@ -899,8 +946,14 @@ def cmd_preflight(run, resume=False):
 
 
 def cmd_approve(run, what, by):
-    if what not in ("plan", "ship") or by not in ("user", "test"):
-        die("usage: state.sh approve <run> plan|ship user|test")
+    if what not in ("plan", "ship") or by not in ("user", "test", "eval"):
+        die("usage: state.sh approve <run> plan|ship user|test (plan eval: eval runs only)")
+    if by == "eval" and what != "plan":
+        die("NOT APPROVED: eval approval is for the plan only; an eval run never ships")
+    if by == "eval" and not eval_of(run):
+        die("NOT APPROVED: `approve plan eval` is for runs whose meta.json has eval; use `approve <run> plan user` after the user's yes")
+    if what == "ship" and eval_of(run):
+        die("NOT APPROVED: eval run: it is never shipped; it ends at ship-approval with waitingFor null")
     if by == "test" and not testmode()["auto"]:
         die("NOT APPROVED: DCV2_TEST_MODE has no auto-approve. Ask the user; after their yes use `approve <run> " + what + " user`.")
     st = load_status(run)
@@ -916,7 +969,7 @@ def cmd_approve(run, what, by):
             die(f"NOT APPROVED: the plan can be approved only at stop #1 with plan.md written (stage {st.get('stage')})")
         st["plan"]["approval"] = {"by": by, "at": t}
         st["stage"] = "plan-approval"
-        line = "plan approved by the user" if by == "user" else "plan auto-approved (test-mode)"
+        line = {"user": "plan approved by the user", "eval": "plan approved for eval (eval mode)"}.get(by, "plan auto-approved (test-mode)")
     else:
         if st.get("stage") != "ship-approval":
             die(f"NOT APPROVED: shipping can be approved only at stop #2 (stage {st.get('stage')})")
@@ -1218,11 +1271,20 @@ def cmd_waves(run):
     print(f"waves=pass {len(waves)} wave(s), {in_scope} ticket(s) in scope, {len(out_of_scope)} out of scope")
 
 
-def cmd_base(repo):
+def cmd_base(repo, run=None):
     repo = portable.real_path(repo)
     if git("-C", repo, "rev-parse", "--git-dir").returncode != 0:
         die(f"NO BASE: {repo} is not a git repo")
     remote = remote_of(repo)
+    pinned = eval_base(run, repo) if run else None
+    if pinned:  # an eval run builds on what its source run built on, not on today's default branch
+        if remote and git("-C", repo, "fetch", "-q", remote).returncode != 0:
+            print(f"note: git fetch {remote} failed; using what is known locally", file=sys.stderr)
+        commit = git("-C", repo, "rev-parse", "--verify", "--quiet", f"{pinned['baseCommit']}^{{commit}}").stdout.strip()
+        if not commit:
+            die(f"NO BASE: the source run's base commit {pinned['baseCommit']} is not in {repo}")
+        print(f"base={pinned.get('base') or '-'} baseCommit={commit} remote={remote or 'none'}")
+        return
     if remote:
         if git("-C", repo, "fetch", "-q", remote).returncode != 0:
             print(f"note: git fetch {remote} failed; using what is known locally", file=sys.stderr)
@@ -1410,6 +1472,12 @@ def cmd_worktree(run, repo, pr_id, base):
             "nothing was recorded in .guard.json")
     if git("-C", repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}").returncode != 0:
         die(f"NOT MADE: base commit {base!r} is not a commit in {repo}; use baseCommit from status.json / state.sh base")
+    pinned = eval_base(run, repo)
+    if pinned:
+        want = git("-C", repo, "rev-parse", "--verify", "--quiet", f"{pinned['baseCommit']}^{{commit}}").stdout.strip()
+        have = git("-C", repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}").stdout.strip()
+        if not want or want != have:
+            die(f"NOT MADE: eval run builds on {pinned['baseCommit']} (the source run's base): use `state.sh base {repo} {run}`")
     branch, wt = canon(repo, run_id, pr_id)
     st = load_json(os.path.join(run, "status.json")) or {}
     rec = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == pr_id), {})
@@ -1482,6 +1550,7 @@ def cmd_ship_check(run):
 
 def cmd_ship_pr(run, pid):
     epic_refuse(run, "NOT SHIPPED")
+    eval_refuse(run, "NOT SHIPPED")
     st = load_status(run)
     if review_mode(run) == "github":
         die("NOT SHIPPED: this run reviews on GitHub (meta.json reviewMode github): ship with `state.sh ready <run> <pr id>`")
@@ -1934,6 +2003,7 @@ def title_and_body(run, st, pr, body, what):
 
 def cmd_draft_pr(run, pid):
     epic_refuse(run, "NOT DRAFTED")
+    eval_refuse(run, "NOT DRAFTED")
     st, pr, rem = github_pr(run, pid, ("building", "ship-approval"))
     if pr.get("prUrl"):
         print(f"draft=exists url={pr['prUrl']}")
@@ -1988,6 +2058,7 @@ def cmd_draft_pr(run, pid):
 
 def cmd_push(run, pid):
     epic_refuse(run, "NOT PUSHED")
+    eval_refuse(run, "NOT PUSHED")
     st, pr, rem = github_pr(run, pid)
     if not pr.get("prUrl"):
         print("push=skipped: no draft PR (the review loop stays local)")
@@ -2042,6 +2113,7 @@ def checked_pr(run, st, pr, rem, what):
 
 
 def cmd_post_review(run, pid, rnd):
+    eval_refuse(run, "NOT POSTED")
     if not re.fullmatch(r"[1-3]", rnd):
         die("NOT POSTED: round must be 1, 2 or 3")
     rnd = int(rnd)
@@ -2077,6 +2149,7 @@ def cmd_post_review(run, pid, rnd):
 
 
 def cmd_comment(run, pid, kind, rnd):
+    eval_refuse(run, "NOT POSTED")
     if kind != "fixes" or not re.fullmatch(r"[1-3]", rnd):
         die("usage: state.sh comment <run> <pr id> fixes <round 1-3> (the only template)")
     rnd = int(rnd)
@@ -2118,6 +2191,7 @@ def cmd_comment(run, pid, kind, rnd):
 
 def cmd_ready(run, pid):
     epic_refuse(run, "NOT READY")
+    eval_refuse(run, "NOT READY")
     st = load_status(run)
     if st.get("stage") != "shipping" or not st.get("shipApproval"):
         die(f"NOT READY: needs stage shipping and the ship approval (stage {st.get('stage')}, "
@@ -2207,6 +2281,7 @@ def ticket_ship_statuses(plan):
 
 
 def cmd_writeback(run, force):
+    eval_refuse(run, "NOT WRITTEN")
     if epic_mode(run):
         print("epic-plan run: no writeback (the wave runs write back their tickets)")
         return
@@ -2820,7 +2895,7 @@ def main(argv):
     elif cmd == "waves": cmd_waves(args[0])
     elif cmd == "scope": cmd_scope(args[0], args[1])
     elif cmd == "plan": cmd_plan(args[0], args[1], args[2] if len(args) > 2 else None)
-    elif cmd == "base": cmd_base(args[0])
+    elif cmd == "base": cmd_base(args[0], args[1] if len(args) > 1 else None)
     elif cmd == "worktree": cmd_worktree(args[0], args[1], args[2], args[3])
     elif cmd == "ship-check": cmd_ship_check(args[0])
     elif cmd == "ship-pr": cmd_ship_pr(args[0], args[1])

@@ -5,6 +5,7 @@
 
 use super::adapters::dcv2_run::{self, ApprovalIn, RunEvents, RunInputs};
 use super::adapters::{AgentMeta, SubagentFile};
+use super::compare;
 use super::index::{
     self, Counts, Exclusion, Limits, PassStats, RunInput, SearchFilter, SearchOut, SessionInput,
     SourceStamp,
@@ -12,6 +13,7 @@ use super::index::{
 use super::redact::{first_hit, redact};
 use super::schema::{sha256_hex, CapturePolicy, SourceRef};
 use super::session::{self, PageRequest, Parsed, SessionView};
+use super::snapshot;
 use crate::provider::claude::same_config_dir;
 use crate::store::settings_store::{resolved_account_config, ClaudeAccount, ClaudeSettings};
 use serde::Serialize;
@@ -510,23 +512,41 @@ pub fn session_view(
         Access::Ready(set) => set,
     };
     let exact = query.run_dir.as_deref().is_some_and(exact_pr);
-    let parsed: Vec<Arc<Parsed>> = set
+    let mut parsed: Vec<Arc<Parsed>> = set
         .sessions
         .iter()
         .map(|s| cache.parsed(s, exact))
         .collect();
+    // A recorded session whose transcript is gone is read from the run's snapshot, that session only.
+    let mut snapshot_info = None;
+    if let Some((manifest, sessions)) = set
+        .run_dir
+        .as_deref()
+        .and_then(|dir| snapshot_sessions(dir, &set.gone))
+    {
+        for (_, events) in sessions {
+            parsed.push(Arc::new(Parsed::from_events(events)));
+        }
+        snapshot_info = Some(session::SnapshotInfo {
+            created_at: manifest.created_at.clone(),
+            policy: manifest.policy,
+            content_kept: manifest.content_lines > 0,
+        });
+    }
     let run = set
         .run_dir
         .as_deref()
         .map(|dir| cache.run_events(dir, opens));
-    session::view(
+    let mut view = session::view(
         &parsed,
         run.as_deref(),
         trace.as_deref(),
         set.policy,
         request,
         set.notices,
-    )
+    )?;
+    view.snapshot = snapshot_info;
+    Ok(view)
 }
 
 /// The file of the trace index, in the app's data folder.
@@ -593,14 +613,27 @@ fn source_stamp(path: &Path) -> Option<SourceStamp> {
 struct HostLoader {
     run_dir: PathBuf,
     exact: bool,
-    sessions: Vec<Option<SessionFiles>>,
+    sessions: Vec<LoaderSession>,
+}
+
+/// Where one session of a run comes from when the index has to parse it.
+enum LoaderSession {
+    /// Its transcript files.
+    Live(SessionFiles),
+    /// Its transcript is gone, but the run's snapshot holds its Events.
+    Snapshot(Vec<super::schema::Event>),
+    /// Its transcript is gone and nothing else is known.
+    Gone,
 }
 
 impl index::Loader for HostLoader {
     fn session(&self, index: usize) -> Arc<Parsed> {
-        match self.sessions.get(index).and_then(Option::as_ref) {
-            Some(files) => Arc::new(session::parse(&files.main, &files.subagents, self.exact)),
-            None => Arc::new(Parsed::from_events(Vec::new())),
+        match self.sessions.get(index) {
+            Some(LoaderSession::Live(files)) => {
+                Arc::new(session::parse(&files.main, &files.subagents, self.exact))
+            }
+            Some(LoaderSession::Snapshot(events)) => Arc::new(Parsed::from_events(events.clone())),
+            _ => Arc::new(Parsed::from_events(Vec::new())),
         }
     }
     fn run(&self) -> RunEvents {
@@ -693,19 +726,35 @@ fn prepare_run(claude: &ClaudeSettings, dir: &Path) -> Option<Prepared> {
             id: session_id_of(&files.main),
             stamps,
         });
-        prepared.loader.sessions.push(Some(files.clone()));
+        prepared
+            .loader
+            .sessions
+            .push(LoaderSession::Live(files.clone()));
     }
+    // A gone session reads its Events from the run's snapshot (so a rebuilt flight.db matches the Trace).
+    let mut from_snapshot = snapshot_sessions(dir, &set.gone)
+        .map(|(_, sessions)| sessions)
+        .unwrap_or_default();
     for id in &set.gone {
         prepared.sessions.push(SessionInput {
             id: id.clone(),
             stamps: Vec::new(),
         });
-        prepared.loader.sessions.push(None);
+        let at = from_snapshot.iter().position(|(sid, _)| sid == id);
+        prepared.loader.sessions.push(match at {
+            Some(at) => LoaderSession::Snapshot(from_snapshot.swap_remove(at).1),
+            None => LoaderSession::Gone,
+        });
     }
     let mut names: Vec<(String, PathBuf)> = run_file_list(dir);
-    for extra in ["meta.json", "repos.json", "app-usage.json"] {
+    for extra in [
+        "meta.json",
+        "repos.json",
+        "app-usage.json",
+        "flight/manifest.json",
+    ] {
         let path = dir.join(extra);
-        if regular_file(&path) {
+        if regular_file(&path) && (!extra.starts_with("flight/") || snapshot_dir(dir).is_some()) {
             names.push((extra.to_string(), path));
         }
     }
@@ -776,6 +825,7 @@ pub fn spawn_index(app: &tauri::AppHandle) {
         .name("flight-index".into())
         .spawn(move || {
             let mut conn: Option<rusqlite::Connection> = None;
+            let mut snapshots = SnapshotState::default();
             loop {
                 std::thread::sleep(INDEX_EVERY);
                 let data = crate::data_dir::app_data_dir(&app).path;
@@ -791,8 +841,482 @@ pub fn spawn_index(app: &tauri::AppHandle) {
                         index_pass(conn, &claude, &dirs, &Limits::default())
                     }));
                 }
+                // The snapshot pass: the same thread, after the index pass, over the same run folders.
+                let settings = app.state::<Mutex<crate::store::SettingsStore>>();
+                let claude = settings.lock().map(|s| s.claude().clone()).ok();
+                if let Some(claude) = claude {
+                    let dirs = app_run_dirs(&data);
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        snapshot_pass(&claude, &dirs, &mut snapshots)
+                    }));
+                }
             }
         });
+}
+
+// ---- the run snapshot (CAP-11, AD-45) ----------------------------------------------------
+
+/// The snapshot folder inside a run folder.
+pub const SNAPSHOT_DIR: &str = "flight";
+/// A snapshot being built, or the old one being replaced (`<this><hex>` and `<this><hex>-old`).
+pub const SNAPSHOT_TMP: &str = ".flight.tmp-";
+/// At most this many runs get a snapshot in one pass.
+pub const SNAPSHOTS_PER_PASS: usize = 2;
+/// A run is tried at most this many times per app session.
+pub const SNAPSHOT_ATTEMPTS: u32 = 3;
+const SNAPSHOT_MANIFEST_MAX: u64 = 4 * 1024 * 1024;
+const SNAPSHOT_FILE_MAX: u64 = 512 * 1024 * 1024;
+
+/// Tries and the last reason logged, per run folder, for this app session only.
+#[derive(Debug, Default)]
+pub struct SnapshotState {
+    tried: std::collections::HashMap<PathBuf, (u32, Option<String>)>,
+}
+
+impl SnapshotState {
+    #[cfg(test)]
+    pub fn attempts(&self, run: &Path) -> u32 {
+        self.tried.get(run).map_or(0, |t| t.0)
+    }
+}
+
+/// A transcript file's identity for the manifest: path, size, mtime (ms) and the sha256 of its bytes.
+fn snap_source(path: &Path) -> Option<snapshot::SnapSource> {
+    let meta = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
+    let bytes = std::fs::read(path).ok()?;
+    Some(snapshot::SnapSource {
+        file: path.display().to_string(),
+        size: meta.len(),
+        mtime: meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_millis() as i64),
+        sha256: sha256_hex(&bytes),
+    })
+}
+
+/// `<run>/flight` when it is a real folder (not a link): the three snapshot files are read only through it.
+fn snapshot_dir(run_dir: &Path) -> Option<PathBuf> {
+    let dir = run_dir.join(SNAPSHOT_DIR);
+    std::fs::symlink_metadata(&dir)
+        .ok()
+        .filter(|m| m.file_type().is_dir())
+        .map(|_| dir)
+}
+
+fn read_snapshot_text(path: &Path, cap: u64) -> Result<String, String> {
+    use crate::store::{read_capped, CappedError};
+    let bytes = read_capped(path, cap).map_err(|e| match e {
+        CappedError::Missing => "missing".to_string(),
+        CappedError::NotRegular => "not a regular file".to_string(),
+        CappedError::TooLarge => "too large".to_string(),
+        CappedError::Io(e) => e,
+    })?;
+    String::from_utf8(bytes).map_err(|_| "not UTF-8".to_string())
+}
+
+/// Only the manifest of a run's snapshot (a small file); `None` when it is absent, damaged or of another schema.
+fn read_snapshot_manifest(run_dir: &Path) -> Option<snapshot::Manifest> {
+    let dir = snapshot_dir(run_dir)?;
+    let manifest: snapshot::Manifest = serde_json::from_str(
+        &read_snapshot_text(&dir.join("manifest.json"), SNAPSHOT_MANIFEST_MAX).ok()?,
+    )
+    .ok()?;
+    (manifest.schema == snapshot::SCHEMA).then_some(manifest)
+}
+
+/// The three files of a run's snapshot, read without following links; `None` when it is absent or damaged.
+fn read_snapshot(run_dir: &Path) -> Option<snapshot::Old> {
+    let dir = snapshot_dir(run_dir)?;
+    let manifest = read_snapshot_manifest(run_dir)?;
+    Some(snapshot::Old {
+        events_jsonl: read_snapshot_text(&dir.join("events.jsonl"), SNAPSHOT_FILE_MAX).ok()?,
+        content_jsonl: read_snapshot_text(&dir.join("content.jsonl"), SNAPSHOT_FILE_MAX).ok(),
+        manifest,
+    })
+}
+
+/// One session's id and its Events.
+type SessionEvents = (String, Vec<super::schema::Event>);
+
+/// The Events of the recorded sessions in `gone` that the run's snapshot holds, one list per session (that
+/// session only, unchanged), with the manifest. Reads `manifest.json` and `events.jsonl` as regular files, never
+/// through a link. A live transcript always wins: the caller passes only the sessions whose transcripts are gone.
+fn snapshot_sessions(
+    run_dir: &Path,
+    gone: &[String],
+) -> Option<(snapshot::Manifest, Vec<SessionEvents>)> {
+    if gone.is_empty() {
+        return None;
+    }
+    let dir = snapshot_dir(run_dir)?;
+    let manifest: snapshot::Manifest = serde_json::from_str(
+        &read_snapshot_text(&dir.join("manifest.json"), SNAPSHOT_MANIFEST_MAX).ok()?,
+    )
+    .ok()?;
+    if manifest.schema != snapshot::SCHEMA {
+        return None;
+    }
+    let wanted: Vec<String> = gone
+        .iter()
+        .filter(|id| manifest.sessions.iter().any(|s| &s.id == *id))
+        .cloned()
+        .collect();
+    if wanted.is_empty() {
+        return None;
+    }
+    let text = read_snapshot_text(&dir.join("events.jsonl"), SNAPSHOT_FILE_MAX).ok()?;
+    let mut by_session: Vec<SessionEvents> =
+        wanted.into_iter().map(|id| (id, Vec::new())).collect();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        if let Ok(event) = serde_json::from_str::<super::schema::Event>(line) {
+            if let Some((_, events)) = by_session.iter_mut().find(|(id, _)| *id == event.session) {
+                events.push(event);
+            }
+        }
+    }
+    by_session.retain(|(_, events)| !events.is_empty());
+    (!by_session.is_empty()).then_some((manifest, by_session))
+}
+
+/// A gone session's content from the run's snapshot: only for a source file the snapshot lists, only while the
+/// current policy is `redacted` or `full`, and only the line whose sha256 is the ref's; else "content not kept".
+/// `None` when the snapshot does not know the file at all (the caller's usual refusal applies).
+fn snapshot_content_for(
+    run_dir: &Path,
+    policy: CapturePolicy,
+    source: &SourceRef,
+) -> Option<Result<ContentOut, String>> {
+    let dir = snapshot_dir(run_dir)?;
+    let manifest: snapshot::Manifest = serde_json::from_str(
+        &read_snapshot_text(&dir.join("manifest.json"), SNAPSHOT_MANIFEST_MAX).ok()?,
+    )
+    .ok()?;
+    if manifest.schema != snapshot::SCHEMA
+        || !manifest.sources.iter().any(|s| s.file == source.file)
+    {
+        return None;
+    }
+    const NOT_KEPT: &str = "content not kept";
+    if !matches!(policy, CapturePolicy::Redacted | CapturePolicy::Full) {
+        return Some(Err(NOT_KEPT.into()));
+    }
+    let Ok(text) = read_snapshot_text(&dir.join("content.jsonl"), SNAPSHOT_FILE_MAX) else {
+        return Some(Err(NOT_KEPT.into()));
+    };
+    let found = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<snapshot::ContentLine>(l).ok())
+        .find(|c| c.sha256 == source.sha256);
+    Some(match found {
+        Some(line) => {
+            // Redacted when it was written; once more on the way out (idempotent).
+            let (text, n) = redact(&line.text);
+            Ok(ContentOut {
+                text,
+                redactions: line.redactions + n as u32,
+                policy,
+            })
+        }
+        None => Err(NOT_KEPT.into()),
+    })
+}
+
+fn remove_tree(path: &Path) {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_dir() => {
+            let _ = std::fs::remove_dir_all(path);
+        }
+        Ok(_) => {
+            let _ = std::fs::remove_file(path);
+        }
+        Err(_) => {}
+    }
+}
+
+/// Puts a run folder right after a crash: a `.flight.tmp-<hex>-old` folder with no `flight/` is the snapshot
+/// a swap had set aside, so it comes back first; every other `.flight.tmp-*` entry is removed.
+fn recover_snapshot_leftovers(run_dir: &Path) {
+    let entries: Vec<(String, PathBuf)> = std::fs::read_dir(run_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| Some((e.file_name().to_str()?.to_string(), e.path())))
+        .filter(|(n, _)| n.starts_with(SNAPSHOT_TMP))
+        .collect();
+    if entries.is_empty() {
+        return;
+    }
+    let live = run_dir.join(SNAPSHOT_DIR);
+    let mut restored = std::fs::symlink_metadata(&live).is_ok();
+    for (name, path) in &entries {
+        if !restored && name.ends_with("-old") && std::fs::rename(path, &live).is_ok() {
+            restored = true;
+        }
+    }
+    for (_, path) in entries {
+        if path.exists() || std::fs::symlink_metadata(&path).is_ok() {
+            remove_tree(&path);
+        }
+    }
+}
+
+/// The redacted text behind every distinct source line of `events` (found again by the line's sha256), read
+/// from the transcripts. A line that changed since it was parsed is skipped.
+fn snapshot_content(events: &[super::schema::Event]) -> Vec<snapshot::ContentLine> {
+    let mut files: std::collections::HashMap<String, std::fs::File> =
+        std::collections::HashMap::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for event in events {
+        let source = &event.content.source;
+        if source.len == 0 || source.len > MAX_LINE || !seen.insert(source.sha256.clone()) {
+            continue;
+        }
+        let file = match files.entry(source.file.clone()) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => match std::fs::File::open(&source.file)
+            {
+                Ok(f) => e.insert(f),
+                Err(_) => continue,
+            },
+        };
+        let mut bytes = Vec::new();
+        if file.seek(SeekFrom::Start(source.offset)).is_err()
+            || file.take(source.len).read_to_end(&mut bytes).is_err()
+            || bytes.len() as u64 != source.len
+            || sha256_hex(&bytes) != source.sha256
+        {
+            continue;
+        }
+        let (text, redactions) = render_line(&bytes);
+        out.push(snapshot::ContentLine {
+            id: event.id.clone(),
+            sha256: source.sha256.clone(),
+            text,
+            redactions,
+        });
+    }
+    out
+}
+
+/// Builds a run's snapshot text: the live sessions parsed now plus, from the old snapshot, the sessions whose
+/// transcripts are gone.
+fn build_snapshot(
+    run_dir: &Path,
+    set: &SessionSet,
+    outcome: &str,
+    updated: Option<String>,
+    old: Option<&snapshot::Old>,
+    cap: usize,
+) -> Result<snapshot::Built, String> {
+    let recorded = crate::run::record::read_record(run_dir)
+        .map(|r| r.sessions)
+        .unwrap_or_default();
+    let exact = exact_pr(run_dir);
+    let mut live = Vec::new();
+    let mut all_events = Vec::new();
+    for files in &set.sessions {
+        let id = session_id_of(&files.main);
+        let config_dir = recorded
+            .iter()
+            .find(|s| s.session_id == id)
+            .map(|s| s.config_dir.clone())
+            .unwrap_or_default();
+        let parsed = session::parse(&files.main, &files.subagents, exact);
+        let sources = std::iter::once(files.main.as_path())
+            .chain(files.subagents.iter().map(|s| s.path.as_path()))
+            .filter_map(snap_source)
+            .collect();
+        all_events.extend(parsed.events.iter().cloned());
+        live.push(snapshot::SessionIn {
+            session: snapshot::SnapSession { id, config_dir },
+            events: parsed.events,
+            sources,
+        });
+    }
+    let content = if matches!(set.policy, CapturePolicy::Redacted | CapturePolicy::Full) {
+        snapshot_content(&all_events)
+    } else {
+        Vec::new()
+    };
+    let carry = old
+        .map(|o| snapshot::carry_over(o, &set.gone))
+        .unwrap_or_default();
+    snapshot::build(snapshot::Input {
+        created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        policy: set.policy,
+        outcome: outcome.to_string(),
+        record_status_updated_at: updated,
+        live: &live,
+        carry,
+        content,
+        cap,
+    })
+}
+
+/// Writes `built` as `<run>/flight/`: into `.flight.tmp-<hex>/`, then the swap. The old `flight/` is renamed
+/// `.flight.tmp-<hex>-old`, the new one renamed `flight`, the old one removed; a failure puts the old one back.
+/// `flight/` is never edited in place, and no write follows a link.
+fn write_snapshot(run_dir: &Path, built: &snapshot::Built) -> Result<(), String> {
+    let live = run_dir.join(SNAPSHOT_DIR);
+    if let Ok(meta) = std::fs::symlink_metadata(&live) {
+        if !meta.file_type().is_dir() {
+            return Err("flight is not a folder".into());
+        }
+    }
+    let hex = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    let tmp = run_dir.join(format!("{SNAPSHOT_TMP}{hex}"));
+    std::fs::create_dir(&tmp).map_err(|e| format!("temp folder: {e}"))?;
+    let written = (|| -> Result<(), String> {
+        let manifest = serde_json::to_vec_pretty(&built.manifest).map_err(|e| e.to_string())?;
+        crate::store::write_run_file(&tmp.join("events.jsonl"), built.events_jsonl.as_bytes())?;
+        if let Some(content) = &built.content_jsonl {
+            crate::store::write_run_file(&tmp.join("content.jsonl"), content.as_bytes())?;
+        }
+        // The manifest last: a folder without one is never read as a snapshot.
+        crate::store::write_run_file(&tmp.join("manifest.json"), &manifest)
+    })();
+    if let Err(why) = written {
+        remove_tree(&tmp);
+        return Err(why);
+    }
+    let old = run_dir.join(format!("{SNAPSHOT_TMP}{hex}-old"));
+    let had_old = std::fs::symlink_metadata(&live).is_ok();
+    if had_old {
+        if let Err(e) = std::fs::rename(&live, &old) {
+            remove_tree(&tmp);
+            return Err(format!("could not set the old snapshot aside: {e}"));
+        }
+    }
+    if let Err(e) = std::fs::rename(&tmp, &live) {
+        if had_old {
+            let _ = std::fs::rename(&old, &live);
+        }
+        remove_tree(&tmp);
+        return Err(format!("could not move the snapshot in: {e}"));
+    }
+    if had_old {
+        remove_tree(&old);
+    }
+    Ok(())
+}
+
+/// Why a run gets no snapshot now, or `None` when it does: its record is terminal, its account keeps run
+/// traces, its policy is not `off`, and `flight/` is absent or belongs to another record.
+fn snapshot_candidate(
+    claude: &ClaudeSettings,
+    run_dir: &Path,
+) -> Option<(String, Option<String>, SessionSet)> {
+    let record = crate::run::record::read_record(run_dir)?;
+    let outcome = record
+        .outcome
+        .clone()
+        .filter(|o| matches!(o.as_str(), "done" | "failed" | "eval-done"))?;
+    let updated = record.status_updated_at.clone();
+    let account = crate::run::folder::read_json_value(&run_dir.join("meta.json"))
+        .and_then(|m| m["account"]["id"].as_str().map(str::to_string))?;
+    if !claude
+        .accounts
+        .iter()
+        .any(|a| a.id == account && a.keep_run_traces)
+    {
+        return None;
+    }
+    // Only the manifest: this runs for every kept run on every pass, so it must not read the big files.
+    if let Some(old) = read_snapshot_manifest(run_dir) {
+        if old.outcome == outcome && old.record_status_updated_at == updated {
+            return None;
+        }
+    }
+    let query = Query {
+        run_dir: Some(run_dir.to_path_buf()),
+        ..Default::default()
+    };
+    match resolve(claude, &query, &Opens::default()) {
+        Access::Ready(set) => Some((outcome, updated, set)),
+        Access::Off | Access::Refused(_) => None,
+    }
+}
+
+/// Whether the last `trace snapshot` line of the run's log.md is a failure.
+fn last_snapshot_line_failed(run_dir: &Path) -> bool {
+    read_snapshot_text(&run_dir.join("log.md"), 8 * 1024 * 1024)
+        .ok()
+        .and_then(|log| {
+            log.lines()
+                .rev()
+                .find(|l| l.contains(" app: trace snapshot "))
+                .map(|l| l.contains(" app: trace snapshot failed: "))
+        })
+        .unwrap_or(false)
+}
+
+/// One snapshot pass over `run_dirs`, run by the index thread after each index pass. A run gets `<run>/flight/`
+/// once per terminal record (see [`snapshot_candidate`]); at most [`SNAPSHOTS_PER_PASS`] runs per pass. A
+/// failure leaves the previous `flight/` in place, is retried on a later pass at most [`SNAPSHOT_ATTEMPTS`]
+/// times per run per app session, and is logged once per run, session and reason. Returns how many were written.
+pub fn snapshot_pass(
+    claude: &ClaudeSettings,
+    run_dirs: &[PathBuf],
+    state: &mut SnapshotState,
+) -> usize {
+    let mut written = 0;
+    for dir in run_dirs {
+        recover_snapshot_leftovers(dir);
+        if written >= SNAPSHOTS_PER_PASS {
+            continue;
+        }
+        if state
+            .tried
+            .get(dir)
+            .is_some_and(|t| t.0 >= SNAPSHOT_ATTEMPTS)
+        {
+            continue;
+        }
+        let Some((outcome, updated, set)) = snapshot_candidate(claude, dir) else {
+            continue;
+        };
+        let old = read_snapshot(dir);
+        // A snapshot whose manifest is fine but whose Events cannot be read: replacing it would drop the
+        // Events of sessions whose transcripts are gone, so keep it and fail with a reason.
+        let result = if old.is_none() && read_snapshot_manifest(dir).is_some() {
+            Err("the previous snapshot's events cannot be read".to_string())
+        } else {
+            build_snapshot(
+                dir,
+                &set,
+                &outcome,
+                updated,
+                old.as_ref(),
+                snapshot::MAX_BYTES,
+            )
+            .and_then(|built| write_snapshot(dir, &built))
+        };
+        match result {
+            Ok(()) => {
+                state.tried.remove(dir);
+                written += 1;
+                // The run panel shows the last failure until a later line says it was written.
+                if last_snapshot_line_failed(dir) {
+                    let _ = crate::run::folder::append_app_log(dir, "trace snapshot written");
+                }
+            }
+            Err(reason) => {
+                let entry = state.tried.entry(dir.clone()).or_default();
+                entry.0 += 1;
+                if entry.1.as_deref() != Some(reason.as_str()) {
+                    entry.1 = Some(reason.clone());
+                    let _ = crate::run::folder::append_app_log(
+                        dir,
+                        &format!("trace snapshot failed: {reason}"),
+                    );
+                }
+            }
+        }
+    }
+    written
 }
 
 /// `flight_search`: the structured search over `<data>/flight.db`, on a connection that can only read. A
@@ -813,6 +1337,503 @@ pub fn search_index(data: &Path, filter: &SearchFilter) -> Result<SearchOut, Str
         out.progress.total = app_run_dirs(data).len() as i64;
     }
     Ok(out)
+}
+
+// ---- compare (CAP-10, AD-47) ----------------------------------------------------------
+
+/// One side of a comparison, as the page shows it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareSide {
+    pub run_id: String,
+    pub run_dir: String,
+    pub title: String,
+    pub outcome: String,
+    /// The run is in the trace index.
+    pub indexed: bool,
+    /// The account's policy is `off`: nothing of this side is read.
+    pub off: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareOut {
+    pub a: CompareSide,
+    pub b: CompareSide,
+    /// Empty unless both sides are indexed and readable.
+    pub rows: Vec<compare::Row>,
+    pub divergence: Option<usize>,
+    /// How far the index is (runs current of runs seen), for the "not indexed yet" meter.
+    pub progress: Counts,
+}
+
+/// The usage readings of an account's windows, for Window share: the host asks by config folder.
+pub type UsageHistory = Vec<crate::usage::WindowHistory>;
+
+fn rfc3339_ms(text: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|d| d.timestamp_millis())
+}
+
+fn share_of(
+    claude: &ClaudeSettings,
+    run_dir: &Path,
+    record: &crate::run::record::RunRecord,
+    usage: &dyn Fn(&str) -> UsageHistory,
+) -> compare::Share {
+    let account = crate::run::folder::read_json_value(&run_dir.join("meta.json"))
+        .and_then(|m| m["account"]["id"].as_str().map(str::to_string));
+    let (Some(account), Some(start), Some(end)) = (
+        account,
+        record.first_activity.as_deref().and_then(rfc3339_ms),
+        record.last_activity.as_deref().and_then(rfc3339_ms),
+    ) else {
+        return compare::Share::default();
+    };
+    let config = resolved_account_config(claude, &account).path;
+    let history = usage(&config);
+    let of = |window: &str| {
+        let readings: Vec<compare::Reading> = history
+            .iter()
+            .filter(|h| h.rate_limit_type == window)
+            .flat_map(|h| h.readings.iter())
+            .map(|r| compare::Reading {
+                at_ms: r.at_ms,
+                utilization: r.utilization,
+                resets_at: r.resets_at,
+            })
+            .collect();
+        compare::window_share(&readings, start, end)
+    };
+    compare::Share {
+        five_hour: of("five_hour"),
+        weekly: of("seven_day"),
+    }
+}
+
+/// The indexed Events of one run, light columns for all and the whole Event only for the kinds Compare needs.
+fn indexed_events(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+) -> Result<Vec<compare::IndexedEvent>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT kind, name, status, pr, failure, rule, paths,
+                    CASE WHEN kind IN ('tool.start', 'check.end') OR failure IS NOT NULL THEN event_json END, id
+             FROM events WHERE run_id = ?1 ORDER BY at, src_file, src_offset",
+        )
+        .map_err(|e| format!("index: {e}"))?;
+    let rows = stmt
+        .query_map([run_id], |r| {
+            let paths: Option<String> = r.get(6)?;
+            let json: Option<String> = r.get(7)?;
+            Ok(compare::IndexedEvent {
+                kind: r.get(0)?,
+                name: r.get(1)?,
+                status: r.get(2)?,
+                pr: r.get(3)?,
+                failure: r.get(4)?,
+                rule: r.get(5)?,
+                paths: paths
+                    .map(|p| p.lines().map(str::to_string).collect())
+                    .unwrap_or_default(),
+                event: json.and_then(|j| serde_json::from_str(&j).ok()),
+                id: r.get(8)?,
+            })
+        })
+        .map_err(|e| format!("index: {e}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("index: {e}"))
+}
+
+/// A read-only connection to `flight.db`, only when it exists with the schema this build reads (an older one is
+/// rebuilt by the index thread, and until then nothing is indexed).
+fn index_reader(data: &Path) -> Option<rusqlite::Connection> {
+    let db = data.join(INDEX_FILE);
+    if !db.is_file() {
+        return None;
+    }
+    index::open_reader(&db).ok().filter(|c| {
+        c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .is_ok_and(|v| v == index::SCHEMA_VERSION)
+    })
+}
+
+/// The share of the account's five-hour window one finished run used (an estimate in percent points), from the
+/// readings inside its span; `None` when there are not enough readings ("not known"). For the Eval dialog's
+/// estimate (N times this).
+pub fn run_five_hour_share(
+    claude: &ClaudeSettings,
+    run_dir: &Path,
+    usage: &dyn Fn(&str) -> UsageHistory,
+) -> Option<f64> {
+    let record = crate::run::record::read_record(run_dir)?;
+    share_of(claude, run_dir, &record, usage).five_hour
+}
+
+/// `flight_compare`: two run folders, each already through `checked_run_dir`. Reads the trace index through a
+/// read-only connection and each run's record; it never writes `flight.db` and never indexes on demand. The
+/// same folder twice is refused.
+pub fn compare_runs(
+    data: &Path,
+    claude: &ClaudeSettings,
+    a: &Path,
+    b: &Path,
+    usage: &dyn Fn(&str) -> UsageHistory,
+) -> Result<CompareOut, String> {
+    if ident(a) == ident(b) {
+        return Err("Pick two different runs.".into());
+    }
+    let conn = index_reader(data);
+    let mut sides = Vec::new();
+    for dir in [a, b] {
+        let run_id = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let query = Query {
+            run_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
+        let off = match resolve(claude, &query, &Opens::default()) {
+            Access::Off => true,
+            Access::Refused(why) => return Err(format!("{run_id}: {why}")),
+            Access::Ready(_) => false,
+        };
+        let row: Option<(String, i64)> = conn.as_ref().and_then(|c| {
+            c.query_row(
+                "SELECT outcome, excluded_off FROM runs WHERE run_id = ?1",
+                [&run_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+        });
+        let record = crate::run::record::read_record(dir);
+        let indexed = row.is_some();
+        let off = off || row.as_ref().is_some_and(|(_, excluded)| *excluded != 0);
+        let outcome = row
+            .map(|(o, _)| o)
+            .filter(|o| !o.is_empty())
+            .or_else(|| record.as_ref().and_then(|r| r.outcome.clone()))
+            .unwrap_or_default();
+        let side = if indexed && !off {
+            let events = indexed_events(conn.as_ref().expect("indexed"), &run_id)?;
+            let record_in = record.as_ref().map(|r| compare::Record {
+                tokens: compare::Tokens {
+                    input: r.tokens.input,
+                    output: r.tokens.output,
+                    cache_write: r.tokens.cache_write_5m + r.tokens.cache_write_1h,
+                    cache_read: r.tokens.cache_read,
+                },
+                minutes_by_stage: r.active_minutes_by_stage.clone(),
+            });
+            Some(compare::Side {
+                events,
+                share: record
+                    .as_ref()
+                    .map(|r| share_of(claude, dir, r, usage))
+                    .unwrap_or_default(),
+                record: record_in,
+            })
+        } else {
+            None
+        };
+        sides.push((
+            CompareSide {
+                run_id,
+                run_dir: dir.display().to_string(),
+                title: crate::run::folder::request_title(dir).unwrap_or_default(),
+                outcome,
+                indexed,
+                off,
+            },
+            side,
+        ));
+    }
+    let (b_side, b_data) = sides.pop().expect("two sides");
+    let (a_side, a_data) = sides.pop().expect("two sides");
+    let rows = match (&a_data, &b_data) {
+        (Some(x), Some(y)) => compare::rows(x, y),
+        _ => compare::Rows {
+            rows: Vec::new(),
+            divergence: None,
+        },
+    };
+    let progress = conn
+        .as_ref()
+        .map(|c| {
+            let p = index::progress(c);
+            Counts {
+                current: p.current,
+                total: p.seen,
+            }
+        })
+        .unwrap_or_default();
+    Ok(CompareOut {
+        a: a_side,
+        b: b_side,
+        rows: rows.rows,
+        divergence: rows.divergence,
+        progress,
+    })
+}
+
+// ---- eval results (CAP-15, AD-48) ------------------------------------------------------
+
+/// min / median / max of one measure over the finished runs that have it; all `None` when none has.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Dist {
+    pub min: Option<f64>,
+    pub median: Option<f64>,
+    pub max: Option<f64>,
+    /// How many runs the figures are over.
+    pub of: usize,
+}
+
+impl Dist {
+    pub fn of_values(mut values: Vec<f64>) -> Self {
+        values.retain(|v| v.is_finite());
+        if values.is_empty() {
+            return Dist::default();
+        }
+        values.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        let mid = values.len() / 2;
+        let median = if values.len() % 2 == 1 {
+            values[mid]
+        } else {
+            (values[mid - 1] + values[mid]) / 2.0
+        };
+        Dist {
+            min: values.first().copied(),
+            median: Some(median),
+            max: values.last().copied(),
+            of: values.len(),
+        }
+    }
+}
+
+/// One run of an eval group.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalRunResult {
+    pub index: u32,
+    pub label: String,
+    pub run_id: Option<String>,
+    pub run_dir: Option<String>,
+    /// `finished` (eval-done), `failed`, `running` or `queued`.
+    pub status: String,
+    /// `eval-done` and every PR `reviewed` with a recorded check of `pass` or `none`; null for a run still going.
+    pub completed: Option<bool>,
+    /// PRs whose app check passed over PRs with an app check; null when the run has none ("not checked").
+    pub check_pass_rate: Option<f64>,
+    /// `checked`, `checking` or `not checked`.
+    pub check_state: String,
+    pub retries: Option<u32>,
+    pub tool_failures: Option<u32>,
+    pub tokens: Option<u64>,
+    pub active_minutes: Option<f64>,
+    /// Branches left after the worktrees were removed, with their unmerged commit count.
+    pub kept_branches: Vec<crate::run::janitor::KeptBranch>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalDistributions {
+    /// 1 for a completed run, 0 for one that is not.
+    pub completed: Dist,
+    pub check_pass_rate: Dist,
+    pub retries: Dist,
+    pub tool_failures: Dist,
+    pub tokens: Dist,
+    pub active_minutes: Dist,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalResults {
+    pub group: String,
+    pub source: String,
+    pub n: u32,
+    pub runs: Vec<EvalRunResult>,
+    pub distributions: EvalDistributions,
+    pub finished: usize,
+    pub running: usize,
+    pub failed: usize,
+}
+
+/// Retries and tool Failures of one indexed run, or `None` when the run is not in the index (or its account is
+/// `off`).
+fn indexed_counts(conn: &rusqlite::Connection, run_id: &str) -> Option<(u32, u32)> {
+    conn.query_row(
+        "SELECT 1 FROM runs WHERE run_id = ?1 AND excluded_off = 0",
+        [run_id],
+        |_| Ok(()),
+    )
+    .ok()?;
+    let count = |sql: &str| {
+        conn.query_row(sql, [run_id], |r| r.get::<_, i64>(0))
+            .ok()
+            .map(|n| n as u32)
+    };
+    Some((
+        count("SELECT COUNT(*) FROM events WHERE run_id = ?1 AND kind = 'retry'")?,
+        count(
+            "SELECT COUNT(*) FROM events WHERE run_id = ?1 AND failure IS NOT NULL
+               AND kind IN ('tool.end', 'tool.blocked')",
+        )?,
+    ))
+}
+
+/// `completed` by record-formats.md: `eval-done`, and every PR `reviewed` with a recorded check of `pass` or
+/// `none` (the skill's own result in status.json, so it never depends on an app check).
+fn eval_completed(run_dir: &Path, outcome: Option<&str>) -> bool {
+    if outcome != Some("eval-done") {
+        return false;
+    }
+    let Some(status) = crate::run::folder::read_json_value(&run_dir.join("status.json")) else {
+        return false;
+    };
+    let prs = status["prs"].as_array().cloned().unwrap_or_default();
+    !prs.is_empty()
+        && prs.iter().all(|pr| {
+            pr["state"].as_str() == Some("reviewed")
+                && matches!(pr["check"]["result"].as_str(), Some("pass" | "none"))
+        })
+}
+
+/// PRs whose app check passed over PRs whose app check ran; `None` with no app-checks.json or no real result.
+fn app_check_rate(run_dir: &Path) -> Option<f64> {
+    if !run_dir.join("app-checks.json").is_file() {
+        return None;
+    }
+    let results: Vec<String> = crate::run::status::read_app_checks(run_dir)
+        .into_values()
+        .map(|c| c.result)
+        .filter(|r| matches!(r.as_str(), "pass" | "fail" | "timeout" | "error"))
+        .collect();
+    if results.is_empty() {
+        return None;
+    }
+    Some(results.iter().filter(|r| r.as_str() == "pass").count() as f64 / results.len() as f64)
+}
+
+/// `flight_eval_results`: the runs of one eval group with their measures and the min / median / max over the
+/// finished ones, read-only. A measure that is not known is `None`, never 0. `checking` says whether an app
+/// check is running for a run folder now.
+pub fn eval_results(
+    data: &Path,
+    group: &str,
+    checking: &dyn Fn(&Path) -> bool,
+) -> Result<EvalResults, String> {
+    let batch = crate::run::dispatch::load(data)
+        .batches
+        .into_iter()
+        .find(|b| b.id == group && crate::run::dispatch::is_eval_batch(b))
+        .ok_or("No such eval group.")?;
+    let conn = index_reader(data);
+    let mut runs = Vec::new();
+    for (i, member) in batch.runs.iter().filter(|r| !r.removed).enumerate() {
+        let index = i as u32 + 1;
+        let dir = member
+            .run_dir
+            .as_deref()
+            .and_then(|d| crate::run::checked_run_dir(data, d).ok());
+        let Some(dir) = dir else {
+            runs.push(EvalRunResult {
+                index,
+                label: member.label.clone(),
+                run_id: None,
+                run_dir: None,
+                status: "queued".into(),
+                completed: None,
+                check_pass_rate: None,
+                check_state: "not checked".into(),
+                retries: None,
+                tool_failures: None,
+                tokens: None,
+                active_minutes: None,
+                kept_branches: Vec::new(),
+            });
+            continue;
+        };
+        let run_id = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let stage = crate::run::folder::read_json_value(&dir.join("status.json"))
+            .and_then(|v| v["stage"].as_str().map(str::to_string));
+        let record = crate::run::record::read_record(&dir);
+        let outcome = record.as_ref().and_then(|r| r.outcome.clone());
+        let eval = crate::run::folder::eval_of(&dir);
+        let status = if crate::run::folder::finished_eval(eval.as_ref(), stage.as_deref()) {
+            "finished"
+        } else if stage.as_deref() == Some("failed") {
+            "failed"
+        } else {
+            "running"
+        };
+        let ended = status != "running";
+        let counts = if ended {
+            conn.as_ref().and_then(|c| indexed_counts(c, &run_id))
+        } else {
+            None
+        };
+        let check_state = if checking(&dir) {
+            "checking"
+        } else if dir.join("app-checks.json").is_file() {
+            "checked"
+        } else {
+            "not checked"
+        };
+        runs.push(EvalRunResult {
+            index,
+            label: member.label.clone(),
+            run_id: Some(run_id),
+            run_dir: Some(dir.display().to_string()),
+            status: status.into(),
+            completed: ended.then(|| eval_completed(&dir, outcome.as_deref())),
+            check_pass_rate: if ended { app_check_rate(&dir) } else { None },
+            check_state: check_state.into(),
+            retries: counts.map(|c| c.0),
+            tool_failures: counts.map(|c| c.1),
+            tokens: record
+                .as_ref()
+                .filter(|_| ended)
+                .map(|r| r.tokens.input + r.tokens.output),
+            active_minutes: record
+                .as_ref()
+                .filter(|_| ended)
+                .map(|r| r.active_minutes_by_stage.values().sum()),
+            kept_branches: crate::run::janitor::kept_branches(&dir),
+        });
+    }
+    let finished: Vec<&EvalRunResult> = runs.iter().filter(|r| r.status == "finished").collect();
+    let over = |f: &dyn Fn(&EvalRunResult) -> Option<f64>| {
+        Dist::of_values(finished.iter().filter_map(|r| f(r)).collect())
+    };
+    let distributions = EvalDistributions {
+        completed: over(&|r| r.completed.map(|c| if c { 1.0 } else { 0.0 })),
+        check_pass_rate: over(&|r| r.check_pass_rate),
+        retries: over(&|r| r.retries.map(f64::from)),
+        tool_failures: over(&|r| r.tool_failures.map(f64::from)),
+        tokens: over(&|r| r.tokens.map(|t| t as f64)),
+        active_minutes: over(&|r| r.active_minutes),
+    };
+    Ok(EvalResults {
+        group: batch.id.clone(),
+        source: batch.source.clone().unwrap_or_default(),
+        n: batch.n.unwrap_or(runs.len() as u32),
+        distributions,
+        finished: finished.len(),
+        running: runs
+            .iter()
+            .filter(|r| matches!(r.status.as_str(), "running" | "queued"))
+            .count(),
+        failed: runs.iter().filter(|r| r.status == "failed").count(),
+        runs,
+    })
 }
 
 /// What `flight_content` returns.
@@ -1001,6 +2022,14 @@ pub fn read_content(
         return read_run_file(source, set.policy, opens);
     }
     if !set.contains(&source.file) {
+        // A gone transcript: the run's snapshot may hold the content.
+        if let Some(found) = set
+            .run_dir
+            .as_deref()
+            .and_then(|dir| snapshot_content_for(dir, set.policy, source))
+        {
+            return found;
+        }
         return Err(if set.run_dir.is_some() {
             "that file is not part of this run"
         } else {
@@ -1049,6 +2078,7 @@ mod tests {
             name: id.to_uppercase(),
             config_dir: Some(dir.display().to_string()),
             capture_policy: policy,
+            keep_run_traces: false,
         }
     }
 
@@ -2783,5 +3813,943 @@ mod tests {
         };
         assert!(set.sessions.is_empty());
         assert!(set.notices[0].starts_with("transcript gone"));
+    }
+
+    // ---- the run snapshot ----
+
+    fn keeping(mut accounts: Vec<ClaudeAccount>) -> ClaudeSettings {
+        for a in &mut accounts {
+            a.keep_run_traces = true;
+        }
+        settings(accounts)
+    }
+
+    /// The record of a finished run: both sessions listed, `outcome` and the status stamp it was computed from.
+    fn finish(run: &Path, config: &Path, sessions: &[&str], outcome: Option<&str>, updated: &str) {
+        let list: Vec<Value> = sessions
+            .iter()
+            .map(|s| json!({"sessionId": s, "configDir": config.display().to_string()}))
+            .collect();
+        std::fs::write(
+            run.join("app-usage.json"),
+            json!({"schema": 1, "sessions": list, "outcome": outcome, "statusUpdatedAt": updated})
+                .to_string(),
+        )
+        .unwrap();
+    }
+
+    fn manifest_of(run: &Path) -> snapshot::Manifest {
+        serde_json::from_str(&std::fs::read_to_string(run.join("flight/manifest.json")).unwrap())
+            .unwrap()
+    }
+
+    fn event_ids(run: &Path) -> Vec<String> {
+        std::fs::read_to_string(run.join("flight/events.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| {
+                serde_json::from_str::<super::super::schema::Event>(l)
+                    .unwrap()
+                    .id
+            })
+            .collect()
+    }
+
+    fn entries_named(run: &Path, prefix: &str) -> Vec<String> {
+        std::fs::read_dir(run)
+            .unwrap()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            .filter(|n| n.starts_with(prefix))
+            .collect()
+    }
+
+    #[test]
+    fn a_finished_run_whose_account_keeps_traces_gets_one_snapshot_per_record_and_metadata_holds_no_content(
+    ) {
+        let dir = TempDir::new("flight_snapshot_basic");
+        let (run, config) = wave1_run(&dir);
+        let mut state = SnapshotState::default();
+        let dirs = std::slice::from_ref(&run);
+        let claude = keeping(vec![account("a", &config, CapturePolicy::Metadata)]);
+        // Not finished: no outcome in the record.
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 0);
+        assert!(!run.join("flight").exists());
+        finish(&run, &config, &[WAVE1_SID], Some("done"), "t1");
+        // Finished, but the account does not keep traces.
+        let off_switch = settings(vec![account("a", &config, CapturePolicy::Metadata)]);
+        assert_eq!(snapshot_pass(&off_switch, dirs, &mut state), 0);
+        assert!(!run.join("flight").exists());
+        // The `off` policy opens nothing, whatever the switch says.
+        let off = keeping(vec![account("a", &config, CapturePolicy::Off)]);
+        assert_eq!(snapshot_pass(&off, dirs, &mut state), 0);
+        assert!(!run.join("flight").exists());
+
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 1);
+        let manifest = manifest_of(&run);
+        assert_eq!(
+            (
+                manifest.outcome.as_str(),
+                manifest.record_status_updated_at.as_deref()
+            ),
+            ("done", Some("t1"))
+        );
+        assert_eq!(manifest.policy, CapturePolicy::Metadata);
+        assert!(manifest.events > 0 && manifest.events == event_ids(&run).len());
+        assert_eq!(manifest.sessions[0].id, WAVE1_SID);
+        assert_eq!(manifest.content_lines, 0);
+        assert!(
+            !run.join("flight/content.jsonl").exists(),
+            "metadata keeps no content"
+        );
+        assert!(!manifest.sources.is_empty());
+        assert!(entries_named(&run, SNAPSHOT_TMP).is_empty());
+        // Once per terminal record: the same record writes nothing again.
+        let created = manifest.created_at.clone();
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 0);
+        assert_eq!(manifest_of(&run).created_at, created);
+        // The snapshot is a regular tree of three files at most.
+        let names = entries_named(&run.join("flight"), "");
+        assert_eq!(names.len(), 2, "{names:?}");
+    }
+
+    #[test]
+    fn a_pass_reads_only_the_manifest_of_a_current_snapshot_and_keeps_one_whose_events_are_unreadable(
+    ) {
+        let dir = TempDir::new("flight_snapshot_manifest_only");
+        let (run, config) = wave1_run(&dir);
+        finish(&run, &config, &[WAVE1_SID], Some("done"), "t1");
+        let claude = keeping(vec![account("a", &config, CapturePolicy::Metadata)]);
+        let dirs = std::slice::from_ref(&run);
+        let mut state = SnapshotState::default();
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 1);
+        // Damage the events: a current snapshot is skipped without reading them.
+        let events = run.join("flight/events.jsonl");
+        std::fs::write(&events, [0xff, 0xfe]).unwrap();
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 0);
+        assert!(state.tried.is_empty());
+        // A new record with unreadable old events keeps the old snapshot and fails with a reason.
+        finish(&run, &config, &[WAVE1_SID], Some("done"), "t2");
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 0);
+        assert_eq!(std::fs::read(&events).unwrap(), vec![0xff, 0xfe]);
+        assert_eq!(
+            manifest_of(&run).record_status_updated_at.as_deref(),
+            Some("t1")
+        );
+        assert_eq!(state.tried.get(&run).map(|t| t.0), Some(1));
+    }
+
+    #[test]
+    fn redacted_and_full_snapshots_keep_redacted_content_by_source_line() {
+        for policy in [CapturePolicy::Redacted, CapturePolicy::Full] {
+            let dir = TempDir::new("flight_snapshot_content");
+            let (run, config) = wave1_run(&dir);
+            finish(&run, &config, &[WAVE1_SID], Some("failed"), "t1");
+            let claude = keeping(vec![account("a", &config, policy)]);
+            assert_eq!(
+                snapshot_pass(
+                    &claude,
+                    std::slice::from_ref(&run),
+                    &mut SnapshotState::default()
+                ),
+                1
+            );
+            let manifest = manifest_of(&run);
+            assert_eq!(manifest.outcome, "failed");
+            assert!(manifest.content_lines > 0);
+            let content = std::fs::read_to_string(run.join("flight/content.jsonl")).unwrap();
+            assert_eq!(content.lines().count(), manifest.content_lines);
+            // Every content line is found again by a source ref of an Event.
+            let events = std::fs::read_to_string(run.join("flight/events.jsonl")).unwrap();
+            for line in content.lines() {
+                let c: snapshot::ContentLine = serde_json::from_str(line).unwrap();
+                assert!(events.contains(&c.sha256), "{}", c.sha256);
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_then_resumed_run_gets_a_new_snapshot_that_keeps_the_gone_sessions_events() {
+        let dir = TempDir::new("flight_snapshot_resume");
+        let (run, config) = wave1_run(&dir);
+        let claude = keeping(vec![account("a", &config, CapturePolicy::Full)]);
+        let dirs = std::slice::from_ref(&run);
+        let mut state = SnapshotState::default();
+        finish(&run, &config, &[WAVE1_SID], Some("failed"), "t1");
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 1);
+        let before = event_ids(&run);
+        let content_before = manifest_of(&run).content_lines;
+        assert!(!before.is_empty());
+
+        // Claude deletes the first session's transcript; the run resumes with a second session and ends again.
+        let proj = config.join("projects/-work-toy");
+        std::fs::remove_file(proj.join(format!("{WAVE1_SID}.jsonl"))).unwrap();
+        std::fs::remove_dir_all(proj.join(WAVE1_SID)).unwrap();
+        session(
+            &config,
+            SID_B,
+            &[
+                prompt("2026-11-06T10:00:00Z"),
+                tool_use(
+                    "2026-11-06T10:00:01Z",
+                    "m1",
+                    "t1",
+                    "Bash",
+                    json!({"command": "ls"}),
+                ),
+            ],
+        );
+        finish(&run, &config, &[WAVE1_SID, SID_B], Some("done"), "t2");
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 1);
+        let manifest = manifest_of(&run);
+        assert_eq!(
+            (
+                manifest.outcome.as_str(),
+                manifest.record_status_updated_at.as_deref()
+            ),
+            ("done", Some("t2"))
+        );
+        let after = event_ids(&run);
+        assert!(
+            before.iter().all(|id| after.contains(id)),
+            "the gone session's Events are kept with their ids"
+        );
+        assert!(
+            after.len() > before.len(),
+            "and the new session's are added"
+        );
+        let ids: Vec<&str> = manifest.sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, [WAVE1_SID, SID_B]);
+        assert!(
+            manifest.content_lines >= content_before,
+            "the gone session's content is carried"
+        );
+        assert!(
+            entries_named(&run, SNAPSHOT_TMP).is_empty(),
+            "the old snapshot was removed after the swap"
+        );
+    }
+
+    #[test]
+    fn leftovers_are_removed_and_a_crash_between_the_two_renames_is_restored() {
+        let dir = TempDir::new("flight_snapshot_crash");
+        let (run, config) = wave1_run(&dir);
+        let claude = keeping(vec![account("a", &config, CapturePolicy::Metadata)]);
+        let dirs = std::slice::from_ref(&run);
+        let mut state = SnapshotState::default();
+        finish(&run, &config, &[WAVE1_SID], Some("done"), "t1");
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 1);
+        let ids = event_ids(&run);
+        // A crashed build, and a crash after the old snapshot was set aside.
+        std::fs::create_dir(run.join(".flight.tmp-dead0001")).unwrap();
+        std::fs::write(run.join(".flight.tmp-dead0001/events.jsonl"), "x").unwrap();
+        std::fs::rename(run.join("flight"), run.join(".flight.tmp-beef0002-old")).unwrap();
+        assert_eq!(
+            snapshot_pass(&claude, dirs, &mut state),
+            0,
+            "the restored snapshot is the current record's"
+        );
+        assert_eq!(event_ids(&run), ids, "nothing was lost");
+        assert!(
+            entries_named(&run, SNAPSHOT_TMP).is_empty(),
+            "{:?}",
+            entries_named(&run, SNAPSHOT_TMP)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_write_leaves_the_previous_snapshot_and_is_logged_once_per_reason_and_tried_three_times(
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new("flight_snapshot_fail");
+        let (run, config) = wave1_run(&dir);
+        let claude = keeping(vec![account("a", &config, CapturePolicy::Metadata)]);
+        let dirs = std::slice::from_ref(&run);
+        let mut state = SnapshotState::default();
+        finish(&run, &config, &[WAVE1_SID], Some("done"), "t1");
+        assert_eq!(snapshot_pass(&claude, dirs, &mut state), 1);
+        let log_before = std::fs::read_to_string(run.join("log.md")).unwrap();
+
+        // The record changes, and the run folder cannot be written to: every pass fails the same way.
+        finish(&run, &config, &[WAVE1_SID], Some("failed"), "t2");
+        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root ignores the mode: skip then.
+        if std::fs::create_dir(run.join(".probe")).is_ok() {
+            std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = std::fs::remove_dir(run.join(".probe"));
+            return;
+        }
+        for _ in 0..5 {
+            assert_eq!(snapshot_pass(&claude, dirs, &mut state), 0);
+        }
+        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            state.attempts(&run),
+            SNAPSHOT_ATTEMPTS,
+            "no more than 3 tries per app session"
+        );
+        assert_eq!(
+            manifest_of(&run).outcome,
+            "done",
+            "the previous snapshot stays"
+        );
+        let log = std::fs::read_to_string(run.join("log.md")).unwrap();
+        let added = log.strip_prefix(&log_before).unwrap_or(&log);
+        assert_eq!(
+            added.matches("app: trace snapshot failed:").count(),
+            1,
+            "one line for the same reason: {added}"
+        );
+        // A new app session (a fresh state) tries again and succeeds.
+        assert_eq!(
+            snapshot_pass(&claude, dirs, &mut SnapshotState::default()),
+            1
+        );
+        assert_eq!(manifest_of(&run).outcome, "failed");
+        let log = std::fs::read_to_string(run.join("log.md")).unwrap();
+        assert!(
+            log.trim_end().ends_with("app: trace snapshot written"),
+            "the panel can tell the failure is over: {log}"
+        );
+    }
+
+    #[test]
+    fn a_flight_that_is_not_a_folder_is_a_failure_and_nothing_follows_a_link() {
+        let dir = TempDir::new("flight_snapshot_link");
+        let (run, config) = wave1_run(&dir);
+        let claude = keeping(vec![account("a", &config, CapturePolicy::Metadata)]);
+        finish(&run, &config, &[WAVE1_SID], Some("done"), "t1");
+        std::fs::write(run.join("flight"), "i am a file").unwrap();
+        let mut state = SnapshotState::default();
+        assert_eq!(
+            snapshot_pass(&claude, std::slice::from_ref(&run), &mut state),
+            0
+        );
+        assert_eq!(
+            std::fs::read_to_string(run.join("flight")).unwrap(),
+            "i am a file"
+        );
+        assert_eq!(state.attempts(&run), 1);
+        assert!(std::fs::read_to_string(run.join("log.md"))
+            .unwrap()
+            .contains("app: trace snapshot failed: flight is not a folder"));
+    }
+
+    // ---- reading a snapshot (CAP-11) ----
+
+    fn read_all(claude: &ClaudeSettings, run: &Path) -> SessionView {
+        let query = Query {
+            run_dir: Some(run.to_path_buf()),
+            ..Default::default()
+        };
+        let request = PageRequest {
+            page_size: Some(1000),
+            ..Default::default()
+        };
+        session_view(
+            claude,
+            &query,
+            &request,
+            &FlightCache::default(),
+            &Opens::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    #[ignore = "regenerates fixtures/run/flight-wave2-snapshot from the wave 1 run (run it with --ignored)"]
+    fn regenerate_the_wave2_snapshot_fixture() {
+        let dir = TempDir::new("flight_regen_wave2");
+        let (run, config) = wave1_run(&dir);
+        finish(
+            &run,
+            &config,
+            &[WAVE1_SID],
+            Some("done"),
+            "2026-11-05T11:00:00Z",
+        );
+        let claude = keeping(vec![account("a", &config, CapturePolicy::Full)]);
+        assert_eq!(
+            snapshot_pass(
+                &claude,
+                std::slice::from_ref(&run),
+                &mut SnapshotState::default()
+            ),
+            1
+        );
+        let out =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/run/flight-wave2-snapshot");
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(out.join("flight")).unwrap();
+        let shown = config.display().to_string().replace('\\', "/");
+        let canonical = config
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        for name in [
+            "meta.json",
+            "app-usage.json",
+            "log.md",
+            "status.json",
+            "flight/manifest.json",
+            "flight/events.jsonl",
+            "flight/content.jsonl",
+        ] {
+            let text = std::fs::read_to_string(run.join(name)).unwrap();
+            let text = text
+                .replace(&canonical, "@CONFIG@")
+                .replace(&shown, "@CONFIG@");
+            std::fs::write(out.join(name), text).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_snapshot_page_has_the_same_events_as_the_live_one_once_the_transcripts_are_gone() {
+        let dir = TempDir::new("flight_snapshot_same");
+        let (run, config) = wave1_run(&dir);
+        let claude = keeping(vec![account("a", &config, CapturePolicy::Full)]);
+        finish(&run, &config, &[WAVE1_SID], Some("done"), "t1");
+        let live = read_all(&claude, &run);
+        assert!(live.snapshot.is_none(), "a live transcript is read live");
+        assert_eq!(
+            snapshot_pass(
+                &claude,
+                std::slice::from_ref(&run),
+                &mut SnapshotState::default()
+            ),
+            1
+        );
+        // A session whose transcript still exists is read live, even with a snapshot beside it.
+        assert!(read_all(&claude, &run).snapshot.is_none());
+        let proj = config.join("projects/-work-toy");
+        std::fs::remove_file(proj.join(format!("{WAVE1_SID}.jsonl"))).unwrap();
+        std::fs::remove_dir_all(proj.join(WAVE1_SID)).unwrap();
+        let from_snapshot = read_all(&claude, &run);
+        let info = from_snapshot.snapshot.clone().expect("the snapshot marker");
+        assert_eq!(
+            (info.policy, info.content_kept),
+            (CapturePolicy::Full, true)
+        );
+        let ids = |v: &SessionView| {
+            v.page
+                .events
+                .iter()
+                .map(|e| e.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(!ids(&live).is_empty());
+        assert_eq!(
+            ids(&from_snapshot),
+            ids(&live),
+            "the same Event ids in the same order"
+        );
+        let refs = |v: &SessionView| {
+            v.page
+                .events
+                .iter()
+                .map(|e| e.content.source.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(refs(&from_snapshot), refs(&live), "and the same SourceRefs");
+        assert_eq!(
+            from_snapshot
+                .failures
+                .iter()
+                .map(|f| f.id.clone())
+                .collect::<Vec<_>>(),
+            live.failures
+                .iter()
+                .map(|f| f.id.clone())
+                .collect::<Vec<_>>(),
+            "the same Failures"
+        );
+        assert!(from_snapshot
+            .notices
+            .iter()
+            .any(|n| n.starts_with("transcript gone")));
+        // Under `off` nothing is read, snapshot or not.
+        let off = keeping(vec![account("a", &config, CapturePolicy::Off)]);
+        let view = read_all(&off, &run);
+        assert!((view.status.as_str(), view.page.events.len()) == ("off", 0));
+        // The index reads the same Events from the snapshot for a rebuilt flight.db.
+        let mut conn = index::open_writer(&dir.join("rebuilt.db")).unwrap();
+        pass_over(&mut conn, &claude, &run);
+        let indexed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE session = ?1",
+                [WAVE1_SID],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            indexed > 0,
+            "a rebuilt index holds the gone session's Events from the snapshot"
+        );
+    }
+
+    #[test]
+    fn the_checked_in_snapshot_fixture_opens_with_its_transcript_removed() {
+        use crate::flight::testkit::wave2_snapshot_run;
+        let dir = TempDir::new("flight_wave2_fixture");
+        let (run, config) = wave2_snapshot_run(&dir);
+        let full = settings(vec![account("a", &config, CapturePolicy::Full)]);
+        let view = read_all(&full, &run);
+        let info = view.snapshot.clone().expect("opened from the snapshot");
+        assert_eq!(
+            (info.policy, info.content_kept),
+            (CapturePolicy::Full, true)
+        );
+        let on_disk: Vec<String> = std::fs::read_to_string(run.join("flight/events.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| {
+                serde_json::from_str::<super::super::schema::Event>(l)
+                    .unwrap()
+                    .id
+            })
+            .collect();
+        assert!(!on_disk.is_empty());
+        let transcript_ids: Vec<String> = view
+            .page
+            .events
+            .iter()
+            .filter(|e| e.provider.name != "dcv2")
+            .map(|e| e.id.clone())
+            .collect();
+        for id in &on_disk {
+            assert!(transcript_ids.contains(id), "{id}");
+        }
+        assert_eq!(transcript_ids.len(), on_disk.len());
+
+        // Content: the line whose sha256 matches the ref, redacted, while the policy is redacted/full.
+        let event = view
+            .page
+            .events
+            .iter()
+            .find(|e| e.id == on_disk[0])
+            .unwrap();
+        let query = Query {
+            run_dir: Some(run.clone()),
+            ..Default::default()
+        };
+        let out = read_content(&full, &query, &event.content.source, &Opens::default()).unwrap();
+        assert!(!out.text.is_empty());
+        assert_eq!(out.policy, CapturePolicy::Full);
+        // A ref whose line was never kept: "content not kept".
+        let mut other = event.content.source.clone();
+        other.sha256 = "0".repeat(64);
+        assert_eq!(
+            read_content(&full, &query, &other, &Opens::default()).unwrap_err(),
+            "content not kept"
+        );
+        // A file the snapshot does not know is refused as before.
+        let mut foreign = event.content.source.clone();
+        foreign.file = "/elsewhere/x.jsonl".into();
+        assert_eq!(
+            read_content(&full, &query, &foreign, &Opens::default()).unwrap_err(),
+            "that file is not part of this run"
+        );
+        // Under a current `metadata` policy: "content not kept", though content.jsonl exists.
+        assert!(run.join("flight/content.jsonl").is_file());
+        let metadata = settings(vec![account("a", &config, CapturePolicy::Metadata)]);
+        assert_eq!(
+            read_content(&metadata, &query, &event.content.source, &Opens::default()).unwrap_err(),
+            "content not kept"
+        );
+        let shown = read_all(&metadata, &run);
+        assert!(
+            shown.snapshot.is_some(),
+            "the Events still open under metadata"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_snapshot_made_of_links_is_refused() {
+        use crate::flight::testkit::wave2_snapshot_run;
+        let dir = TempDir::new("flight_wave2_links");
+        let (run, config) = wave2_snapshot_run(&dir);
+        let full = settings(vec![account("a", &config, CapturePolicy::Full)]);
+        assert!(read_all(&full, &run).snapshot.is_some());
+        // events.jsonl is a link: nothing is read from the snapshot.
+        let events = run.join("flight/events.jsonl");
+        let real = dir.join("elsewhere.jsonl");
+        std::fs::rename(&events, &real).unwrap();
+        std::os::unix::fs::symlink(&real, &events).unwrap();
+        assert!(
+            read_all(&full, &run).snapshot.is_none(),
+            "a linked events.jsonl"
+        );
+        std::fs::remove_file(&events).unwrap();
+        std::fs::rename(&real, &events).unwrap();
+        // flight itself is a link.
+        let moved = dir.join("moved-flight");
+        std::fs::rename(run.join("flight"), &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, run.join("flight")).unwrap();
+        assert!(
+            read_all(&full, &run).snapshot.is_none(),
+            "a linked flight folder"
+        );
+    }
+
+    // ---- compare ----
+
+    fn no_usage(_: &str) -> UsageHistory {
+        Vec::new()
+    }
+
+    /// The pair indexed under two accounts (one per account folder), plus the settings for it.
+    fn compare_setup(dir: &TempDir) -> (PathBuf, PathBuf, ClaudeSettings) {
+        use crate::flight::testkit::compare_guard_runs;
+        let ((pass, pass_config), (fail, fail_config)) = compare_guard_runs(dir);
+        let claude = settings(vec![
+            account("p", &pass_config, CapturePolicy::Metadata),
+            account("f", &fail_config, CapturePolicy::Metadata),
+        ]);
+        let mut conn = index::open_writer(&dir.join(INDEX_FILE)).unwrap();
+        index_pass(
+            &mut conn,
+            &claude,
+            &[pass.clone(), fail.clone()],
+            &Limits::default(),
+        )
+        .unwrap();
+        (pass, fail, claude)
+    }
+
+    #[test]
+    fn two_runs_that_differ_by_one_guard_block_diverge_at_the_failures_row() {
+        let dir = TempDir::new("flight_compare_guard");
+        let (pass, fail, claude) = compare_setup(&dir);
+        let out = compare_runs(dir.path(), &claude, &pass, &fail, &no_usage).unwrap();
+        assert!(out.a.indexed && out.b.indexed && !out.a.off && !out.b.off);
+        let at = out.divergence.expect("a difference");
+        let row = &out.rows[at];
+        assert_eq!(
+            (row.group.as_str(), row.key.as_str()),
+            ("failures", "tool.blocked:run-file-write")
+        );
+        assert_eq!((&row.a, &row.b), (&json!(0), &json!(1)));
+        assert!(row.a_event.is_none(), "the passing run has no such Event");
+        let blocked = row
+            .b_event
+            .clone()
+            .expect("the failing run's blocked Event opens in its Trace");
+        let page = read_all(
+            &settings(vec![account(
+                "f",
+                &dir.join("config-fail"),
+                CapturePolicy::Metadata,
+            )]),
+            &fail,
+        );
+        assert!(page
+            .page
+            .events
+            .iter()
+            .any(|e| e.id == blocked && e.kind == "tool.blocked"));
+        assert_eq!(
+            out.rows.iter().filter(|r| r.differs).count(),
+            1,
+            "only the guard block differs: {:?}",
+            out.rows.iter().filter(|r| r.differs).collect::<Vec<_>>()
+        );
+        // The record numbers are the same for both and are rows too.
+        let tokens: Vec<_> = out.rows.iter().filter(|r| r.group == "tokens").collect();
+        assert_eq!(tokens.len(), 4);
+        assert!(out
+            .rows
+            .iter()
+            .any(|r| r.group == "tools" && r.key == "Bash" && r.a == json!(1) && r.b == json!(1)));
+        // Swapping the sides swaps the values and finds the same row.
+        let back = compare_runs(dir.path(), &claude, &fail, &pass, &no_usage).unwrap();
+        assert_eq!(
+            back.divergence.map(|i| back.rows[i].key.clone()),
+            Some("tool.blocked:run-file-write".to_string())
+        );
+        assert_eq!(
+            (
+                &back.rows[back.divergence.unwrap()].a,
+                &back.rows[back.divergence.unwrap()].b
+            ),
+            (&json!(1), &json!(0))
+        );
+    }
+
+    #[test]
+    fn compare_refuses_the_same_folder_and_reports_a_side_that_is_not_indexed_or_off() {
+        let dir = TempDir::new("flight_compare_states");
+        let (pass, fail, claude) = compare_setup(&dir);
+        let same = compare_runs(dir.path(), &claude, &pass, &pass, &no_usage).unwrap_err();
+        assert_eq!(same, "Pick two different runs.");
+
+        // A run the index has not seen: its side says so, and no rows are made.
+        let other = dir.join("r-20261105-100000-new");
+        let other_config = dir.join("config-new");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::create_dir_all(&other_config).unwrap();
+        let mut claude2 = claude.clone();
+        claude2
+            .accounts
+            .push(account("n", &other_config, CapturePolicy::Metadata));
+        std::fs::write(
+            other.join("meta.json"),
+            json!({"account": {"id": "n", "configDir": other_config.display().to_string()}})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            other.join("app-usage.json"),
+            json!({"schema": 1, "sessions": []}).to_string(),
+        )
+        .unwrap();
+        let out = compare_runs(dir.path(), &claude2, &pass, &other, &no_usage).unwrap();
+        assert!(out.a.indexed && !out.b.indexed);
+        assert!(out.rows.is_empty() && out.divergence.is_none());
+
+        // An `off` account: that side reads nothing and the rows stay empty.
+        let off = settings(vec![
+            account("p", &dir.join("config-pass"), CapturePolicy::Off),
+            account("f", &dir.join("config-fail"), CapturePolicy::Metadata),
+        ]);
+        let out = compare_runs(dir.path(), &off, &pass, &fail, &no_usage).unwrap();
+        assert!(out.a.off && !out.b.off);
+        assert!(out.rows.is_empty());
+    }
+
+    #[test]
+    fn window_share_comes_from_the_accounts_readings_inside_the_runs_span() {
+        let dir = TempDir::new("flight_compare_share");
+        let (pass, fail, claude) = compare_setup(&dir);
+        let at = |t: &str| {
+            chrono::DateTime::parse_from_rfc3339(t)
+                .unwrap()
+                .timestamp_millis()
+        };
+        let usage = |_: &str| -> UsageHistory {
+            vec![crate::usage::WindowHistory {
+                rate_limit_type: "five_hour".into(),
+                readings: vec![
+                    crate::usage::Reading {
+                        at_ms: at("2026-11-05T09:50:00Z"),
+                        utilization: Some(10.0),
+                        resets_at: Some(9_999_999_999),
+                    },
+                    crate::usage::Reading {
+                        at_ms: at("2026-11-05T10:30:00Z"),
+                        utilization: Some(12.0),
+                        resets_at: Some(9_999_999_999),
+                    },
+                    crate::usage::Reading {
+                        at_ms: at("2026-11-05T10:50:00Z"),
+                        utilization: Some(14.5),
+                        resets_at: Some(9_999_999_999),
+                    },
+                ],
+            }]
+        };
+        let out = compare_runs(dir.path(), &claude, &pass, &fail, &usage).unwrap();
+        let five = out.rows.iter().find(|r| r.key == "fiveHour").unwrap();
+        assert_eq!(
+            (&five.a, &five.b),
+            (&json!(4.5), &json!(4.5)),
+            "the estimate over the span"
+        );
+        let weekly = out.rows.iter().find(|r| r.key == "weekly").unwrap();
+        assert_eq!(
+            (&weekly.a, weekly.differs),
+            (&Value::Null, false),
+            "no weekly readings: not recorded"
+        );
+    }
+
+    #[test]
+    fn compare_never_writes_flight_db_and_never_creates_it() {
+        let dir = TempDir::new("flight_compare_readonly");
+        let (pass, fail, claude) = compare_setup(&dir);
+        let db = dir.join(INDEX_FILE);
+        let before = std::fs::read(&db).unwrap();
+        let stamp = std::fs::metadata(&db).unwrap().modified().unwrap();
+        compare_runs(dir.path(), &claude, &pass, &fail, &no_usage).unwrap();
+        assert_eq!(std::fs::read(&db).unwrap(), before);
+        assert_eq!(std::fs::metadata(&db).unwrap().modified().unwrap(), stamp);
+        // No index at all: both sides are "not indexed" and nothing is created.
+        let empty = TempDir::new("flight_compare_noindex");
+        let out = compare_runs(empty.path(), &claude, &pass, &fail, &no_usage).unwrap();
+        assert!(!out.a.indexed && !out.b.indexed && out.rows.is_empty());
+        assert!(
+            !empty.join(INDEX_FILE).exists(),
+            "compare never indexes on demand"
+        );
+    }
+
+    // ---- eval results ----
+
+    /// A run folder made into an eval run of group `b-eval` at stage `stage`, with the record outcome `outcome`.
+    fn make_eval(run: &Path, stage: &str, outcome: Option<&str>, reviewed: bool) {
+        let read = |name: &str| -> Value {
+            serde_json::from_str(&std::fs::read_to_string(run.join(name)).unwrap_or("{}".into()))
+                .unwrap_or(json!({}))
+        };
+        let mut meta = read("meta.json");
+        meta["eval"] = json!({"group": "b-eval", "index": 1, "of": 4, "source": "r-0"});
+        std::fs::write(run.join("meta.json"), meta.to_string()).unwrap();
+        let mut status = read("status.json");
+        status["stage"] = json!(stage);
+        status["waitingFor"] = Value::Null;
+        if reviewed {
+            status["prs"][0]["state"] = json!("reviewed");
+        }
+        std::fs::write(run.join("status.json"), status.to_string()).unwrap();
+        let mut usage = read("app-usage.json");
+        usage["outcome"] = json!(outcome);
+        std::fs::write(run.join("app-usage.json"), usage.to_string()).unwrap();
+    }
+
+    #[test]
+    fn eval_results_give_distributions_over_the_finished_runs_only() {
+        let dir = TempDir::new("flight_eval_results");
+        let (pass, fail, claude) = compare_setup(&dir);
+        // A: finished and completed, with an app check that failed. B: finished, not completed, never checked.
+        make_eval(&pass, "ship-approval", Some("eval-done"), true);
+        make_eval(&fail, "ship-approval", Some("eval-done"), false);
+        std::fs::remove_file(fail.join("app-checks.json")).unwrap();
+        // C is still running, D failed.
+        let running = dir.join("r-20261105-100000-c");
+        let failed = dir.join("r-20261105-100000-d");
+        for (run, stage) in [(&running, "building"), (&failed, "failed")] {
+            std::fs::create_dir_all(run).unwrap();
+            std::fs::write(
+                run.join("status.json"),
+                json!({"schema": 1, "stage": stage, "prs": []}).to_string(),
+            )
+            .unwrap();
+            make_eval(run, stage, None, false);
+        }
+        // Index A and B after the edits (the index holds their Retries and Failures).
+        let mut conn = index::open_writer(&dir.join(INDEX_FILE)).unwrap();
+        index_pass(
+            &mut conn,
+            &claude,
+            &[pass.clone(), fail.clone()],
+            &Limits::default(),
+        )
+        .unwrap();
+        let dirs: Vec<PathBuf> = [&pass, &fail, &running, &failed]
+            .iter()
+            .map(|p| p.canonicalize().unwrap())
+            .collect();
+        crate::run::folder::adopt_runs(dir.path(), &dirs).unwrap();
+        crate::run::dispatch::with(dir.path(), |d| {
+            d.batches.push(crate::run::dispatch::Batch {
+                id: "b-eval".into(),
+                created_at: "t".into(),
+                runs: dirs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| crate::run::dispatch::BatchRun {
+                        entry_id: format!("q-{i}"),
+                        ticket_ids: vec![],
+                        label: format!("Eval run {} of 4", i + 1),
+                        run_dir: Some(p.display().to_string()),
+                        removed: false,
+                    })
+                    .collect(),
+                notified: vec![],
+                kind: Some("eval".into()),
+                source: Some("r-0".into()),
+                n: Some(4),
+                extra: Default::default(),
+            })
+        })
+        .unwrap();
+
+        let checking = |p: &Path| p.ends_with("r-20261105-100000-fail");
+        let out = eval_results(dir.path(), "b-eval", &checking).unwrap();
+        assert_eq!((out.finished, out.running, out.failed, out.n), (2, 1, 1, 4));
+        let by = |i: usize| &out.runs[i];
+        assert_eq!(by(0).status, "finished");
+        assert_eq!(
+            by(0).completed,
+            Some(true),
+            "eval-done, reviewed, recorded check pass"
+        );
+        assert_eq!(by(1).completed, Some(false), "a PR still fixing");
+        assert_eq!(by(2).status, "running");
+        assert_eq!(by(2).completed, None);
+        assert_eq!(by(3).status, "failed");
+        assert_eq!(
+            by(3).completed,
+            Some(false),
+            "a failed run counts as not completed"
+        );
+        // The check pass rate comes from app-checks.json only; none reads null, never 0.
+        assert_eq!(by(0).check_pass_rate, Some(0.0));
+        assert_eq!(by(0).check_state, "checked");
+        assert_eq!(by(1).check_pass_rate, None);
+        assert_eq!(
+            by(1).check_state,
+            "checking",
+            "the slot is held for this run"
+        );
+        // Measures of a run still going are null.
+        assert_eq!(
+            (by(2).tokens, by(2).retries, by(2).active_minutes),
+            (None, None, None)
+        );
+        // Retries and tool Failures come from the index; tokens and minutes from the record.
+        assert_eq!((by(0).retries, by(0).tool_failures), (Some(2), Some(0)));
+        assert_eq!((by(1).retries, by(1).tool_failures), (Some(2), Some(1)));
+        assert_eq!(by(0).tokens, Some(1540));
+        assert_eq!(by(0).active_minutes, Some(50.0));
+        // The distributions cover the two finished runs.
+        let d = &out.distributions;
+        assert_eq!(
+            (
+                d.completed.min,
+                d.completed.median,
+                d.completed.max,
+                d.completed.of
+            ),
+            (Some(0.0), Some(0.5), Some(1.0), 2)
+        );
+        assert_eq!(
+            (
+                d.tool_failures.min,
+                d.tool_failures.median,
+                d.tool_failures.max
+            ),
+            (Some(0.0), Some(0.5), Some(1.0))
+        );
+        assert_eq!(
+            (d.retries.min, d.retries.max, d.retries.of),
+            (Some(2.0), Some(2.0), 2)
+        );
+        assert_eq!(
+            d.check_pass_rate,
+            Dist {
+                min: Some(0.0),
+                median: Some(0.0),
+                max: Some(0.0),
+                of: 1
+            },
+            "over the one run that has it"
+        );
+        assert_eq!(d.tokens.median, Some(1540.0));
+        assert!(eval_results(dir.path(), "b-nope", &checking).is_err());
+    }
+
+    #[test]
+    fn a_distribution_of_nothing_is_empty_not_zero() {
+        assert_eq!(Dist::of_values(vec![]), Dist::default());
+        assert_eq!(Dist::of_values(vec![f64::NAN]), Dist::default());
+        let d = Dist::of_values(vec![3.0, 1.0, 2.0, 10.0]);
+        assert_eq!(
+            (d.min, d.median, d.max, d.of),
+            (Some(1.0), Some(2.5), Some(10.0), 4)
+        );
     }
 }

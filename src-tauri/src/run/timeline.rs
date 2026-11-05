@@ -210,7 +210,8 @@ fn outcome_of(text: &str) -> &'static str {
         "plan approved by the user"
         | "ship approved by the user"
         | "plan auto-approved (test-mode)"
-        | "ship auto-approved (test-mode)" => "approved",
+        | "ship auto-approved (test-mode)"
+        | "plan approved for eval (eval mode)" => "approved",
         "plan not approved; run paused"
         | "ship declined; run paused"
         | "plan changes requested" => "declined",
@@ -593,6 +594,7 @@ mod tests {
     fn approval_wording_is_matched_whole_and_case_insensitively() {
         for (text, want) in [
             ("Plan approved by the user", "approved"),
+            ("plan approved for eval (eval mode)", "approved"),
             ("plan approved by the user and more", "ended"),
             ("ship declined; run paused", "declined"),
             ("plan changes requested", "declined"),

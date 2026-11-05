@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "createdAt": "2026-11-04T23:30:40Z",
+  "policy": "full",
+  "sessions": [
+    {
+      "id": "aaaa1111-2222-4333-8444-555555555555",
+      "configDir": "@CONFIG@"
+    }
+  ],
+  "sources": [
+    {
+      "file": "@CONFIG@/projects/-work-toy/aaaa1111-2222-4333-8444-555555555555.jsonl",
+      "size": 1767,
+      "mtime": 1793835040549,
+      "sha256": "ecbc6c1613467f765d5aa082c262d03e3b17ab03a3cc400a45f71253a59f06d4"
+    },
+    {
+      "file": "@CONFIG@/projects/-work-toy/aaaa1111-2222-4333-8444-555555555555/subagents/agent-a1pr2impl0000000001.jsonl",
+      "size": 1764,
+      "mtime": 1793835040549,
+      "sha256": "a3951b0faae8231a9d82b4064724cd4c7c6e35c58cd5b744e1b4e6fddafc6c77"
+    },
+    {
+      "file": "@CONFIG@/projects/-work-toy/aaaa1111-2222-4333-8444-555555555555/subagents/agent-a2pr2review00000002.jsonl",
+      "size": 512,
+      "mtime": 1793835040549,
+      "sha256": "0de4eb2c1e75278d00ae62db9ea8f76a3eb6bc6bffc5f4dcd9c77fe4fcf91e3f"
+    }
+  ],
+  "events": 21,
+  "contentLines": 13,
+  "truncated": false,
+  "outcome": "done",
+  "recordStatusUpdatedAt": "2026-11-05T11:00:00Z"
+}

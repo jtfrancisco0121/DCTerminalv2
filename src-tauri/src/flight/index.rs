@@ -22,7 +22,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 /// `PRAGMA user_version` of the schema below. Another version is dropped and rebuilt (it is a cache).
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// At most this many changed runs are re-derived in one pass.
 pub const MAX_RUNS_PER_PASS: usize = 16;
@@ -81,6 +81,7 @@ CREATE TABLE events (
     pr_state TEXT,
     phase_label TEXT,
     failure TEXT,
+    rule TEXT,
     paths TEXT,
     src_file TEXT NOT NULL,
     src_offset INTEGER NOT NULL,
@@ -321,9 +322,12 @@ fn stored_session_events(
     Ok(out)
 }
 
-fn flatten_failures<'a>(failures: &'a [Failure], out: &mut HashMap<&'a str, &'a str>) {
+/// Each failing event's id with the label of its Failure and, for a guard block, the guard's rule id.
+type FailureOf<'a> = HashMap<&'a str, (&'a str, Option<&'a str>)>;
+
+fn flatten_failures<'a>(failures: &'a [Failure], out: &mut FailureOf<'a>) {
     for f in failures {
-        out.insert(f.id.as_str(), f.derived.label.as_str());
+        out.insert(f.id.as_str(), (f.derived.label.as_str(), f.rule.as_deref()));
         flatten_failures(&f.repeats, out);
     }
 }
@@ -376,9 +380,15 @@ fn rebuild(
         let gone = s.stamps.is_empty();
         if gone || reusable {
             let events = stored_session_events(conn, &run.run_id, &s.id)?;
-            if !events.is_empty() || gone {
-                if !events.is_empty() {
-                    parsed.push(Arc::new(Parsed::from_events(events)));
+            if !events.is_empty() {
+                parsed.push(Arc::new(Parsed::from_events(events)));
+                continue;
+            }
+            if gone {
+                // Nothing stored (a rebuilt flight.db): the loader may know the session from a snapshot.
+                let fallback = run.loader.session(i);
+                if !fallback.events.is_empty() {
+                    parsed.push(fallback);
                 }
                 continue;
             }
@@ -403,7 +413,7 @@ fn rebuild(
         .map(|(_, e)| e.as_ref().clone())
         .collect();
     let spans = correlate::spans(&events);
-    let mut failure_of: HashMap<&str, &str> = HashMap::new();
+    let mut failure_of: FailureOf<'_> = HashMap::new();
     flatten_failures(&merged.failures, &mut failure_of);
 
     let tx = conn.transaction().map_err(db_err)?;
@@ -412,9 +422,9 @@ fn rebuild(
         let mut insert = tx
             .prepare(
                 "INSERT OR REPLACE INTO events (run_id, id, session, agent_id, parent, role, pr, pr_exact, kind,
-                   status, name, at, stage, pr_state, phase_label, failure, paths, src_file, src_offset, src_len,
+                   status, name, at, stage, pr_state, phase_label, failure, rule, paths, src_file, src_offset, src_len,
                    src_sha256, event_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             )
             .map_err(db_err)?;
         for event in &events {
@@ -450,7 +460,8 @@ fn rebuild(
                     phase.and_then(|p| p.stage.clone()),
                     phase.and_then(|p| p.pr_state.clone()),
                     phase.and_then(|p| p.label.clone()),
-                    failure_of.get(event.id.as_str()),
+                    failure_of.get(event.id.as_str()).map(|f| f.0),
+                    failure_of.get(event.id.as_str()).and_then(|f| f.1),
                     paths,
                     event.content.source.file,
                     event.content.source.offset as i64,

@@ -37,6 +37,15 @@ describe("ActiveRuns", () => {
     vi.useRealTimers();
   });
 
+  it("words a finished eval run as finished, with no waiting flag", async () => {
+    list = [run("e", { stage: "ship-approval", eval: { group: "b-1", index: 1, of: 2, source: "r-0" } })];
+    render(<ActiveRuns onClose={() => {}} onAllRuns={() => {}} />);
+    const item = await screen.findByTestId("active-e");
+    expect(item.textContent).toContain("Eval run finished");
+    expect(item.textContent).not.toContain("waiting for you");
+    expect(item.textContent).not.toContain("Waiting for your go");
+  });
+
   it("lists runs of every window with stage, waiting/stalled flags and PR progress; Go to tab focuses", async () => {
     list = [
       run("a"),

@@ -86,4 +86,72 @@ pub(crate) mod testing {
         run(path, &["add", "."]);
         run(path, &["commit", "-q", "-m", "init"]);
     }
+
+    /// An eval run on disk: repo `ws/mathlib`, PR1's worktree on the run's branch with one commit past the
+    /// base, and the run folder (`data/runs/<id>`) with status.json at `stage`, request.md, repos.json and
+    /// (when `eval`) a meta.json `eval` naming a group of 2.
+    pub struct EvalRun {
+        pub run_dir: std::path::PathBuf,
+        pub repo: std::path::PathBuf,
+        pub worktree: std::path::PathBuf,
+        pub branch: String,
+    }
+
+    pub const EVAL_RUN_ID: &str = "r-20261105-0900-abcd";
+
+    pub fn eval_run(root: &Path, stage: &str, eval: bool) -> EvalRun {
+        let repo = root.join("ws/mathlib");
+        repo_at(&repo);
+        let base = super::git(&repo, &["rev-parse", "HEAD"]).unwrap();
+        let branch = format!("dcv2/{EVAL_RUN_ID}-pr1");
+        let worktree = root.join(format!("ws/mathlib-worktrees/dcv2-{EVAL_RUN_ID}-pr1"));
+        run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                &branch,
+                worktree.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(worktree.join("feature.txt"), "x\n").unwrap();
+        run(&worktree, &["add", "feature.txt"]);
+        run(&worktree, &["commit", "-q", "-m", "implement"]);
+        let run_dir = root.join("data/runs").join(EVAL_RUN_ID);
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("request.md"),
+            format!(
+                "# Request\n\nfolder: {}\n\n## What to do\n\nDo it\n",
+                root.join("ws").display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            run_dir.join("repos.json"),
+            serde_json::json!({"schema":1,"repos":[{"name":"mathlib","path":repo}]}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            run_dir.join("status.json"),
+            serde_json::json!({"schema":1,"stage":stage,"waitingFor":null,"prs":[
+                {"id":"PR1","repoPath":repo,"worktree":worktree,"baseCommit":base,"state":"reviewed"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let meta = if eval {
+            serde_json::json!({"schema":1,"eval":{"group":"b-1","index":1,"of":2,"source":"r-0"}})
+        } else {
+            serde_json::json!({"schema":1})
+        };
+        std::fs::write(run_dir.join("meta.json"), meta.to_string()).unwrap();
+        EvalRun {
+            run_dir,
+            repo,
+            worktree,
+            branch,
+        }
+    }
 }

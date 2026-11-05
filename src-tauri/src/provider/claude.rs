@@ -349,12 +349,14 @@ mod tests {
                     name: "Personal".into(),
                     config_dir: Some(folder("personal")),
                     capture_policy: Default::default(),
+                    keep_run_traces: false,
                 },
                 ClaudeAccount {
                     id: "work".into(),
                     name: "Work".into(),
                     config_dir: Some(folder("work")),
                     capture_policy: Default::default(),
+                    keep_run_traces: false,
                 },
             ],
         };

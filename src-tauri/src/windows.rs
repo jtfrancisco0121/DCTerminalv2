@@ -1653,6 +1653,7 @@ mod tests {
                     name: "Work".into(),
                     config_dir: None,
                     capture_policy: Default::default(),
+                    keep_run_traces: false,
                 }],
             })
             .unwrap();

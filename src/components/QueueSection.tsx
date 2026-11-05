@@ -72,7 +72,8 @@ export function QueueSection() {
               </span>
               {confirm === entry.id && (
                 <p className="hint warn" role="alert">
-                  Start it now, past the limit of {overview.cap}?{" "}
+                  Start it now, past the limit of {overview.cap}?
+                  {entry.params.eval ? " The usage hold still applies to an eval run." : ""}{" "}
                   <button
                     type="button"
                     className="link-button"

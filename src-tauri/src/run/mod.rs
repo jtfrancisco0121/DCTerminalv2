@@ -481,6 +481,9 @@ pub struct StartParams {
     /// The queue entry that started this run (recorded in meta.json, so a restart can tell it started).
     #[serde(default)]
     pub dispatch_entry_id: Option<String>,
+    /// One run of an eval group: recorded in meta.json `eval` (only the dispatcher sets it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval: Option<folder::EvalRef>,
 }
 
 #[tauri::command]
@@ -512,6 +515,7 @@ pub async fn start_run(
         max_implementers,
         run_mode,
         dispatch_entry_id: None,
+        eval: None,
     };
     blocking(move || start_run_inner(&app, params)).await
 }
@@ -532,6 +536,7 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
         max_implementers,
         run_mode,
         dispatch_entry_id,
+        eval,
     } = params;
     let folder = start_folder(&folder)?;
     let ctx = launch_context(app, window_id.as_deref())?;
@@ -592,6 +597,7 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
             max_implementers,
             mode: run_mode.filter(|m| folder::RUN_MODES.contains(&m.as_str())),
             dispatch_entry_id,
+            eval,
         };
         if meta.mode.is_some() && clickup.as_ref().is_none_or(|c| c.ticket_ids.is_empty()) {
             return Err(
@@ -659,6 +665,19 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
     })
 }
 
+/// A finished eval run cannot be opened again: it ended at `ship-approval` on
+/// purpose and has no stop #2 (the skill reports "eval run finished" too).
+fn refuse_finished_eval(run_dir: &Path) -> Result<(), String> {
+    let stage = folder::read_json_value(&run_dir.join("status.json"))
+        .and_then(|v| v.get("stage").and_then(|s| s.as_str()).map(str::to_string));
+    if folder::finished_eval(folder::eval_of(run_dir).as_ref(), stage.as_deref()) {
+        return Err(
+            "Eval run finished: it is never shipped, so there is nothing to resume.".into(),
+        );
+    }
+    Ok(())
+}
+
 /// `/dcv2:eagle-eye resume run=<dir>` in a new tab, with the same env.
 #[tauri::command]
 pub async fn resume_run(
@@ -669,6 +688,7 @@ pub async fn resume_run(
     blocking(move || {
         let data = data_dir(&app);
         let run_dir = checked_run_dir(&data, &run_dir)?;
+        refuse_finished_eval(&run_dir)?;
         if let Some(tab) = focus_live_run_tab(&app, &run_dir)? {
             return Ok(StartedRun {
                 tab,
@@ -730,25 +750,137 @@ pub async fn read_run(app: AppHandle, run_dir: String) -> Result<status::RunView
 
 static CHECKS_RUNNING: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 
+/// Whether R1 is running for this run folder right now (a check, or a cleanup holding the slot).
+pub fn checks_running(dir: &Path) -> bool {
+    CHECKS_RUNNING
+        .lock()
+        .map(|set| set.as_ref().is_some_and(|set| set.contains(dir)))
+        .unwrap_or(false)
+}
+
+/// Takes the run's R1 slot (an atomic test-and-set), or says the checks are already running.
+fn take_checks_slot(dir: &Path) -> Result<(), String> {
+    let mut running = CHECKS_RUNNING.lock().map_err(|e| e.to_string())?;
+    if running
+        .get_or_insert_with(HashSet::new)
+        .insert(dir.to_path_buf())
+    {
+        Ok(())
+    } else {
+        Err("The checks of this run are already running.".into())
+    }
+}
+
+/// Gives the slot back when dropped, so it is released after an error or a panic too.
+struct ChecksSlot<'a>(&'a Path);
+
+impl Drop for ChecksSlot<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut running) = CHECKS_RUNNING.lock() {
+            if let Some(set) = running.as_mut() {
+                set.remove(self.0);
+            }
+        }
+    }
+}
+
 /// R1 for one run folder, at most once at a time (the button and a typed
 /// request share it).
 pub fn rerun_checks_once(dir: &Path) -> Result<(), String> {
-    {
-        let mut running = CHECKS_RUNNING.lock().map_err(|e| e.to_string())?;
-        if !running
-            .get_or_insert_with(HashSet::new)
-            .insert(dir.to_path_buf())
-        {
-            return Err("The checks of this run are already running.".into());
+    take_checks_slot(dir)?;
+    let _slot = ChecksSlot(dir);
+    check::rerun_checks(dir, check::CHECK_TIMEOUT)
+}
+
+/// Runs `f` while holding the run's R1 slot, with the same atomic test-and-set `rerun_checks_once` uses, so an
+/// R1 check cannot start on a run whose worktrees `f` is removing. If a check is running, `f` does not run.
+pub fn with_checks_slot<R>(dir: &Path, f: impl FnOnce() -> R) -> Result<R, String> {
+    take_checks_slot(dir).map_err(|_| "checks still running".to_string())?;
+    let _slot = ChecksSlot(dir);
+    Ok(f())
+}
+
+/// Cleans up every finished run of an eval group, one result per run: the clean worktrees go through the
+/// janitor (`git branch -d` keeps the unmerged branches), each inside the run's checks slot. A run whose
+/// check is running is skipped with "checks still running".
+pub fn eval_clean_up_group(data: &Path, group: &str) -> Result<Vec<EvalCleanLine>, String> {
+    let batch = dispatch::load(data)
+        .batches
+        .into_iter()
+        .find(|b| b.id == group && dispatch::is_eval_batch(b))
+        .ok_or("No such eval group.")?;
+    let mut out = Vec::new();
+    for (i, run) in batch.runs.iter().filter(|r| !r.removed).enumerate() {
+        let index = i as u32 + 1;
+        let Some(dir) = run
+            .run_dir
+            .as_deref()
+            .and_then(|d| checked_run_dir(data, d).ok())
+        else {
+            out.push(EvalCleanLine {
+                index,
+                run_dir: run.run_dir.clone(),
+                lines: vec!["not started yet".into()],
+            });
+            continue;
+        };
+        let mut lines = afk::clean_up_lines(&dir).unwrap_or_else(|why| vec![why]);
+        if !dir.join("app-checks.json").is_file() {
+            lines.push("not checked: its check pass rate stays \"not checked\"".into());
         }
+        out.push(EvalCleanLine {
+            index,
+            run_dir: Some(dir.display().to_string()),
+            lines,
+        });
     }
-    let result = check::rerun_checks(dir, check::CHECK_TIMEOUT);
-    if let Ok(mut running) = CHECKS_RUNNING.lock() {
-        if let Some(set) = running.as_mut() {
-            set.remove(dir);
-        }
+    Ok(out)
+}
+
+/// The result lines of cleaning one run of an eval group.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalCleanLine {
+    pub index: u32,
+    pub run_dir: Option<String>,
+    pub lines: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn eval_clean_up(app: AppHandle, group: String) -> Result<Vec<EvalCleanLine>, String> {
+    blocking(move || eval_clean_up_group(&data_dir(&app), &group)).await
+}
+
+/// The app's only forced branch delete (`git branch -D`): the user confirmed it. Accepted only for a finished
+/// eval run, for the branch that PR's `expected_branch` names in its verified repo, with no worktree on it.
+pub fn eval_delete_branch_in(run_dir: &Path, pr_id: &str) -> Result<String, String> {
+    let stage = folder::read_json_value(&run_dir.join("status.json"))
+        .and_then(|v| v.get("stage").and_then(|s| s.as_str()).map(str::to_string));
+    if !folder::finished_eval(folder::eval_of(run_dir).as_ref(), stage.as_deref()) {
+        return Err("Only a branch of a finished eval run can be deleted here.".into());
     }
-    result
+    let kept = janitor::kept_branches(run_dir)
+        .into_iter()
+        .find(|b| b.pr_id == pr_id)
+        .ok_or("That branch is not one this eval run kept (it is gone, has a worktree, or is not its own).")?;
+    git::git(
+        Path::new(&kept.repo_path),
+        &["branch", "-D", "--", &kept.branch],
+    )?;
+    Ok(format!("branch {} deleted", kept.branch))
+}
+
+#[tauri::command]
+pub async fn eval_delete_branch(
+    app: AppHandle,
+    run_dir: String,
+    pr_id: String,
+) -> Result<String, String> {
+    blocking(move || {
+        let dir = checked_run_dir(&data_dir(&app), &run_dir)?;
+        eval_delete_branch_in(&dir, &pr_id)
+    })
+    .await
 }
 
 /// The slop verdict for one PR (what `plugin/scripts/stop-check.sh` reports): the
@@ -866,6 +998,161 @@ pub async fn read_memory_file(app: AppHandle, path: String) -> Result<String, St
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
+
+    #[test]
+    fn with_checks_slot_makes_r1_refuse_and_releases_the_slot_also_on_error() {
+        let dir = TempDir::new("checks_slot");
+        let run = dir.join("runs/r-1");
+        std::fs::create_dir_all(&run).unwrap();
+        let inside = with_checks_slot(&run, || rerun_checks_once(&run)).unwrap();
+        assert!(
+            inside.unwrap_err().contains("already running"),
+            "R1 refuses while the slot is held"
+        );
+        // A second holder is refused without running its closure.
+        let mut ran = false;
+        let nested = with_checks_slot(&run, || with_checks_slot(&run, || ran = true)).unwrap();
+        assert_eq!(nested.unwrap_err(), "checks still running");
+        assert!(!ran);
+        // The slot is free again after the closure, also when it returned an error.
+        let failed: Result<Result<(), String>, String> =
+            with_checks_slot(&run, || Err("boom".to_string()));
+        assert_eq!(failed.unwrap().unwrap_err(), "boom");
+        assert!(
+            with_checks_slot(&run, || ()).is_ok(),
+            "released after an error"
+        );
+        // And a running R1 holds it against a cleanup.
+        take_checks_slot(&run).unwrap();
+        assert_eq!(
+            with_checks_slot(&run, || ()).unwrap_err(),
+            "checks still running"
+        );
+        drop(ChecksSlot(&run));
+        assert!(with_checks_slot(&run, || ()).is_ok());
+    }
+
+    #[test]
+    fn eval_delete_branch_refuses_everything_but_a_finished_eval_runs_own_unattached_branch() {
+        use crate::run::git::testing::{eval_run, run as git_run};
+        let dir = TempDir::new("eval_delete_branch");
+        let normal = eval_run(dir.path(), "ship-approval", false);
+        git_run(
+            &normal.repo,
+            &["worktree", "remove", normal.worktree.to_str().unwrap()],
+        );
+        let err = eval_delete_branch_in(&normal.run_dir, "PR1").unwrap_err();
+        assert!(err.contains("finished eval run"), "a normal run: {err}");
+
+        let other = TempDir::new("eval_delete_branch_eval");
+        let ev = eval_run(other.path(), "ship-approval", true);
+        // A branch with a worktree on it.
+        let err = eval_delete_branch_in(&ev.run_dir, "PR1").unwrap_err();
+        assert!(err.contains("not one this eval run kept"), "{err}");
+        assert!(ev.worktree.exists());
+        git_run(
+            &ev.repo,
+            &["worktree", "remove", ev.worktree.to_str().unwrap()],
+        );
+        // A PR that is not the run's, or whose branch is not the expected one.
+        assert!(eval_delete_branch_in(&ev.run_dir, "PR2").is_err());
+        assert!(eval_delete_branch_in(&ev.run_dir, "../PR1").is_err());
+        // A run that is not finished.
+        std::fs::write(
+            ev.run_dir.join("status.json"),
+            std::fs::read_to_string(ev.run_dir.join("status.json"))
+                .unwrap()
+                .replace("ship-approval", "building"),
+        )
+        .unwrap();
+        assert!(eval_delete_branch_in(&ev.run_dir, "PR1").is_err());
+        std::fs::write(
+            ev.run_dir.join("status.json"),
+            std::fs::read_to_string(ev.run_dir.join("status.json"))
+                .unwrap()
+                .replace("building", "ship-approval"),
+        )
+        .unwrap();
+        // The one allowed case.
+        let said = eval_delete_branch_in(&ev.run_dir, "PR1").unwrap();
+        assert!(said.contains(&ev.branch));
+        let left = crate::run::git::git(&ev.repo, &["branch", "--list", &ev.branch]).unwrap();
+        assert!(left.is_empty(), "the branch is gone: {left}");
+        assert!(
+            eval_delete_branch_in(&ev.run_dir, "PR1").is_err(),
+            "nothing left to delete"
+        );
+    }
+
+    #[test]
+    fn eval_clean_up_skips_a_run_whose_check_is_running_and_notes_a_run_with_no_check() {
+        use crate::run::git::testing::eval_run;
+        let dir = TempDir::new("eval_clean_up_group");
+        let ev = eval_run(dir.path(), "ship-approval", true);
+        let data = dir.join("data");
+        let run_dir = ev.run_dir.canonicalize().unwrap();
+        dispatch::with(&data, |d| {
+            d.batches.push(dispatch::Batch {
+                id: "b-1".into(),
+                created_at: "t".into(),
+                runs: vec![dispatch::BatchRun {
+                    entry_id: "q-1".into(),
+                    ticket_ids: vec![],
+                    label: "Eval run 1 of 2".into(),
+                    run_dir: Some(run_dir.display().to_string()),
+                    removed: false,
+                }],
+                notified: vec![],
+                kind: Some("eval".into()),
+                source: Some("r-0".into()),
+                n: Some(2),
+                extra: Default::default(),
+            })
+        })
+        .unwrap();
+        assert!(eval_clean_up_group(&data, "nope").is_err());
+        take_checks_slot(&run_dir).unwrap();
+        let skipped = eval_clean_up_group(&data, "b-1").unwrap();
+        assert!(
+            skipped[0].lines.iter().any(|l| l == "checks still running"),
+            "{skipped:?}"
+        );
+        assert!(
+            ev.worktree.exists(),
+            "nothing was removed under a running check"
+        );
+        drop(ChecksSlot(&run_dir));
+        let done = eval_clean_up_group(&data, "b-1").unwrap();
+        assert!(!ev.worktree.exists(), "{done:?}");
+        assert!(
+            done[0].lines.iter().any(|l| l.contains("not checked")),
+            "{done:?}"
+        );
+    }
+
+    #[test]
+    fn resume_of_a_finished_eval_run_is_refused_and_a_normal_run_is_not() {
+        let dir = TempDir::new("resume_eval");
+        let run = dir.join("runs/r-1");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("status.json"), r#"{"stage":"ship-approval"}"#).unwrap();
+        assert!(
+            refuse_finished_eval(&run).is_ok(),
+            "a normal run waits at ship-approval"
+        );
+        std::fs::write(
+            run.join("meta.json"),
+            r#"{"eval":{"group":"b","index":1,"of":2,"source":"r-0"}}"#,
+        )
+        .unwrap();
+        let err = refuse_finished_eval(&run).unwrap_err();
+        assert!(err.starts_with("Eval run finished"), "{err}");
+        std::fs::write(run.join("status.json"), r#"{"stage":"building"}"#).unwrap();
+        assert!(
+            refuse_finished_eval(&run).is_ok(),
+            "an eval run still building can resume"
+        );
+    }
 
     #[test]
     fn a_second_resume_finds_the_live_tab_of_that_run_in_any_window() {

@@ -193,6 +193,17 @@ export interface SessionView {
   notices: string[];
   /** Phase of each event of the page, by event id. */
   phases?: Record<string, Phase>;
+  /** Set when a session whose transcript is gone was read from the run's snapshot. */
+  snapshot?: SnapshotInfo | null;
+}
+
+/** The run snapshot a gone session was read from (snapshot.rs `Manifest`, host.rs `session_view`). */
+export interface SnapshotInfo {
+  createdAt: string;
+  /** The capture policy the snapshot was made under. */
+  policy: CapturePolicy;
+  /** The snapshot holds redacted content (`content.jsonl`). */
+  contentKept: boolean;
 }
 
 /** What `flight_content` returns: redacted text and how many lines were redacted. */
@@ -240,4 +251,111 @@ export interface SearchOut {
   /** Runs left out because their account's capture policy is off. */
   excludedOff: number;
   progress: { current: number; total: number };
+}
+
+/** One side of a comparison (host.rs `CompareSide`). */
+export interface CompareSide {
+  runId: string;
+  runDir: string;
+  title: string;
+  outcome: string;
+  /** The run is in the trace index. */
+  indexed: boolean;
+  /** AgentFlight is off for the run's account: nothing of it is read. */
+  off: boolean;
+}
+
+/** The groups of a Compare row, in the fixed order of the page (compare.rs `GROUPS`). */
+export const COMPARE_GROUPS = [
+  "stages",
+  "tools",
+  "failures",
+  "retries",
+  "repeats",
+  "files",
+  "checks",
+  "tokens",
+  "windowShare",
+] as const;
+export type CompareGroup = (typeof COMPARE_GROUPS)[number];
+
+/** One Compare row: a number, a text or null (not recorded) on each side. */
+export interface CompareRow {
+  group: CompareGroup | string;
+  key: string;
+  a: number | string | null;
+  b: number | string | null;
+  differs: boolean;
+  /** The first Event of the row in run A / run B (none for record numbers). */
+  aEvent?: string | null;
+  bEvent?: string | null;
+}
+
+/** What `flight_compare` returns. `rows` is empty unless both sides are indexed and readable. */
+export interface CompareOut {
+  a: CompareSide;
+  b: CompareSide;
+  rows: CompareRow[];
+  /** The index (into `rows`) of the first row that differs. */
+  divergence: number | null;
+  progress: { current: number; total: number };
+}
+
+
+/** min / median / max of one measure over the finished runs that have it (host.rs `Dist`). */
+export interface Dist {
+  min: number | null;
+  median: number | null;
+  max: number | null;
+  /** How many runs the figures are over. */
+  of: number;
+}
+
+/** A branch a finished eval run left behind (janitor.rs `KeptBranch`). */
+export interface KeptBranch {
+  prId: string;
+  branch: string;
+  repoPath: string;
+  /** Commits past the run's base commit; null when they could not be counted. */
+  unmergedCommits: number | null;
+}
+
+/** One run of an eval group (host.rs `EvalRunResult`). A measure that is not known is null, never 0. */
+export interface EvalRunResult {
+  index: number;
+  label: string;
+  runId: string | null;
+  runDir: string | null;
+  /** `finished` (eval-done), `failed`, `running` or `queued`. */
+  status: "finished" | "failed" | "running" | "queued" | string;
+  completed: boolean | null;
+  checkPassRate: number | null;
+  /** `checked`, `checking` or `not checked`. */
+  checkState: "checked" | "checking" | "not checked" | string;
+  retries: number | null;
+  toolFailures: number | null;
+  tokens: number | null;
+  activeMinutes: number | null;
+  keptBranches: KeptBranch[];
+}
+
+export interface EvalDistributions {
+  completed: Dist;
+  checkPassRate: Dist;
+  retries: Dist;
+  toolFailures: Dist;
+  tokens: Dist;
+  activeMinutes: Dist;
+}
+
+/** What `flight_eval_results` returns. */
+export interface EvalResults {
+  group: string;
+  source: string;
+  n: number;
+  runs: EvalRunResult[];
+  distributions: EvalDistributions;
+  finished: number;
+  running: number;
+  failed: number;
 }

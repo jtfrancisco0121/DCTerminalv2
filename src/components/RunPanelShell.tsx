@@ -23,6 +23,8 @@ type Props = {
   prs?: { done: number; total: number };
   mode?: string | null;
   reached?: string | null;
+  /** A finished eval run: every step is done. */
+  finished?: boolean;
   /** The layout changed: the terminal beside the panel refits. */
   onLayoutChange?: () => void;
   children: ReactNode;
@@ -33,7 +35,7 @@ type Props = {
  * keys; double-click resets), a collapse control, and a narrow rail when
  * collapsed. Width and state are kept per window.
  */
-export function RunPanelShell({ windowId, stageLabel, attention, stage, waitingFor, prs, mode, reached, onLayoutChange, children }: Props) {
+export function RunPanelShell({ windowId, stageLabel, attention, stage, waitingFor, prs, mode, reached, finished, onLayoutChange, children }: Props) {
   const [layout, setLayout] = useState<PanelLayout>(() => loadLayout(windowId));
   const frame = useRef<HTMLDivElement>(null);
   const first = useRef(true);
@@ -85,6 +87,7 @@ export function RunPanelShell({ windowId, stageLabel, attention, stage, waitingF
             prs={prs ?? { done: 0, total: 0 }}
             mode={mode}
             reached={reached}
+            finished={finished}
             variant="vertical"
           />
         )}

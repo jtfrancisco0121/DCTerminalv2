@@ -71,7 +71,7 @@ pub struct RunRecord {
     pub schema: u32,
     #[serde(default)]
     pub sessions: Vec<SessionRef>,
-    /// `done` or `failed`; None until the run finished.
+    /// `done`, `failed` or (an eval run at `ship-approval`) `eval-done`; None until the run finished.
     #[serde(default)]
     pub outcome: Option<String>,
     #[serde(default)]
@@ -207,15 +207,20 @@ fn session_totals(sessions: &[SessionRef]) -> (Tokens, Option<f64>, Option<(i64,
     (tokens, cost, span)
 }
 
-/// Writes the record's totals when the run is `done` or `failed` and the
-/// record has none yet or was computed from an older status.json. Returns
+/// Writes the record's totals when the run is `done` or `failed` (or a
+/// finished eval run) and the record has none yet or was computed from an
+/// older status.json. Returns
 /// whether it wrote.
 pub fn ensure_record(run_dir: &Path) -> Result<bool, String> {
     let Some(status) = read_json_value(&run_dir.join("status.json")) else {
         return Ok(false);
     };
     let stage = status.get("stage").and_then(|v| v.as_str()).unwrap_or("");
-    if stage != "done" && stage != "failed" {
+    // An eval run ends at `ship-approval` (it is never shipped): that is its
+    // terminal record, written as `eval-done`; `done` is never written for it.
+    let eval_done =
+        super::folder::finished_eval(super::folder::eval_of(run_dir).as_ref(), Some(stage));
+    if stage != "done" && stage != "failed" && !eval_done {
         return Ok(false);
     }
     let updated = status
@@ -244,7 +249,7 @@ pub fn ensure_record(run_dir: &Path) -> Result<bool, String> {
     // Sessions may have been added while the logs were read.
     let mut record = read_record(run_dir).unwrap_or_default();
     record.schema = 1;
-    record.outcome = Some(stage.to_string());
+    record.outcome = Some(if eval_done { "eval-done" } else { stage }.to_string());
     record.pr_count = prs.len() as u32;
     record.pr_urls = pr_urls;
     record.tokens = tokens.into();
@@ -496,6 +501,65 @@ not a log line
         std::fs::create_dir_all(&empty).unwrap();
         assert!(!ensure_record(&empty).unwrap());
         assert!(read_record(&empty).is_none());
+    }
+
+    #[test]
+    fn an_eval_run_at_ship_approval_gets_an_eval_done_record_and_a_normal_run_none() {
+        let dir = TempDir::new("record_eval");
+        let config1 = fixture_config(&dir, "config1");
+        let run = run_dir(&dir, "ship-approval", "t1");
+        std::fs::write(
+            run.join("log.md"),
+            "2026-10-27T10:00:00Z planning start\n2026-10-27T10:10:00Z building go\n2026-10-27T10:25:00Z ship-approval eval run finished\n",
+        )
+        .unwrap();
+        append_session(&run, SID, &config1.display().to_string()).unwrap();
+        assert!(
+            !ensure_record(&run).unwrap(),
+            "a normal run at ship-approval has no record"
+        );
+        assert!(read_record(&run).unwrap().outcome.is_none());
+
+        std::fs::write(
+            run.join("meta.json"),
+            json!({"schema": 1, "eval": {"group": "b-1", "index": 1, "of": 2, "source": "r-0"}})
+                .to_string(),
+        )
+        .unwrap();
+        assert!(ensure_record(&run).unwrap());
+        let record = read_record(&run).unwrap();
+        assert_eq!(record.outcome.as_deref(), Some("eval-done"));
+        assert!(
+            record.tokens.input + record.tokens.output > 0,
+            "tokens are summed"
+        );
+        assert_eq!(record.active_minutes_by_stage["planning"], 10.0);
+        assert_eq!(record.active_minutes_by_stage["building"], 15.0);
+        assert!(record.span_minutes.is_some());
+        assert_eq!(record.pr_count, 2);
+
+        // A later status update keeps eval-done; a failed eval run keeps failed.
+        std::fs::write(
+            run.join("status.json"),
+            json!({"schema": 1, "stage": "ship-approval", "updatedAt": "t2", "prs": []})
+                .to_string(),
+        )
+        .unwrap();
+        assert!(ensure_record(&run).unwrap());
+        assert_eq!(
+            read_record(&run).unwrap().outcome.as_deref(),
+            Some("eval-done")
+        );
+        std::fs::write(
+            run.join("status.json"),
+            json!({"schema": 1, "stage": "failed", "updatedAt": "t3", "prs": []}).to_string(),
+        )
+        .unwrap();
+        assert!(ensure_record(&run).unwrap());
+        assert_eq!(
+            read_record(&run).unwrap().outcome.as_deref(),
+            Some("failed")
+        );
     }
 
     #[test]

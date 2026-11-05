@@ -10,7 +10,13 @@ export type QueueEntry = {
   accountId: string;
   queuedAt: string;
   batchId: string | null;
-  params: { folder: string; request: string; clickup?: { ticketIds: string[] } | null };
+  params: {
+    folder: string;
+    request: string;
+    clickup?: { ticketIds: string[] } | null;
+    /** One run of an eval group; its usage hold is never skipped, not even by Start now. */
+    eval?: { group: string; index: number; of: number; source: string } | null;
+  };
 };
 export type Holder = { runDir: string; runId: string; stage: string | null; why: string };
 export type DispatchOverview = { cap: number; usageHoldPercent: number | null; queue: QueueEntry[]; holders: Holder[]; atCap: boolean };
@@ -36,6 +42,9 @@ export type StartParams = {
 /** One run per ticket group: a new batch of queue entries (the dispatcher starts them as slots allow). */
 export const dispatchRuns = (base: StartParams, groups: { clickup: { refs: unknown[]; ticketIds: string[] }; label: string }[]) =>
   invoke<string>("dispatch_runs", { base, groups });
+/** "Evaluate N times": a new eval batch of N queue entries from a finished run (refused with the reason). */
+export const dispatchEvalStart = (windowId: string | null, sourceRunDir: string, n: number) =>
+  invoke<string>("dispatch_eval_start", { windowId, sourceRunDir, n });
 export const dispatchEnqueue = (params: StartParams, label: string) => invoke<string>("dispatch_enqueue", { params, label });
 
 export type BatchRow = {
@@ -50,7 +59,9 @@ export type BatchRow = {
   prUrl: string | null;
   ci: string | null;
 };
-export type Batch = { id: string; createdAt: string; rows: BatchRow[]; waitingForYou: number };
+/** An eval group in the overview: k of n runs have ended. */
+export type EvalBatch = { n: number; source: string; finished: number };
+export type Batch = { id: string; createdAt: string; rows: BatchRow[]; waitingForYou: number; eval?: EvalBatch | null };
 export const batchOverview = () => invoke<Batch[]>("batch_overview");
 export const batchRemoveRun = (batchId: string, entryId: string) => invoke<void>("batch_remove_run", { batchId, entryId });
 
@@ -70,3 +81,18 @@ export function queueCount(o: Pick<DispatchOverview, "cap" | "holders" | "queue"
   const free = Math.max(0, o.cap - o.holders.length - o.queue.length);
   return Math.max(0, count - free);
 }
+
+/** What the Eval setup dialog shows before it starts anything (dispatch.rs `EvalPreview`). */
+export type EvalPreview = {
+  title: string;
+  /** `run.usageHoldPercent`; null when no hold is set. */
+  holdPercent: number | null;
+  /** The latest five-hour reading of the window's account; null when there is none. */
+  fiveHour: { percent: number; resetsAt: number | null } | null;
+  /** Repos the runs build on the source run's base commits. */
+  basedRepos: string[];
+  /** Repos the source has no base for: they use the default branch. */
+  defaultBranchRepos: string[];
+};
+export const dispatchEvalPreview = (windowId: string | null, sourceRunDir: string) =>
+  invoke<EvalPreview>("dispatch_eval_preview", { windowId, sourceRunDir });

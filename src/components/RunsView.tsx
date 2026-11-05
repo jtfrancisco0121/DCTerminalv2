@@ -3,7 +3,17 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { readRunFile, resumeRun, runOverview, type RunListItem, type StartedRun } from "../run/api";
 import { costText } from "../run/observe";
 import { runsSummary, sortRuns, type SortDir, type SortKey } from "../run/analytics";
-import { ESTIMATE_NOTE, minutesText, outcomeTone, relativeDate, runMatches, safeUrl, stageText } from "../run/words";
+import {
+  ESTIMATE_NOTE,
+  evalFinished,
+  minutesText,
+  outcomeText,
+  outcomeTone,
+  relativeDate,
+  runMatches,
+  safeUrl,
+  stageText,
+} from "../run/words";
 import { Pill } from "./Pill";
 import { Dialog } from "./Dialog";
 import { errorText } from "./InlineNotice";
@@ -19,10 +29,12 @@ type Props = {
   onStarted: (started: StartedRun) => void;
   /** The Analytics button: open the analytics page (the owner closes this dialog). */
   onAnalytics?: () => void;
+  /** An eval run's "Results" link: open the results of its group (the owner closes this dialog). */
+  onEvalResults?: (group: string) => void;
 };
 
 /** All the app's runs, newest first, with search by title, folder or ticket id and a stage filter. */
-export function RunsView({ windowId, onClose, onStarted, onAnalytics }: Props) {
+export function RunsView({ windowId, onClose, onStarted, onAnalytics, onEvalResults }: Props) {
   const [runs, setRuns] = useState<RunListItem[] | null>(null);
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState("");
@@ -84,7 +96,7 @@ export function RunsView({ windowId, onClose, onStarted, onAnalytics }: Props) {
   return (
     <Dialog title="Runs" onClose={onClose} className="runs-dialog">
       <QueueSection />
-      <BatchOverview />
+      <BatchOverview onEvalResults={onEvalResults} />
       <EpicsSection />
       <div className="runs-filters">
         <input
@@ -157,7 +169,7 @@ export function RunsView({ windowId, onClose, onStarted, onAnalytics }: Props) {
                       {run.adopted && <span className="hint"> (from the dev app)</span>}
                       <span className="hint">
                         {" "}
-                        — {stageText(run.stage)}
+                        — {stageText(run.stage, run.eval)}
                         {run.folder ? ` · ${run.folder}` : ""}
                       </span>
                       {(run.ticketIds ?? []).length > 0 && (
@@ -168,7 +180,9 @@ export function RunsView({ windowId, onClose, onStarted, onAnalytics }: Props) {
                       )}
                     </td>
                     <td>
-                      <Pill tone={outcomeTone(record?.outcome, run.stage)}>{stageText(record?.outcome ?? run.stage)}</Pill>
+                      <Pill tone={outcomeTone(record?.outcome, run.stage, run.eval)}>
+                        {record?.outcome ? outcomeText(record.outcome) : stageText(run.stage, run.eval)}
+                      </Pill>
                     </td>
                     <td className="hint" title={run.createdAt ?? undefined}>
                       {relativeDate(run.createdAt) || "—"}
@@ -205,9 +219,14 @@ export function RunsView({ windowId, onClose, onStarted, onAnalytics }: Props) {
                       >
                         Open folder
                       </button>
-                      {run.stage !== "done" && (
+                      {run.stage !== "done" && !evalFinished(run) && (
                         <button type="button" className="link-button" disabled={busy} onClick={() => void resume(run)}>
                           Resume
+                        </button>
+                      )}
+                      {run.eval && onEvalResults && (
+                        <button type="button" className="link-button" onClick={() => onEvalResults(run.eval!.group)}>
+                          Results
                         </button>
                       )}
                       </div>

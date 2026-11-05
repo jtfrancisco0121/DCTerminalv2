@@ -26,7 +26,7 @@ type Notice = AttentionEvent & { id: number };
  * windows) and Dismiss. Every window shows it. macOS shows no banner while
  * the app is frontmost, so this is how the person is reached then.
  */
-export function AttentionNotices() {
+export function AttentionNotices({ onEvalResults }: { onEvalResults?: (group: string) => void } = {}) {
   const [notices, setNotices] = useState<Notice[]>([]);
   const next = useRef(0);
 
@@ -75,6 +75,20 @@ export function AttentionNotices() {
                   Go to tab
                 </button>
               )}{" "}
+              {notice.kind === "eval-finished" && notice.runId && onEvalResults && (
+                <>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => {
+                      onEvalResults(notice.runId!);
+                      dismiss(notice.id);
+                    }}
+                  >
+                    Results
+                  </button>{" "}
+                </>
+              )}
               <button type="button" className="secondary-button" onClick={() => dismiss(notice.id)}>
                 Dismiss
               </button>

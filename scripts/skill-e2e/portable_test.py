@@ -210,6 +210,11 @@ class NtPaths(unittest.TestCase):
         self.assertFalse(p.is_protected("/c/app/runs/r-x/logs/PR1-check.txt", run, names, ntpath, ident_fn))
         self.assertFalse(p.is_protected("/c/other/logs/guard.log", run, names, ntpath, ident_fn), "another folder's guard.log")
         self.assertFalse(p.is_protected("/c/app/runs/r-x/deeper/logs/guard.log", run, names, ntpath, ident_fn))
+        for snap in ("flight/events.jsonl", "flight/manifest.json", "flight", "FLIGHT/content.jsonl", ".flight.tmp-ab12", ".flight.tmp-ab12/x",
+                     ".flight.tmp-ab12-old/events.jsonl"):
+            self.assertTrue(p.is_protected("/c/app/runs/r-x/" + snap, run, names, ntpath, ident_fn), snap)
+        self.assertFalse(p.is_protected("/c/other/flight/events.jsonl", run, names, ntpath, ident_fn), "another folder's flight/")
+        self.assertFalse(p.is_protected("/c/app/runs/r-x/deeper/notes.md", run, names, ntpath, ident_fn))
         self.assertTrue(p.is_protected("/bad/status.json", run, names, ntpath, ident_fn), "UNRESOLVED is refused")
         self.assertFalse(p.is_protected("/dev/null", run, names, ntpath, ident_fn), "the null device is no file")
 

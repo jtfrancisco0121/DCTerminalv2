@@ -2,7 +2,7 @@
 
 import { KIND, STATUS } from "../flight/types";
 import type { UsageTone } from "../usage/limits";
-import type { LogLine, PrView, RunView } from "./api";
+import type { EvalRef, LogLine, PrView, RunView } from "./api";
 
 /**
  * The one status vocabulary of the UI. Components pick a tone from these
@@ -114,10 +114,31 @@ const STAGES: Record<string, string> = {
   failed: "Failed",
 };
 
-/** Unknown stages are shown as they are. */
-export function stageText(stage: string | null): string {
+/** The words for a finished eval run, wherever its stage or outcome is shown. */
+export const EVAL_FINISHED_TEXT = "Eval run finished";
+
+/**
+ * A run of an eval group that has ended: it carries meta.json `eval` and stops at `ship-approval` for good (nothing is
+ * shipped). The twin of Rust `folder::finished_eval`; every function below that reads a run's stage checks it first.
+ */
+export function evalFinished(run: { stage?: string | null; eval?: EvalRef | null } | null | undefined): boolean {
+  return Boolean(run && run.eval && run.stage === "ship-approval");
+}
+
+/**
+ * Unknown stages are shown as they are. Pass the run's `eval` where there is one: a finished eval run reads "Eval run
+ * finished", never "Waiting for your go to open the PRs". Without the second argument it is unchanged.
+ */
+export function stageText(stage: string | null, evalRef?: EvalRef | null): string {
   if (!stage) return "Starting";
+  if (evalRef && stage === "ship-approval") return EVAL_FINISHED_TEXT;
   return STAGES[stage] ?? stage;
+}
+
+/** The words of a run record's outcome: `eval-done` is "Eval run finished", the rest as a stage. */
+export function outcomeText(outcome: string | null | undefined): string {
+  if (outcome === "eval-done") return EVAL_FINISHED_TEXT;
+  return stageText(outcome ?? null);
 }
 
 /** The event kinds the detector announces (src-tauri/src/observe/attention.rs), for Settings. */
@@ -135,11 +156,12 @@ export const ATTENTION_KINDS: ReadonlyArray<{ key: string; label: string }> = [
   { key: "batch-planned", label: "Every plan of a batch is ready for approval" },
   { key: "batch-ready", label: "Every run of a batch is ready to ship" },
   { key: "wave-ready", label: "An epic's next wave is ready to start" },
+  { key: "eval-finished", label: "Every run of an eval group has finished" },
 ];
 
 /** The events the phone gets (src-tauri/src/observe/push.rs PUSH_KINDS). */
 export const PUSH_KINDS: ReadonlyArray<{ key: string; label: string }> = ATTENTION_KINDS.filter((kind) =>
-  ["stall", "check-failed", "ci-failed", "merged-cleaned", "autopost-failed", "batch-planned", "batch-ready", "wave-ready"].includes(kind.key),
+  ["stall", "check-failed", "ci-failed", "merged-cleaned", "autopost-failed", "batch-planned", "batch-ready", "wave-ready", "eval-finished"].includes(kind.key),
 );
 
 const PR_STATES: Record<string, string> = {
@@ -184,9 +206,9 @@ export function checkMark(result: string | null | undefined): string {
   }
 }
 
-/** The run is over: offer the worktree clean-up. */
-export function runFinished(view: RunView): boolean {
-  return view.stage === "done" || view.stage === "failed";
+/** The run is over: offer the worktree clean-up. A finished eval run is over too. */
+export function runFinished(view: { stage?: string | null; eval?: EvalRef | null }): boolean {
+  return view.stage === "done" || view.stage === "failed" || evalFinished(view);
 }
 
 /**
@@ -338,6 +360,17 @@ export const RUN_STEPS: ReadonlyArray<{ key: string; label: string }> = [
 /** An epic-plan run only plans: it never builds or ships (plugin/scripts/state.sh). */
 export const EPIC_PLAN_STEPS: ReadonlyArray<string> = ["planning", "plan-approval", "done"];
 
+/**
+ * An eval run plans, builds and reviews, then ends at `ship-approval` with nothing to approve (state.sh refuses the
+ * ship steps): its last step is the end, and its plan approval is not the user's.
+ */
+export const EVAL_STEPS: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "planning", label: "Planning" },
+  { key: "plan-approval", label: "Plan approval" },
+  { key: "building", label: "Building" },
+  { key: "ship-approval", label: "Eval finished" },
+];
+
 /** The steps where the user answers. */
 export const USER_STEPS: ReadonlyArray<string> = ["plan-approval", "ship-approval"];
 
@@ -349,6 +382,7 @@ export function prsDone(prs: ReadonlyArray<{ state: string | null }>): number {
 }
 
 function stepSetFor(mode: string | null | undefined): ReadonlyArray<{ key: string; label: string }> {
+  if (mode === "eval") return EVAL_STEPS;
   return mode === "epic-plan" ? RUN_STEPS.filter((step) => EPIC_PLAN_STEPS.includes(step.key)) : RUN_STEPS;
 }
 
@@ -374,7 +408,7 @@ export function runSteps(
   stage: string | null,
   waitingFor: string | null,
   prs: { done: number; total: number },
-  opts: { mode?: string | null; reached?: string | null } = {},
+  opts: { mode?: string | null; reached?: string | null; finished?: boolean } = {},
 ): { steps: RunStep[]; failed: boolean } | null {
   if (!stage) return null;
   const set = stepSetFor(opts.mode);
@@ -387,10 +421,11 @@ export function runSteps(
   const steps = set.map((step, i): RunStep => {
     let status: StepStatus;
     if (failed) status = i <= reachedAt ? "done" : "todo";
-    else if (stage === "done") status = "done";
+    else if (stage === "done" || opts.finished) status = "done";
     else if (waitAt >= 0) status = i < waitAt ? "done" : i === waitAt ? "waiting" : "todo";
     else status = i < at ? "done" : i === at ? "current" : "todo";
-    const out: RunStep = { key: step.key, label: step.label, status, you: USER_STEPS.includes(step.key) };
+    const you = opts.mode !== "eval" && USER_STEPS.includes(step.key);
+    const out: RunStep = { key: step.key, label: step.label, status, you };
     if (step.key === "building" && prs.total > 0) out.extra = `${prs.done}/${prs.total} PRs`;
     return out;
   });
@@ -405,14 +440,14 @@ export type TimelineGroup = { key: string; stage: string | null; label: string; 
  * The key is the stage plus the group's oldest line, so it stays the same
  * while newer lines are appended and the window shifts.
  */
-export function groupTimeline(lines: ReadonlyArray<LogLine>, limit = 30): TimelineGroup[] {
+export function groupTimeline(lines: ReadonlyArray<LogLine>, limit = 30, evalRef?: EvalRef | null): TimelineGroup[] {
   const groups: TimelineGroup[] = [];
   for (const line of lines.slice(-limit).reverse()) {
     const last = groups[groups.length - 1];
     if (last && last.stage === line.stage) {
       last.lines.push(line);
     } else {
-      groups.push({ key: "", stage: line.stage, label: line.stage ? stageText(line.stage) : "Other", lines: [line] });
+      groups.push({ key: "", stage: line.stage, label: line.stage ? stageText(line.stage, evalRef) : "Other", lines: [line] });
     }
   }
   for (const group of groups) {
@@ -433,6 +468,7 @@ export type TabReading = {
   stage?: string | null;
   waitingFor?: string | null;
   runMode?: string | null;
+  eval?: EvalRef | null;
   prsDone: number;
   prsTotal: number;
 };
@@ -458,6 +494,8 @@ export function tabProgress(reading: TabReading | null | undefined): TabProgress
   const join = (head: string) => (prs ? `${head} · ${prs}` : head);
   if (stage === "failed") return { fraction: 1, tone: "danger", waiting: false, title: join("Failed") };
   if (stage === "done") return { fraction: 1, tone: "success", waiting: false, title: join("Done") };
+  // A finished eval run is over, not waiting for anyone.
+  if (evalFinished(reading)) return { fraction: 1, tone: "success", waiting: false, title: join(EVAL_FINISHED_TEXT) };
   const waiting = Boolean(reading.waitingFor);
   const set = stepSetFor(reading.runMode);
   const at = set.findIndex((step) => step.key === stage);
@@ -471,8 +509,13 @@ export function tabProgress(reading: TabReading | null | undefined): TabProgress
 }
 
 /** The tone of a run's outcome in the Runs table: the record's outcome, else the stage. */
-export function outcomeTone(outcome: string | null | undefined, stage: string | null | undefined): Tone {
+export function outcomeTone(
+  outcome: string | null | undefined,
+  stage: string | null | undefined,
+  evalRef?: EvalRef | null,
+): Tone {
   const value = outcome ?? stage;
+  if (value === "eval-done" || evalFinished({ stage, eval: evalRef })) return "success";
   if (value === "done") return "success";
   if (value === "failed") return "danger";
   return stage ? "running" : "muted";
@@ -614,4 +657,156 @@ export function orchestrationStatusText(e: OrchestrationEvent): string | null {
   if (e.kind === KIND.APPROVAL_DECISION) return e.status === STATUS.OK ? "approved" : "declined";
   if (e.kind === KIND.CHECK_END || e.kind === KIND.CI_STATE) return CHECK_WORD[e.status ?? ""] ?? null;
   return null;
+}
+
+/**
+ * The reason of the run's latest "trace snapshot failed" log line (written by the app's index thread), or null once a
+ * later "trace snapshot written" line says it was made. Lines read `app: trace snapshot failed: <reason>`.
+ */
+export function snapshotFailure(timeline: ReadonlyArray<{ text: string }>): string | null {
+  for (let at = timeline.length - 1; at >= 0; at -= 1) {
+    const text = timeline[at]!.text;
+    const failed = /^app: trace snapshot failed: (.*)$/.exec(text);
+    if (failed) return failed[1] ?? "";
+    if (/^app: trace snapshot written$/.test(text)) return null;
+  }
+  return null;
+}
+
+// ---- Compare (flight/compare.rs): the words of the rows and of the first difference ----------
+
+const COMPARE_GROUP_TEXT: Record<string, string> = {
+  stages: "Active minutes per stage",
+  tools: "Tool calls",
+  failures: "Failures",
+  retries: "Retries",
+  repeats: "Repeats",
+  files: "Files touched",
+  checks: "Checks",
+  tokens: "Tokens",
+  windowShare: "Window share",
+};
+
+/** The heading of a Compare row group. */
+export function compareGroupText(group: string): string {
+  return COMPARE_GROUP_TEXT[group] ?? group;
+}
+
+const COMPARE_KEY_TEXT: Record<string, string> = {
+  input: "input",
+  output: "output",
+  cacheWrite: "cache write",
+  cacheRead: "cache read",
+  fiveHour: "five-hour window",
+  weekly: "weekly window",
+  "tool.end": "failed tool calls",
+  "tool.blocked": "guard blocks",
+  error: "errors",
+  "check.end": "failed checks",
+};
+
+/** The words of a row's key: a guard block with its rule, a check with its source and PR, a stage as it is. */
+export function compareKeyText(group: string, key: string): string {
+  if (group === "failures") {
+    const [kind, rule] = [key.split(":")[0] ?? key, key.includes(":") ? key.slice(key.indexOf(":") + 1) : null];
+    const base = COMPARE_KEY_TEXT[kind] ?? kind;
+    return rule ? `${base} (${rule})` : base;
+  }
+  if (group === "checks") {
+    const [source, pr] = key.split("/");
+    return `${source ?? key} check${pr && pr !== "-" ? `, ${pr}` : ""}`;
+  }
+  if (group === "retries") return key === "-" ? "retries (no PR)" : `retries of ${key}`;
+  return COMPARE_KEY_TEXT[key] ?? key;
+}
+
+/** A cell: null is "not recorded"; minutes, percent points (an estimate) and counts read as what they are. */
+export function compareValueText(group: string, value: number | string | null | undefined): string {
+  if (value === null || value === undefined) return "not recorded";
+  if (typeof value === "string") return value;
+  if (group === "stages") return `${value} min`;
+  if (group === "windowShare") return `${value} points (estimate)`;
+  if (group === "tokens") return value.toLocaleString("en-US");
+  return String(value);
+}
+
+/** "First difference: guard blocks (run-file-write) (0 vs 1)" for the Divergence row, or a no-difference line. */
+export function compareSentence(
+  row: { group: string; key: string; a: number | string | null; b: number | string | null } | null | undefined,
+): string {
+  if (!row) return "No differences in these rows.";
+  return `First difference: ${compareGroupText(row.group)}, ${compareKeyText(row.group, row.key)} (${compareValueText(row.group, row.a)} vs ${compareValueText(row.group, row.b)})`;
+}
+
+/** Whether a Compare cell can open a Trace (record numbers cannot). */
+export function compareOpensTrace(group: string): boolean {
+  return group !== "tokens" && group !== "windowShare" && group !== "stages";
+}
+
+
+// ---- Eval (AF14): the usage hold, the estimate and the distribution texts -------------------
+
+/** The latest five-hour reading of an account: percent used, and when that window resets (Unix seconds). */
+export type FiveHourReading = { percent: number; resetsAt: number | null };
+
+/**
+ * Why an eval start is held now, or null. The twin of dispatch.rs `eval_hold`: with a hold set and no reading at all
+ * it holds ("not known"); a reading past its reset is clear (the window has reset); otherwise the hold applies at or
+ * past its percent. With no hold set it is clear.
+ */
+export function evalHoldReason(
+  hold: number | null | undefined,
+  reading: FiveHourReading | null | undefined,
+  nowSec: number,
+): string | null {
+  if (hold === null || hold === undefined) return null;
+  if (!reading) return "Five-hour usage is not known: Start waits until a Claude tab reports it.";
+  if (reading.resetsAt !== null && reading.resetsAt <= nowSec) return null;
+  if (reading.percent >= hold) {
+    return `Five-hour usage is ${Math.round(reading.percent)}%, at or past your hold of ${hold}%.`;
+  }
+  return null;
+}
+
+/** The usage line of the Eval dialog: the current five-hour percent and the hold, or why neither is known. */
+export function evalUsageLine(
+  hold: number | null | undefined,
+  reading: FiveHourReading | null | undefined,
+  nowSec: number,
+): string {
+  if (hold === null || hold === undefined) return "No usage hold is set";
+  if (!reading) return "Five-hour usage is not known";
+  if (reading.resetsAt !== null && reading.resetsAt <= nowSec) return `The five-hour window has reset (hold ${hold}%)`;
+  return `Five-hour usage ${Math.round(reading.percent)}% · hold ${hold}%`;
+}
+
+/** N times the source run's Window share (percent points of the five-hour window), or that it is not known. */
+export function evalEstimateText(n: number, share: number | null | undefined): string {
+  if (share === null || share === undefined || !Number.isFinite(share)) return "Estimate: not known";
+  const total = Math.round(n * share * 10) / 10;
+  return `Estimate: about ${total} points of the five-hour window (${n} × ${Math.round(share * 10) / 10})`;
+}
+
+/** The base line of the Eval dialog. */
+export function evalBaseText(based: ReadonlyArray<string>, fallback: ReadonlyArray<string>): string {
+  const name = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  if (based.length === 0) return "Builds on the current default branch";
+  if (fallback.length === 0) return "Builds on the source run's commits";
+  return `Builds on the source run's commits, and on the current default branch for ${fallback.map(name).join(", ")}`;
+}
+
+/** What a check state reads as in the Eval results' Checks column. */
+export function evalCheckText(state: string, passRate: number | null | undefined): string {
+  if (state === "checking") return "checking…";
+  if (passRate === null || passRate === undefined) return "not checked";
+  return `${Math.round(passRate * 100)}% pass`;
+}
+
+/** "min 1 · median 2 · max 4 (over 3 runs)" for one measure; "no figures" when no finished run has it. */
+export function evalDistText(
+  dist: { min: number | null; median: number | null; max: number | null; of: number },
+  format: (value: number) => string = (v) => String(Math.round(v * 100) / 100),
+): string {
+  if (dist.min === null || dist.median === null || dist.max === null) return "no figures";
+  return `min ${format(dist.min)} · median ${format(dist.median)} · max ${format(dist.max)} (over ${dist.of} ${dist.of === 1 ? "run" : "runs"})`;
 }

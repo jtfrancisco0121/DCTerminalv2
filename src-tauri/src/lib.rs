@@ -210,6 +210,10 @@ pub fn run() {
             run::dispatch::dispatch_overview,
             run::dispatch::dispatch_enqueue,
             run::dispatch::dispatch_runs,
+            run::dispatch::dispatch_eval_start,
+            run::dispatch::dispatch_eval_preview,
+            run::eval_clean_up,
+            run::eval_delete_branch,
             run::dispatch::batch_overview,
             run::dispatch::batch_remove_run,
             run::epics::epics_overview,
@@ -256,6 +260,9 @@ pub fn run() {
             commands::flight::flight_content,
             commands::flight::flight_session,
             commands::flight::flight_search,
+            commands::flight::flight_compare,
+            commands::flight::flight_eval_results,
+            commands::flight::flight_run_share,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

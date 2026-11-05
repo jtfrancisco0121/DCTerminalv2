@@ -1,0 +1,4 @@
+running 3 tests
+test add ... FAILED
+export DB_PASSWORD=Hunter2Hunter2xyz
+test result: FAILED. 2 passed; 1 failed

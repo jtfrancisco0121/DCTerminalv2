@@ -292,6 +292,7 @@ mod tests {
             waiting_for: waiting_for.map(str::to_string),
             waiting_since: None,
             run_mode: None,
+            eval: None,
             stalled: false,
             prs_done: 0,
             prs_total: 0,

@@ -96,6 +96,8 @@ export type ClaudeAccount = {
   configDir?: string | null;
   /** What the Session Inspector may read from this account's logs. Absent: `metadata`. */
   capturePolicy?: "off" | "metadata" | "redacted" | "full";
+  /** "Keep run traces": a finished run of this account gets a snapshot of its session events (default off). */
+  keepRunTraces?: boolean;
 };
 
 export type ClaudeSettings = {
@@ -132,6 +134,8 @@ export type RunSettings = {
 export type ObserveSettings = {
   /** "Track activity in every Claude tab" (default on). */
   hooksAllTabs: boolean;
+  /** "Eval mode": a finished run can be repeated N times to compare outcomes (default off). */
+  evalEnabled?: boolean;
 };
 
 /** Notifications: a master switch and one switch per event kind (missing: on). */
@@ -410,6 +414,8 @@ export type ActiveRun = {
   waitingSince?: string | null;
   /** The run's mode (`epic-plan`); missing or null is a normal run. */
   runMode?: string | null;
+  /** The run's `eval` (one run of an eval group); missing or null is a normal run. */
+  eval?: { group: string; index: number; of: number; source: string } | null;
   stalled: boolean;
   prsDone: number;
   prsTotal: number;

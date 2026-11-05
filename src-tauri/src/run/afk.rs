@@ -157,23 +157,46 @@ fn recheck(dir: &Path) -> Result<String, String> {
 
 /// Finished runs only: the merged-PR cleanup, then the janitor's clean
 /// worktrees (branches kept unless merged; remote branches only of merged PRs).
+/// A finished eval run (`ship-approval` with meta.json `eval`) is finished too: it has no PRs to merge, so
+/// only the janitor runs, inside the run's checks slot.
 fn clean_up(dir: &Path) -> Result<String, String> {
+    let lines = clean_up_lines(dir)?;
+    if lines.is_empty() {
+        return Ok("nothing to clean up".into());
+    }
+    Ok(lines.join("; "))
+}
+
+/// The result lines of [`clean_up`], one per worktree.
+pub fn clean_up_lines(dir: &Path) -> Result<Vec<String>, String> {
     let stage = stage_of(dir);
-    if !matches!(stage.as_deref(), Some("done") | Some("failed")) {
+    let eval_done = folder::finished_eval(folder::eval_of(dir).as_ref(), stage.as_deref());
+    if !matches!(stage.as_deref(), Some("done") | Some("failed")) && !eval_done {
         return Err(format!(
             "the run is not finished (stage {}): cleanup waits for done or failed",
             stage.as_deref().unwrap_or("none")
         ));
     }
+    if eval_done {
+        // The tick's R1 refuses this run while its worktrees are being removed.
+        return super::with_checks_slot(dir, || janitor_lines(dir));
+    }
     let mut lines: Vec<String> = cleanup::cleanup_run(dir, &GhCli)
         .iter()
         .map(cleanup::CleanupRecord::line)
         .collect();
+    lines.extend(janitor_lines(dir));
+    Ok(lines)
+}
+
+/// Removes the clean worktrees, then says which were kept and why.
+fn janitor_lines(dir: &Path) -> Vec<String> {
     let removable: Vec<String> = janitor::list_worktrees(dir)
         .into_iter()
         .filter(|item| item.removable)
         .map(|item| item.pr_id)
         .collect();
+    let mut lines = Vec::new();
     for r in janitor::remove_clean(dir, &removable) {
         lines.push(format!("{}: {}", r.pr_id, r.message));
     }
@@ -188,10 +211,7 @@ fn clean_up(dir: &Path) -> Result<String, String> {
         })
         .collect();
     lines.extend(kept);
-    if lines.is_empty() {
-        return Ok("nothing to clean up".into());
-    }
-    Ok(lines.join("; "))
+    lines
 }
 
 /// R8: ticket ids and the changed fields only (no ticket text).
@@ -248,5 +268,49 @@ fn selftest(app: &AppHandle, dir: &Path) -> Result<String, String> {
             "self-test failed (Claude Code {version}): {}",
             result.detail.as_deref().unwrap_or("see the app's banner")
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::run::git::testing::eval_run;
+    use crate::test_support::TempDir;
+
+    #[test]
+    fn clean_up_accepts_a_finished_eval_run_removes_its_clean_worktrees_and_keeps_the_branch() {
+        let dir = TempDir::new("afk_eval_cleanup");
+        let ev = eval_run(dir.path(), "ship-approval", true);
+        let lines = clean_up_lines(&ev.run_dir).unwrap();
+        assert!(
+            !ev.worktree.exists(),
+            "the clean worktree is removed: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("kept (not merged)")),
+            "git branch -d keeps the unmerged branch: {lines:?}"
+        );
+        let branch = crate::run::git::git(&ev.repo, &["branch", "--list", &ev.branch]).unwrap();
+        assert!(
+            branch.contains(&ev.branch),
+            "the dcv2/ branch is still there"
+        );
+        assert!(clean_up(&ev.run_dir).is_ok());
+    }
+
+    #[test]
+    fn clean_up_keeps_a_dirty_eval_worktree_and_still_refuses_a_normal_ship_approval_run() {
+        let dir = TempDir::new("afk_eval_dirty");
+        let ev = eval_run(dir.path(), "ship-approval", true);
+        std::fs::write(ev.worktree.join("wip.txt"), "wip").unwrap();
+        let lines = clean_up_lines(&ev.run_dir).unwrap();
+        assert!(ev.worktree.exists());
+        assert!(lines.iter().any(|l| l.starts_with("PR1 kept")), "{lines:?}");
+
+        let other = TempDir::new("afk_normal_ship_approval");
+        let normal = eval_run(other.path(), "ship-approval", false);
+        let err = clean_up(&normal.run_dir).unwrap_err();
+        assert!(err.contains("not finished"), "{err}");
+        assert!(normal.worktree.exists(), "nothing was removed");
     }
 }

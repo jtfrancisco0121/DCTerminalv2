@@ -56,6 +56,17 @@ describe("TraceSearch", () => {
     });
   });
 
+  it("words a finished eval run's outcome instead of printing it raw", async () => {
+    flightSearch.mockResolvedValue(out({ runs: [hit("r-e", 1, { outcome: "eval-done" }), hit("r-d", 1)] }));
+    view();
+    fireEvent.submit(form());
+    await screen.findByRole("listbox", { name: "Matching runs" });
+    const [evalRow, doneRow] = results();
+    expect(evalRow!.textContent).toContain("Eval run finished");
+    expect(evalRow!.textContent).not.toContain("eval-done");
+    expect(doneRow!.textContent).toContain("Done");
+  });
+
   it("filterOf leaves empty fields out and sends only values", () => {
     expect(filterOf(EMPTY_FORM)).toEqual({});
     expect(filterOf({ ...EMPTY_FORM, nameContains: "  x  ", prState: "fixing", from: "2026-11-01", text: "a'; DROP" })).toEqual({
@@ -170,12 +181,74 @@ describe("TraceSearch", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(screen.queryByRole("listbox")).toBeNull();
     expect((screen.getByLabelText("Repo") as HTMLInputElement).value).toBe("");
-    expect(onChange).toHaveBeenLastCalledWith({ form: EMPTY_FORM, filter: null, out: null });
+    expect(onChange).toHaveBeenLastCalledWith({ form: EMPTY_FORM, filter: null, out: null, selected: [] });
   });
 
   it("starts with a hint and searches nothing until asked", () => {
     view();
     expect(screen.getByText(/Nothing searches while you type/)).toBeTruthy();
     expect(flightSearch).not.toHaveBeenCalled();
+  });
+
+  describe("compare selection", () => {
+    const threeRuns = () =>
+      flightSearch.mockResolvedValue(out({ runs: [hit("r-3", 1), hit("r-2", 3), hit("r-1", 1)] }));
+    const search = async (onCompare = vi.fn(), onChange = vi.fn()) => {
+      threeRuns();
+      view({ onCompare, onChange });
+      fireEvent.submit(form());
+      await screen.findByRole("listbox", { name: "Matching runs" });
+      return { onCompare, onChange };
+    };
+    const box = (id: string) => screen.getByRole("checkbox", { name: `Select run ${id} for compare` }) as HTMLInputElement;
+    const compareButton = () => screen.getByRole("button", { name: "Compare" }) as HTMLButtonElement;
+
+    it("enables Compare at exactly two ticked runs, with the hint below that, and a third tick replaces the oldest", async () => {
+      const { onCompare } = await search();
+      expect(compareButton().disabled).toBe(true);
+      expect(screen.getByTestId("compare-hint").textContent).toBe("Select two runs to compare.");
+      fireEvent.click(box("r-1"));
+      expect(compareButton().disabled).toBe(true);
+      fireEvent.click(box("r-2"));
+      expect(compareButton().disabled).toBe(false);
+      expect(screen.queryByTestId("compare-hint")).toBeNull();
+      // A third tick replaces the oldest (r-1).
+      fireEvent.click(box("r-3"));
+      expect(box("r-1").checked).toBe(false);
+      expect(box("r-2").checked && box("r-3").checked).toBe(true);
+      fireEvent.click(compareButton());
+      expect(onCompare).toHaveBeenCalledWith("/data/runs/r-2", "/data/runs/r-3");
+      // Unticking leaves one: disabled again.
+      fireEvent.click(box("r-3"));
+      expect(compareButton().disabled).toBe(true);
+    });
+
+    it("ticking a box does not open the Trace, and Clear drops the selection", async () => {
+      const onOpen = vi.fn();
+      threeRuns();
+      view({ onCompare: vi.fn(), onOpen });
+      fireEvent.submit(form());
+      await screen.findByRole("listbox", { name: "Matching runs" });
+      fireEvent.click(box("r-1"));
+      expect(onOpen).not.toHaveBeenCalled();
+      expect(box("r-1").checked).toBe(true);
+      fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+      expect(screen.queryByRole("checkbox")).toBeNull();
+      fireEvent.submit(form());
+      await screen.findByRole("listbox", { name: "Matching runs" });
+      expect(box("r-1").checked).toBe(false);
+    });
+
+    it("keeps the selection in the state the App holds, and has no checkboxes without a Compare handler", async () => {
+      const { onChange } = await search();
+      fireEvent.click(box("r-2"));
+      expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ selected: ["/data/runs/r-2"] }));
+      cleanup();
+      view();
+      fireEvent.submit(form());
+      await screen.findByRole("listbox", { name: "Matching runs" });
+      expect(screen.queryByRole("checkbox")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Compare" })).toBeNull();
+    });
   });
 });
