@@ -3643,6 +3643,15 @@ mod tests {
 
     fn wave1_payload(policy: CapturePolicy, encoding: export::Encoding) -> export::Payload {
         let (_dir, run, claude) = wave1("export_golden", policy);
+        // A review round is stamped with its file's mtime, which a fresh copy sets to "now": pin it
+        // to the instant the golden files were made, so the export does not depend on the date.
+        let pinned = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_793_844_729_630);
+        std::fs::File::options()
+            .write(true)
+            .open(run.join("reviews").join("PR2-round1.md"))
+            .unwrap()
+            .set_modified(pinned)
+            .unwrap();
         let (_, input) = export_input(
             &claude,
             &run_query(&run),
