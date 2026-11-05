@@ -828,3 +828,19 @@ export function exportSizeText(spans: number, events: number, bytes: number): st
 export function exportLeavesText(spans: number, endpoint: string): string {
   return `This export leaves the machine: ${spans} spans to ${endpoint}`;
 }
+
+/** The labels of replayed output: what the agent did, what the app ran again, and what a re-run starts. */
+export const REPLAY_LABEL = { recorded: "recorded", rerun: "re-run", fresh: "new execution" } as const;
+
+/** What replay cannot see (the file pane's footnote). */
+export const REPLAY_FOOTNOTE = "Changes made by shell commands are not seen.";
+
+/** Why the replay toggle is disabled, or null. */
+export function replayDisabledReason(eventCount: number, off: boolean): string | null {
+  if (off) return "AgentFlight is off for this account (Settings › Activity).";
+  if (eventCount === 0) return "This trace has no events to replay.";
+  return null;
+}
+
+/** "after edit 3 of 7". */
+export const replayEditText = (k: number, n: number) => `after edit ${k} of ${n}`;

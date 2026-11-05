@@ -392,3 +392,46 @@ export interface ExportSent {
   spans: number;
   status: number;
 }
+
+/** One tick of the replay track (host.rs `ReplayEntry`): eight keys, never a path. */
+export interface ReplayEntry {
+  id: string;
+  at: string;
+  kind: string;
+  name: string | null;
+  status: string | null;
+  /** How many files a `file.change` touched; null for other kinds. */
+  file: number | null;
+  /** `skill`, `app` or `stop-check` for a `check.end`. */
+  checkSource: string | null;
+  pr: string | null;
+}
+
+export interface ReplayTrackOut {
+  /** `ok`, or `off` when the policy lets nothing be read. */
+  status: string;
+  entries: ReplayEntry[];
+  truncated: boolean;
+}
+
+export interface ReplayStop {
+  /** The 1-based edit of the file that does not apply. */
+  at: number;
+  reason: string;
+}
+
+/** The file after one recorded edit (host.rs `ReplayFile`). */
+export interface ReplayFileOut {
+  /** `ok` (text is set), `off` or `unavailable` (see `reason`). */
+  status: "ok" | "off" | "unavailable";
+  reason: string | null;
+  /** Relative to the PR's worktree. */
+  path: string | null;
+  pr: string | null;
+  text: string | null;
+  redactions: number;
+  truncated: boolean;
+  edit: number | null;
+  edits: number;
+  stopped: ReplayStop | null;
+}

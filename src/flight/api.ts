@@ -8,6 +8,8 @@ import type {
   ExportPolicy,
   ExportPreview,
   ExportSent,
+  ReplayFileOut,
+  ReplayTrackOut,
   SearchFilter,
   SearchOut,
   SessionView,
@@ -48,3 +50,10 @@ export const flightExportSend = (digest: string, endpoint: string) =>
 /** Writes exactly the previewed bytes to the picked path. */
 export const flightExportSave = (digest: string, path: string) =>
   invoke<void>("flight_export_save", { request: { digest, path } });
+
+/** The replay track of a Trace: one tick per Event, never a path. Read-only. */
+export const flightReplayTrack = (target: TraceTarget) => invoke<ReplayTrackOut>("flight_replay_track", { target });
+
+/** The file a `file.change` Event changed, rebuilt as it was after that edit. Read-only; nothing recorded runs. */
+export const flightReplayFile = (target: TraceTarget, eventId: string) =>
+  invoke<ReplayFileOut>("flight_replay_file", { request: { ...target, eventId } });
