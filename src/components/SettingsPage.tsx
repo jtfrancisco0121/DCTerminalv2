@@ -202,6 +202,7 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
     try {
       const saved = await setRunSettings(runSettings);
       setRun(saved);
+      setSavedRunValue(saved);
       setSavedRun(runKey(saved));
       setNotice({ tone: "info", text: "Run settings saved." });
       onSaved({ ...view, run: saved });

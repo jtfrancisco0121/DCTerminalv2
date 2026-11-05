@@ -119,6 +119,18 @@ describe("SettingsPage orchestrator rows", () => {
     expect(setClaudeSettings.mock.calls[setClaudeSettings.mock.calls.length - 1]![0].accounts[0]!.orchestratorModel).toBe("sonnet");
   });
 
+  it("a Runs save is kept when an orchestrator select is saved afterwards", async () => {
+    setRunSettings.mockClear();
+    render(<SettingsPage view={runView({ orchestratorModel: "opus", orchestratorPermissionMode: "auto" })} onSaved={() => {}} onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/Implementers at once/), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save run settings" }));
+    await waitFor(() => expect(setRunSettings).toHaveBeenCalledTimes(1));
+    await screen.findByText("Run settings saved.");
+    fireEvent.change(screen.getByRole("combobox", { name: "Orchestrator permission mode" }), { target: { value: "acceptEdits" } });
+    await waitFor(() => expect(setRunSettings).toHaveBeenCalledTimes(2));
+    expect(setRunSettings.mock.calls[1]![0]).toMatchObject({ maxImplementers: 5, orchestratorPermissionMode: "acceptEdits" });
+  });
+
   it("shows the backend's refusal of a custom id and keeps the stored model", async () => {
     setRunSettings.mockClear();
     setRunSettings.mockRejectedValueOnce("Not a model id: use opus, sonnet, haiku or a claude-… id.");
