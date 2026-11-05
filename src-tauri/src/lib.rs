@@ -269,6 +269,11 @@ pub fn run() {
             commands::flight::flight_export_save,
             commands::flight::flight_replay_track,
             commands::flight::flight_replay_file,
+            commands::flight::flight_replay_check_info,
+            commands::flight::flight_replay_check,
+            commands::flight::flight_replay_check_stop,
+            commands::flight::flight_replay_checks,
+            commands::flight::flight_replay_check_log,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

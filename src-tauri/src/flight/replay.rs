@@ -13,16 +13,16 @@ pub struct Replacement {
     pub replace_all: bool,
 }
 
-/// A recorded edit tool call that succeeded.
+/// A recorded edit tool call that succeeded: `Write`, `Edit` (`Replace`) or `MultiEdit` (`Multi`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Edit {
     /// The whole file is replaced.
     Write {
         content: String,
     },
-    Edit(Replacement),
+    Replace(Replacement),
     /// The steps apply in order; if one does not apply, none does.
-    MultiEdit {
+    Multi {
         edits: Vec<Replacement>,
     },
 }
@@ -84,8 +84,8 @@ fn apply(text: &mut Option<String>, edit: &Edit) -> Result<(), String> {
             *text = Some(content.clone());
             Ok(())
         }
-        Edit::Edit(r) => apply_one(text, r),
-        Edit::MultiEdit { edits } => {
+        Edit::Replace(r) => apply_one(text, r),
+        Edit::Multi { edits } => {
             // Work on a copy: a step that fails leaves the file as it was before the whole call.
             let mut work = text.clone();
             for r in edits {
@@ -152,19 +152,19 @@ mod tests {
 
     #[test]
     fn an_edit_replaces_one_occurrence_and_replace_all_every_one() {
-        let s = reconstruct(Some("a b a"), &[Edit::Edit(rep("b", "c", false))]);
+        let s = reconstruct(Some("a b a"), &[Edit::Replace(rep("b", "c", false))]);
         assert_eq!(s.text.as_deref(), Some("a c a"));
-        let s = reconstruct(Some("a b a"), &[Edit::Edit(rep("a", "z", true))]);
+        let s = reconstruct(Some("a b a"), &[Edit::Replace(rep("a", "z", true))]);
         assert_eq!(s.text.as_deref(), Some("z b z"));
     }
 
     #[test]
     fn a_multi_edit_applies_in_order_and_is_all_or_nothing() {
         let edits = vec![rep("one", "two", false), rep("two", "three", false)];
-        let s = reconstruct(Some("one"), &[Edit::MultiEdit { edits }]);
+        let s = reconstruct(Some("one"), &[Edit::Multi { edits }]);
         assert_eq!(s.text.as_deref(), Some("three"));
         let edits = vec![rep("one", "two", false), rep("missing", "x", false)];
-        let s = reconstruct(Some("one"), &[Edit::MultiEdit { edits }]);
+        let s = reconstruct(Some("one"), &[Edit::Multi { edits }]);
         assert_eq!(
             s.text.as_deref(),
             Some("one"),
@@ -178,9 +178,9 @@ mod tests {
         let s = reconstruct(
             Some("abc"),
             &[
-                Edit::Edit(rep("a", "A", false)),
-                Edit::Edit(rep("zzz", "x", false)),
-                Edit::Edit(rep("b", "B", false)),
+                Edit::Replace(rep("a", "A", false)),
+                Edit::Replace(rep("zzz", "x", false)),
+                Edit::Replace(rep("b", "B", false)),
             ],
         );
         assert_eq!(s.text.as_deref(), Some("Abc"));
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn a_duplicate_old_text_without_replace_all_stops_the_file() {
-        let s = reconstruct(Some("x x"), &[Edit::Edit(rep("x", "y", false))]);
+        let s = reconstruct(Some("x x"), &[Edit::Replace(rep("x", "y", false))]);
         assert_eq!(s.text.as_deref(), Some("x x"));
         assert_eq!(s.stopped_at, Some(0));
         assert!(s.reason.unwrap().contains("more than once"));
@@ -198,11 +198,11 @@ mod tests {
 
     #[test]
     fn an_edit_of_a_file_that_does_not_exist_stops_but_an_empty_old_text_creates_it() {
-        let s = reconstruct(None, &[Edit::Edit(rep("a", "b", false))]);
+        let s = reconstruct(None, &[Edit::Replace(rep("a", "b", false))]);
         assert_eq!(s.stopped_at, Some(0));
-        let s = reconstruct(None, &[Edit::Edit(rep("", "fresh", false))]);
+        let s = reconstruct(None, &[Edit::Replace(rep("", "fresh", false))]);
         assert_eq!(s.text.as_deref(), Some("fresh"));
-        let s = reconstruct(Some("has text"), &[Edit::Edit(rep("", "x", false))]);
+        let s = reconstruct(Some("has text"), &[Edit::Replace(rep("", "x", false))]);
         assert_eq!(s.stopped_at, Some(0));
     }
 
@@ -210,7 +210,7 @@ mod tests {
     fn five_hundred_edits_rebuild_in_under_a_second() {
         let base: String = (0..500).map(|i| format!("line {i}\n")).collect();
         let edits: Vec<Edit> = (0..500)
-            .map(|i| Edit::Edit(rep(&format!("line {i}\n"), &format!("LINE {i}\n"), false)))
+            .map(|i| Edit::Replace(rep(&format!("line {i}\n"), &format!("LINE {i}\n"), false)))
             .collect();
         let t = std::time::Instant::now();
         let s = reconstruct(Some(&base), &edits);

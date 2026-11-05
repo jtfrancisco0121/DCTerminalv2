@@ -498,6 +498,189 @@ pub fn kept_branches(run_dir: &Path) -> Vec<KeptBranch> {
     out
 }
 
+// ---- scratch worktrees of check re-runs (AF13) ------------------------------------------------
+//
+// A re-run builds a detached worktree at the recorded commit, runs there and removes it. It is the only place the
+// app removes a worktree with `--force`, so it acts on nothing but a path that matches the scratch name, sits in
+// the repo's own `-worktrees` folder and that git lists as `detached`. Contract worktrees (`dcv2-<run>-<pr>`) never
+// match, and no branch is touched.
+
+/// A commit id as git prints it: hex only, so it can never be read as an option or a ref expression.
+pub fn valid_commit(text: &str) -> bool {
+    (7..=64).contains(&text.len()) && text.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// `dcv2-replay-<runId>-<pr>-<n>`; `r-` starts every run id.
+fn scratch_name_ok(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("dcv2-replay-r-") else {
+        return false;
+    };
+    let Some((head, n)) = rest.rsplit_once('-') else {
+        return false;
+    };
+    let Some((id, pr)) = head.rsplit_once("-pr") else {
+        return false;
+    };
+    !id.is_empty()
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && !pr.is_empty()
+        && pr.chars().all(|c| c.is_ascii_digit())
+        && !n.is_empty()
+        && n.chars().all(|c| c.is_ascii_digit())
+}
+
+/// The scratch worktree path of re-run `n` of `pr_id`: `<repo parent>/<repo>-worktrees/dcv2-replay-<runId>-<pr>-<n>`.
+pub fn scratch_worktree(repo: &Path, run_id: &str, pr_id: &str, n: u32) -> Option<PathBuf> {
+    if !super::status::valid_pr_id(pr_id) {
+        return None;
+    }
+    let name = format!("dcv2-replay-{run_id}-{}-{n}", pr_id.to_ascii_lowercase());
+    if !scratch_name_ok(&name) {
+        return None;
+    }
+    let repo = canonical(repo);
+    let repo_name = repo.file_name()?.to_string_lossy().to_string();
+    Some(
+        repo.parent()?
+            .join(format!("{repo_name}-worktrees"))
+            .join(name),
+    )
+}
+
+/// The same path, folded for comparison (lowercase on Windows).
+fn ident(path: &Path) -> String {
+    let text = canonical(path).to_string_lossy().to_string();
+    if cfg!(windows) {
+        text.to_lowercase()
+    } else {
+        text
+    }
+}
+
+/// The scratch path is where [`scratch_worktree`] puts it for `repo`: the name matches and the parent is the repo's
+/// own `-worktrees` folder.
+fn scratch_in_place(repo: &Path, path: &Path) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if !scratch_name_ok(&name) {
+        return Err("not a re-run scratch worktree".into());
+    }
+    let repo = canonical(repo);
+    let repo_name = repo
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let want = repo
+        .parent()
+        .map(|p| p.join(format!("{repo_name}-worktrees")));
+    let parent = path.parent();
+    match (want, parent) {
+        (Some(want), Some(parent)) if ident(&want) == ident(parent) => Ok(()),
+        _ => Err("not in this repo's worktrees folder".into()),
+    }
+}
+
+/// `git worktree add --detach -- <path> <commit>` for a scratch path. Refuses a path that exists.
+pub fn add_scratch(repo: &Path, path: &Path, commit: &str) -> Result<(), String> {
+    scratch_in_place(repo, path)?;
+    if !valid_commit(commit) {
+        return Err("not a commit id".into());
+    }
+    if std::fs::symlink_metadata(path).is_ok() {
+        return Err("the scratch folder already exists".into());
+    }
+    let path_text = path.to_string_lossy().to_string();
+    git(
+        repo,
+        &["worktree", "add", "--detach", "--", &path_text, commit],
+    )
+    .map(|_| ())
+}
+
+/// One entry of `git worktree list --porcelain`.
+struct Listed {
+    path: PathBuf,
+    detached: bool,
+    branch: bool,
+    locked: bool,
+}
+
+fn listed_worktrees(repo: &Path) -> Result<Vec<Listed>, String> {
+    let out = git(repo, &["worktree", "list", "--porcelain"])?;
+    let mut all: Vec<Listed> = Vec::new();
+    for line in out.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            all.push(Listed {
+                path: PathBuf::from(path),
+                detached: false,
+                branch: false,
+                locked: false,
+            });
+        } else if let Some(entry) = all.last_mut() {
+            if line == "detached" {
+                entry.detached = true;
+            } else if line.starts_with("branch ") {
+                entry.branch = true;
+            } else if line == "locked" || line.starts_with("locked ") {
+                entry.locked = true;
+            }
+        }
+    }
+    Ok(all)
+}
+
+/// Removes a scratch worktree. It acts only when the name matches, the parent is the repo's own `-worktrees`
+/// folder and git lists the path as `detached` (no branch). A matching entry git lists as `locked` (a crash during
+/// `worktree add` leaves `locked initializing`) is unlocked first. A scratch folder git no longer lists is only
+/// pruned. No branch is touched.
+pub fn remove_scratch(repo: &Path, path: &Path) -> Result<(), String> {
+    scratch_in_place(repo, path)?;
+    let listed = listed_worktrees(repo)?;
+    let mine = listed.iter().find(|l| ident(&l.path) == ident(path));
+    let Some(entry) = mine else {
+        // Not listed: nothing to remove with git. A folder left behind is not ours to delete.
+        let _ = git(repo, &["worktree", "prune"]);
+        return if path.exists() {
+            Err("git does not list this folder as a worktree".into())
+        } else {
+            Ok(())
+        };
+    };
+    if entry.branch || !entry.detached {
+        return Err("not a detached worktree".into());
+    }
+    let path_text = path.to_string_lossy().to_string();
+    if entry.locked {
+        git(repo, &["worktree", "unlock", "--", &path_text])?;
+    }
+    git(repo, &["worktree", "remove", "--force", "--", &path_text])?;
+    let _ = git(repo, &["worktree", "prune"]);
+    Ok(())
+}
+
+/// `path` relative to `prefix`, comparing the real paths when both exist and the spelled ones otherwise
+/// (a removed worktree has no real path), so a run whose worktrees were cleaned up still maps.
+pub fn strip_worktree_prefix(path: &Path, prefix: &Path) -> Option<PathBuf> {
+    let fold = |p: PathBuf| {
+        if cfg!(windows) {
+            PathBuf::from(p.to_string_lossy().to_lowercase())
+        } else {
+            p
+        }
+    };
+    for (a, b) in [
+        (canonical(path), canonical(prefix)),
+        (path.to_path_buf(), prefix.to_path_buf()),
+    ] {
+        if let Ok(rel) = fold(a).strip_prefix(fold(b)) {
+            return Some(rel.to_path_buf());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -752,5 +935,111 @@ mod tests {
         );
         std::fs::write(ev.run_dir.join("status.json"), moved).unwrap();
         assert!(kept_branches(&ev.run_dir).is_empty());
+    }
+
+    #[test]
+    fn a_scratch_worktree_is_added_detached_and_removed_leaving_the_run_untouched() {
+        let dir = TempDir::new("janitor_scratch");
+        let repo = dir.join("ws/mathlib");
+        repo_at(&repo);
+        let head = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+        let contract = expected_worktree(&repo, "r-20261105-130000-cd34", "PR1").unwrap();
+        add(&repo, "dcv2/r-20261105-130000-cd34-pr1", &contract);
+        let scratch = scratch_worktree(&repo, "r-20261105-130000-cd34", "PR1", 2).unwrap();
+        assert!(scratch
+            .to_string_lossy()
+            .ends_with("mathlib-worktrees/dcv2-replay-r-20261105-130000-cd34-pr1-2"));
+        add_scratch(&repo, &scratch, &head).unwrap();
+        assert!(scratch.join("README.md").is_file());
+        let porcelain = git(&repo, &["worktree", "list", "--porcelain"]).unwrap();
+        assert!(porcelain.contains("detached"), "{porcelain}");
+        // An existing path is refused; so is a commit that is not hex.
+        assert!(add_scratch(&repo, &scratch, &head)
+            .unwrap_err()
+            .contains("already exists"));
+        let other = scratch_worktree(&repo, "r-20261105-130000-cd34", "PR1", 3).unwrap();
+        assert!(add_scratch(&repo, &other, "--detach").is_err());
+        remove_scratch(&repo, &scratch).unwrap();
+        assert!(!scratch.exists());
+        // Gone already: only pruned.
+        remove_scratch(&repo, &scratch).unwrap();
+        // The contract worktree and its branch are untouched.
+        assert!(contract.is_dir());
+        assert!(git(&repo, &["branch", "--list"])
+            .unwrap()
+            .contains("dcv2/r-20261105-130000-cd34-pr1"));
+    }
+
+    #[test]
+    fn remove_scratch_refuses_a_contract_worktree_a_wrong_parent_and_a_non_detached_path() {
+        let dir = TempDir::new("janitor_scratch_refuse");
+        let repo = dir.join("ws/mathlib");
+        repo_at(&repo);
+        let head = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+        // A contract worktree: the name does not match.
+        let contract = expected_worktree(&repo, "r-20261105-130000-cd34", "PR1").unwrap();
+        add(&repo, "dcv2/r-20261105-130000-cd34-pr1", &contract);
+        assert!(remove_scratch(&repo, &contract)
+            .unwrap_err()
+            .contains("not a re-run scratch"));
+        assert!(contract.is_dir());
+        // A scratch-named detached worktree in another folder: the parent is wrong.
+        let wrong = dir.join("elsewhere/dcv2-replay-r-20261105-130000-cd34-pr1-1");
+        run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                wrong.to_str().unwrap(),
+                &head,
+            ],
+        );
+        assert!(remove_scratch(&repo, &wrong)
+            .unwrap_err()
+            .contains("worktrees folder"));
+        assert!(wrong.is_dir());
+        // A scratch-named worktree in the right folder but on a branch: not detached.
+        let on_branch = scratch_worktree(&repo, "r-20261105-130000-cd34", "PR1", 5).unwrap();
+        add(&repo, "feature/x", &on_branch);
+        assert!(remove_scratch(&repo, &on_branch)
+            .unwrap_err()
+            .contains("not a detached"));
+        assert!(on_branch.is_dir());
+        // A scratch-named folder git does not list is not ours to delete.
+        let plain = scratch_worktree(&repo, "r-20261105-130000-cd34", "PR1", 6).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(remove_scratch(&repo, &plain).is_err());
+        assert!(plain.is_dir());
+        // The name rule.
+        assert!(scratch_worktree(&repo, "r-1", "PR1; rm", 1).is_none());
+        assert!(scratch_worktree(&repo, "x-1", "PR1", 1).is_none());
+    }
+
+    #[test]
+    fn a_locked_scratch_entry_is_unlocked_and_removed() {
+        let dir = TempDir::new("janitor_scratch_locked");
+        let repo = dir.join("ws/mathlib");
+        repo_at(&repo);
+        let head = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+        let scratch = scratch_worktree(&repo, "r-20261105-130000-cd34", "PR1", 1).unwrap();
+        add_scratch(&repo, &scratch, &head).unwrap();
+        git(
+            &repo,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "initializing",
+                scratch.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        assert!(git(&repo, &["worktree", "list", "--porcelain"])
+            .unwrap()
+            .contains("locked"));
+        remove_scratch(&repo, &scratch).unwrap();
+        assert!(!scratch.exists());
     }
 }

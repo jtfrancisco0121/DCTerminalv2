@@ -859,6 +859,11 @@ pub fn spawn_index(app: &tauri::AppHandle) {
         .spawn(move || {
             let mut conn: Option<rusqlite::Connection> = None;
             let mut snapshots = SnapshotState::default();
+            // Before the first sleep: re-runs the last quit left half done (their scratch worktrees go).
+            {
+                let data = crate::data_dir::app_data_dir(&app).path;
+                let _ = std::panic::catch_unwind(|| crate::run::rerun::cleanup_leftovers(&data));
+            }
             loop {
                 std::thread::sleep(INDEX_EVERY);
                 let data = crate::data_dir::app_data_dir(&app).path;
@@ -2292,28 +2297,6 @@ fn unavailable(reason: impl Into<String>) -> ReplayFile {
     ReplayFile::none("unavailable", reason)
 }
 
-/// `path` relative to `prefix`, comparing the real paths when both exist and the spelled ones otherwise
-/// (a removed worktree has no real path), so a merged run whose worktrees were cleaned up still maps.
-pub(crate) fn strip_prefix(path: &Path, prefix: &Path) -> Option<PathBuf> {
-    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    let fold = |p: PathBuf| {
-        if cfg!(windows) {
-            PathBuf::from(p.to_string_lossy().to_lowercase())
-        } else {
-            p
-        }
-    };
-    for (a, b) in [
-        (canon(path), canon(prefix)),
-        (path.to_path_buf(), prefix.to_path_buf()),
-    ] {
-        if let Ok(rel) = fold(a).strip_prefix(fold(b)) {
-            return Some(rel.to_path_buf());
-        }
-    }
-    None
-}
-
 /// A PR of a run: its verified repo, base commit and the text prefix of its (possibly removed) worktree.
 struct ReplayPr {
     id: String,
@@ -2348,7 +2331,7 @@ fn replay_prs(run_dir: &Path) -> Vec<ReplayPr> {
                 .get("baseCommit")
                 .and_then(Value::as_str)
                 .map(str::to_string)
-                .filter(|b| valid_commit(b));
+                .filter(|b| crate::run::janitor::valid_commit(b));
             Some(ReplayPr {
                 id,
                 repo,
@@ -2357,11 +2340,6 @@ fn replay_prs(run_dir: &Path) -> Vec<ReplayPr> {
             })
         })
         .collect()
-}
-
-/// A commit id as git prints it: hex only, so it can never be read as an option or a ref expression.
-pub(crate) fn valid_commit(text: &str) -> bool {
-    (7..=64).contains(&text.len()) && text.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// A relative path with no `..` part, no root and no option-like start, in git's `/` form.
@@ -2395,14 +2373,14 @@ fn edit_of(name: &str, input: &Value) -> Result<replay::Edit, String> {
         "Write" => Ok(replay::Edit::Write {
             content: text(input, "content").ok_or_else(bad)?,
         }),
-        "Edit" => Ok(replay::Edit::Edit(replacement(input).ok_or_else(bad)?)),
+        "Edit" => Ok(replay::Edit::Replace(replacement(input).ok_or_else(bad)?)),
         "MultiEdit" => {
             let list = input
                 .get("edits")
                 .and_then(Value::as_array)
                 .ok_or_else(bad)?;
             let edits: Option<Vec<_>> = list.iter().map(replacement).collect();
-            Ok(replay::Edit::MultiEdit {
+            Ok(replay::Edit::Multi {
                 edits: edits.ok_or_else(bad)?,
             })
         }
@@ -2475,9 +2453,9 @@ pub fn replay_file(
     };
     // Which PR's worktree holds the file.
     let spelled = PathBuf::from(&path);
-    let found = replay_prs(run_dir)
-        .into_iter()
-        .find_map(|pr| strip_prefix(&spelled, &pr.prefix).map(|rel| (pr, rel)));
+    let found = replay_prs(run_dir).into_iter().find_map(|pr| {
+        crate::run::janitor::strip_worktree_prefix(&spelled, &pr.prefix).map(|rel| (pr, rel))
+    });
     let Some((pr, rel)) = found else {
         return Ok(unavailable(
             "This file is outside every PR worktree of the run.",
@@ -2597,6 +2575,21 @@ pub fn replay_file(
         out.reason = Some("This edit failed, so the file is as it was before it.".into());
     }
     Ok(out)
+}
+
+// ---- Check re-run (AF13) ----
+
+/// A re-run needs a readable Trace: policy `off` (or an unknown account folder) refuses it.
+pub fn replay_gate(claude: &ClaudeSettings, run_dir: &Path) -> Result<(), String> {
+    let query = Query {
+        run_dir: Some(run_dir.to_path_buf()),
+        ..Default::default()
+    };
+    match resolve(claude, &query, &Opens::default()) {
+        Access::Refused(why) => Err(why),
+        Access::Off => Err(EXPORT_OFF.into()),
+        Access::Ready(_) => Ok(()),
+    }
 }
 
 // ---- Export (AF12): Preview, Send, Save ----
@@ -4077,7 +4070,7 @@ mod tests {
         let first = replay_of(toy, &ids[0]);
         assert_eq!(first.status, "ok", "{first:?}");
         assert_eq!(first.text.as_deref(), Some("ALPHA\nbeta\n"));
-        assert_eq!((first.edit, first.edits), (Some(1), 3 + 0));
+        assert_eq!((first.edit, first.edits), (Some(1), 3));
         assert_eq!(first.path.as_deref(), Some("src/a.txt"));
         assert_eq!(first.pr.as_deref(), Some("PR1"));
         // The failed edit is skipped: the file is as it was, and it says why.

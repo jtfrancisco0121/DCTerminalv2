@@ -192,6 +192,16 @@ pub(crate) fn append_run_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
     open_no_follow(&mut opts, path)?.write_all(data)
 }
 
+/// Open a log file for appending (created when missing); a link is refused.
+pub(crate) fn append_run_log(path: &Path) -> std::io::Result<fs::File> {
+    if cfg!(not(unix)) && is_link(path) {
+        return Err(link_refusal(path));
+    }
+    let mut opts = fs::OpenOptions::new();
+    opts.append(true).create(true);
+    open_no_follow(&mut opts, path)
+}
+
 /// Create (truncate) a log file in a run folder; a link is refused.
 pub(crate) fn create_run_log(path: &Path) -> std::io::Result<fs::File> {
     if cfg!(not(unix)) && is_link(path) {
