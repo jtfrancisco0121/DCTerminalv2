@@ -602,6 +602,30 @@ describe("App run pages", () => {
     endState();
   });
 
+  it("Escape pressed the moment the dashboard appears closes it (no wait for effects or timers)", async () => {
+    await openApp();
+    await waitFor(() => expect(screen.getByTestId("tab-progress-tab_run")).toBeTruthy());
+
+    // The observer callback runs as a microtask right after React inserts the region: before any macrotask,
+    // passive effect or timer, which is how a loaded machine can order them.
+    let pressed = false;
+    const observer = new MutationObserver(() => {
+      if (pressed || !document.querySelector('[aria-label="Run dashboard"]')) return;
+      pressed = true;
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    try {
+      await paletteOpen(/Run dashboard/);
+      await waitFor(() => expect(pressed).toBe(true));
+      await waitFor(() => expect(screen.queryByRole("region", { name: "Run dashboard" })).toBeNull());
+    } finally {
+      observer.disconnect();
+    }
+    cleanup();
+    endState();
+  });
+
   it("opens the trace from the palette over the run panel; Escape closes it and no terminal is unmounted", async () => {
     await openApp();
     await waitFor(() => expect(screen.getByTestId("tab-progress-tab_run")).toBeTruthy());

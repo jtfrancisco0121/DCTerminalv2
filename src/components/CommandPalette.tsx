@@ -79,10 +79,17 @@ export function CommandPalette({ items, onClose }: Props) {
   }, [at]);
 
   const run = (item: PaletteItem) => {
+    // The item runs and the palette closes in the same microtask, so React commits the item's state change
+    // (a page opening) and the closed palette together; a throwing item still closes it.
     Promise.resolve()
-      .then(() => item.run())
-      .catch((err: unknown) => reportError(`Command palette: ${item.label}`, err, { notify: true }))
-      .finally(onClose);
+      .then(() => {
+        try {
+          return item.run();
+        } finally {
+          onClose();
+        }
+      })
+      .catch((err: unknown) => reportError(`Command palette: ${item.label}`, err, { notify: true }));
   };
 
   return (

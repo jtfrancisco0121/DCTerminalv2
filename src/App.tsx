@@ -658,19 +658,22 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [dialog, paletteOpen]);
 
-  // Escape closes a page (a dialog or the palette on top takes the key first).
+  // Escape closes a page (a dialog or the palette on top takes the key first). One listener for the whole
+  // life of the window reads the latest state from a ref assigned during render, so the key is never
+  // handled with state from before the last commit (a listener attached in an effect lags one commit).
+  const escapeRef = useRef({ page, trace, dialog, paletteOpen, closeTrace });
+  escapeRef.current = { page, trace, dialog, paletteOpen, closeTrace };
   useEffect(() => {
-    if ((!page && !trace) || dialog || paletteOpen) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (trace) closeTrace();
+      const now = escapeRef.current;
+      if ((!now.page && !now.trace) || now.dialog || now.paletteOpen) return;
+      if (now.trace) now.closeTrace();
       else setPage(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // closeTrace only reads a ref and sets state.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, trace, dialog, paletteOpen]);
+  }, []);
 
   // The palette offers unfinished runs and the role tiles: read them when it opens.
   useEffect(() => {
