@@ -173,13 +173,13 @@ pub fn minutes_by_stage(log: &str) -> BTreeMap<String, f64> {
     out
 }
 
-fn rfc3339(ms: i64) -> Option<String> {
+pub(crate) fn rfc3339(ms: i64) -> Option<String> {
     chrono::DateTime::from_timestamp_millis(ms).map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string())
 }
 
 /// Totals over every listed session's log (and its sub-agents'). Reads
 /// files only; the caller holds no lock.
-fn session_totals(sessions: &[SessionRef]) -> (Tokens, Option<f64>, Option<(i64, i64)>) {
+pub(crate) fn session_totals(sessions: &[SessionRef]) -> (Tokens, Option<f64>, Option<(i64, i64)>) {
     let mut tokens = Tokens::default();
     let mut cost = Some(0.0);
     let mut span: Option<(i64, i64)> = None;
@@ -270,7 +270,7 @@ pub fn ensure_record(run_dir: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-fn read_log(run_dir: &Path) -> String {
+pub(crate) fn read_log(run_dir: &Path) -> String {
     use std::io::Read;
     let Ok(file) = std::fs::File::open(run_dir.join("log.md")) else {
         return String::new();
