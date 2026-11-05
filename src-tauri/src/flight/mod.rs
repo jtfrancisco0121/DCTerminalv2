@@ -11,6 +11,7 @@
 //! - `tail`: the JSONL tailer, with byte offsets.
 //! - `adapters`: provider transcripts to events.
 //! - `correlate`, `derive`: spans, tree, failures, files, repeats.
+//! - `export`: the OTLP payload of a Trace (JSON and protobuf), pure.
 //! - `redact`: the one secret scanner (also used by ClickUp).
 //! - `compare`: the rows and the Divergence of two runs.
 //! - `snapshot`: the text of a run's `flight/` snapshot (events, refs, content under policy).
@@ -20,6 +21,8 @@ pub mod adapters;
 pub mod compare;
 pub mod correlate;
 pub mod derive;
+#[allow(dead_code)] // used by the host's Export commands (S3)
+pub mod export;
 pub mod host;
 pub mod index;
 pub mod redact;

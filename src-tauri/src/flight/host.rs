@@ -6,6 +6,7 @@
 use super::adapters::dcv2_run::{self, ApprovalIn, RunEvents, RunInputs};
 use super::adapters::{AgentMeta, SubagentFile};
 use super::compare;
+use super::export;
 use super::index::{
     self, Counts, Exclusion, Limits, PassStats, RunInput, SearchFilter, SearchOut, SessionInput,
     SourceStamp,
@@ -493,22 +494,24 @@ impl FlightCache {
     }
 }
 
-/// `flight_session`: the policy first, then the files, then one page.
-pub fn session_view(
+/// A query resolved and parsed: the sessions (and the snapshot's, for a gone transcript) and the run's own events.
+struct Loaded {
+    set: SessionSet,
+    parsed: Vec<Arc<Parsed>>,
+    run: Option<Arc<RunEvents>>,
+    snapshot: Option<session::SnapshotInfo>,
+}
+
+/// The policy first, then the files, then the parse; `None` when the policy is `off`.
+fn load(
     claude: &ClaudeSettings,
     query: &Query,
-    request: &PageRequest,
     cache: &FlightCache,
     opens: &Opens,
-) -> Result<SessionView, String> {
-    let trace = query
-        .run_dir
-        .as_ref()
-        .and_then(|d| d.file_name())
-        .map(|n| n.to_string_lossy().to_string());
+) -> Result<Option<Loaded>, String> {
     let set = match resolve(claude, query, opens) {
         Access::Refused(why) => return Err(why),
-        Access::Off => return Ok(SessionView::off(trace.as_deref().unwrap_or(""))),
+        Access::Off => return Ok(None),
         Access::Ready(set) => set,
     };
     let exact = query.run_dir.as_deref().is_some_and(exact_pr);
@@ -537,15 +540,44 @@ pub fn session_view(
         .run_dir
         .as_deref()
         .map(|dir| cache.run_events(dir, opens));
+    Ok(Some(Loaded {
+        set,
+        parsed,
+        run,
+        snapshot: snapshot_info,
+    }))
+}
+
+/// The run id of a run query.
+fn trace_of(query: &Query) -> Option<String> {
+    query
+        .run_dir
+        .as_ref()
+        .and_then(|d| d.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+}
+
+/// `flight_session`: the policy first, then the files, then one page.
+pub fn session_view(
+    claude: &ClaudeSettings,
+    query: &Query,
+    request: &PageRequest,
+    cache: &FlightCache,
+    opens: &Opens,
+) -> Result<SessionView, String> {
+    let trace = trace_of(query);
+    let Some(loaded) = load(claude, query, cache, opens)? else {
+        return Ok(SessionView::off(trace.as_deref().unwrap_or("")));
+    };
     let mut view = session::view(
-        &parsed,
-        run.as_deref(),
+        &loaded.parsed,
+        loaded.run.as_deref(),
         trace.as_deref(),
-        set.policy,
+        loaded.set.policy,
         request,
-        set.notices,
+        loaded.set.notices,
     )?;
-    view.snapshot = snapshot_info;
+    view.snapshot = loaded.snapshot;
     Ok(view)
 }
 
@@ -2007,17 +2039,23 @@ pub fn read_content(
     source: &SourceRef,
     opens: &Opens,
 ) -> Result<ContentOut, String> {
-    let set = match resolve(claude, query, opens) {
-        Access::Refused(why) => return Err(why),
-        Access::Off => {
-            return Ok(ContentOut {
-                text: String::new(),
-                redactions: 0,
-                policy: CapturePolicy::Off,
-            })
-        }
-        Access::Ready(set) => set,
-    };
+    match resolve(claude, query, opens) {
+        Access::Refused(why) => Err(why),
+        Access::Off => Ok(ContentOut {
+            text: String::new(),
+            redactions: 0,
+            policy: CapturePolicy::Off,
+        }),
+        Access::Ready(set) => read_content_in(&set, source, opens),
+    }
+}
+
+/// [`read_content`] for an already resolved set (the policy is not `off`).
+fn read_content_in(
+    set: &SessionSet,
+    source: &SourceRef,
+    opens: &Opens,
+) -> Result<ContentOut, String> {
     if set.contains_run_file(&source.file) {
         return read_run_file(source, set.policy, opens);
     }
@@ -2057,6 +2095,62 @@ pub fn read_content(
         redactions,
         policy: set.policy,
     })
+}
+
+/// A Trace ready to export: the capture policy of its account and the data `export::build` takes.
+/// `None` when the policy is `off`. Tool text is read (redacted) only when `with_content`.
+pub fn export_input(
+    claude: &ClaudeSettings,
+    query: &Query,
+    cache: &FlightCache,
+    opens: &Opens,
+    with_content: bool,
+) -> Result<Option<(CapturePolicy, export::ExportInput)>, String> {
+    let Some(loaded) = load(claude, query, cache, opens)? else {
+        return Ok(None);
+    };
+    let merged = session::merge(&loaded.parsed, loaded.run.as_deref());
+    let trace = trace_of(query).or_else(|| {
+        loaded
+            .parsed
+            .first()
+            .and_then(|p| p.events.first())
+            .map(|e| e.trace.clone())
+    });
+    let mut events: Vec<super::schema::Event> = merged
+        .ordered
+        .iter()
+        .map(|(_, e)| e.as_ref().clone())
+        .collect();
+    let trace = trace.unwrap_or_default();
+    let mut content = std::collections::BTreeMap::new();
+    for e in events.iter_mut() {
+        e.trace = trace.clone();
+        let tool_edge =
+            e.kind == super::schema::kind::TOOL_START || e.kind == super::schema::kind::TOOL_END;
+        if with_content && tool_edge && e.agent.id != super::schema::ORCHESTRATION {
+            // A line that cannot be read now (changed, gone) is left out, not an error.
+            if let Ok(out) = read_content_in(&loaded.set, &e.content.source, opens) {
+                content.insert(
+                    e.id.clone(),
+                    export::ToolText {
+                        text: out.text,
+                        redactions: out.redactions,
+                    },
+                );
+            }
+        }
+    }
+    Ok(Some((
+        loaded.set.policy,
+        export::ExportInput {
+            trace,
+            events,
+            agents: loaded.parsed.iter().map(|p| p.tree.clone()).collect(),
+            failures: merged.failures,
+            content,
+        },
+    )))
 }
 
 #[cfg(test)]
@@ -2890,6 +2984,64 @@ mod tests {
 
     fn event_by(view: &SessionView, f: impl Fn(&Event) -> bool) -> &Event {
         view.page.events.iter().find(|e| f(e)).expect("event")
+    }
+
+    fn wave1_payload(policy: CapturePolicy, encoding: export::Encoding) -> export::Payload {
+        let (_dir, run, claude) = wave1("export_golden", policy);
+        let (_, input) = export_input(
+            &claude,
+            &run_query(&run),
+            &FlightCache::default(),
+            &Opens::default(),
+            false,
+        )
+        .unwrap()
+        .expect("not off");
+        export::build(&input, export::ExportPolicy::Metadata, encoding).unwrap()
+    }
+
+    #[test]
+    fn the_wave1_trace_exports_byte_for_byte_to_the_golden_files() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/flight");
+        let json = wave1_payload(CapturePolicy::Metadata, export::Encoding::Json);
+        let pb = wave1_payload(CapturePolicy::Metadata, export::Encoding::Protobuf);
+        let hex: String = pb
+            .bytes
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+            + "\n";
+        if std::env::var("FLIGHT_WRITE_GOLDEN").is_ok() {
+            std::fs::write(dir.join("otlp-wave1.json"), &json.bytes).unwrap();
+            std::fs::write(dir.join("otlp-wave1.pb.hex"), &hex).unwrap();
+        }
+        assert_eq!(
+            json.bytes,
+            std::fs::read(dir.join("otlp-wave1.json")).unwrap(),
+            "regenerate with FLIGHT_WRITE_GOLDEN=1"
+        );
+        assert_eq!(
+            hex,
+            std::fs::read_to_string(dir.join("otlp-wave1.pb.hex")).unwrap(),
+            "regenerate with FLIGHT_WRITE_GOLDEN=1"
+        );
+        // The Trace has agents, tools and the run's orchestration.
+        assert!(
+            json.spans >= 5 && json.events >= 5,
+            "{} {}",
+            json.spans,
+            json.events
+        );
+        let text = String::from_utf8(json.bytes).unwrap();
+        for name in [
+            "invoke_agent",
+            "execute_tool",
+            "agentflight.run",
+            "agentflight.check.end",
+        ] {
+            assert!(text.contains(name), "{name}");
+        }
+        assert!(!text.contains("gen_ai.tool.call.arguments"));
     }
 
     #[test]
