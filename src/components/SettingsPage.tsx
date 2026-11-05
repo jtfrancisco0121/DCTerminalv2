@@ -69,6 +69,9 @@ export function loginText(login: LoginStatus): string {
   }
 }
 
+/** The model choices of the select (the backend decides what is valid; "" is the account's own model). */
+const ORCHESTRATOR_MODELS = ["opus", "sonnet", "haiku", ""];
+
 const DEFAULT_RUN: RunSettings = { maxImplementers: 3, stopHooks: true };
 
 /** The comparable form of each section's values: defaults filled in, so an untouched field is never "changed". */
@@ -128,6 +131,14 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
   const [savedTerminal, setSavedTerminal] = useState(() => terminalKey(view.terminal));
   const [savedRun, setSavedRun] = useState(() => runKey(view.run ?? DEFAULT_RUN));
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  // The orchestrator rows save on change from the last saved values, so a pending edit elsewhere is not saved with them.
+  const [savedRunValue, setSavedRunValue] = useState<RunSettings>(view.run ?? DEFAULT_RUN);
+  const [savedAccountList, setSavedAccountList] = useState<ClaudeAccount[]>(view.claude.accounts);
+  const [savedClaudePath, setSavedClaudePath] = useState(view.claude.claudePath ?? null);
+  const [customModelOpen, setCustomModelOpen] = useState(false);
+  const [customModel, setCustomModel] = useState("");
+  const [modelError, setModelError] = useState<string | null>(null);
+  const [accountModelError, setAccountModelError] = useState<{ id: string; text: string } | null>(null);
   const accountsDirty = accountsKey(claudePath, accounts) !== savedAccounts;
   const terminalDirty = terminalKey(terminal) !== savedTerminal;
   const runDirty = runKey(runSettings) !== savedRun;
@@ -162,6 +173,7 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
     target?.scrollIntoView?.({ block: "start" });
   }, [section]);
 
+  const storedModel = runSettings.orchestratorModel ?? "opus";
   const resolved = (id: string) => view.accounts.find((account) => account.id === id);
   const edit = (index: number, patch: Partial<ClaudeAccount>) =>
     setAccounts((list) => list.map((account, at) => (at === index ? { ...account, ...patch } : account)));
@@ -176,6 +188,8 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
       const next = await setClaudeSettings({ claudePath: claudePath.trim() || null, accounts });
       setAccounts(next.claude.accounts);
       setSavedAccounts(accountsKey(claudePath, next.claude.accounts));
+      setSavedAccountList(next.claude.accounts);
+      setSavedClaudePath(next.claude.claudePath ?? null);
       setLogins(null);
       setNotice({ tone: "info", text: "Accounts saved." });
       onSaved(next);
@@ -193,6 +207,42 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
       onSaved({ ...view, run: saved });
     } catch (err) {
       setNotice({ tone: "error", text: errorText(err) });
+    }
+  };
+
+  /** Saves one orchestrator setting of the Runs section on its own; a refusal shows the backend's message. */
+  const saveOrchestrator = async (patch: Partial<RunSettings>): Promise<boolean> => {
+    try {
+      const saved = await setRunSettings({ ...savedRunValue, ...patch });
+      setSavedRunValue(saved);
+      setRun((run) => ({
+        ...run,
+        orchestratorModel: saved.orchestratorModel,
+        orchestratorPermissionMode: saved.orchestratorPermissionMode,
+      }));
+      onSaved({ ...view, run: saved });
+      setModelError(null);
+      return true;
+    } catch (err) {
+      setModelError(errorText(err));
+      return false;
+    }
+  };
+
+  const saveAccountModel = async (id: string, model: string | null) => {
+    try {
+      const next = await setClaudeSettings({
+        claudePath: savedClaudePath,
+        accounts: savedAccountList.map((a) => (a.id === id ? { ...a, orchestratorModel: model } : a)),
+      });
+      setSavedAccountList(next.claude.accounts);
+      setAccounts((list) =>
+        list.map((a) => ({ ...a, orchestratorModel: next.claude.accounts.find((n) => n.id === a.id)?.orchestratorModel })),
+      );
+      setAccountModelError(null);
+      onSaved(next);
+    } catch (err) {
+      setAccountModelError({ id, text: errorText(err) });
     }
   };
 
@@ -610,6 +660,97 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
             onChange={(event) => setRun({ ...runSettings, maxImplementers: Number(event.target.value) || 3 })}
           />
         </label>
+        <label className="field-label">
+          Orchestrator model
+          <select
+            className="text-input"
+            value={customModelOpen || !ORCHESTRATOR_MODELS.includes(storedModel) ? "custom" : storedModel}
+            aria-describedby="orchestrator-model-hint"
+            onChange={(event) => {
+              const value = event.target.value;
+              if (value === "custom") {
+                setCustomModelOpen(true);
+                return;
+              }
+              setCustomModelOpen(false);
+              setModelError(null);
+              void saveOrchestrator({ orchestratorModel: value });
+            }}
+          >
+            <option value="opus">Opus (default)</option>
+            <option value="sonnet">Sonnet</option>
+            <option value="haiku">Haiku</option>
+            <option value="">Account default</option>
+            <option value="custom">Custom model id</option>
+          </select>
+        </label>
+        {(customModelOpen || !ORCHESTRATOR_MODELS.includes(storedModel)) && (
+          <label className="field-label">
+            Model id
+            <input
+              className="text-input"
+              value={customModelOpen ? customModel : storedModel}
+              placeholder="claude-…"
+              aria-invalid={modelError ? true : undefined}
+              aria-describedby={modelError ? "orchestrator-model-error" : undefined}
+              onChange={(event) => {
+                setCustomModelOpen(true);
+                setCustomModel(event.target.value);
+              }}
+              onBlur={() => {
+                if (!customModelOpen || customModel.trim() === "") return;
+                void saveOrchestrator({ orchestratorModel: customModel.trim() }).then((ok) => ok && setCustomModelOpen(false));
+              }}
+            />
+          </label>
+        )}
+        {modelError && (
+          <p className="hint warn" id="orchestrator-model-error" role="alert">
+            {modelError}
+          </p>
+        )}
+        <p className="hint" id="orchestrator-model-hint">
+          The model every Eagle-Eye run starts on. Role and plain tabs are not changed.
+        </p>
+        <label className="field-label">
+          Orchestrator permission mode
+          <select
+            className="text-input"
+            value={runSettings.orchestratorPermissionMode ?? "auto"}
+            onChange={(event) => void saveOrchestrator({ orchestratorPermissionMode: event.target.value })}
+          >
+            <option value="auto">Auto (default)</option>
+            <option value="acceptEdits">Accept edits</option>
+            <option value="default">Ask every time</option>
+            <option value="">Account default</option>
+          </select>
+        </label>
+        {accounts.map((account) => (
+          <div key={account.id}>
+            <label className="field-label">
+              Orchestrator model of {account.name}
+              <select
+                className="text-input"
+                aria-label={`Orchestrator model of ${account.name}`}
+                value={account.orchestratorModel ?? ""}
+                onChange={(event) => void saveAccountModel(account.id, event.target.value || null)}
+              >
+                <option value="">Use the run setting</option>
+                <option value="opus">Opus</option>
+                <option value="sonnet">Sonnet</option>
+                <option value="haiku">Haiku</option>
+                {account.orchestratorModel && !ORCHESTRATOR_MODELS.includes(account.orchestratorModel) && (
+                  <option value={account.orchestratorModel}>{account.orchestratorModel}</option>
+                )}
+              </select>
+            </label>
+            {accountModelError?.id === account.id && (
+              <p className="hint warn" role="alert">
+                {accountModelError.text}
+              </p>
+            )}
+          </div>
+        ))}
         <label className="field-label">
           Runs live at once (the rest wait in the queue)
           <input

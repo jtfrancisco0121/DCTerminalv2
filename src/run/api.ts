@@ -207,6 +207,8 @@ export type RunView = {
   reviewMode?: string;
   /** meta.json's `mode` (`epic-plan`); missing or null is a normal run. */
   runMode?: string | null;
+  /** meta.json's `orchestrator`: what the Eagle-Eye tab was started with (a null value: the account default); missing: an older run. */
+  orchestrator?: { model: string | null; permissionMode: string | null } | null;
   /** meta.json's `eval` (one run of an eval group); missing or null is a normal run. */
   eval?: EvalRef | null;
   /** status.json has `shipApproval`. */

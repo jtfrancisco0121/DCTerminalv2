@@ -283,6 +283,19 @@ describe("RunPanelView", () => {
     expect(screen.getByRole("list", { name: "Run steps" }).querySelectorAll("li")).toHaveLength(3);
   });
 
+  it("shows the orchestrator a run was started with, 'account default' for a null, and nothing for an older run", () => {
+    renderPanel({ orchestrator: { model: "opus", permissionMode: "auto" } });
+    expect(screen.getByTestId("run-orchestrator-line").textContent).toBe("Orchestrator: opus · auto");
+    cleanup();
+    renderPanel({ orchestrator: { model: null, permissionMode: "auto" } });
+    expect(screen.getByTestId("run-orchestrator-line").textContent).toBe(
+      "Orchestrator: account default · auto",
+    );
+    cleanup();
+    renderPanel({ orchestrator: undefined });
+    expect(screen.queryByTestId("run-orchestrator-line")).toBeNull();
+  });
+
   it("shows the stage, the approval card, and the plan", () => {
     renderPanel();
     expect(screen.getByTestId("run-stage").textContent).toBe("Waiting for your go to open the PRs");
