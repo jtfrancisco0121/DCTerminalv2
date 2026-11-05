@@ -240,6 +240,7 @@ pub fn import(
                 config_dir: account.config_dir.clone(),
                 capture_policy: Default::default(),
                 keep_run_traces: false,
+                orchestrator_model: None,
             });
         summary.accounts_added.push(account.name.clone());
         accounts.insert(account.id.clone(), id);
@@ -1072,6 +1073,7 @@ mod tests {
                 config_dir: Some(root.join("claude-personal").display().to_string()),
                 capture_policy: Default::default(),
                 keep_run_traces: false,
+                orchestrator_model: None,
             }],
         };
         let composed = std::cell::RefCell::new(Vec::new());
@@ -1373,6 +1375,7 @@ mod tests {
             config_dir: Some(dir.into()),
             capture_policy: Default::default(),
             keep_run_traces: false,
+            orchestrator_model: None,
         }
     }
 
@@ -1448,6 +1451,7 @@ mod tests {
                     config_dir: Some(format!("/nowhere/{n}")),
                     capture_policy: Default::default(),
                     keep_run_traces: false,
+                    orchestrator_model: None,
                 })
                 .collect(),
         };

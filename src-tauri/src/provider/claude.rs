@@ -350,6 +350,7 @@ mod tests {
                     config_dir: Some(folder("personal")),
                     capture_policy: Default::default(),
                     keep_run_traces: false,
+                    orchestrator_model: None,
                 },
                 ClaudeAccount {
                     id: "work".into(),
@@ -357,6 +358,7 @@ mod tests {
                     config_dir: Some(folder("work")),
                     capture_policy: Default::default(),
                     keep_run_traces: false,
+                    orchestrator_model: None,
                 },
             ],
         };
