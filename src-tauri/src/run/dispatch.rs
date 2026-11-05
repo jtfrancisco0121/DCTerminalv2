@@ -881,7 +881,7 @@ pub fn reviewed_run_facts(data: &Path, now_secs: i64) -> Vec<ReviewedRunFacts> {
             })
         })
         .collect();
-    facts.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    facts.sort_by_key(|f| std::cmp::Reverse(f.updated_at));
     facts
 }
 

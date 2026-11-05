@@ -10,7 +10,8 @@
 #
 #   memory.sh id <repo path>                     print the repo id
 #   memory.sh compose <start folder> <out file>  write the launch system-prompt file (bounded)
-#   memory.sh status <start folder>              JSON for the app panel
+#   memory.sh status <start folder|repo id>      JSON for the app panel (a repo id: that id's memory folder,
+#                                                head and path null; `indexPath` is the index.md path)
 #   memory.sh write <id | workspace:<id>> <relative file>  < content
 #                                                the only write path for agents: caps, secret scan,
 #                                                pinned lines, topic header; rejects with a reason
@@ -26,7 +27,8 @@
 #                                                on <root>/.lock, so two runs finishing together keep both lines
 #   memory.sh touched <repo path> <from> [<to>]  agent helper: topics whose covered paths changed in
 #                                                `git diff <from>..<to>` (to defaults to HEAD), and
-#                                                changed paths no topic covers
+#                                                changed paths no topic covers; each topic line is
+#                                                `topic topics/<f>.md <absolute path> (checked-at ...): ...`
 #   memory.sh scan  < text                       the secret scanner alone (state.sh uses it before posting
 #                                                to GitHub): prints "clean" (exit 0) or the line numbers
 #                                                and kinds of the hits, never the values (exit 1)
@@ -337,7 +339,26 @@ def head_of(repo):
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+REPO_ID_RE = re.compile(r"^[a-z0-9._-]+(__[a-z0-9._-]+)+$")
+
+
+def status_of_id(rid):
+    """status for a repo id: that id's folder under the memory root; head and path are unknown (null)."""
+    root = root_dir(required=False)
+    d = os.path.join(root, rid) if root else None
+    idx = os.path.join(d, "index.md") if d else None
+    topics = topics_of(d, None, {}) if d and os.path.isdir(d) else []
+    out = {"schema": 1, "root": root, "workspace": None,
+           "repos": [{"name": rid, "path": None, "id": rid, "indexPath": idx,
+                      "present": bool(idx and os.path.isfile(idx)), "head": None, "topics": topics,
+                      "staleCount": sum(1 for t in topics if t["stale"]),
+                      "indexBytes": os.path.getsize(idx) if idx and os.path.isfile(idx) else 0}]}
+    print(json.dumps(out, indent=2))
+
+
 def cmd_status(folder):
+    if not os.path.isdir(os.path.realpath(folder)) and REPO_ID_RE.match(folder):
+        return status_of_id(folder)  # a repo id (memory.sh id <repo>), not a folder
     root = root_dir(required=False)
     ws, repos = in_play(folder)
     names = {os.path.basename(r): r for r in repos}
@@ -353,7 +374,7 @@ def cmd_status(folder):
         d = os.path.join(root, rid) if root else None
         idx = os.path.join(d, "index.md") if d else None
         topics = topics_of(d, r) if d else []
-        out["repos"].append({"name": os.path.basename(r), "path": r, "id": rid,
+        out["repos"].append({"name": os.path.basename(r), "path": r, "id": rid, "indexPath": idx,
                              "present": bool(idx and os.path.isfile(idx)), "head": head_of(r), "topics": topics,
                              "staleCount": sum(1 for t in topics if t["stale"]),
                              "indexBytes": os.path.getsize(idx) if idx and os.path.isfile(idx) else 0})
@@ -631,7 +652,7 @@ def cmd_touched(repo, since, to):
             mine = [p for p in paths if any(covered(p, c) for c in h["covers"])]
             if mine:
                 seen.update(mine)
-                hit.append(f"topic topics/{f} (checked-at {h['checkedAt']}): {len(mine)} changed: " + ", ".join(mine[:8]) + (" ..." if len(mine) > 8 else ""))
+                hit.append(f"topic topics/{f} {os.path.join(td, f)} (checked-at {h['checkedAt']}): {len(mine)} changed: " + ", ".join(mine[:8]) + (" ..." if len(mine) > 8 else ""))
     print(f"repo {rid} {repo}: {len(paths)} changed paths since {since[:12]}")
     print("\n".join(hit) if hit else "no topic touched")
     rest = [p for p in paths if p not in seen]
@@ -650,7 +671,7 @@ if "--root" in args:
 cmd, rest = (args[0] if args else ""), args[1:]
 need = {"id": 1, "compose": 2, "status": 1, "write": 2, "learn": 2, "touched": 2, "scan": 0}
 if cmd not in need or len(rest) < need[cmd]:
-    die("usage: memory.sh id <repo> | compose <folder> <out> | status <folder> | write <id> <file> < content | learn <id> <topic|index> < lines | touched <repo> <from> [<to>] | scan < text")
+    die("usage: memory.sh id <repo> | compose <folder> <out> | status <folder|repo id> | write <id> <file> < content | learn <id> <topic|index> < lines | touched <repo> <from> [<to>] | scan < text")
 if cmd == "id": cmd_id(rest[0])
 elif cmd == "compose": cmd_compose(rest[0], rest[1])
 elif cmd == "status": cmd_status(rest[0])
