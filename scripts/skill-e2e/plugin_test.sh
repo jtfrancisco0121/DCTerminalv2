@@ -149,6 +149,15 @@ grep -qF 'with an `eval=` line from preflight: report "eval run finished" and st
 grep -qF 'S request <run> cleanup' "$SK" && ok "  eval clean-up routing through S request <run> cleanup" || bad "  SKILL.md: no eval clean up routing"
 grep -qF 'There is **no stop #2**' "$SK" && ok "  no stop #2 for an eval run" || bad "  SKILL.md: the eval end does not say there is no stop #2"
 
+echo "# memory paths come only from memory.sh (0.8.1)"
+MU="$P/roles/memory-updater.md"; MA="$P/agents/memory-updater.md"; DV="$P/skills/developer/SKILL.md"
+grep -qF 'paths `memory.sh` prints' "$MU" && ok "  role: only printed paths" || bad "  memory-updater role: no 'only paths memory.sh prints' rule"
+grep -qF 'is `FAILED` with its message, never `NO MEMORY`' "$MU" && ok "  role: a failed command is FAILED" || bad "  memory-updater role: no FAILED rule"
+grep -qF '`NO MEMORY` only when' "$MU" && ok "  role: NO MEMORY only for present false" || bad "  memory-updater role: NO MEMORY rule"
+grep -qF 'only at paths `memory.sh` prints' "$MA" && ok "  agent: only printed paths" || bad "  memory-updater agent: no printed-paths rule"
+grep -qF 'is `FAILED` with its message, never `NO MEMORY`' "$MA" && ok "  agent: FAILED rule" || bad "  memory-updater agent: no FAILED rule"
+grep -qF 'memory.sh id <repo>' "$DV" && ok "  developer skill step 8 passes the repo id" || bad "  developer SKILL.md step 8 does not pass id"
+
 echo "# scripts parse"
 for f in "$P"/scripts/*.sh "$P"/scripts/lib/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do
   bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"

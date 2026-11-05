@@ -4,6 +4,7 @@
 //! `DCV2_TEST_MODE` and drops an inherited one.
 
 use crate::provider::ProgramArgs;
+use crate::store::settings_store::{valid_orchestrator_mode, valid_orchestrator_model};
 use crate::store::TabLaunch;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -87,6 +88,10 @@ pub struct LaunchInput {
     pub slop_check: bool,
     pub settings_file: Option<PathBuf>,
     pub memory_prompt: Option<PathBuf>,
+    /// `--model` of an Eagle-Eye tab (run folder set); never added to a role tab.
+    pub orchestrator_model: Option<String>,
+    /// `--permission-mode` of an Eagle-Eye tab (run folder set); never `bypassPermissions`.
+    pub orchestrator_mode: Option<String>,
 }
 
 /// The tab's launch record (docs/launch.md "Command").
@@ -117,6 +122,26 @@ pub fn launch_spec(input: &LaunchInput) -> TabLaunch {
     if let Some(prompt) = &input.memory_prompt {
         args.push("--append-system-prompt-file".into());
         args.push(prompt.display().to_string());
+    }
+    // Only an Eagle-Eye tab (it has a run folder) is pinned; a role or plain tab stays a plain claude.
+    // A value outside the allow-list (so never `bypassPermissions`) adds no flag.
+    if input.run_dir.is_some() {
+        if let Some(model) = input
+            .orchestrator_model
+            .as_deref()
+            .filter(|m| !m.is_empty() && valid_orchestrator_model(m))
+        {
+            args.push("--model".into());
+            args.push(model.to_string());
+        }
+        if let Some(mode) = input
+            .orchestrator_mode
+            .as_deref()
+            .filter(|m| !m.is_empty() && valid_orchestrator_mode(m))
+        {
+            args.push("--permission-mode".into());
+            args.push(mode.to_string());
+        }
     }
     TabLaunch {
         role: input.role.clone(),
@@ -260,6 +285,8 @@ mod tests {
             slop_check: false,
             settings_file: None,
             memory_prompt: Some("/d/runs/r1/memory-prompt.md".into()),
+            orchestrator_model: Some("opus".into()),
+            orchestrator_mode: Some("auto".into()),
         }
     }
 
@@ -284,7 +311,11 @@ mod tests {
                 "--plugin-dir",
                 "/app/plugin",
                 "--append-system-prompt-file",
-                "/d/runs/r1/memory-prompt.md"
+                "/d/runs/r1/memory-prompt.md",
+                "--model",
+                "opus",
+                "--permission-mode",
+                "auto"
             ]
         );
         let role = launch_spec(&LaunchInput {
@@ -301,6 +332,51 @@ mod tests {
             "/dcv2:planner add multiply"
         );
         assert_eq!(role_prompt("onboard", ""), "/dcv2:onboard");
+    }
+
+    #[test]
+    fn only_an_eagle_eye_tab_is_pinned_and_never_to_bypass_permissions() {
+        let flag = |spec: &TabLaunch, name: &str| {
+            spec.args
+                .iter()
+                .position(|a| a == name)
+                .map(|i| spec.args[i + 1].clone())
+        };
+        let eagle = launch_spec(&input(Some("/d/runs/r1")));
+        assert_eq!(flag(&eagle, "--model").as_deref(), Some("opus"));
+        assert_eq!(flag(&eagle, "--permission-mode").as_deref(), Some("auto"));
+        // A role tab carries neither flag even when the values are given.
+        let role = launch_spec(&input(None));
+        assert_eq!(
+            role.args,
+            [
+                "--plugin-dir",
+                "/app/plugin",
+                "--append-system-prompt-file",
+                "/d/runs/r1/memory-prompt.md"
+            ]
+        );
+        // None adds no flag.
+        let none = launch_spec(&LaunchInput {
+            orchestrator_model: None,
+            orchestrator_mode: None,
+            ..input(Some("/d/runs/r1"))
+        });
+        assert_eq!(flag(&none, "--model"), None);
+        assert_eq!(flag(&none, "--permission-mode"), None);
+        for bad in ["bypassPermissions", "dontAsk", "plan", ""] {
+            let spec = launch_spec(&LaunchInput {
+                orchestrator_mode: Some(bad.into()),
+                ..input(Some("/d/runs/r1"))
+            });
+            assert_eq!(flag(&spec, "--permission-mode"), None, "{bad}");
+            assert!(!spec.args.iter().any(|a| a == "bypassPermissions"));
+        }
+        let spec = launch_spec(&LaunchInput {
+            orchestrator_model: Some("gpt-4".into()),
+            ..input(Some("/d/runs/r1"))
+        });
+        assert_eq!(flag(&spec, "--model"), None);
     }
 
     #[test]

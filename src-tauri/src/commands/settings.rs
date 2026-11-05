@@ -276,6 +276,7 @@ mod tests {
                         config_dir: Some(config.display().to_string()),
                         capture_policy: Default::default(),
                         keep_run_traces: false,
+                        orchestrator_model: None,
                     }
                 })
                 .collect(),

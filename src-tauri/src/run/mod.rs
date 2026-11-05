@@ -381,6 +381,8 @@ struct LaunchContext {
     account_id: String,
     account_name: String,
     run: crate::store::RunSettings,
+    /// `--model` and `--permission-mode` of an Eagle-Eye tab (settings > account override > run-wide).
+    orchestrator: (Option<String>, Option<String>),
     worktree_setup: std::collections::BTreeMap<String, crate::store::RepoSetup>,
 }
 
@@ -399,6 +401,7 @@ fn launch_context(app: &AppHandle, window_id: Option<&str>) -> Result<LaunchCont
         provider: ClaudeProvider::for_account(claude, &account_id),
         account_name: account_display_name(claude, &account_id),
         run: settings.run().clone(),
+        orchestrator: crate::store::settings_store::orchestrator_for(&settings.data, &account_id),
         worktree_setup: settings.data.worktree_setup.clone(),
         account_id,
     })
@@ -578,6 +581,9 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
         slop_check: ctx.run.slop_check,
         settings_file: launch::launch_settings_file(&plugin),
         memory_prompt: None,
+        // Role tiles stay plain: the pin is for the Eagle-Eye tab below only (launch_spec checks run_dir).
+        orchestrator_model: None,
+        orchestrator_mode: None,
     };
     if role == "eagle-eye" {
         if !force.unwrap_or(false) {
@@ -622,6 +628,8 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
             mode: run_mode.filter(|m| folder::RUN_MODES.contains(&m.as_str())),
             dispatch_entry_id,
             eval,
+            orchestrator_model: ctx.orchestrator.0.clone(),
+            orchestrator_mode: ctx.orchestrator.1.clone(),
         };
         if meta.mode.is_some() && clickup.as_ref().is_none_or(|c| c.ticket_ids.is_empty()) {
             return Err(
@@ -662,6 +670,8 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
             run_dir: Some(run_dir.clone()),
             max_implementers: max_implementers.unwrap_or(base.max_implementers),
             memory_prompt: prompt_file,
+            orchestrator_model: ctx.orchestrator.0.clone(),
+            orchestrator_mode: ctx.orchestrator.1.clone(),
             ..base
         });
         let label = format!("Eagle-Eye · {}", folder_name(&folder));
@@ -687,6 +697,15 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
         run_dir: None,
         focused: false,
     })
+}
+
+/// The orchestrator flags of a resumed tab: the run's recorded pair (meta.json, even when its values are
+/// null), else the current settings for a run that recorded none. meta.json is never rewritten.
+fn resume_orchestrator(
+    run_dir: &Path,
+    from_settings: &(Option<String>, Option<String>),
+) -> (Option<String>, Option<String>) {
+    folder::orchestrator_of(run_dir).unwrap_or_else(|| from_settings.clone())
 }
 
 /// A finished eval run cannot be opened again: it ended at `ship-approval` on
@@ -734,6 +753,8 @@ pub async fn resume_run(
             launch_prompts_dir(&data).join(format!("{}-memory-prompt.md", uuid::Uuid::new_v4()))
         };
         let prompt_file = memory::compose(&plugin, &memory_dir, &folder, &prompt_out);
+        let (orchestrator_model, orchestrator_mode) =
+            resume_orchestrator(&run_dir, &ctx.orchestrator);
         let spec = launch::launch_spec(&launch::LaunchInput {
             role: "eagle-eye-resume".into(),
             prompt: format!("/dcv2:eagle-eye resume run={}", run_dir.display()),
@@ -747,6 +768,8 @@ pub async fn resume_run(
             slop_check: ctx.run.slop_check,
             settings_file: launch::launch_settings_file(&plugin),
             memory_prompt: prompt_file,
+            orchestrator_model,
+            orchestrator_mode,
         });
         let label = format!("Eagle-Eye · {}", folder_name(&folder));
         let tab = add_launch_tab(&app, window_id.as_deref(), &folder, &label, spec, true)?;
@@ -1022,6 +1045,33 @@ pub async fn read_memory_file(app: AppHandle, path: String) -> Result<String, St
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
+
+    #[test]
+    fn a_resume_uses_the_recorded_orchestrator_else_the_settings() {
+        let dir = TempDir::new("resume_orchestrator");
+        let run = dir.join("r-1");
+        std::fs::create_dir_all(&run).unwrap();
+        let settings = (Some("haiku".to_string()), Some("default".to_string()));
+        // An older run: no record, so the settings apply.
+        std::fs::write(run.join("meta.json"), r#"{"schema":1}"#).unwrap();
+        assert_eq!(resume_orchestrator(&run, &settings), settings);
+        // A recorded run keeps what it started with, a recorded null included.
+        std::fs::write(
+            run.join("meta.json"),
+            r#"{"orchestrator":{"model":"opus","permissionMode":null}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resume_orchestrator(&run, &settings),
+            (Some("opus".to_string()), None)
+        );
+        assert!(
+            std::fs::read_to_string(run.join("meta.json"))
+                .unwrap()
+                .contains("opus"),
+            "meta.json is never rewritten"
+        );
+    }
 
     #[test]
     fn with_checks_slot_makes_r1_refuse_and_releases_the_slot_also_on_error() {

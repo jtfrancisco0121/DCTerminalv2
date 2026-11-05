@@ -82,6 +82,9 @@ pub struct ClaudeAccount {
     /// session events that outlives Claude's transcript cleanup. Off by default; an old file loads off.
     #[serde(default)]
     pub keep_run_traces: bool,
+    /// The model of this account's Eagle-Eye orchestrator tabs; None: the run-wide setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator_model: Option<String>,
 }
 
 /// Claude Code: where `claude` is (empty: looked up) and the accounts.
@@ -150,9 +153,30 @@ pub fn normalize_claude_accounts(claude: &mut ClaudeSettings) -> Result<(), Stri
             config_dir: None,
             capture_policy: Default::default(),
             keep_run_traces: false,
+            orchestrator_model: None,
         });
     }
     Ok(())
+}
+
+/// Invalid stored orchestrator values become "no flag": an account override to `None`, the run-wide
+/// model and mode to "". Never an error.
+fn coerce_invalid_orchestrator(claude: &mut ClaudeSettings, run: &mut RunSettings) {
+    for account in &mut claude.accounts {
+        if account
+            .orchestrator_model
+            .as_deref()
+            .is_some_and(|m| !valid_orchestrator_model(m))
+        {
+            account.orchestrator_model = None;
+        }
+    }
+    if !valid_orchestrator_model(&run.orchestrator_model) {
+        run.orchestrator_model.clear();
+    }
+    if !valid_orchestrator_mode(&run.orchestrator_permission_mode) {
+        run.orchestrator_permission_mode.clear();
+    }
 }
 
 /// Shown instead of a terminal when a window's account is no longer in
@@ -547,6 +571,74 @@ pub struct RunSettings {
     /// runs' merged PRs lose their worktree, local and remote branch.
     #[serde(default = "default_true")]
     pub auto_cleanup: bool,
+    /// `--model` of an Eagle-Eye orchestrator tab: `opus` by default, empty: the account's own model.
+    #[serde(default = "default_orchestrator_model")]
+    pub orchestrator_model: String,
+    /// `--permission-mode` of an Eagle-Eye orchestrator tab: `auto` by default, empty: the account's own mode.
+    #[serde(default = "default_orchestrator_permission_mode")]
+    pub orchestrator_permission_mode: String,
+}
+
+fn default_orchestrator_model() -> String {
+    "opus".to_string()
+}
+
+fn default_orchestrator_permission_mode() -> String {
+    "auto".to_string()
+}
+
+/// Message for a refused orchestrator model.
+pub const ORCHESTRATOR_MODEL_REFUSED: &str =
+    "Not a model id: use opus, sonnet, haiku or a claude-… id.";
+/// Message for a refused orchestrator permission mode.
+pub const ORCHESTRATOR_MODE_REFUSED: &str =
+    "Not a permission mode: use auto, acceptEdits or default.";
+
+/// An orchestrator model: empty (no flag), an alias (`opus`, `sonnet`, `haiku`) or a `claude-…` id,
+/// each with an optional `[1m]` suffix.
+pub fn valid_orchestrator_model(model: &str) -> bool {
+    if model.is_empty() {
+        return true;
+    }
+    let base = model.strip_suffix("[1m]").unwrap_or(model);
+    if ["opus", "sonnet", "haiku"].contains(&base) {
+        return true;
+    }
+    base.len() > "claude-".len()
+        && base.len() <= 80
+        && base.starts_with("claude-")
+        && base
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
+}
+
+/// An orchestrator permission mode: empty (no flag), `auto`, `acceptEdits` or `default`. Never
+/// `bypassPermissions`, `dontAsk` or `plan`.
+pub fn valid_orchestrator_mode(mode: &str) -> bool {
+    mode.is_empty() || ["auto", "acceptEdits", "default"].contains(&mode)
+}
+
+/// The `--model` and `--permission-mode` values of an orchestrator tab of `account_id`: the account's
+/// override when set, else the run-wide value. Empty or invalid stored values give `None` (no flag).
+pub fn orchestrator_for(
+    settings: &SettingsFile,
+    account_id: &str,
+) -> (Option<String>, Option<String>) {
+    let own = settings
+        .claude
+        .accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .and_then(|a| a.orchestrator_model.as_deref())
+        .filter(|m| !m.is_empty() && valid_orchestrator_model(m));
+    let model = own
+        .or(Some(settings.run.orchestrator_model.as_str()))
+        .filter(|m| !m.is_empty() && valid_orchestrator_model(m))
+        .map(str::to_string);
+    let mode = Some(settings.run.orchestrator_permission_mode.as_str())
+        .filter(|m| !m.is_empty() && valid_orchestrator_mode(m))
+        .map(str::to_string);
+    (model, mode)
 }
 
 pub const WATCHDOG_MINUTES_LIMIT: u32 = 240;
@@ -581,6 +673,8 @@ impl Default for RunSettings {
             batch_pushes: true,
             auto_start_waves: false,
             auto_cleanup: true,
+            orchestrator_model: default_orchestrator_model(),
+            orchestrator_permission_mode: default_orchestrator_permission_mode(),
         }
     }
 }
@@ -623,6 +717,8 @@ impl SettingsStore {
             data.claude.claude_path = None;
             normalize_claude_accounts(&mut data.claude)?;
         }
+        // A hand-edited orchestrator value must not stop startup or drop an account: no flag instead.
+        coerce_invalid_orchestrator(&mut data.claude, &mut data.run);
         Ok(Self { path, data })
     }
 
@@ -654,6 +750,28 @@ impl SettingsStore {
     /// Paths are trimmed; an empty path clears the setting.
     pub fn set_claude(&mut self, mut next: ClaudeSettings) -> Result<(), String> {
         normalize_claude_accounts(&mut next)?;
+        // Only a changed override is refused; an unchanged bad stored one is coerced, so it never
+        // blocks an unrelated save.
+        for account in &mut next.accounts {
+            let model = account
+                .orchestrator_model
+                .take()
+                .map(|m| m.trim().to_string());
+            let model = model.filter(|m| !m.is_empty());
+            let stored = self
+                .data
+                .claude
+                .accounts
+                .iter()
+                .find(|a| a.id == account.id)
+                .and_then(|a| a.orchestrator_model.clone());
+            account.orchestrator_model = match model {
+                Some(m) if valid_orchestrator_model(&m) => Some(m),
+                Some(m) if stored.as_deref() == Some(m.as_str()) => None,
+                Some(_) => return Err(ORCHESTRATOR_MODEL_REFUSED.to_string()),
+                None => None,
+            };
+        }
         self.data.claude = next;
         self.save()
     }
@@ -668,6 +786,23 @@ impl SettingsStore {
 
     /// The implementer cap is kept within 1..=8.
     pub fn set_run(&mut self, next: RunSettings) -> Result<(), String> {
+        // Only a changed value is refused; an unchanged bad stored one is coerced to "" (no flag).
+        let model = next.orchestrator_model.trim().to_string();
+        let model = if valid_orchestrator_model(&model) {
+            model
+        } else if model == self.data.run.orchestrator_model {
+            String::new()
+        } else {
+            return Err(ORCHESTRATOR_MODEL_REFUSED.to_string());
+        };
+        let mode = next.orchestrator_permission_mode.trim().to_string();
+        let mode = if valid_orchestrator_mode(&mode) {
+            mode
+        } else if mode == self.data.run.orchestrator_permission_mode {
+            String::new()
+        } else {
+            return Err(ORCHESTRATOR_MODE_REFUSED.to_string());
+        };
         self.data.run = RunSettings {
             max_implementers: next.max_implementers.clamp(1, MAX_IMPLEMENTERS_LIMIT),
             stop_hooks: next.stop_hooks,
@@ -678,6 +813,8 @@ impl SettingsStore {
             batch_pushes: next.batch_pushes,
             auto_start_waves: next.auto_start_waves,
             auto_cleanup: next.auto_cleanup,
+            orchestrator_model: model,
+            orchestrator_permission_mode: mode,
         };
         self.save()
     }
@@ -972,6 +1109,7 @@ mod tests {
             config_dir: dir.map(str::to_string),
             capture_policy: Default::default(),
             keep_run_traces: false,
+            orchestrator_model: None,
         }
     }
 
@@ -998,6 +1136,94 @@ mod tests {
             store.claude().accounts[0].capture_policy,
             CapturePolicy::Metadata
         );
+    }
+
+    #[test]
+    fn orchestrator_defaults_validation_and_resolution() {
+        let dir = TempDir::new("settings_orchestrator");
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"schemaVersion":1,"claude":{"accounts":[{"id":"default","name":"Claude"},{"id":"b","name":"B"}]}}"#,
+        )
+        .unwrap();
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(store.run().orchestrator_model, "opus");
+        assert_eq!(store.run().orchestrator_permission_mode, "auto");
+        assert_eq!(
+            orchestrator_for(&store.data, "default"),
+            (Some("opus".into()), Some("auto".into()))
+        );
+
+        for bad in ["gpt-4", "claude-", "Opus", "opus 1m"] {
+            let mut run = store.run().clone();
+            run.orchestrator_model = bad.into();
+            assert!(store.set_run(run).is_err(), "{bad}");
+        }
+        for bad in ["bypassPermissions", "dontAsk", "plan"] {
+            let mut run = store.run().clone();
+            run.orchestrator_permission_mode = bad.into();
+            assert!(store.set_run(run).is_err(), "{bad}");
+        }
+        assert_eq!(store.run().orchestrator_model, "opus", "kept");
+        assert_eq!(store.run().orchestrator_permission_mode, "auto", "kept");
+
+        let mut run = store.run().clone();
+        run.orchestrator_model = "opus[1m]".into();
+        store.set_run(run).unwrap();
+        assert_eq!(store.run().orchestrator_model, "opus[1m]");
+
+        let mut claude = store.claude().clone();
+        claude.accounts[1].orchestrator_model = Some("claude-sonnet-4-5".into());
+        store.set_claude(claude).unwrap();
+        assert_eq!(
+            orchestrator_for(&store.data, "b").0.as_deref(),
+            Some("claude-sonnet-4-5")
+        );
+        assert_eq!(
+            orchestrator_for(&store.data, "default").0.as_deref(),
+            Some("opus[1m]")
+        );
+        let mut claude = store.claude().clone();
+        claude.accounts[1].orchestrator_model = Some("gpt-4".into());
+        assert!(store.set_claude(claude).is_err());
+        assert_eq!(
+            store.claude().accounts[1].orchestrator_model.as_deref(),
+            Some("claude-sonnet-4-5")
+        );
+
+        let mut run = store.run().clone();
+        run.orchestrator_model = String::new();
+        run.orchestrator_permission_mode = String::new();
+        store.set_run(run).unwrap();
+        assert_eq!(orchestrator_for(&store.data, "default"), (None, None));
+    }
+
+    #[test]
+    fn invalid_stored_orchestrator_values_never_fail_open_or_block_saves() {
+        let dir = TempDir::new("settings_orchestrator_bad");
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"schemaVersion":1,"claude":{"accounts":[{"id":"default","name":"Claude","orchestratorModel":"gpt-4"}]},"run":{"orchestratorModel":"gpt-4","orchestratorPermissionMode":"bypassPermissions"}}"#,
+        )
+        .unwrap();
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(store.claude().accounts.len(), 1);
+        assert_eq!(orchestrator_for(&store.data, "default"), (None, None));
+
+        // The raw stored values, as a UI that did not touch them would send them back.
+        store.data.claude.accounts[0].orchestrator_model = Some("gpt-4".into());
+        store.data.run.orchestrator_model = "gpt-4".into();
+        let mut claude = store.claude().clone();
+        claude.accounts[0].name = "Renamed".into();
+        store.set_claude(claude).unwrap();
+        assert_eq!(store.claude().accounts[0].name, "Renamed");
+        assert_eq!(store.claude().accounts[0].orchestrator_model, None);
+        store.data.run.orchestrator_model = "gpt-4".into();
+        let mut run = store.run().clone();
+        run.max_implementers = 5;
+        store.set_run(run).unwrap();
+        assert_eq!(store.run().max_implementers, 5);
+        assert_eq!(store.run().orchestrator_model, "");
     }
 
     #[test]

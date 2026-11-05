@@ -420,6 +420,12 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
           finished={evalFinished(view)}
         />
         <div className="hint run-id">{view.runId}</div>
+        {view.orchestrator && (
+          <div className="hint run-orchestrator-line" data-testid="run-orchestrator-line">
+            Orchestrator: {view.orchestrator.model ?? "account default"} ·{" "}
+            {view.orchestrator.permissionMode ?? "account default"}
+          </div>
+        )}
       </header>
       {view.statusProblem && <p className="hint warn">{view.statusProblem}</p>}
       {snapshotFailure(view.timeline) !== null && (

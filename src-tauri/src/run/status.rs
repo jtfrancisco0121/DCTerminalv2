@@ -167,6 +167,14 @@ pub struct BmadView {
     pub documents: Vec<String>,
 }
 
+/// What the Eagle-Eye tab of a run was started with (`None`: the account's own default).
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OrchestratorView {
+    pub model: Option<String>,
+    pub permission_mode: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RunView {
@@ -191,6 +199,9 @@ pub struct RunView {
     pub review_mode: String,
     /// meta.json's `mode` (`epic-plan`); `None` is a normal run.
     pub run_mode: Option<String>,
+    /// meta.json's `orchestrator`; `None` is an older run that recorded none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orchestrator: Option<OrchestratorView>,
     /// meta.json's `eval` (one run of an eval group); `None` is a normal run.
     pub eval: Option<super::folder::EvalRef>,
     /// status.json has `shipApproval` (the yes at stop #2).
@@ -631,6 +642,11 @@ pub fn read_run(run_dir: &Path, checks_running: bool) -> RunView {
     view.run_dir = run_dir.display().to_string();
     view.review_mode = super::folder::review_mode_of(run_dir);
     view.run_mode = super::folder::run_mode_of(run_dir);
+    view.orchestrator =
+        super::folder::orchestrator_of(run_dir).map(|(model, permission_mode)| OrchestratorView {
+            model,
+            permission_mode,
+        });
     view.eval = super::folder::eval_of(run_dir);
     // BMAD: shown only for a run started with auto or on; an old run (no
     // `bmad` in meta.json) shows nothing.
@@ -901,6 +917,26 @@ mod tests {
         assert_eq!(read_run(&run, false).run_mode.as_deref(), Some("epic-plan"));
         std::fs::write(run.join("meta.json"), r#"{"mode":"bogus"}"#).unwrap();
         assert_eq!(read_run(&run, false).run_mode, None);
+    }
+
+    #[test]
+    fn the_orchestrator_comes_from_meta_json_and_is_none_for_an_older_run() {
+        let dir = TempDir::new("run_orchestrator_view");
+        let run = dir.join("r-1");
+        std::fs::create_dir_all(&run).unwrap();
+        assert_eq!(read_run(&run, false).orchestrator, None);
+        std::fs::write(run.join("meta.json"), r#"{"schema":1}"#).unwrap();
+        assert_eq!(read_run(&run, false).orchestrator, None);
+        std::fs::write(
+            run.join("meta.json"),
+            r#"{"orchestrator":{"model":"opus","permissionMode":null}}"#,
+        )
+        .unwrap();
+        let view = read_run(&run, false).orchestrator.unwrap();
+        assert_eq!(view.model.as_deref(), Some("opus"));
+        assert_eq!(view.permission_mode, None);
+        let json = serde_json::to_value(&view).unwrap();
+        assert!(json.get("permissionMode").is_some());
     }
 
     #[test]

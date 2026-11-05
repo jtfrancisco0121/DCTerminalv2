@@ -1654,6 +1654,7 @@ mod tests {
                     config_dir: None,
                     capture_policy: Default::default(),
                     keep_run_traces: false,
+                    orchestrator_model: None,
                 }],
             })
             .unwrap();

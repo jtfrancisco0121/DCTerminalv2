@@ -100,6 +100,8 @@ export type ClaudeAccount = {
   capturePolicy?: "off" | "metadata" | "redacted" | "full";
   /** "Keep run traces": a finished run of this account gets a snapshot of its session events (default off). */
   keepRunTraces?: boolean;
+  /** Model of this account's Eagle-Eye orchestrator tabs; absent: the run setting. The backend validates it. */
+  orchestratorModel?: string | null;
 };
 
 export type ClaudeSettings = {
@@ -131,6 +133,10 @@ export type RunSettings = {
   autoStartWaves?: boolean;
   /** "Clean up merged runs automatically" (default on). */
   autoCleanup?: boolean;
+  /** `--model` of an Eagle-Eye orchestrator tab (backend default `opus`); "" is the account's own model. */
+  orchestratorModel?: string;
+  /** `--permission-mode` of an Eagle-Eye orchestrator tab (backend default `auto`); "" is the account's own mode. */
+  orchestratorPermissionMode?: string;
 };
 
 export type ObserveSettings = {

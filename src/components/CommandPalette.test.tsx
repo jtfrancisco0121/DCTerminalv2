@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearUiErrors, uiErrors } from "../uiErrors";
 import { CommandPalette, matchRank, rankItems, type PaletteItem } from "./CommandPalette";
@@ -53,6 +54,43 @@ describe("CommandPalette", () => {
     fireEvent.change(box, { target: { value: "qqq" } });
     expect(screen.getByText("Nothing matches")).toBeTruthy();
     expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("an item that throws is reported and still closes the palette", async () => {
+    const onClose = vi.fn();
+    render(
+      <CommandPalette
+        items={[
+          item("t1", "Tabs", "Claude · app", () => {
+            throw new Error("boom");
+          }),
+        ]}
+        onClose={onClose}
+      />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole("option"));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(uiErrors().length).toBeGreaterThan(0);
+  });
+
+  it("closes in the same commit as the item's state change", async () => {
+    const commits: string[] = [];
+    function Host() {
+      const [page, setPage] = useState(false);
+      const [open, setOpen] = useState(true);
+      commits.push(`page=${page} open=${open}`);
+      return open ? <CommandPalette items={[item("t1", "Tabs", "Open page", () => setPage(true))]} onClose={() => setOpen(false)} /> : <p>{page ? "page" : "none"}</p>;
+    }
+    render(<Host />);
+    commits.length = 0;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("option"));
+    });
+    expect(screen.getByText("page")).toBeTruthy();
+    expect(commits).not.toContain("page=true open=true");
+    expect(commits[commits.length - 1]).toBe("page=true open=false");
   });
 
   it("wraps the arrows and runs the active row with Enter, then closes", async () => {

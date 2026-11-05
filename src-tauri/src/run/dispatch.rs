@@ -498,7 +498,7 @@ pub fn on_tick(app: &AppHandle, tab_run_dirs: &HashSet<String>) {
     }
     super::epics::auto_start(app);
     let state = load(&data);
-    eval_check_tick(app, &state);
+    app_check_tick(app, &state);
     if state.queue.is_empty() {
         return;
     }
@@ -719,7 +719,7 @@ pub fn finish(state: &mut Dispatch, id: &str, outcome: Result<Option<String>, St
     }
 }
 
-// ---- the app check of finished eval runs (AD-48) ---------------------------------------------
+// ---- the app check of finished eval runs and reviewed-clean PRs (AD-48) ---------------------------------------------
 
 /// What the selector needs to know of one run of an eval batch.
 #[derive(Debug, Clone, PartialEq)]
@@ -788,50 +788,171 @@ pub fn eval_check_facts(batches: &[Batch]) -> Vec<EvalCheckFacts> {
         .collect()
 }
 
-/// One eval check at a time, app-wide.
-static EVAL_CHECK_RUNNING: AtomicBool = AtomicBool::new(false);
+/// What the picker needs to know of one own run that may owe an app check (R1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewedRunFacts {
+    pub run_dir: String,
+    pub stage: Option<String>,
+    /// status.json `updatedAt`, in epoch seconds.
+    pub updated_at: Option<i64>,
+    /// A PR in `reviewed|opened|pushed|local-only` whose worktree folder exists and that has no entry in
+    /// app-checks.json.
+    pub unchecked_pr: bool,
+}
+
+/// How long after its last update a run still gets a backend app check: a pre-approved run passes
+/// `ship-approval` in 0 to 10 s, but its record is still owed when the app was closed meanwhile.
+const APP_CHECK_WINDOW_SECS: i64 = 24 * 60 * 60;
+const APP_CHECK_STAGES: &[&str] = &["ship-approval", "shipping", "done"];
+const APP_CHECK_PR_STATES: &[&str] = &["reviewed", "opened", "pushed", "local-only"];
+/// The facts of the own runs are read at most this often.
+const APP_CHECK_READ_EVERY_MS: i64 = 10_000;
+
+/// The one own run to give an app check next, or `None`: at `ship-approval`, `shipping` or `done`, updated
+/// within 24 h, with a reviewed-clean PR that has a worktree and no app-checks.json entry, and not tried in
+/// this app session. The first match of `facts` (newest first) wins.
+pub fn reviewed_run_to_check(
+    facts: &[ReviewedRunFacts],
+    now_secs: i64,
+    tried: &HashSet<String>,
+) -> Option<String> {
+    facts
+        .iter()
+        .find(|f| {
+            !tried.contains(&f.run_dir)
+                && f.unchecked_pr
+                && f.stage
+                    .as_deref()
+                    .is_some_and(|s| APP_CHECK_STAGES.contains(&s))
+                && f.updated_at
+                    .is_some_and(|t| (0..=APP_CHECK_WINDOW_SECS).contains(&(now_secs - t)))
+        })
+        .map(|f| f.run_dir.clone())
+}
+
+/// The facts of the app's own runs (`<data>/runs`, never adopted ones), newest update first, read cheaply:
+/// files only, no git, and a run's PRs are read only once its stage and age qualify.
+pub fn reviewed_run_facts(data: &Path, now_secs: i64) -> Vec<ReviewedRunFacts> {
+    let mut facts: Vec<ReviewedRunFacts> = std::fs::read_dir(super::folder::runs_dir(data))
+        .map(|entries| entries.flatten().map(|e| e.path()).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| {
+            p.is_dir()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| !n.starts_with('.'))
+        })
+        .filter_map(|path| {
+            let status = super::folder::read_json_value(&path.join("status.json"))?;
+            let stage = status["stage"].as_str().map(String::from);
+            let updated_at = status["updatedAt"]
+                .as_str()
+                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                .map(|t| t.timestamp());
+            let in_play = stage
+                .as_deref()
+                .is_some_and(|s| APP_CHECK_STAGES.contains(&s))
+                && updated_at
+                    .is_some_and(|t| (0..=APP_CHECK_WINDOW_SECS).contains(&(now_secs - t)));
+            let unchecked_pr = in_play && {
+                let checked = super::folder::read_json_value(&path.join("app-checks.json"));
+                status["prs"].as_array().is_some_and(|prs| {
+                    prs.iter().any(|pr| {
+                        let id = pr["id"].as_str().unwrap_or_default();
+                        pr["state"]
+                            .as_str()
+                            .is_some_and(|s| APP_CHECK_PR_STATES.contains(&s))
+                            && pr["worktree"]
+                                .as_str()
+                                .is_some_and(|wt| !wt.is_empty() && Path::new(wt).is_dir())
+                            && !id.is_empty()
+                            && checked
+                                .as_ref()
+                                .is_none_or(|c| c["checks"].get(id).is_none())
+                    })
+                })
+            };
+            Some(ReviewedRunFacts {
+                run_dir: path.display().to_string(),
+                stage,
+                updated_at,
+                unchecked_pr,
+            })
+        })
+        .collect();
+    facts.sort_by_key(|f| std::cmp::Reverse(f.updated_at));
+    facts
+}
+
+/// One backend app check at a time, app-wide (a check the panel starts is limited per run by the slot only).
+static APP_CHECK_RUNNING: AtomicBool = AtomicBool::new(false);
 /// Runs given a check in this app session: a failed check is not retried, and neither is a run whose slot a
 /// cleanup holds.
-static EVAL_CHECK_TRIED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+static APP_CHECK_TRIED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+static APP_CHECK_LAST_READ_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
-/// Gives the next finished eval run its app check (R1: the repo's own check commands in its worktrees, no Claude
-/// usage), on a thread of its own, never on the tick, and never twice in a session for the same run.
-fn eval_check_tick(app: &AppHandle, state: &Dispatch) {
-    if state.batches.is_empty() || EVAL_CHECK_RUNNING.load(Ordering::SeqCst) {
+/// The next run to give an app check: a finished eval run of the batches first, then an own run with a
+/// reviewed-clean PR and no record. It is marked tried, so it is never picked twice in a session.
+pub fn app_check_pick(
+    data: &Path,
+    batches: &[Batch],
+    tried: &mut HashSet<String>,
+    now_secs: i64,
+) -> Option<String> {
+    let eval = eval_check_facts(batches);
+    let picked = eval_run_to_check(batches, &eval, tried)
+        .or_else(|| reviewed_run_to_check(&reviewed_run_facts(data, now_secs), now_secs, tried));
+    if let Some(dir) = &picked {
+        tried.insert(dir.clone());
+    }
+    picked
+}
+
+/// R1 for a picked run: the same checked folder the slot is keyed by; a refusal (a cleanup or a panel check
+/// holds it) is not retried.
+pub fn app_check_run(data: &Path, dir: &str) {
+    if let Ok(run_dir) = super::checked_run_dir(data, dir) {
+        let _ = super::rerun_checks_once(&run_dir);
+    }
+}
+
+/// Gives the next run that owes one its app check (R1: the repo's own check commands in its worktrees, no
+/// Claude usage), without the run panel being open: on a thread of its own, never on the tick, one at a time,
+/// and never twice in a session for the same run (AD-48).
+fn app_check_tick(app: &AppHandle, state: &Dispatch) {
+    if APP_CHECK_RUNNING.load(Ordering::SeqCst) {
         return;
     }
-    let facts = eval_check_facts(&state.batches);
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if now_ms - APP_CHECK_LAST_READ_MS.load(Ordering::SeqCst) < APP_CHECK_READ_EVERY_MS {
+        return;
+    }
+    APP_CHECK_LAST_READ_MS.store(now_ms, Ordering::SeqCst);
+    let data = data_dir(app);
     let Some(dir) = ({
-        let Ok(mut tried) = EVAL_CHECK_TRIED.lock() else {
+        let Ok(mut tried) = APP_CHECK_TRIED.lock() else {
             return;
         };
         let tried = tried.get_or_insert_with(HashSet::new);
-        let picked = eval_run_to_check(&state.batches, &facts, tried);
-        if let Some(dir) = &picked {
-            tried.insert(dir.clone());
-        }
-        picked
+        app_check_pick(&data, &state.batches, tried, now_ms / 1000)
     }) else {
         return;
     };
-    if EVAL_CHECK_RUNNING
+    if APP_CHECK_RUNNING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
         return;
     }
-    let data = data_dir(app);
     let spawned = std::thread::Builder::new()
-        .name("dcv2-eval-check".into())
+        .name("dcv2-app-check".into())
         .spawn(move || {
-            // The same checked folder the R1 slot is keyed by; a refusal (a cleanup holds it) is not retried.
-            if let Ok(run_dir) = super::checked_run_dir(&data, &dir) {
-                let _ = super::rerun_checks_once(&run_dir);
-            }
-            EVAL_CHECK_RUNNING.store(false, Ordering::SeqCst);
+            app_check_run(&data, &dir);
+            APP_CHECK_RUNNING.store(false, Ordering::SeqCst);
         });
     if spawned.is_err() {
-        EVAL_CHECK_RUNNING.store(false, Ordering::SeqCst);
+        APP_CHECK_RUNNING.store(false, Ordering::SeqCst);
     }
 }
 
@@ -2567,6 +2688,126 @@ mod tests {
             "the batch's run order decides: e2 comes before e4"
         );
         assert!(eval_run_to_check(&[], &facts, &HashSet::new()).is_none());
+    }
+
+    const NOW: i64 = 1_800_000_000;
+
+    fn run_fact(dir: &str, stage: &str, age_secs: i64, unchecked: bool) -> ReviewedRunFacts {
+        ReviewedRunFacts {
+            run_dir: format!("/runs/{dir}"),
+            stage: Some(stage.into()),
+            updated_at: Some(NOW - age_secs),
+            unchecked_pr: unchecked,
+        }
+    }
+
+    #[test]
+    fn the_reviewed_run_picker_takes_an_unchecked_recent_run_past_ship_approval_once() {
+        let facts = vec![
+            run_fact("has-record", "shipping", 5, false), // PR1 already has a record, or no worktree
+            run_fact("building", "building", 5, true),    // not reviewed yet
+            run_fact("old", "done", 25 * 3600, true),     // updated more than 24 h ago
+            run_fact("future", "done", -3600, true),      // a clock far ahead is not "recent"
+            run_fact("tried", "shipping", 5, true),
+            run_fact("the-one", "shipping", 10, true),
+            run_fact("second", "done", 20, true),
+        ];
+        let mut tried = HashSet::from(["/runs/tried".to_string()]);
+        assert_eq!(
+            reviewed_run_to_check(&facts, NOW, &tried).as_deref(),
+            Some("/runs/the-one")
+        );
+        tried.insert("/runs/the-one".to_string());
+        assert_eq!(
+            reviewed_run_to_check(&facts, NOW, &tried).as_deref(),
+            Some("/runs/second"),
+            "one at a time, each at most once"
+        );
+        tried.insert("/runs/second".to_string());
+        assert_eq!(reviewed_run_to_check(&facts, NOW, &tried), None);
+        assert_eq!(
+            reviewed_run_to_check(
+                &[run_fact("a", "ship-approval", 0, true)],
+                NOW,
+                &HashSet::new()
+            )
+            .as_deref(),
+            Some("/runs/a"),
+            "ship approval passed in 0 s"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_reviewed_clean_pr_gets_an_app_checks_record_without_any_panel() {
+        use crate::run::git::testing::{repo_at, run};
+        use crate::test_support::TempDir;
+        const RUN: &str = "r-20261105-0900-abcd";
+        let dir = TempDir::new("app_check_backend");
+        let data = dir.join("data");
+        let repo = dir.join("ws/mathlib");
+        repo_at(&repo);
+        let wt = dir.join(format!("ws/mathlib-worktrees/dcv2-{RUN}-pr1"));
+        run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                &format!("dcv2/{RUN}-pr1"),
+                wt.to_str().unwrap(),
+            ],
+        );
+        let run_dir = data.join("runs").join(RUN);
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("repos.json"),
+            serde_json::json!({"schema": 1, "repos": [
+                {"name": "mathlib", "path": repo, "check": "echo fine"}]})
+            .to_string(),
+        )
+        .unwrap();
+        // Ship approval passed at once: the run is already `shipping` and PR1 is `opened`.
+        let write_status = |stage: &str, updated: chrono::DateTime<chrono::Utc>| {
+            std::fs::write(
+                run_dir.join("status.json"),
+                serde_json::json!({"schema": 1, "stage": stage,
+                    "updatedAt": updated.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                    "prs": [{"id": "PR1", "repo": "mathlib", "repoPath": repo,
+                        "worktree": wt, "state": "opened"}]})
+                .to_string(),
+            )
+            .unwrap();
+        };
+        let now = chrono::Utc::now();
+        // Not reviewed yet, or too old: nothing is picked.
+        let mut tried = HashSet::new();
+        write_status("building", now);
+        assert_eq!(
+            app_check_pick(&data, &[], &mut tried, now.timestamp()),
+            None
+        );
+        write_status("shipping", now - chrono::Duration::hours(30));
+        assert_eq!(
+            app_check_pick(&data, &[], &mut tried, now.timestamp()),
+            None
+        );
+        write_status("shipping", now);
+        let picked = app_check_pick(&data, &[], &mut tried, now.timestamp()).unwrap();
+        assert!(picked.ends_with(RUN), "{picked}");
+        app_check_run(&data, &picked);
+        let checks = crate::run::status::read_app_checks(&run_dir);
+        assert_eq!(checks["PR1"].result, "pass", "{:?}", checks["PR1"]);
+        // Once per session, and a run with a record is not a candidate in a new session either.
+        assert_eq!(
+            app_check_pick(&data, &[], &mut tried, now.timestamp()),
+            None
+        );
+        assert_eq!(
+            app_check_pick(&data, &[], &mut HashSet::new(), now.timestamp()),
+            None
+        );
     }
 
     #[test]

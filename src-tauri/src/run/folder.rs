@@ -125,6 +125,10 @@ pub struct RunMeta {
     pub dispatch_entry_id: Option<String>,
     /// Set for one run of an eval group (the same task N times); `None` is a normal run.
     pub eval: Option<EvalRef>,
+    /// The `--model` the orchestrator tab was started with; `None` is recorded as null (the account's own).
+    pub orchestrator_model: Option<String>,
+    /// The `--permission-mode` the orchestrator tab was started with; `None` is recorded as null.
+    pub orchestrator_mode: Option<String>,
 }
 
 /// One run of an eval group, as meta.json's `eval` records it.
@@ -229,6 +233,25 @@ pub fn max_implementers_of(run_dir: &Path) -> Option<u32> {
         .and_then(Value::as_u64)
         .and_then(|n| u32::try_from(n).ok())
         .filter(|n| (1..=MAX_IMPLEMENTERS_LIMIT).contains(n))
+}
+
+/// meta.json's `orchestrator` as `(model, permission mode)`: `None` when the run recorded none (an
+/// older run). A recorded null stays `None` inside (the account's own); a value outside the
+/// allow-list is dropped, so a hand edit cannot put `bypassPermissions` on a resumed tab.
+pub fn orchestrator_of(run_dir: &Path) -> Option<(Option<String>, Option<String>)> {
+    use crate::store::settings_store::{valid_orchestrator_mode, valid_orchestrator_model};
+    let meta = read_json_value(&run_dir.join("meta.json"))?;
+    let o = meta.get("orchestrator").filter(|o| o.is_object())?;
+    let pick = |key: &str, ok: fn(&str) -> bool| {
+        o.get(key)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty() && ok(v))
+            .map(str::to_string)
+    };
+    Some((
+        pick("model", valid_orchestrator_model),
+        pick("permissionMode", valid_orchestrator_mode),
+    ))
 }
 
 /// The repos a run is limited to, from the ticked names. `None` or every
@@ -366,6 +389,10 @@ pub fn create_run(
     if let Some(n) = meta.max_implementers {
         meta_json["maxImplementers"] = json!(n.clamp(1, MAX_IMPLEMENTERS_LIMIT));
     }
+    meta_json["orchestrator"] = json!({
+        "model": meta.orchestrator_model,
+        "permissionMode": meta.orchestrator_mode,
+    });
     if let Some(eval) = meta.eval.as_ref() {
         meta_json["eval"] = serde_json::to_value(eval).map_err(|e| format!("eval: {e}"))?;
     }
@@ -937,6 +964,43 @@ mod tests {
     }
 
     #[test]
+    fn the_orchestrator_is_recorded_and_read_back_and_an_older_run_has_none() {
+        let dir = TempDir::new("run_orchestrator");
+        let make = |model: Option<&str>, mode: Option<&str>, request: &str| {
+            let meta = RunMeta {
+                account_id: "default".into(),
+                orchestrator_model: model.map(str::to_string),
+                orchestrator_mode: mode.map(str::to_string),
+                ..Default::default()
+            };
+            let created =
+                create_run(dir.path(), Path::new("/w"), &[], &[], request, &meta).unwrap();
+            PathBuf::from(created.run_dir)
+        };
+        let run = make(Some("opus"), Some("auto"), "one");
+        let meta = read_json_value(&run.join("meta.json")).unwrap();
+        assert_eq!(meta["orchestrator"]["model"], "opus");
+        assert_eq!(meta["orchestrator"]["permissionMode"], "auto");
+        assert_eq!(
+            orchestrator_of(&run),
+            Some((Some("opus".into()), Some("auto".into())))
+        );
+        let account_default = make(None, None, "two");
+        let meta = read_json_value(&account_default.join("meta.json")).unwrap();
+        assert!(meta["orchestrator"]["model"].is_null());
+        assert!(meta["orchestrator"]["permissionMode"].is_null());
+        assert_eq!(orchestrator_of(&account_default), Some((None, None)));
+        std::fs::write(run.join("meta.json"), r#"{"schema":1}"#).unwrap();
+        assert_eq!(orchestrator_of(&run), None, "an older run");
+        std::fs::write(
+            run.join("meta.json"),
+            r#"{"orchestrator":{"model":"gpt-4","permissionMode":"bypassPermissions"}}"#,
+        )
+        .unwrap();
+        assert_eq!(orchestrator_of(&run), Some((None, None)));
+    }
+
+    #[test]
     fn a_run_folder_has_its_inputs_and_lists_newest_first() {
         let dir = TempDir::new("run_create");
         let repos = vec![Repo {
@@ -960,6 +1024,8 @@ mod tests {
             mode: None,
             dispatch_entry_id: None,
             eval: None,
+            orchestrator_model: None,
+            orchestrator_mode: None,
         };
         assert!(create_run(dir.path(), Path::new("/w"), &repos, &[], "  ", &meta).is_err());
         let one = create_run(

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SettingsView } from "../bridge";
 
 const setRunSettings = vi.fn(async (run: unknown) => run);
@@ -86,6 +86,69 @@ describe("SettingsPage capture policy", () => {
     await waitFor(() => expect(setClaudeSettings).toHaveBeenCalled());
     const sent = setClaudeSettings.mock.calls[0]![0];
     expect(sent.accounts[0]!.capturePolicy).toBe("off");
+  });
+});
+
+describe("SettingsPage orchestrator rows", () => {
+  afterEach(() => {
+    setRunSettings.mockClear();
+    setClaudeSettings.mockClear();
+  });
+
+  const runView = (run: Record<string, unknown>): SettingsView => ({ ...view(), run: { maxImplementers: 3, stopHooks: true, ...run } });
+
+  it("shows Opus and Auto for a settings object without the fields and one override row per account", () => {
+    const two = runView({});
+    two.claude.accounts.push({ id: "work", name: "Work", configDir: null });
+    render(<SettingsPage view={two} onSaved={() => {}} onClose={() => {}} />);
+    expect((screen.getByRole("combobox", { name: "Orchestrator model" }) as HTMLSelectElement).value).toBe("opus");
+    expect((screen.getByRole("combobox", { name: "Orchestrator permission mode" }) as HTMLSelectElement).value).toBe("auto");
+    expect(screen.getByRole("combobox", { name: "Orchestrator model of Personal" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Orchestrator model of Work" })).toBeTruthy();
+    expect(screen.getByText("The model every Eagle-Eye run starts on. Role and plain tabs are not changed.")).toBeTruthy();
+  });
+
+  it("saves a select change on its own, from the stored values", async () => {
+    setRunSettings.mockClear();
+    render(<SettingsPage view={runView({ orchestratorModel: "opus", orchestratorPermissionMode: "auto" })} onSaved={() => {}} onClose={() => {}} />);
+    fireEvent.change(screen.getByRole("combobox", { name: "Orchestrator permission mode" }), { target: { value: "acceptEdits" } });
+    await waitFor(() => expect(setRunSettings).toHaveBeenCalled());
+    expect(setRunSettings.mock.calls[0]![0]).toMatchObject({ orchestratorModel: "opus", orchestratorPermissionMode: "acceptEdits" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Orchestrator model of Personal" }), { target: { value: "sonnet" } });
+    await waitFor(() => expect(setClaudeSettings).toHaveBeenCalled());
+    expect(setClaudeSettings.mock.calls[setClaudeSettings.mock.calls.length - 1]![0].accounts[0]!.orchestratorModel).toBe("sonnet");
+  });
+
+  it("a Runs save is kept when an orchestrator select is saved afterwards", async () => {
+    setRunSettings.mockClear();
+    render(<SettingsPage view={runView({ orchestratorModel: "opus", orchestratorPermissionMode: "auto" })} onSaved={() => {}} onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/Implementers at once/), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save run settings" }));
+    await waitFor(() => expect(setRunSettings).toHaveBeenCalledTimes(1));
+    await screen.findByText("Run settings saved.");
+    fireEvent.change(screen.getByRole("combobox", { name: "Orchestrator permission mode" }), { target: { value: "acceptEdits" } });
+    await waitFor(() => expect(setRunSettings).toHaveBeenCalledTimes(2));
+    expect(setRunSettings.mock.calls[1]![0]).toMatchObject({ maxImplementers: 5, orchestratorPermissionMode: "acceptEdits" });
+  });
+
+  it("shows the backend's refusal of a custom id and keeps the stored model", async () => {
+    setRunSettings.mockClear();
+    setRunSettings.mockRejectedValueOnce("Not a model id: use opus, sonnet, haiku or a claude-… id.");
+    render(<SettingsPage view={runView({ orchestratorModel: "opus", orchestratorPermissionMode: "auto" })} onSaved={() => {}} onClose={() => {}} />);
+    const select = screen.getByRole("combobox", { name: "Orchestrator model" }) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "custom" } });
+    expect(setRunSettings).not.toHaveBeenCalled();
+    const input = screen.getByRole("textbox", { name: "Model id" });
+    fireEvent.change(input, { target: { value: "gpt-4" } });
+    fireEvent.blur(input);
+    const error = await screen.findByRole("alert");
+    expect(error.textContent).toContain("Not a model id");
+    expect(input.getAttribute("aria-describedby")).toBe(error.id);
+    expect(setRunSettings.mock.calls[0]![0]).toMatchObject({ orchestratorModel: "gpt-4" });
+    // Nothing was stored: switching to Opus again saves opus, not the refused id.
+    fireEvent.change(select, { target: { value: "opus" } });
+    await waitFor(() => expect(setRunSettings).toHaveBeenCalledTimes(2));
+    expect(setRunSettings.mock.calls[1]![0]).toMatchObject({ orchestratorModel: "opus" });
   });
 });
 

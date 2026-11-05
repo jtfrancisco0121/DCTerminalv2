@@ -208,6 +208,28 @@ has "  sync touched" "topic topics/sync.md"
 hasnt "  contracts not touched" "topics/contracts.md"
 expect 1 "touched with an unknown commit" bash "$MEM" touched "$API" deadbeef
 
+echo "# touched prints absolute paths; status takes a repo id (root with a space)"
+SP="$d/mem space"; cp -R "$DCV2_MEMORY_DIR" "$SP"
+expect 0 "touched under a root with a space" env -u DCV2_MEMORY_DIR bash "$MEM" --root "$SP" touched "$API" "$A0"
+has "  keeps the old prefix" "topic topics/sync.md"
+line="$(grep '^topic topics/sync.md ' <<<"$out")"
+tpath="${line#topic topics/sync.md }"; tpath="${tpath%% (checked-at*}"
+[[ "$tpath" == "$(cd "$SP" && pwd -P)/$APIID/topics/sync.md" ]] && ok "  absolute path up to ' (checked-at'" || bad "  parsed path: '$tpath'"
+[[ -f "$tpath" ]] && ok "  that path exists" || bad "  no file at '$tpath'"
+expect 0 "status by path" env -u DCV2_MEMORY_DIR bash "$MEM" --root "$SP" status "$API"
+is "  present" repos.0.present true
+BYPATH_INDEX="$(js repos.0.indexPath)"
+expect 0 "status by repo id" env -u DCV2_MEMORY_DIR bash "$MEM" --root "$SP" status "$APIID"
+is "  present, same memory" repos.0.present true
+is "  same id" repos.0.id "\"$APIID\""
+is "  same index path" repos.0.indexPath "$BYPATH_INDEX"
+is "  path is null" repos.0.path null
+is "  head is null" repos.0.head null
+expect 0 "status by an unknown repo id" env -u DCV2_MEMORY_DIR bash "$MEM" --root "$SP" status github.com__nobody__nothing
+is "  not present, not 'no folder'" repos.0.present false
+expect 1 "status of something that is neither a folder nor an id" bash "$MEM" status "$d/nope"
+has "  still says no folder" "no folder"
+
 echo "# compose with memory"
 expect 0 "compose" bash "$MEM" compose "$WS" "$d/prompt.md"
 out="$(cat "$d/prompt.md")"

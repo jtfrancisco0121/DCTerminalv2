@@ -621,8 +621,17 @@ pub fn sweep(
         if !wants_cleanup(&dir, now) {
             continue;
         }
-        asked.insert(dir.clone(), Instant::now());
-        out.extend(cleanup_run(&dir, lookup));
+        // The run's checks slot (keyed by the canonical folder, as R1 keys it) is held while worktrees are
+        // removed. A taken slot skips the run this sweep without recording the ask: it is retried next time.
+        let Ok(canonical) = super::checked_run_dir(data, &run.run_dir) else {
+            continue;
+        };
+        let Ok(records) = super::with_checks_slot(&canonical, || cleanup_run(&canonical, lookup))
+        else {
+            continue;
+        };
+        asked.insert(dir, Instant::now());
+        out.extend(records);
     }
     out
 }
@@ -1035,6 +1044,31 @@ mod tests {
         assert!(!s.wt(1).exists() && !s.on_remote(1));
         assert!(sweep(&s.data, true, &fake, &mut asked, Duration::ZERO).is_empty());
         assert_eq!(fake.calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn the_sweep_skips_a_run_whose_checks_slot_is_held_and_asks_again_later() {
+        let s = setup("done", &[1], &[]);
+        let mut fake = Fake::default();
+        fake.prs.insert(url(1), info("MERGED", 1, &s.tips[&1]));
+        let mut asked = HashMap::new();
+        // Held through the canonical key `rerun_checks_once` uses, not the sweep's raw path.
+        let canonical = s.run_dir.canonicalize().unwrap();
+        let held = crate::run::with_checks_slot(&canonical, || {
+            sweep(&s.data, true, &fake, &mut asked, Duration::ZERO)
+        })
+        .unwrap();
+        assert!(held.is_empty(), "{held:?}");
+        assert!(fake.calls.borrow().is_empty(), "no gh call while held");
+        assert!(
+            s.wt(1).exists(),
+            "the worktree stays while a check holds the slot"
+        );
+        assert!(asked.is_empty(), "a skipped run is not recorded as asked");
+        // Free again: the next sweep cleans it.
+        let recs = sweep(&s.data, true, &fake, &mut asked, Duration::ZERO);
+        assert_eq!(recs.len(), 1, "{recs:?}");
+        assert!(!s.wt(1).exists());
     }
 
     #[test]

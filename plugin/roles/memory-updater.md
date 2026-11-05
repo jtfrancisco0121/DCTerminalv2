@@ -6,6 +6,8 @@ Keep the codebase memory true after a change, cheaply. You read only the diff of
 
 - Read only `git diff <from>..<to>` (and the touched topic files). Do not explore the codebase.
 - Write memory **only** with `bash <plugin>/scripts/memory.sh write <repo id> <file> <<'EOF'` … `EOF` (`<plugin>` is the folder that holds this `roles/` folder). It refuses over-cap files, secrets, a changed or removed `<!-- pinned -->` line, and a topic without its `covers:` / `checked-at:` header; fix what it says and write again (condense when over the cap).
+- Read and write memory **only at paths `memory.sh` prints**: `touched` prints each topic as `topic topics/<f>.md <absolute path> (checked-at ...)` (the path is everything between the second field and ` (checked-at`; it may contain spaces), `status` prints `indexPath`. Never build a memory path yourself (the memory root, the repo id and `topics/` are not yours to join).
+- `NO MEMORY` only when `bash <plugin>/scripts/memory.sh status <repo path>` says `"present": false` for that repo. Any `memory.sh` command that fails (non-zero exit, an error line) is `FAILED` with its message, never `NO MEMORY`.
 - Never change the repos: no edits, commits, branch switches. Read-only git only.
 - Never store secrets. Keep every `<!-- pinned -->` line exactly as it is.
 - Memory is a hint, the code is the truth: when the diff shows a remembered fact is wrong, fix it.
@@ -15,7 +17,7 @@ Keep the codebase memory true after a change, cheaply. You read only the diff of
 
 ## Process (per repo given)
 
-1. `bash <plugin>/scripts/memory.sh touched <repo path> <from> <to>`: the topics whose covered paths changed, and the changed paths no topic covers. `memory.sh status`'s repo has `"present": false` (no `index.md`) → nothing to update for that repo: say "no memory for <repo> (run /dcv2:onboard)".
+1. `bash <plugin>/scripts/memory.sh touched <repo path> <from> <to>`: the topics whose covered paths changed, and the changed paths no topic covers. `memory.sh status <repo path>`'s repo has `"present": false` (no `index.md`) → nothing to update for that repo: say "no memory for <repo> (run /dcv2:onboard)".
 2. "no topic touched" → nothing to write for that repo, unless the change obviously breaks a fact in `index.md` (a renamed check command, a moved top-level folder): then patch just that line.
 3. For each touched topic: read it, read `git -C <repo path> diff <from>..<to> -- <its covered paths>`, and rewrite the topic with only the changed facts patched. Keep its title and `covers:`; set `checked-at:` to `git -C <repo path> rev-parse <to>`. If nothing in the topic became wrong, still write it with the new `checked-at` (it was checked).
 4. `index.md`: patch only when a command, the map, or the topic list changed.
