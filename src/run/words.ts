@@ -844,3 +844,65 @@ export function replayDisabledReason(eventCount: number, off: boolean): string |
 
 /** "after edit 3 of 7". */
 export const replayEditText = (k: number, n: number) => `after edit ${k} of ${n}`;
+
+/** The re-run states, in words and tone (muted when it did not finish, running while it runs). */
+export function rerunStateText(state: string): string {
+  switch (state) {
+    case "preparing":
+      return "preparing";
+    case "setup":
+      return "setting up";
+    case "running":
+      return "running the check";
+    case "pass":
+      return "pass";
+    case "fail":
+      return "fail";
+    case "timeout":
+      return "timed out";
+    case "error":
+      return "error";
+    case "stopped":
+      return "stopped";
+    case "interrupted":
+      return "interrupted (the app quit)";
+    default:
+      return state;
+  }
+}
+
+export function rerunStateTone(state: string): Tone {
+  switch (state) {
+    case "preparing":
+    case "setup":
+    case "running":
+      return "running";
+    case "pass":
+      return "success";
+    case "fail":
+    case "timeout":
+    case "error":
+      return "danger";
+    default:
+      return "muted";
+  }
+}
+
+/** A re-run that is still going. */
+export const rerunActive = (state: string) => state === "preparing" || state === "setup" || state === "running";
+
+/** The disabled "Re-run check" caption for a check that is not the app's own. */
+export const RERUN_NOT_APP = "Only the app's own check can be re-run.";
+
+/** The note in the confirmation when the recorded check ran on a dirty worktree. */
+export const RERUN_DIRTY_NOTE =
+  "The recorded check ran with uncommitted changes in the worktree; the re-run uses the committed files at this commit only.";
+
+/** "Re-run PR2's check at 3f2a9c1". */
+export const rerunTitle = (pr: string, commit: string | null) => `Re-run ${pr}'s check${commit ? ` at ${commit.slice(0, 7)}` : ""}`;
+
+/** The last `n` lines of a log. */
+export function lastLines(text: string, n: number): string {
+  const lines = text.replace(/\n$/, "").split("\n");
+  return lines.slice(-n).join("\n");
+}

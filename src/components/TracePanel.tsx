@@ -28,6 +28,7 @@ import { ExportDialog } from "./ExportDialog";
 import { FilePane, type FileState } from "./FilePane";
 import { Pill } from "./Pill";
 import { ReplayTrack } from "./ReplayTrack";
+import { RerunCheck } from "./RerunCheck";
 
 /** At most this many pages are fetched to bring a failure's event into the list. */
 const MAX_JUMP_PAGES = 50;
@@ -838,6 +839,9 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
                     <>
                       {shown && <EventFields event={shown} phase={view?.phases?.[shown.id]} />}
                       <pre className={`trace-pre${shown && isRun(shown) ? " trace-pre-run" : ""}`}>{content.out.text}</pre>
+                      {replay && shown && target.runDir && shown.kind === "check.end" && prOf(shown) && (
+                        <RerunCheck runDir={target.runDir} pr={prOf(shown)!} appCheck={shown.attrs.source === "app"} />
+                      )}
                       <p className="hint">
                         {content.out.redactions} redacted
                         {shown ? ` · source ${shown.content.ref.file.split(/[\\/]/).pop()} @ ${shown.content.ref.offset}+${shown.content.ref.len}` : ""}

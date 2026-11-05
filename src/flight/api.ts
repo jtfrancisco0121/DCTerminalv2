@@ -8,6 +8,8 @@ import type {
   ExportPolicy,
   ExportPreview,
   ExportSent,
+  RerunInfo,
+  RerunRecord,
   ReplayFileOut,
   ReplayTrackOut,
   SearchFilter,
@@ -57,3 +59,21 @@ export const flightReplayTrack = (target: TraceTarget) => invoke<ReplayTrackOut>
 /** The file a `file.change` Event changed, rebuilt as it was after that edit. Read-only; nothing recorded runs. */
 export const flightReplayFile = (target: TraceTarget, eventId: string) =>
   invoke<ReplayFileOut>("flight_replay_file", { request: { ...target, eventId } });
+
+/** What the re-run confirmation shows (command, setup, folder, commit), or the reason there is none. */
+export const flightReplayCheckInfo = (runDir: string, pr: string) =>
+  invoke<RerunInfo>("flight_replay_check_info", { request: { runDir, pr } });
+
+/** Starts a check re-run at the recorded commit in a scratch worktree; one at a time in the app. */
+export const flightReplayCheck = (runDir: string, pr: string) =>
+  invoke<RerunRecord>("flight_replay_check", { request: { runDir, pr } });
+
+/** Stops the running re-run. */
+export const flightReplayCheckStop = () => invoke<void>("flight_replay_check_stop");
+
+/** The re-run records of a run (newest first per PR). */
+export const flightReplayChecks = (runDir: string) => invoke<RerunRecord[]>("flight_replay_checks", { runDir });
+
+/** The tail of a re-run's log. */
+export const flightReplayCheckLog = (runDir: string, pr: string, n: number) =>
+  invoke<string>("flight_replay_check_log", { request: { runDir, pr, n } });

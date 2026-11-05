@@ -3224,3 +3224,42 @@ body,
 .file-pane-footnote {
   padding: 0 var(--space-2) var(--space-2);
 }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.rerun-results {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+
+.rerun-result {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+  min-width: 0;
+}
+
+.rerun-log {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  margin: 0;
+  max-height: 14rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.rerun-confirm {
+  background: var(--bg-elev);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  font-family: var(--font-mono);
+}

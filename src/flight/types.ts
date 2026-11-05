@@ -435,3 +435,58 @@ export interface ReplayFileOut {
   edits: number;
   stopped: ReplayStop | null;
 }
+
+/** What the recorded check said (rerun.rs `Recorded`). */
+export interface RerunRecorded {
+  result: string;
+  exitCode: number | null;
+  finishedAt: string | null;
+  clean: boolean | null;
+}
+
+/** `flight_replay_check_info`: what the re-run confirmation shows, or why there is none. */
+export interface RerunInfo {
+  reason: string | null;
+  command: string | null;
+  setup: string | null;
+  /** The recorded check folder relative to the PR's worktree; empty for its root. */
+  cwd: string;
+  commit: string | null;
+  clean: boolean | null;
+  recorded: RerunRecorded | null;
+  /** A re-run runs somewhere in the app. */
+  running: boolean;
+}
+
+export type RerunState =
+  | "preparing"
+  | "setup"
+  | "running"
+  | "pass"
+  | "fail"
+  | "timeout"
+  | "error"
+  | "stopped"
+  | "interrupted";
+
+/** One re-run (rerun.rs `RerunRecord`). */
+export interface RerunRecord {
+  schema: number;
+  runId: string;
+  pr: string;
+  n: number;
+  repo: string;
+  worktree: string;
+  commit: string;
+  command: string;
+  setup: string | null;
+  cwd: string;
+  recorded: RerunRecorded;
+  state: RerunState;
+  exitCode: number | null;
+  startedAt: string;
+  finishedAt: string | null;
+  detail: string | null;
+  log: string;
+  scratchLeft?: boolean;
+}
