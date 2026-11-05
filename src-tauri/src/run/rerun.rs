@@ -690,6 +690,7 @@ mod tests {
     use crate::run::git::testing::{repo_at, run};
     use crate::test_support::TempDir;
     use serde_json::json;
+    #[cfg(unix)]
     use std::sync::atomic::AtomicBool;
 
     /// The re-run slot is one per process: tests that use it take turns.
@@ -712,6 +713,7 @@ mod tests {
     }
 
     impl Toy {
+        #[cfg(unix)]
         fn out(&self, name: &str) -> PathBuf {
             self.dir.join("out").join(name)
         }
@@ -776,6 +778,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn wait_done(t: &Toy) -> RerunRecord {
         for _ in 0..600 {
             if let Some(rec) = list(&t.data, RUN).into_iter().next() {
@@ -789,6 +792,7 @@ mod tests {
     }
 
     /// Every file under `dir` (not `.git`) with its mtime.
+    #[cfg(unix)]
     fn snapshot(dir: &Path) -> Vec<(String, std::time::SystemTime)> {
         let mut out = Vec::new();
         fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, std::time::SystemTime)>) {
