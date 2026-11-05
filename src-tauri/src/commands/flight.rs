@@ -303,3 +303,53 @@ pub async fn flight_export_save(
     .await
     .map_err(|e| e.to_string())?
 }
+
+/// The replay track of a Trace: one tick per Event, no path. Read-only, on a worker thread.
+#[tauri::command]
+pub async fn flight_replay_track(
+    app: AppHandle,
+    settings: State<'_, Mutex<SettingsStore>>,
+    cache: State<'_, FlightCache>,
+    target: Target,
+) -> Result<host::ReplayTrack, String> {
+    let claude = settings.lock().map_err(|e| e.to_string())?.claude().clone();
+    let query = query_for(&app, &target)?;
+    let cache = cache.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        host::replay_track(&claude, &query, &cache, &Opens::default())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayFileRequest {
+    #[serde(flatten)]
+    pub target: Target,
+    pub event_id: String,
+}
+
+/// The file a `file.change` Event changed, rebuilt as it was after that edit (read-only; nothing recorded runs).
+#[tauri::command]
+pub async fn flight_replay_file(
+    app: AppHandle,
+    settings: State<'_, Mutex<SettingsStore>>,
+    cache: State<'_, FlightCache>,
+    request: ReplayFileRequest,
+) -> Result<host::ReplayFile, String> {
+    let claude = settings.lock().map_err(|e| e.to_string())?.claude().clone();
+    let query = query_for(&app, &request.target)?;
+    let cache = cache.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        host::replay_file(
+            &claude,
+            &query,
+            &cache,
+            &Opens::default(),
+            &request.event_id,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

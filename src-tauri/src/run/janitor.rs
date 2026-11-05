@@ -404,7 +404,7 @@ pub struct KeptBranch {
 
 /// The repo a status.json `repoPath` names, only when it is a git repo top that is one of the run's repos
 /// (listed in repos.json, or inside the start folder): the file is written by an LLM-driven skill.
-fn verified_repo(run_dir: &Path, repo: &str) -> Option<PathBuf> {
+pub(crate) fn verified_repo(run_dir: &Path, repo: &str) -> Option<PathBuf> {
     let repo = canonical(Path::new(repo));
     if !super::git::is_repo_top(&repo) {
         return None;

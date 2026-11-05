@@ -11,6 +11,7 @@
 //! - `tail`: the JSONL tailer, with byte offsets.
 //! - `adapters`: provider transcripts to events.
 //! - `correlate`, `derive`: spans, tree, failures, files, repeats.
+//! - `replay`: a file rebuilt from its base and the recorded edits, pure.
 //! - `export`: the OTLP payload of a Trace (JSON and protobuf), pure.
 //! - `redact`: the one secret scanner (also used by ClickUp).
 //! - `compare`: the rows and the Divergence of two runs.
@@ -25,6 +26,7 @@ pub mod export;
 pub mod host;
 pub mod index;
 pub mod redact;
+pub mod replay;
 pub mod schema;
 pub mod session;
 pub mod snapshot;
