@@ -72,10 +72,40 @@ pub fn run_one(
     log: &Path,
     timeout: Duration,
 ) -> (String, Option<i32>, Option<String>) {
+    run_step(command, cwd, log, timeout, false, None)
+}
+
+/// [`run_one`] that can be stopped and can append: when `stop` becomes true the whole process tree is killed and the
+/// result is `stopped`. With `append` the output goes after what the log already holds (a re-run's setup, then its
+/// check, share one log); else the log is truncated. The pid is registered like [`run_one`]'s, so [`kill_all`] stops it.
+pub fn run_one_stoppable(
+    command: &str,
+    cwd: &Path,
+    log: &Path,
+    timeout: Duration,
+    append: bool,
+    stop: &std::sync::atomic::AtomicBool,
+) -> (String, Option<i32>, Option<String>) {
+    run_step(command, cwd, log, timeout, append, Some(stop))
+}
+
+fn run_step(
+    command: &str,
+    cwd: &Path,
+    log: &Path,
+    timeout: Duration,
+    append: bool,
+    stop: Option<&std::sync::atomic::AtomicBool>,
+) -> (String, Option<i32>, Option<String>) {
     if let Some(parent) = log.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let file = match crate::store::create_run_log(log) {
+    let opened = if append {
+        crate::store::append_run_log(log)
+    } else {
+        crate::store::create_run_log(log)
+    };
+    let file = match opened {
         Ok(file) => file,
         Err(err) => return ("error".into(), None, Some(format!("log file: {err}"))),
     };
@@ -120,6 +150,13 @@ pub fn run_one(
                 let code = status.code();
                 let result = if status.success() { "pass" } else { "fail" };
                 return (result.into(), code, noted(note, None));
+            }
+            Ok(None) if stop.is_some_and(|s| s.load(std::sync::atomic::Ordering::SeqCst)) => {
+                crate::platform::kill_tree_pid(pid);
+                untrack();
+                let _ = child.kill();
+                let _ = child.wait();
+                return ("stopped".into(), None, noted(note, Some("stopped".into())));
             }
             Ok(None) if started.elapsed() >= timeout => {
                 crate::platform::kill_tree_pid(pid);

@@ -24,6 +24,7 @@ pub mod preview;
 pub mod record;
 pub mod repos;
 pub mod requests;
+pub mod rerun;
 pub mod slop;
 pub mod status;
 pub mod timeline;

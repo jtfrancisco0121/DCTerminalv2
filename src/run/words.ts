@@ -810,3 +810,99 @@ export function evalDistText(
   if (dist.min === null || dist.median === null || dist.max === null) return "no figures";
   return `min ${format(dist.min)} · median ${format(dist.median)} · max ${format(dist.max)} (over ${dist.of} ${dist.of === 1 ? "run" : "runs"})`;
 }
+
+/** Phoenix's local OTLP/HTTP traces address (the host default, `settings_store.rs`). */
+export const DEFAULT_EXPORT_ENDPOINT = "http://127.0.0.1:6006/v1/traces";
+
+/** Export refusals the host words (the host and this file hold the same text). */
+export const EXPORT_CHANGED = "the trace changed since the preview";
+export const EXPORT_TOO_LARGE = "This trace is larger than 32 MiB; export a single session instead.";
+
+/** "412 spans, 38 events, 61.2 KiB". */
+export function exportSizeText(spans: number, events: number, bytes: number): string {
+  const size = bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MiB` : `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${spans} spans, ${events} events, ${size}`;
+}
+
+/** The warning above Send when the endpoint is not on this machine. */
+export function exportLeavesText(spans: number, endpoint: string): string {
+  return `This export leaves the machine: ${spans} spans to ${endpoint}`;
+}
+
+/** The labels of replayed output: what the agent did, what the app ran again, and what a re-run starts. */
+export const REPLAY_LABEL = { recorded: "recorded", rerun: "re-run", fresh: "new execution" } as const;
+
+/** What replay cannot see (the file pane's footnote). */
+export const REPLAY_FOOTNOTE = "Changes made by shell commands are not seen.";
+
+/** Why the replay toggle is disabled, or null. */
+export function replayDisabledReason(eventCount: number, off: boolean): string | null {
+  if (off) return "AgentFlight is off for this account (Settings › Activity).";
+  if (eventCount === 0) return "This trace has no events to replay.";
+  return null;
+}
+
+/** "after edit 3 of 7". */
+export const replayEditText = (k: number, n: number) => `after edit ${k} of ${n}`;
+
+/** The re-run states, in words and tone (muted when it did not finish, running while it runs). */
+export function rerunStateText(state: string): string {
+  switch (state) {
+    case "preparing":
+      return "preparing";
+    case "setup":
+      return "setting up";
+    case "running":
+      return "running the check";
+    case "pass":
+      return "pass";
+    case "fail":
+      return "fail";
+    case "timeout":
+      return "timed out";
+    case "error":
+      return "error";
+    case "stopped":
+      return "stopped";
+    case "interrupted":
+      return "interrupted (the app quit)";
+    default:
+      return state;
+  }
+}
+
+export function rerunStateTone(state: string): Tone {
+  switch (state) {
+    case "preparing":
+    case "setup":
+    case "running":
+      return "running";
+    case "pass":
+      return "success";
+    case "fail":
+    case "timeout":
+    case "error":
+      return "danger";
+    default:
+      return "muted";
+  }
+}
+
+/** A re-run that is still going. */
+export const rerunActive = (state: string) => state === "preparing" || state === "setup" || state === "running";
+
+/** The disabled "Re-run check" caption for a check that is not the app's own. */
+export const RERUN_NOT_APP = "Only the app's own check can be re-run.";
+
+/** The note in the confirmation when the recorded check ran on a dirty worktree. */
+export const RERUN_DIRTY_NOTE =
+  "The recorded check ran with uncommitted changes in the worktree; the re-run uses the committed files at this commit only.";
+
+/** "Re-run PR2's check at 3f2a9c1". */
+export const rerunTitle = (pr: string, commit: string | null) => `Re-run ${pr}'s check${commit ? ` at ${commit.slice(0, 7)}` : ""}`;
+
+/** The last `n` lines of a log. */
+export function lastLines(text: string, n: number): string {
+  const lines = text.replace(/\n$/, "").split("\n");
+  return lines.slice(-n).join("\n");
+}

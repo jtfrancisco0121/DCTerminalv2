@@ -5,9 +5,13 @@ import type { Failure, FlightEvent, SessionView } from "../flight/types";
 
 const flightSession = vi.fn();
 const flightContent = vi.fn();
+const flightReplayTrack = vi.fn();
+const flightReplayFile = vi.fn();
 vi.mock("../flight/api", () => ({
   flightSession: (...args: unknown[]) => flightSession(...args),
   flightContent: (...args: unknown[]) => flightContent(...args),
+  flightReplayTrack: (...args: unknown[]) => flightReplayTrack(...args),
+  flightReplayFile: (...args: unknown[]) => flightReplayFile(...args),
 }));
 
 const { TracePanel } = await import("./TracePanel");
@@ -120,7 +124,23 @@ function sessionView(over: Partial<SessionView> = {}): SessionView {
 beforeEach(() => {
   flightSession.mockReset();
   flightContent.mockReset();
+  flightReplayTrack.mockReset();
+  flightReplayFile.mockReset();
   flightSession.mockResolvedValue(sessionView());
+  flightReplayTrack.mockImplementation(async () => ({
+    status: "ok",
+    truncated: false,
+    entries: events.map((e) => ({
+      id: e.id,
+      at: e.at,
+      kind: e.id === "e4" ? "file.change" : e.kind,
+      name: e.name,
+      status: e.status,
+      file: e.id === "e4" ? 1 : null,
+      checkSource: null,
+      pr: null,
+    })),
+  }));
 });
 afterEach(cleanup);
 
@@ -128,6 +148,115 @@ const open = async () => {
   render(<TracePanel target={{ runDir: "/runs/r-1" }} onClose={() => {}} />);
   await screen.findByRole("listbox", { name: "Events" });
 };
+
+describe("TracePanel replay", () => {
+  const selectedId = () => document.querySelector('[role="option"][aria-selected="true"]')?.id;
+
+  it("is disabled with its reason under policy off and when there are no events", async () => {
+    flightSession.mockResolvedValue(sessionView({ status: "off", policy: "off" }));
+    render(<TracePanel target={{ runDir: "/runs/r-1" }} onClose={() => {}} />);
+    await waitFor(() => expect((screen.getByRole("button", { name: "Replay" }) as HTMLButtonElement).disabled).toBe(true));
+    expect(screen.getByRole("button", { name: "Replay" }).getAttribute("title")).toContain("off for this account");
+    cleanup();
+    flightSession.mockResolvedValue(sessionView({ page: { events: [], nextCursor: null } }));
+    render(<TracePanel target={{ runDir: "/runs/r-1" }} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Replay" }).getAttribute("title")).toContain("no events"));
+  });
+
+  it("steps through every Event with the keys and the Event list follows; Esc leaves", async () => {
+    await open();
+    const toggle = screen.getByRole("button", { name: "Replay" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(toggle);
+    const slider = await screen.findByRole("slider");
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    expect(slider.getAttribute("aria-valuemin")).toBe("0");
+    expect(slider.getAttribute("aria-valuemax")).toBe(String(events.length - 1));
+    expect(slider.getAttribute("aria-valuenow")).toBe("0");
+    expect(slider.getAttribute("aria-valuetext")).toContain("Session started");
+    expect(selectedId()).toBe("trace-row-e1");
+    fireEvent.keyDown(slider, { key: "ArrowRight" });
+    expect(slider.getAttribute("aria-valuenow")).toBe("1");
+    expect(selectedId()).toBe("trace-row-e2");
+    fireEvent.keyDown(slider, { key: "End" });
+    expect(slider.getAttribute("aria-valuenow")).toBe(String(events.length - 1));
+    expect(selectedId()).toBe("trace-row-e8");
+    fireEvent.keyDown(slider, { key: "ArrowRight" });
+    expect(slider.getAttribute("aria-valuenow")).toBe(String(events.length - 1));
+    fireEvent.keyDown(slider, { key: "Home" });
+    expect(selectedId()).toBe("trace-row-e1");
+    fireEvent.keyDown(screen.getByRole("region", { name: "Trace" }), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("slider")).toBeNull());
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("shows the file labelled recorded for a file.change, and the stop message", async () => {
+    flightReplayFile.mockResolvedValue({
+      status: "ok",
+      reason: null,
+      path: "src/add.js",
+      pr: "PR1",
+      text: "let a = 1;\nlet b = 2;\n",
+      redactions: 2,
+      truncated: false,
+      edit: 2,
+      edits: 3,
+      stopped: { at: 3, reason: "the text this edit replaces is not in the file" },
+    });
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: "Replay" }));
+    const slider = await screen.findByRole("slider");
+    // e4 is the fourth Event.
+    fireEvent.keyDown(slider, { key: "ArrowRight" });
+    fireEvent.keyDown(slider, { key: "ArrowRight" });
+    fireEvent.keyDown(slider, { key: "ArrowRight" });
+    const pane = await screen.findByTestId("file-pane");
+    expect(flightReplayFile).toHaveBeenCalledWith({ runDir: "/runs/r-1" }, "e4");
+    await waitFor(() => expect(within(pane).getByTestId("file-pane-text")).toBeTruthy());
+    expect(pane.textContent).toContain("recorded");
+    expect(pane.textContent).toContain("src/add.js");
+    expect(pane.textContent).toContain("after edit 2 of 3");
+    expect(pane.textContent).toContain("2 redacted");
+    expect(within(pane).getByTestId("file-pane-stopped").textContent).toContain("Cannot reconstruct this file past this edit.");
+    expect(pane.textContent).toContain("Changes made by shell commands are not seen.");
+    // Moving to another kind of Event takes the pane away.
+    fireEvent.keyDown(slider, { key: "ArrowRight" });
+    await waitFor(() => expect(screen.queryByTestId("file-pane")).toBeNull());
+  });
+
+  it("says why a file cannot be shown", async () => {
+    flightReplayFile.mockResolvedValue({
+      status: "unavailable",
+      reason: "This file is outside every PR worktree of the run.",
+      path: null,
+      pr: null,
+      text: null,
+      redactions: 0,
+      truncated: false,
+      edit: null,
+      edits: 0,
+      stopped: null,
+    });
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: "Replay" }));
+    const slider = await screen.findByRole("slider");
+    for (let i = 0; i < 3; i += 1) fireEvent.keyDown(slider, { key: "ArrowRight" });
+    expect((await screen.findByTestId("file-pane-reason")).textContent).toContain("outside every PR worktree");
+  });
+});
+
+describe("TracePanel export", () => {
+  it("has an Export button before Search that is disabled when the policy is off", async () => {
+    await open();
+    const names = screen.getAllByRole("button").map((b) => b.textContent);
+    expect(names.indexOf("Export")).toBeGreaterThan(-1);
+    expect((screen.getByRole("button", { name: "Export" }) as HTMLButtonElement).disabled).toBe(false);
+    cleanup();
+    flightSession.mockResolvedValue(sessionView({ status: "off", policy: "off" }));
+    render(<TracePanel target={{ runDir: "/runs/r-1" }} onClose={() => {}} />);
+    await waitFor(() => expect((screen.getByRole("button", { name: "Export" }) as HTMLButtonElement).disabled).toBe(true));
+  });
+});
 
 describe("TracePanel snapshot", () => {
   it("shows the Snapshot pill with its time and whether content was kept", async () => {

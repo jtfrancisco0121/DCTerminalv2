@@ -6,11 +6,13 @@
 use super::adapters::dcv2_run::{self, ApprovalIn, RunEvents, RunInputs};
 use super::adapters::{AgentMeta, SubagentFile};
 use super::compare;
+use super::export;
 use super::index::{
     self, Counts, Exclusion, Limits, PassStats, RunInput, SearchFilter, SearchOut, SessionInput,
     SourceStamp,
 };
 use super::redact::{first_hit, redact};
+use super::replay;
 use super::schema::{sha256_hex, CapturePolicy, SourceRef};
 use super::session::{self, PageRequest, Parsed, SessionView};
 use super::snapshot;
@@ -493,22 +495,24 @@ impl FlightCache {
     }
 }
 
-/// `flight_session`: the policy first, then the files, then one page.
-pub fn session_view(
+/// A query resolved and parsed: the sessions (and the snapshot's, for a gone transcript) and the run's own events.
+struct Loaded {
+    set: SessionSet,
+    parsed: Vec<Arc<Parsed>>,
+    run: Option<Arc<RunEvents>>,
+    snapshot: Option<session::SnapshotInfo>,
+}
+
+/// The policy first, then the files, then the parse; `None` when the policy is `off`.
+fn load(
     claude: &ClaudeSettings,
     query: &Query,
-    request: &PageRequest,
     cache: &FlightCache,
     opens: &Opens,
-) -> Result<SessionView, String> {
-    let trace = query
-        .run_dir
-        .as_ref()
-        .and_then(|d| d.file_name())
-        .map(|n| n.to_string_lossy().to_string());
+) -> Result<Option<Loaded>, String> {
     let set = match resolve(claude, query, opens) {
         Access::Refused(why) => return Err(why),
-        Access::Off => return Ok(SessionView::off(trace.as_deref().unwrap_or(""))),
+        Access::Off => return Ok(None),
         Access::Ready(set) => set,
     };
     let exact = query.run_dir.as_deref().is_some_and(exact_pr);
@@ -537,15 +541,44 @@ pub fn session_view(
         .run_dir
         .as_deref()
         .map(|dir| cache.run_events(dir, opens));
+    Ok(Some(Loaded {
+        set,
+        parsed,
+        run,
+        snapshot: snapshot_info,
+    }))
+}
+
+/// The run id of a run query.
+fn trace_of(query: &Query) -> Option<String> {
+    query
+        .run_dir
+        .as_ref()
+        .and_then(|d| d.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+}
+
+/// `flight_session`: the policy first, then the files, then one page.
+pub fn session_view(
+    claude: &ClaudeSettings,
+    query: &Query,
+    request: &PageRequest,
+    cache: &FlightCache,
+    opens: &Opens,
+) -> Result<SessionView, String> {
+    let trace = trace_of(query);
+    let Some(loaded) = load(claude, query, cache, opens)? else {
+        return Ok(SessionView::off(trace.as_deref().unwrap_or("")));
+    };
     let mut view = session::view(
-        &parsed,
-        run.as_deref(),
+        &loaded.parsed,
+        loaded.run.as_deref(),
         trace.as_deref(),
-        set.policy,
+        loaded.set.policy,
         request,
-        set.notices,
+        loaded.set.notices,
     )?;
-    view.snapshot = snapshot_info;
+    view.snapshot = loaded.snapshot;
     Ok(view)
 }
 
@@ -826,6 +859,11 @@ pub fn spawn_index(app: &tauri::AppHandle) {
         .spawn(move || {
             let mut conn: Option<rusqlite::Connection> = None;
             let mut snapshots = SnapshotState::default();
+            // Before the first sleep: re-runs the last quit left half done (their scratch worktrees go).
+            {
+                let data = crate::data_dir::app_data_dir(&app).path;
+                let _ = std::panic::catch_unwind(|| crate::run::rerun::cleanup_leftovers(&data));
+            }
             loop {
                 std::thread::sleep(INDEX_EVERY);
                 let data = crate::data_dir::app_data_dir(&app).path;
@@ -2007,17 +2045,23 @@ pub fn read_content(
     source: &SourceRef,
     opens: &Opens,
 ) -> Result<ContentOut, String> {
-    let set = match resolve(claude, query, opens) {
-        Access::Refused(why) => return Err(why),
-        Access::Off => {
-            return Ok(ContentOut {
-                text: String::new(),
-                redactions: 0,
-                policy: CapturePolicy::Off,
-            })
-        }
-        Access::Ready(set) => set,
-    };
+    match resolve(claude, query, opens) {
+        Access::Refused(why) => Err(why),
+        Access::Off => Ok(ContentOut {
+            text: String::new(),
+            redactions: 0,
+            policy: CapturePolicy::Off,
+        }),
+        Access::Ready(set) => read_content_in(&set, source, opens),
+    }
+}
+
+/// [`read_content`] for an already resolved set (the policy is not `off`).
+fn read_content_in(
+    set: &SessionSet,
+    source: &SourceRef,
+    opens: &Opens,
+) -> Result<ContentOut, String> {
     if set.contains_run_file(&source.file) {
         return read_run_file(source, set.policy, opens);
     }
@@ -2037,6 +2081,18 @@ pub fn read_content(
         }
         .into());
     }
+    let bytes = read_transcript_line(source, opens)?;
+    let (text, redactions) = render_line(&bytes);
+    Ok(ContentOut {
+        text,
+        redactions,
+        policy: set.policy,
+    })
+}
+
+/// One transcript line by its ref, checked against its sha256. The caller has checked that the file is part
+/// of the resolved set.
+fn read_transcript_line(source: &SourceRef, opens: &Opens) -> Result<Vec<u8>, String> {
     if source.len > MAX_LINE {
         return Err("that line is too large to show".into());
     }
@@ -2051,12 +2107,705 @@ pub fn read_content(
     if bytes.len() as u64 != source.len || sha256_hex(&bytes) != source.sha256 {
         return Err("source changed".into());
     }
-    let (text, redactions) = render_line(&bytes);
-    Ok(ContentOut {
-        text,
-        redactions,
-        policy: set.policy,
+    Ok(bytes)
+}
+
+/// A Trace ready to export: the capture policy of its account and the data `export::build` takes.
+/// `None` when the policy is `off`. Tool text is read (redacted) only when `with_content`.
+pub fn export_input(
+    claude: &ClaudeSettings,
+    query: &Query,
+    cache: &FlightCache,
+    opens: &Opens,
+    with_content: bool,
+) -> Result<Option<(CapturePolicy, export::ExportInput)>, String> {
+    let Some(loaded) = load(claude, query, cache, opens)? else {
+        return Ok(None);
+    };
+    let merged = session::merge(&loaded.parsed, loaded.run.as_deref());
+    let trace = trace_of(query).or_else(|| {
+        loaded
+            .parsed
+            .first()
+            .and_then(|p| p.events.first())
+            .map(|e| e.trace.clone())
+    });
+    let mut events: Vec<super::schema::Event> = merged
+        .ordered
+        .iter()
+        .map(|(_, e)| e.as_ref().clone())
+        .collect();
+    let trace = trace.unwrap_or_default();
+    let mut content = std::collections::BTreeMap::new();
+    for e in events.iter_mut() {
+        e.trace = trace.clone();
+        let tool_edge =
+            e.kind == super::schema::kind::TOOL_START || e.kind == super::schema::kind::TOOL_END;
+        if with_content && tool_edge && e.agent.id != super::schema::ORCHESTRATION {
+            // A line that cannot be read now (changed, gone) is left out, not an error.
+            if let Ok(out) = read_content_in(&loaded.set, &e.content.source, opens) {
+                content.insert(
+                    e.id.clone(),
+                    export::ToolText {
+                        text: out.text,
+                        redactions: out.redactions,
+                    },
+                );
+            }
+        }
+    }
+    Ok(Some((
+        loaded.set.policy,
+        export::ExportInput {
+            trace,
+            events,
+            agents: loaded.parsed.iter().map(|p| p.tree.clone()).collect(),
+            failures: merged.failures,
+            content,
+        },
+    )))
+}
+
+// ---- Event replay (AF13): the replay track and a file after each recorded edit ----
+
+/// The track holds at most this many Events.
+pub const MAX_TRACK: usize = 20_000;
+/// Shown when the replayed Trace has no run (its files belong to no PR worktree).
+const REPLAY_NO_RUN: &str =
+    "Replaying file changes needs a run: a session alone has no PR worktrees.";
+
+/// One tick of the replay track. Eight keys, no path.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayEntry {
+    pub id: String,
+    pub at: String,
+    pub kind: String,
+    pub name: Option<String>,
+    pub status: Option<String>,
+    /// How many files a `file.change` touched (never their paths); `None` for other kinds.
+    pub file: Option<usize>,
+    /// `skill`, `app` or `stop-check` for a `check.end`.
+    pub check_source: Option<String>,
+    pub pr: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayTrack {
+    /// `ok`, or `off` when the policy lets nothing be read.
+    pub status: String,
+    pub entries: Vec<ReplayEntry>,
+    pub truncated: bool,
+}
+
+/// One entry per Event of the Trace, in Trace order (the order `flight_session` pages in).
+pub fn replay_track(
+    claude: &ClaudeSettings,
+    query: &Query,
+    cache: &FlightCache,
+    opens: &Opens,
+) -> Result<ReplayTrack, String> {
+    use super::schema::kind;
+    let Some(loaded) = load(claude, query, cache, opens)? else {
+        return Ok(ReplayTrack {
+            status: "off".into(),
+            entries: Vec::new(),
+            truncated: false,
+        });
+    };
+    let merged = session::merge(&loaded.parsed, loaded.run.as_deref());
+    let truncated = merged.ordered.len() > MAX_TRACK;
+    let entries = merged
+        .ordered
+        .iter()
+        .take(MAX_TRACK)
+        .map(|(_, e)| {
+            let text = |key: &str| e.attrs.get(key).and_then(Value::as_str).map(str::to_string);
+            ReplayEntry {
+                id: e.id.clone(),
+                at: e.at.clone(),
+                kind: e.kind.clone(),
+                name: e.name.clone(),
+                status: e.status.clone(),
+                file: (e.kind == kind::FILE_CHANGE).then(|| {
+                    e.attrs
+                        .get("files")
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len)
+                }),
+                check_source: (e.kind == kind::CHECK_END)
+                    .then(|| text(super::schema::attr::SOURCE))
+                    .flatten(),
+                pr: text(super::schema::attr::PR).or_else(|| e.agent.pr.clone()),
+            }
+        })
+        .collect();
+    Ok(ReplayTrack {
+        status: "ok".into(),
+        entries,
+        truncated,
     })
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayStop {
+    /// The 1-based edit (among the file's recorded edits) that does not apply.
+    pub at: usize,
+    pub reason: String,
+}
+
+/// The file after one recorded edit.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayFile {
+    /// `ok` (text is set), `off` (the policy reads nothing) or `unavailable` (see `reason`).
+    pub status: String,
+    pub reason: Option<String>,
+    /// The file relative to the PR's worktree.
+    pub path: Option<String>,
+    pub pr: Option<String>,
+    pub text: Option<String>,
+    pub redactions: u32,
+    /// The text was cut at 256 KiB.
+    pub truncated: bool,
+    /// This edit is the k-th of the file's n successful recorded edits.
+    pub edit: Option<usize>,
+    pub edits: usize,
+    pub stopped: Option<ReplayStop>,
+}
+
+impl ReplayFile {
+    fn none(status: &str, reason: impl Into<String>) -> Self {
+        Self {
+            status: status.into(),
+            reason: Some(reason.into()),
+            path: None,
+            pr: None,
+            text: None,
+            redactions: 0,
+            truncated: false,
+            edit: None,
+            edits: 0,
+            stopped: None,
+        }
+    }
+}
+
+fn unavailable(reason: impl Into<String>) -> ReplayFile {
+    ReplayFile::none("unavailable", reason)
+}
+
+/// A PR of a run: its verified repo, base commit and the text prefix of its (possibly removed) worktree.
+struct ReplayPr {
+    id: String,
+    repo: PathBuf,
+    base: Option<String>,
+    prefix: PathBuf,
+}
+
+/// The run's PRs from status.json only. The worktree folder is never verified, read or opened: its path
+/// is `janitor::expected_worktree` of the verified repo, used as text.
+fn replay_prs(run_dir: &Path) -> Vec<ReplayPr> {
+    let run_id = run_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let status = crate::run::folder::read_json_value(&run_dir.join("status.json"));
+    let prs = status
+        .as_ref()
+        .and_then(|s| s.get("prs"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    prs.iter()
+        .filter_map(|pr| {
+            let id = pr.get("id")?.as_str()?.to_string();
+            if !crate::run::status::valid_pr_id(&id) {
+                return None;
+            }
+            let repo = crate::run::janitor::verified_repo(run_dir, pr.get("repoPath")?.as_str()?)?;
+            let prefix = crate::run::janitor::expected_worktree(&repo, &run_id, &id)?;
+            let base = pr
+                .get("baseCommit")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .filter(|b| crate::run::janitor::valid_commit(b));
+            Some(ReplayPr {
+                id,
+                repo,
+                base,
+                prefix,
+            })
+        })
+        .collect()
+}
+
+/// A relative path with no `..` part, no root and no option-like start, in git's `/` form.
+fn git_path(rel: &Path) -> Option<String> {
+    let mut parts = Vec::new();
+    for part in rel.components() {
+        match part {
+            std::path::Component::Normal(p) => parts.push(p.to_string_lossy().to_string()),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+/// The edit a recorded `tool_use` made, from its input.
+fn edit_of(name: &str, input: &Value) -> Result<replay::Edit, String> {
+    let text = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).map(str::to_string);
+    let replacement = |v: &Value| -> Option<replay::Replacement> {
+        Some(replay::Replacement {
+            old: text(v, "old_string")?,
+            new: text(v, "new_string")?,
+            replace_all: v
+                .get("replace_all")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })
+    };
+    let bad = || "the recorded input has an unexpected shape".to_string();
+    match name {
+        "Write" => Ok(replay::Edit::Write {
+            content: text(input, "content").ok_or_else(bad)?,
+        }),
+        "Edit" => Ok(replay::Edit::Replace(replacement(input).ok_or_else(bad)?)),
+        "MultiEdit" => {
+            let list = input
+                .get("edits")
+                .and_then(Value::as_array)
+                .ok_or_else(bad)?;
+            let edits: Option<Vec<_>> = list.iter().map(replacement).collect();
+            Ok(replay::Edit::Multi {
+                edits: edits.ok_or_else(bad)?,
+            })
+        }
+        _ => Err(bad()),
+    }
+}
+
+/// The recorded input of a `tool_use` (by id) on a transcript line, in memory only.
+fn recorded_edit(
+    set: &SessionSet,
+    event: &super::schema::Event,
+    opens: &Opens,
+) -> Result<replay::Edit, String> {
+    let source = &event.content.source;
+    if !set.contains(&source.file) {
+        return Err("the transcript is gone, so the recorded input cannot be read".into());
+    }
+    let bytes = read_transcript_line(source, opens)?;
+    let line: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "the recorded line is not readable".to_string())?;
+    let id = event.span.as_deref().unwrap_or("");
+    let block = line["message"]["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|b| b["type"] == "tool_use" && b["id"] == id)
+        .ok_or_else(|| "the recorded input is not on that line".to_string())?;
+    edit_of(block["name"].as_str().unwrap_or(""), &block["input"])
+}
+
+/// The file a `file.change` Event changed, as it was after that edit: the PR's base commit plus the recorded
+/// successful edits of that file up to this one. Read-only: the base comes from git in the run's verified repo,
+/// the edits from the transcript lines, in memory; nothing recorded is ever run, and nothing is written.
+pub fn replay_file(
+    claude: &ClaudeSettings,
+    query: &Query,
+    cache: &FlightCache,
+    opens: &Opens,
+    event_id: &str,
+) -> Result<ReplayFile, String> {
+    use super::schema::{kind, Event};
+    let Some(loaded) = load(claude, query, cache, opens)? else {
+        return Ok(ReplayFile::none("off", EXPORT_OFF));
+    };
+    let merged = session::merge(&loaded.parsed, loaded.run.as_deref());
+    let events: Vec<&Event> = merged.ordered.iter().map(|(_, e)| e.as_ref()).collect();
+    let Some(at) = events.iter().position(|e| e.id == event_id) else {
+        return Ok(unavailable("that event is not in this trace"));
+    };
+    let target = events[at];
+    let file_of = |e: &Event| -> Option<String> {
+        e.attrs
+            .get("files")
+            .and_then(Value::as_array)
+            .and_then(|f| f.first())
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let Some(path) = (target.kind == kind::FILE_CHANGE)
+        .then(|| file_of(target))
+        .flatten()
+    else {
+        return Ok(unavailable("that event is not a file change"));
+    };
+    if target.name.as_deref() == Some("NotebookEdit") || path.ends_with(".ipynb") {
+        return Ok(unavailable("Notebooks are not reconstructed."));
+    }
+    let Some(run_dir) = query.run_dir.as_deref() else {
+        return Ok(unavailable(REPLAY_NO_RUN));
+    };
+    // Which PR's worktree holds the file.
+    let spelled = PathBuf::from(&path);
+    let found = replay_prs(run_dir).into_iter().find_map(|pr| {
+        crate::run::janitor::strip_worktree_prefix(&spelled, &pr.prefix).map(|rel| (pr, rel))
+    });
+    let Some((pr, rel)) = found else {
+        return Ok(unavailable(
+            "This file is outside every PR worktree of the run.",
+        ));
+    };
+    let Some(git_rel) = git_path(&rel) else {
+        return Ok(unavailable("This path is not a file inside a worktree."));
+    };
+    let mut out = unavailable("");
+    out.path = Some(git_rel.clone());
+    out.pr = Some(pr.id.clone());
+    let Some(base) = pr.base.as_deref() else {
+        out.reason = Some("No base commit is recorded for this PR.".into());
+        return Ok(out);
+    };
+    let is_commit = crate::run::git::git(&pr.repo, &["cat-file", "-t", base])
+        .is_ok_and(|kind| kind == "commit");
+    if !is_commit {
+        out.reason = Some(
+            "The base commit is not in this repo (the branch may have been cleaned up).".into(),
+        );
+        return Ok(out);
+    }
+    // The base text: absent at the base commit is a new file, not an error.
+    let spec = format!("{base}:{git_rel}");
+    let base_text = match crate::run::git::git(&pr.repo, &["cat-file", "-s", &spec]) {
+        Err(_) => None,
+        Ok(size) => {
+            if size.parse::<usize>().unwrap_or(usize::MAX) > replay::MAX_FILE {
+                out.reason = Some("This file is over 2 MiB; it is not reconstructed.".into());
+                return Ok(out);
+            }
+            match crate::run::git::git_bytes(&pr.repo, &["show", &spec], replay::MAX_FILE) {
+                Ok(bytes) => match String::from_utf8(bytes) {
+                    Ok(text) => Some(text),
+                    Err(_) => {
+                        out.reason = Some("This file is not text.".into());
+                        return Ok(out);
+                    }
+                },
+                Err(why) => {
+                    out.reason = Some(format!("The base version cannot be read: {why}"));
+                    return Ok(out);
+                }
+            }
+        }
+    };
+    // The file's successful recorded edits, in order, up to this one.
+    let ended_ok: std::collections::HashSet<(&str, &str)> = events
+        .iter()
+        .filter(|e| e.kind == kind::TOOL_END && e.status.as_deref() == Some("ok"))
+        .filter_map(|e| Some((e.agent.id.as_str(), e.span.as_deref()?)))
+        .collect();
+    let succeeded = |e: &Event| {
+        e.span
+            .as_deref()
+            .is_some_and(|s| ended_ok.contains(&(e.agent.id.as_str(), s)))
+    };
+    let mine: Vec<(usize, &Event)> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| {
+            e.kind == kind::FILE_CHANGE
+                && file_of(e).as_deref() == Some(path.as_str())
+                && succeeded(e)
+        })
+        .map(|(i, e)| (i, *e))
+        .collect();
+    out.edits = mine.len();
+    let upto: Vec<&(usize, &Event)> = mine.iter().filter(|(i, _)| *i <= at).collect();
+    out.edit = succeeded(target).then_some(upto.len());
+    let mut edits = Vec::new();
+    let mut unreadable: Option<(usize, String)> = None;
+    for (k, (_, e)) in upto.iter().enumerate() {
+        match recorded_edit(&loaded.set, e, opens) {
+            Ok(edit) => edits.push(edit),
+            Err(why) => {
+                unreadable = Some((k, why));
+                break;
+            }
+        }
+    }
+    let state = replay::reconstruct(base_text.as_deref(), &edits);
+    let stopped = match (state.stopped_at, &state.reason, unreadable) {
+        (Some(k), Some(why), _) => Some(ReplayStop {
+            at: k + 1,
+            reason: why.clone(),
+        }),
+        (None, _, Some((k, why))) => Some(ReplayStop {
+            at: k + 1,
+            reason: why,
+        }),
+        _ => None,
+    };
+    out.stopped = stopped;
+    match state.text {
+        Some(text) => {
+            let (mut text, redactions) = redact(&text);
+            out.redactions = redactions as u32;
+            if text.len() > MAX_TEXT {
+                let mut cut = MAX_TEXT;
+                while !text.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                text.truncate(cut);
+                out.truncated = true;
+            }
+            out.text = Some(text);
+            out.status = "ok".into();
+            out.reason = None;
+        }
+        None => {
+            out.reason = Some("The file does not exist yet at this point.".into());
+        }
+    }
+    if !succeeded(target) && out.status == "ok" {
+        out.reason = Some("This edit failed, so the file is as it was before it.".into());
+    }
+    Ok(out)
+}
+
+// ---- Check re-run (AF13) ----
+
+/// A re-run needs a readable Trace: policy `off` (or an unknown account folder) refuses it.
+pub fn replay_gate(claude: &ClaudeSettings, run_dir: &Path) -> Result<(), String> {
+    let query = Query {
+        run_dir: Some(run_dir.to_path_buf()),
+        ..Default::default()
+    };
+    match resolve(claude, &query, &Opens::default()) {
+        Access::Refused(why) => Err(why),
+        Access::Off => Err(EXPORT_OFF.into()),
+        Access::Ready(_) => Ok(()),
+    }
+}
+
+// ---- Export (AF12): Preview, Send, Save ----
+
+/// The one refusal for bytes that are no longer the previewed ones. `src/run/words.ts` holds the same text.
+pub const CHANGED_SINCE_PREVIEW: &str = "the trace changed since the preview";
+/// Shown when the account's capture policy is `off`.
+pub const EXPORT_OFF: &str = "AgentFlight is off for this account (Settings › Activity).";
+/// The export POST takes at most this long.
+const EXPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The bytes of the last Preview, one entry, replaced by the next Preview. Send and Save take exactly
+/// these bytes, so what leaves is what the user saw (a Trace that grew in between is not re-read).
+#[derive(Debug, Clone, Default)]
+pub struct ExportState {
+    previewed: Arc<Mutex<Option<Previewed>>>,
+}
+
+#[derive(Debug)]
+struct Previewed {
+    digest: String,
+    bytes: Arc<Vec<u8>>,
+    content_type: &'static str,
+    spans: usize,
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportRequest {
+    pub policy: export::ExportPolicy,
+    pub encoding: export::Encoding,
+    /// The per-export tick that `full` needs.
+    #[serde(default)]
+    pub confirm_full: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPreview {
+    /// The policy actually used (`full` is clamped to `metadata` without its conditions).
+    pub policy: export::ExportPolicy,
+    pub encoding: export::Encoding,
+    pub endpoint: String,
+    pub spans: usize,
+    pub events: usize,
+    pub bytes: usize,
+    pub digest: String,
+    pub fields: Vec<export::FieldCount>,
+    pub warnings: Vec<String>,
+    /// The endpoint is on this machine.
+    pub loopback: bool,
+    /// The Trace's capture policy: the dialog lists `full` only for `full`.
+    pub capture_policy: CapturePolicy,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSent {
+    pub endpoint: String,
+    pub spans: usize,
+    pub status: u16,
+}
+
+/// An export endpoint: `http://` or `https://` with a host. Returns it trimmed.
+pub fn check_endpoint(text: &str) -> Result<String, String> {
+    crate::store::settings_store::check_export_endpoint(text)
+}
+
+/// The endpoint's host is this machine (`localhost`, `127.x.x.x`, `::1`).
+pub fn is_loopback(endpoint: &str) -> bool {
+    let Ok(uri) = endpoint.trim().parse::<ureq::http::Uri>() else {
+        return false;
+    };
+    let host = uri
+        .host()
+        .unwrap_or("")
+        .trim_matches(|c| c == '[' || c == ']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// The agent that sends an export: http or https, no redirect (a redirect could carry the body to
+/// another host), no proxy (the environment's proxy variables are not read, so a loopback export stays
+/// on loopback), 30 s, status codes are replies to read.
+pub fn export_agent() -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(EXPORT_TIMEOUT))
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .proxy(None)
+        .user_agent(concat!("DCTerminalv2/", env!("CARGO_PKG_VERSION")))
+        .build();
+    ureq::Agent::new_with_config(config)
+}
+
+/// Builds the payload for a Trace and keeps its bytes for Send and Save.
+pub fn export_preview(
+    claude: &ClaudeSettings,
+    query: &Query,
+    cache: &FlightCache,
+    opens: &Opens,
+    state: &ExportState,
+    request: &ExportRequest,
+    endpoint: &str,
+) -> Result<ExportPreview, String> {
+    let endpoint = check_endpoint(endpoint)?;
+    // The policy first: nothing is read for `off`.
+    let capture = match resolve(claude, query, opens) {
+        Access::Refused(why) => return Err(why),
+        Access::Off => return Err(EXPORT_OFF.into()),
+        Access::Ready(set) => set.policy,
+    };
+    let mut warnings = Vec::new();
+    let mut policy = export::ExportPolicy::Metadata;
+    if request.policy == export::ExportPolicy::Full {
+        if capture != CapturePolicy::Full {
+            warnings.push(
+                "The account's capture policy is not full, so no tool text is exported."
+                    .to_string(),
+            );
+        } else if !request.confirm_full {
+            warnings.push("Tool text is not exported until you confirm it.".to_string());
+        } else {
+            policy = export::ExportPolicy::Full;
+        }
+    }
+    let Some((_, input)) = export_input(
+        claude,
+        query,
+        cache,
+        opens,
+        policy == export::ExportPolicy::Full,
+    )?
+    else {
+        return Err(EXPORT_OFF.into());
+    };
+    let payload = export::build(&input, policy, request.encoding)?;
+    let loopback = is_loopback(&endpoint);
+    let preview = ExportPreview {
+        policy,
+        encoding: request.encoding,
+        endpoint,
+        spans: payload.spans,
+        events: payload.events,
+        bytes: payload.bytes.len(),
+        digest: payload.digest.clone(),
+        fields: payload.fields,
+        warnings,
+        loopback,
+        capture_policy: capture,
+    };
+    *state.previewed.lock().map_err(|e| e.to_string())? = Some(Previewed {
+        digest: payload.digest,
+        bytes: Arc::new(payload.bytes),
+        content_type: payload.content_type,
+        spans: preview.spans,
+    });
+    Ok(preview)
+}
+
+fn previewed(
+    state: &ExportState,
+    digest: &str,
+) -> Result<(Arc<Vec<u8>>, &'static str, usize), String> {
+    let guard = state.previewed.lock().map_err(|e| e.to_string())?;
+    match guard.as_ref() {
+        Some(p) if p.digest == digest => Ok((p.bytes.clone(), p.content_type, p.spans)),
+        _ => Err(CHANGED_SINCE_PREVIEW.into()),
+    }
+}
+
+/// Posts exactly the previewed bytes (one request, no retry, no redirect).
+pub fn export_send(
+    state: &ExportState,
+    agent: &ureq::Agent,
+    digest: &str,
+    endpoint: &str,
+) -> Result<ExportSent, String> {
+    let endpoint = check_endpoint(endpoint)?;
+    let (bytes, content_type, spans) = previewed(state, digest)?;
+    let response = agent
+        .post(&endpoint)
+        .header("Content-Type", content_type)
+        .send(&bytes[..])
+        .map_err(|e| format!("could not reach {endpoint}: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "{endpoint} answered {} {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or("")
+        )
+        .trim_end()
+        .to_string());
+    }
+    Ok(ExportSent {
+        endpoint,
+        spans,
+        status: status.as_u16(),
+    })
+}
+
+/// Writes exactly the previewed bytes to `path` (created or truncated, never through a link).
+pub fn export_save(state: &ExportState, digest: &str, path: &Path) -> Result<(), String> {
+    use std::io::Write;
+    let (bytes, _, _) = previewed(state, digest)?;
+    if !path.is_absolute() {
+        return Err("choose a full path to save to".into());
+    }
+    let mut file = crate::store::create_run_log(path)
+        .map_err(|e| format!("cannot save to {}: {e}", path.display()))?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("cannot save to {}: {e}", path.display()))
 }
 
 #[cfg(test)]
@@ -2890,6 +3639,612 @@ mod tests {
 
     fn event_by(view: &SessionView, f: impl Fn(&Event) -> bool) -> &Event {
         view.page.events.iter().find(|e| f(e)).expect("event")
+    }
+
+    fn wave1_payload(policy: CapturePolicy, encoding: export::Encoding) -> export::Payload {
+        let (_dir, run, claude) = wave1("export_golden", policy);
+        let (_, input) = export_input(
+            &claude,
+            &run_query(&run),
+            &FlightCache::default(),
+            &Opens::default(),
+            false,
+        )
+        .unwrap()
+        .expect("not off");
+        export::build(&input, export::ExportPolicy::Metadata, encoding).unwrap()
+    }
+
+    #[test]
+    fn the_wave1_trace_exports_byte_for_byte_to_the_golden_files() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/flight");
+        let json = wave1_payload(CapturePolicy::Metadata, export::Encoding::Json);
+        let pb = wave1_payload(CapturePolicy::Metadata, export::Encoding::Protobuf);
+        let hex: String = pb
+            .bytes
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+            + "\n";
+        if std::env::var("FLIGHT_WRITE_GOLDEN").is_ok() {
+            std::fs::write(dir.join("otlp-wave1.json"), &json.bytes).unwrap();
+            std::fs::write(dir.join("otlp-wave1.pb.hex"), &hex).unwrap();
+        }
+        assert_eq!(
+            json.bytes,
+            std::fs::read(dir.join("otlp-wave1.json")).unwrap(),
+            "regenerate with FLIGHT_WRITE_GOLDEN=1"
+        );
+        assert_eq!(
+            hex,
+            std::fs::read_to_string(dir.join("otlp-wave1.pb.hex")).unwrap(),
+            "regenerate with FLIGHT_WRITE_GOLDEN=1"
+        );
+        // The Trace has agents, tools and the run's orchestration.
+        assert!(
+            json.spans >= 5 && json.events >= 5,
+            "{} {}",
+            json.spans,
+            json.events
+        );
+        let text = String::from_utf8(json.bytes).unwrap();
+        for name in [
+            "invoke_agent",
+            "execute_tool",
+            "agentflight.run",
+            "agentflight.check.end",
+        ] {
+            assert!(text.contains(name), "{name}");
+        }
+        assert!(!text.contains("gen_ai.tool.call.arguments"));
+    }
+
+    fn preview_of(
+        claude: &ClaudeSettings,
+        run: &Path,
+        state: &ExportState,
+        policy: export::ExportPolicy,
+        confirm: bool,
+    ) -> Result<ExportPreview, String> {
+        export_preview(
+            claude,
+            &run_query(run),
+            &FlightCache::default(),
+            &Opens::default(),
+            state,
+            &ExportRequest {
+                policy,
+                encoding: export::Encoding::Protobuf,
+                confirm_full: confirm,
+            },
+            "http://127.0.0.1:6006/v1/traces",
+        )
+    }
+
+    #[test]
+    fn export_is_refused_for_policy_off_and_full_is_clamped_without_its_conditions() {
+        let state = ExportState::default();
+        let (_d, run, claude) = wave1("export_off", CapturePolicy::Off);
+        assert_eq!(
+            preview_of(&claude, &run, &state, export::ExportPolicy::Metadata, false).unwrap_err(),
+            EXPORT_OFF
+        );
+        // Capture policy metadata: `full` is clamped.
+        let (_d, run, claude) = wave1("export_meta", CapturePolicy::Metadata);
+        let p = preview_of(&claude, &run, &state, export::ExportPolicy::Full, true).unwrap();
+        assert_eq!(p.policy, export::ExportPolicy::Metadata);
+        assert!(!p.warnings.is_empty());
+        // Capture policy full but no confirmation: clamped. With it: full, and the text is in the bytes.
+        let (_d, run, claude) = wave1("export_full", CapturePolicy::Full);
+        let p = preview_of(&claude, &run, &state, export::ExportPolicy::Full, false).unwrap();
+        assert_eq!(p.policy, export::ExportPolicy::Metadata);
+        let p = preview_of(&claude, &run, &state, export::ExportPolicy::Full, true).unwrap();
+        assert_eq!(p.policy, export::ExportPolicy::Full);
+        assert!(p
+            .fields
+            .iter()
+            .any(|f| f.field == "gen_ai.tool.call.arguments"));
+        assert!(p.loopback && p.bytes > 0 && p.spans > 0);
+    }
+
+    #[test]
+    fn an_unknown_digest_is_refused_by_send_and_save_with_the_one_message() {
+        let state = ExportState::default();
+        let agent = export_agent();
+        let err = export_send(&state, &agent, "nope", "http://127.0.0.1:1/v1/traces").unwrap_err();
+        assert_eq!(err, CHANGED_SINCE_PREVIEW);
+        let dir = TempDir::new("export_unknown");
+        let err = export_save(&state, "nope", &dir.join("x.pb")).unwrap_err();
+        assert_eq!(err, CHANGED_SINCE_PREVIEW);
+        assert!(!dir.join("x.pb").exists());
+    }
+
+    #[test]
+    fn only_http_and_https_with_a_host_are_endpoints_and_loopback_is_told_apart() {
+        for bad in [
+            "",
+            "  ",
+            "ftp://x/y",
+            "file:///etc/passwd",
+            "http://",
+            "localhost:6006",
+            "javascript:1",
+        ] {
+            assert!(check_endpoint(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            check_endpoint(" https://example.com/v1/traces ").unwrap(),
+            "https://example.com/v1/traces"
+        );
+        assert!(is_loopback("http://127.0.0.1:6006/v1/traces"));
+        assert!(is_loopback("http://localhost:4318/v1/traces"));
+        assert!(is_loopback("http://[::1]:4318/x"));
+        assert!(!is_loopback("http://10.0.0.5:6006/v1/traces"));
+        assert!(!is_loopback("https://example.com/x"));
+    }
+
+    #[test]
+    fn the_export_agent_has_no_proxy_and_follows_no_redirect() {
+        let agent = export_agent();
+        assert!(agent.config().proxy().is_none());
+        assert_eq!(agent.config().max_redirects(), 0);
+    }
+
+    /// A one-shot server: answers the first request with `reply`, returns its body, and says whether a
+    /// second request ever arrived.
+    fn serve_once(reply: &'static str) -> (String, std::thread::JoinHandle<(Vec<u8>, bool)>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 8192];
+            let (head_end, length) = loop {
+                let n = stream.read(&mut chunk).unwrap();
+                buf.extend_from_slice(&chunk[..n]);
+                if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&buf[..at]).to_lowercase();
+                    let length = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    break (at + 4, length);
+                }
+                assert!(n > 0, "closed before the head");
+            };
+            while buf.len() < head_end + length {
+                let n = stream.read(&mut chunk).unwrap();
+                assert!(n > 0, "closed before the body");
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            stream.write_all(reply.as_bytes()).unwrap();
+            drop(stream);
+            listener.set_nonblocking(true).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let second = listener.accept().is_ok();
+            (buf[head_end..head_end + length].to_vec(), second)
+        });
+        (format!("http://{addr}/v1/traces"), handle)
+    }
+
+    #[test]
+    fn send_posts_exactly_the_previewed_bytes_even_after_new_events_and_follows_no_redirect() {
+        let state = ExportState::default();
+        let (_d, run, claude) = wave1("export_send", CapturePolicy::Metadata);
+        let p = preview_of(&claude, &run, &state, export::ExportPolicy::Metadata, false).unwrap();
+        let want = state
+            .previewed
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .bytes
+            .clone();
+        assert_eq!(want.len(), p.bytes);
+        // The Trace grows after the Preview.
+        let log = run.join("log.md");
+        let mut text = std::fs::read_to_string(&log).unwrap();
+        text.push_str("2026-11-05T11:59:00Z building PR1 later line\n");
+        std::fs::write(&log, text).unwrap();
+        let (url, server) =
+            serve_once("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        let sent = export_send(&state, &export_agent(), &p.digest, &url).unwrap();
+        assert_eq!((sent.status, sent.spans), (200, p.spans));
+        let (body, second) = server.join().unwrap();
+        assert_eq!(body, *want, "the previewed bytes, not a re-read Trace");
+        assert!(!second);
+        // A redirect is an error and is not followed.
+        let (url, server) = serve_once(
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let err = export_send(&state, &export_agent(), &p.digest, &url).unwrap_err();
+        assert!(err.contains("302"), "{err}");
+        let (_, second) = server.join().unwrap();
+        assert!(!second, "no second request");
+        // A non-2xx reply carries its status.
+        let (url, server) = serve_once(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let err = export_send(&state, &export_agent(), &p.digest, &url).unwrap_err();
+        assert!(err.contains("500"), "{err}");
+        server.join().unwrap();
+        // A non-http endpoint never reaches the network.
+        assert!(export_send(&state, &export_agent(), &p.digest, "ftp://127.0.0.1/x").is_err());
+    }
+
+    #[test]
+    fn save_writes_exactly_the_previewed_bytes_and_never_through_a_link() {
+        let state = ExportState::default();
+        let (dir, run, claude) = wave1("export_save", CapturePolicy::Metadata);
+        let p = preview_of(&claude, &run, &state, export::ExportPolicy::Metadata, false).unwrap();
+        let want = state
+            .previewed
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .bytes
+            .clone();
+        let out = dir.join("trace.otlp.pb");
+        std::fs::write(&out, vec![7u8; want.len() + 50]).unwrap();
+        export_save(&state, &p.digest, &out).unwrap();
+        assert_eq!(
+            std::fs::read(&out).unwrap(),
+            *want,
+            "truncated and rewritten"
+        );
+        assert!(export_save(&state, &p.digest, Path::new("relative.pb")).is_err());
+        #[cfg(unix)]
+        {
+            let target = dir.join("victim.txt");
+            std::fs::write(&target, "keep").unwrap();
+            let link = dir.join("link.pb");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(export_save(&state, &p.digest, &link).is_err());
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+        }
+    }
+
+    /// A run on disk over a toy git repo: PR1 built on the repo's commit `base`, in a linked worktree, with a
+    /// transcript of edits of `src/a.txt` (and a `rm -rf` Bash call).
+    struct Toy {
+        _dir: TempDir,
+        run: PathBuf,
+        repo: PathBuf,
+        wt: PathBuf,
+        claude: ClaudeSettings,
+        sentinel: PathBuf,
+        file: String,
+    }
+
+    const TOY_SID: &str = "bbbb1111-2222-4333-8444-555555555555";
+    const TOY_RUN: &str = "r-20261105-120000-ab12";
+
+    fn toy_replay(policy: CapturePolicy) -> Toy {
+        use crate::run::git::testing::{repo_at, run};
+        let dir = TempDir::new("replay_toy");
+        let config = dir.join("config");
+        let repo = dir.join("ws/toy");
+        repo_at(&repo);
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/a.txt"), "alpha\nbeta\n").unwrap();
+        run(&repo, &["add", "."]);
+        run(&repo, &["commit", "-q", "-m", "add a"]);
+        let base = crate::run::git::git(&repo, &["rev-parse", "HEAD"]).unwrap();
+        let wt = crate::run::janitor::expected_worktree(&repo, TOY_RUN, "PR1").unwrap();
+        run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "dcv2/pr1",
+                wt.to_str().unwrap(),
+            ],
+        );
+        let wt = wt.canonicalize().unwrap();
+        let file = wt.join("src/a.txt").display().to_string();
+        let sentinel = dir.join("sentinel");
+        std::fs::create_dir_all(&sentinel).unwrap();
+        let runs = dir.join("runs");
+        let run_dir = runs.join(TOY_RUN);
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let write =
+            |name: &str, v: Value| std::fs::write(run_dir.join(name), v.to_string()).unwrap();
+        write(
+            "status.json",
+            json!({"schema":1,"runId":TOY_RUN,"stage":"building","prs":[
+                {"id":"PR1","repoPath":repo,"worktree":wt,"baseCommit":base,"state":"building"}]}),
+        );
+        write(
+            "repos.json",
+            json!({"schema":1,"repos":[{"name":"toy","path":repo}]}),
+        );
+        write(
+            "meta.json",
+            json!({"schema":1,"account":{"id":"a","name":"A","configDir":config}}),
+        );
+        write(
+            "app-usage.json",
+            json!({"schema":1,"sessions":[{"sessionId":TOY_SID,"configDir":config}]}),
+        );
+        let t = |n: u32| format!("2026-11-05T12:00:{n:02}Z");
+        let edit =
+            |old: &str, new: &str| json!({"file_path": file, "old_string": old, "new_string": new});
+        let lines = vec![
+            prompt(&t(0)),
+            tool_use(&t(1), "m1", "t1", "Edit", edit("alpha", "ALPHA")),
+            tool_result(&t(2), "t1", "ok", false),
+            tool_use(&t(3), "m2", "t2", "Edit", edit("gamma", "x")),
+            tool_result(&t(4), "t2", "String to replace not found", true),
+            tool_use(
+                &t(5),
+                "m3",
+                "t3",
+                "MultiEdit",
+                json!({"file_path": file, "edits": [
+                    {"old_string": "beta", "new_string": "BETA"},
+                    {"old_string": "BETA", "new_string": "BETA2"}]}),
+            ),
+            tool_result(&t(6), "t3", "ok", false),
+            tool_use(
+                &t(7),
+                "m4",
+                "t4",
+                "Bash",
+                json!({"command": format!("rm -rf {}", sentinel.display())}),
+            ),
+            tool_result(&t(8), "t4", "ok", false),
+            tool_use(&t(9), "m5", "t5", "Edit", edit("nope", "x")),
+            tool_result(&t(10), "t5", "ok", false),
+            tool_use(
+                &t(11),
+                "m6",
+                "t6",
+                "Write",
+                json!({"file_path": dir.join("elsewhere.txt"), "content": "x"}),
+            ),
+            tool_result(&t(12), "t6", "ok", false),
+            tool_use(
+                &t(13),
+                "m7",
+                "t7",
+                "Write",
+                json!({"file_path": format!("{}/../out.txt", wt.display()), "content": "x"}),
+            ),
+            tool_result(&t(14), "t7", "ok", false),
+        ];
+        let proj = config.join("projects/-work-toy");
+        std::fs::create_dir_all(&proj).unwrap();
+        let text: String = lines.iter().map(|l| l.to_string() + "\n").collect();
+        std::fs::write(proj.join(format!("{TOY_SID}.jsonl")), text).unwrap();
+        let claude = settings(vec![account("a", &config, policy)]);
+        Toy {
+            _dir: dir,
+            run: run_dir,
+            repo,
+            wt,
+            claude,
+            sentinel,
+            file,
+        }
+    }
+
+    fn replay_of(toy: &Toy, event: &str) -> ReplayFile {
+        replay_file(
+            &toy.claude,
+            &run_query(&toy.run),
+            &FlightCache::default(),
+            &Opens::default(),
+            event,
+        )
+        .unwrap()
+    }
+
+    fn toy_track(toy: &Toy) -> ReplayTrack {
+        replay_track(
+            &toy.claude,
+            &run_query(&toy.run),
+            &FlightCache::default(),
+            &Opens::default(),
+        )
+        .unwrap()
+    }
+
+    /// The file.change event ids in order (t1, t2, t3, t5, t6, t7).
+    fn file_changes(track: &ReplayTrack) -> Vec<String> {
+        track
+            .entries
+            .iter()
+            .filter(|e| e.kind == "file.change")
+            .map(|e| e.id.clone())
+            .collect()
+    }
+
+    fn check_toy_states(toy: &Toy) {
+        let ids = file_changes(&toy_track(toy));
+        assert_eq!(ids.len(), 6, "{ids:?}");
+        let first = replay_of(toy, &ids[0]);
+        assert_eq!(first.status, "ok", "{first:?}");
+        assert_eq!(first.text.as_deref(), Some("ALPHA\nbeta\n"));
+        assert_eq!((first.edit, first.edits), (Some(1), 3));
+        assert_eq!(first.path.as_deref(), Some("src/a.txt"));
+        assert_eq!(first.pr.as_deref(), Some("PR1"));
+        // The failed edit is skipped: the file is as it was, and it says why.
+        let failed = replay_of(toy, &ids[1]);
+        assert_eq!(failed.text.as_deref(), Some("ALPHA\nbeta\n"));
+        assert_eq!(failed.edit, None);
+        assert!(failed.reason.unwrap().contains("failed"));
+        // The multi-edit applies in order.
+        let multi = replay_of(toy, &ids[2]);
+        assert_eq!(multi.text.as_deref(), Some("ALPHA\nBETA2\n"));
+        assert_eq!(multi.edit, Some(2));
+        assert_eq!(multi.stopped, None);
+        // An edit whose old text is absent stops the file at the state before it.
+        let stopped = replay_of(toy, &ids[3]);
+        assert_eq!(stopped.text.as_deref(), Some("ALPHA\nBETA2\n"));
+        let stop = stopped.stopped.expect("stopped");
+        assert_eq!(stop.at, 3);
+        assert!(stop.reason.contains("not in the file"));
+        // A file outside every PR worktree, and a path with `..`.
+        let outside = replay_of(toy, &ids[4]);
+        assert_eq!(outside.status, "unavailable");
+        assert!(outside
+            .reason
+            .unwrap()
+            .contains("outside every PR worktree"));
+        assert!(outside.text.is_none());
+        let dots = replay_of(toy, &ids[5]);
+        assert_eq!(dots.status, "unavailable");
+        assert!(dots.text.is_none());
+    }
+
+    #[test]
+    fn a_file_is_its_base_commit_plus_the_recorded_successful_edits() {
+        let toy = toy_replay(CapturePolicy::Metadata);
+        check_toy_states(&toy);
+    }
+
+    #[test]
+    fn a_run_whose_worktree_was_removed_still_replays_to_the_same_text() {
+        let toy = toy_replay(CapturePolicy::Metadata);
+        crate::run::git::testing::run(
+            &toy.repo,
+            &["worktree", "remove", "--force", toy.wt.to_str().unwrap()],
+        );
+        assert!(!toy.wt.exists());
+        check_toy_states(&toy);
+    }
+
+    #[test]
+    fn replay_runs_nothing_it_read_from_a_transcript() {
+        let toy = toy_replay(CapturePolicy::Full);
+        let track = toy_track(&toy);
+        assert!(track
+            .entries
+            .iter()
+            .any(|e| e.name.as_deref() == Some("Bash")));
+        for id in track.entries.iter().map(|e| e.id.clone()) {
+            replay_of(&toy, &id);
+        }
+        // Export reads the same Events and must not run them either.
+        export_input(
+            &toy.claude,
+            &run_query(&toy.run),
+            &FlightCache::default(),
+            &Opens::default(),
+            true,
+        )
+        .unwrap();
+        assert!(toy.sentinel.is_dir(), "the recorded `rm -rf` was never run");
+        // And no replay or export source names a way to run one.
+        for file in ["replay.rs", "export.rs"] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/flight")
+                .join(file);
+            let live =
+                crate::test_support::without_test_items(&std::fs::read_to_string(path).unwrap());
+            for banned in ["std::process", "Command", "quiet_command", "run_one"] {
+                assert!(!live.contains(banned), "{file} names {banned}");
+            }
+        }
+    }
+
+    #[test]
+    fn policy_off_returns_no_file_text_and_no_track() {
+        let toy = toy_replay(CapturePolicy::Off);
+        let track = toy_track(&toy);
+        assert_eq!((track.status.as_str(), track.entries.len()), ("off", 0));
+        let file = replay_of(&toy, "ev_anything");
+        assert_eq!(file.status, "off");
+        assert!(file.text.is_none());
+    }
+
+    #[test]
+    fn the_track_has_eight_keys_and_no_path() {
+        let toy = toy_replay(CapturePolicy::Metadata);
+        let track = toy_track(&toy);
+        let value = serde_json::to_value(&track).unwrap();
+        let entries = value["entries"].as_array().unwrap();
+        assert!(entries.len() > 10);
+        let mut files = 0;
+        for entry in entries {
+            let mut keys: Vec<&str> = entry
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort();
+            assert_eq!(
+                keys,
+                [
+                    "at",
+                    "checkSource",
+                    "file",
+                    "id",
+                    "kind",
+                    "name",
+                    "pr",
+                    "status"
+                ]
+            );
+            assert!(entry["file"].is_number() || entry["file"].is_null());
+            if entry["kind"] == "file.change" {
+                files += 1;
+                assert_eq!(entry["file"], 1);
+            }
+        }
+        assert_eq!(files, 6);
+        let text = value.to_string();
+        for path in [
+            toy.file.as_str(),
+            toy.wt.to_str().unwrap(),
+            toy.repo.to_str().unwrap(),
+            "src/a.txt",
+        ] {
+            assert!(!text.contains(path), "the track names {path}");
+        }
+    }
+
+    #[test]
+    fn replayed_text_is_redacted_and_cut_at_256_kib() {
+        let toy = toy_replay(CapturePolicy::Metadata);
+        // Add a huge Write to the transcript.
+        let log = toy
+            ._dir
+            .join(format!("config/projects/-work-toy/{TOY_SID}.jsonl"));
+        let mut text = std::fs::read_to_string(&log).unwrap();
+        let big = "just a plain line of text\n".repeat(12 * 1024);
+        text.push_str(
+            &tool_use(
+                "2026-11-05T11:59:00Z",
+                "m9",
+                "t9",
+                "Write",
+                json!({"file_path": toy.file, "content": big}),
+            )
+            .to_string(),
+        );
+        text.push('\n');
+        text.push_str(&tool_result("2026-11-05T11:59:01Z", "t9", "ok", false).to_string());
+        text.push('\n');
+        std::fs::write(&log, text).unwrap();
+        let ids = file_changes(&toy_track(&toy));
+        let last = replay_of(&toy, &ids[0]);
+        assert_eq!(last.status, "ok", "{last:?}");
+        assert!(
+            last.truncated,
+            "{:?} {:?} {:?} len {:?}",
+            last.status,
+            last.reason,
+            last.stopped,
+            last.text.as_ref().map(|t| t.len())
+        );
+        assert!(last.text.unwrap().len() <= MAX_TEXT);
     }
 
     #[test]

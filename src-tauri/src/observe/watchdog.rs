@@ -20,6 +20,8 @@ pub struct WatchInput {
     pub activity: Option<TabActivity>,
     /// A tool started and has not finished (a long Bash, say).
     pub tool_running: bool,
+    /// The context is being compacted (`PreCompact` without `PostCompact`).
+    pub compacting: bool,
     /// The last hook event.
     pub hook_updated: Option<SystemTime>,
     /// When `activity` last changed (the start of a needs-you episode).
@@ -82,7 +84,7 @@ pub fn check(now: SystemTime, input: &WatchInput, threshold_minutes: u32) -> Opt
         Some(TabActivity::NeedsYou) => return None,
         // A running tool is work, but a tool whose last hook event is older
         // than twice the threshold is stuck (a crash never sent PostToolUse).
-        Some(TabActivity::Working) if input.tool_running => {
+        Some(TabActivity::Working) if input.tool_running || input.compacting => {
             let age = input
                 .hook_updated
                 .map(|at| now.duration_since(at).unwrap_or(Duration::ZERO));
@@ -312,5 +314,21 @@ mod tests {
         );
         assert!(check(t0 + secs(1200), &input, 10).is_some(), "2 x: a stall");
         assert!(check(t0 + secs(3000), &input, 10).is_some());
+    }
+
+    #[test]
+    fn a_compacting_tab_is_held_off_like_a_running_tool() {
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let secs = Duration::from_secs;
+        let input = WatchInput {
+            status_changed: Some(t0),
+            transcript_written: Some(t0),
+            activity: Some(TabActivity::Working),
+            compacting: true,
+            hook_updated: Some(t0),
+            ..Default::default()
+        };
+        assert_eq!(check(t0 + secs(1140), &input, 10), None);
+        assert!(check(t0 + secs(1200), &input, 10).is_some());
     }
 }

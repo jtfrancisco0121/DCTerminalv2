@@ -18,6 +18,10 @@ export type TabHookState = {
   sessionId: string | null;
   /** Unix ms when `activity` last changed. */
   activitySinceMs?: number | null;
+  /** Between PreCompact and PostCompact. */
+  compacting?: boolean;
+  /** The model a PostModelSwitch named. */
+  model?: string | null;
 };
 
 export type Tokens = { input: number; output: number; cacheWrite5m: number; cacheWrite1h: number; cacheRead: number };

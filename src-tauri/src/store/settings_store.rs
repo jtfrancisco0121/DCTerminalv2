@@ -292,6 +292,16 @@ pub struct ObserveSettings {
     /// purpose). Off by default; an old file loads off.
     #[serde(default)]
     pub eval_enabled: bool,
+    /// Where a Trace Export is sent by default (AgentFlight's OTLP export; Phoenix's local port).
+    #[serde(default = "default_export_endpoint")]
+    pub export_endpoint: String,
+}
+
+/// Phoenix's local OTLP/HTTP traces endpoint.
+pub const DEFAULT_EXPORT_ENDPOINT: &str = "http://127.0.0.1:6006/v1/traces";
+
+fn default_export_endpoint() -> String {
+    DEFAULT_EXPORT_ENDPOINT.to_string()
 }
 
 impl Default for ObserveSettings {
@@ -299,8 +309,29 @@ impl Default for ObserveSettings {
         Self {
             hooks_all_tabs: true,
             eval_enabled: false,
+            export_endpoint: default_export_endpoint(),
         }
     }
+}
+
+/// An export endpoint: only `http://` and `https://` URLs with a host are kept. Returns it trimmed;
+/// the error says why a value is refused.
+pub fn check_export_endpoint(text: &str) -> Result<String, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Enter an http:// or https:// address.".into());
+    }
+    let uri = text
+        .parse::<ureq::http::Uri>()
+        .map_err(|_| "That is not a valid address.".to_string())?;
+    match uri.scheme_str() {
+        Some("http") | Some("https") => {}
+        _ => return Err("Only http:// and https:// addresses are used.".into()),
+    }
+    if uri.host().is_none_or(|h| h.is_empty()) {
+        return Err("The address has no host.".into());
+    }
+    Ok(text.to_string())
 }
 
 /// Notifications (docs/launch.md, "Attention"): a master switch and one
@@ -655,7 +686,9 @@ impl SettingsStore {
         &self.data.observe
     }
 
-    pub fn set_observe(&mut self, next: ObserveSettings) -> Result<(), String> {
+    pub fn set_observe(&mut self, mut next: ObserveSettings) -> Result<(), String> {
+        // An invalid endpoint is refused and the old settings stay.
+        next.export_endpoint = check_export_endpoint(&next.export_endpoint)?;
         self.data.observe = next;
         self.save()
     }
@@ -774,6 +807,50 @@ mod tests {
             .unwrap();
         let again = SettingsStore::open(dir.path()).unwrap();
         assert!(!again.observe().hooks_all_tabs);
+    }
+
+    #[test]
+    fn the_export_endpoint_defaults_for_old_files_and_an_invalid_one_keeps_the_old_value() {
+        let dir = TempDir::new("settings_export_endpoint");
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"observe":{"hooksAllTabs":true,"evalEnabled":false}}"#,
+        )
+        .unwrap();
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(
+            store.observe().export_endpoint,
+            "http://127.0.0.1:6006/v1/traces"
+        );
+        store
+            .set_observe(ObserveSettings {
+                export_endpoint: " http://localhost:4318/v1/traces ".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            store.observe().export_endpoint,
+            "http://localhost:4318/v1/traces"
+        );
+        for bad in ["ftp://example.com", "http://", "not a url", ""] {
+            let err = store
+                .set_observe(ObserveSettings {
+                    export_endpoint: bad.into(),
+                    ..Default::default()
+                })
+                .unwrap_err();
+            assert!(!err.is_empty());
+            assert_eq!(
+                store.observe().export_endpoint,
+                "http://localhost:4318/v1/traces",
+                "{bad}"
+            );
+        }
+        let again = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(
+            again.observe().export_endpoint,
+            "http://localhost:4318/v1/traces"
+        );
     }
 
     #[test]
@@ -944,8 +1021,8 @@ mod tests {
         store.set_claude(claude).unwrap();
         store
             .set_observe(ObserveSettings {
-                hooks_all_tabs: true,
                 eval_enabled: true,
+                ..Default::default()
             })
             .unwrap();
         let again = SettingsStore::open(dir.path()).unwrap();

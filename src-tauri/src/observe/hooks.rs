@@ -54,6 +54,11 @@ pub struct TabHookState {
     /// (any recognised event, a `SubagentStop` included) this is the start
     /// of an episode: how long the tab has been needs-you, say.
     pub activity_since_ms: Option<u64>,
+    /// Between `PreCompact` and `PostCompact`: the context is being compacted,
+    /// which is work, not a stall.
+    pub compacting: bool,
+    /// The model a `PostModelSwitch` named (cleared by a new session).
+    pub model: Option<String>,
 }
 
 /// More running tool ids than this is a runaway (lost `Post` events): the
@@ -83,6 +88,7 @@ impl TabHookState {
     pub fn exited(&mut self) {
         self.clear_tools();
         self.subagents_running = 0;
+        self.compacting = false;
     }
 
     /// One reduced hook event (`forward::reduce`).
@@ -104,6 +110,8 @@ impl TabHookState {
             "SessionStart" => {
                 self.activity = TabActivity::Waiting;
                 self.clear_tools();
+                self.compacting = false;
+                self.model = None;
                 // Only SessionStart moves the session (a /clear or a resume
                 // starts a new one). Any other event may come from a
                 // sub-agent or an old session.
@@ -113,9 +121,34 @@ impl TabHookState {
                     }
                 }
             }
-            "UserPromptSubmit" => self.activity = TabActivity::Working,
+            "UserPromptSubmit" => {
+                self.activity = TabActivity::Working;
+                self.compacting = false;
+            }
+            "PreCompact" => {
+                self.activity = TabActivity::Working;
+                self.compacting = true;
+            }
+            "PostCompact" => self.compacting = false,
+            "PostToolBatch" => {
+                // The ids are absent when the payload was cut at the input cap.
+                if let Some(ids) = event.get("batch_tool_ids").and_then(Value::as_array) {
+                    for id in ids.iter().filter_map(Value::as_str) {
+                        self.running_tools.remove(id);
+                    }
+                    self.sync_tool_running();
+                }
+            }
+            "PostModelSwitch" => {
+                self.model = event
+                    .get("to_model")
+                    .and_then(Value::as_str)
+                    .filter(|m| !m.is_empty())
+                    .map(str::to_string);
+            }
             "PreToolUse" => {
                 self.activity = TabActivity::Working;
+                self.compacting = false;
                 match tool_id {
                     Some(_) if self.running_tools.len() >= MAX_RUNNING_TOOLS => {
                         // A runaway (Post events lost): start over rather than grow.
@@ -161,6 +194,7 @@ impl TabHookState {
                 // them, not on you.
                 self.subagents_running = background;
                 self.clear_tools();
+                self.compacting = false;
                 self.activity = if background > 0 {
                     TabActivity::Working
                 } else {
@@ -171,6 +205,7 @@ impl TabHookState {
                 self.activity = TabActivity::Unknown;
                 self.subagents_running = 0;
                 self.clear_tools();
+                self.compacting = false;
             }
             _ => return,
         }
@@ -465,6 +500,10 @@ pub const EVENTS: &[&str] = &[
     "Notification",
     "PermissionRequest",
     "SessionEnd",
+    "PreCompact",
+    "PostCompact",
+    "PostToolBatch",
+    "PostModelSwitch",
 ];
 
 /// The `hooks` settings value: every event in [`EVENTS`] runs `command`.
@@ -549,6 +588,8 @@ mod tests {
         let mut fields = doc_list("The forwarder keeps only:");
         assert_eq!(fields.pop().as_deref(), Some("background_running"));
         assert_eq!(fields.pop().as_deref(), Some("background_tasks"));
+        // The derived (not copied) field comes right before them.
+        assert_eq!(fields.pop().as_deref(), Some("batch_tool_ids"));
         assert_eq!(fields.len(), forward::KEPT_FIELDS.len(), "{fields:?}");
         fields.sort();
         let mut code: Vec<String> = forward::KEPT_FIELDS.iter().map(|e| e.to_string()).collect();
@@ -1023,5 +1064,169 @@ mod prefix_tests {
         assert!(fields.get("agent_id").is_none());
         let reduced = forward::reduce(&fields);
         assert_eq!(reduced["hook_event_name"], "PostToolUse");
+    }
+}
+
+#[cfg(test)]
+mod af11_tests {
+    use super::*;
+    use crate::observe::forward;
+    use serde_json::json;
+
+    fn fixture(name: &str) -> Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/fixtures/claude-2.1.287/hooks")
+            .join(name);
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn apply(state: &mut TabHookState, file: &str) {
+        state.apply(&forward::reduce(&fixture(file)), 10);
+    }
+
+    #[test]
+    fn the_registered_events_are_the_old_twelve_plus_the_four_recorded() {
+        assert_eq!(EVENTS.len(), 16);
+        for name in [
+            "PreCompact",
+            "PostCompact",
+            "PostToolBatch",
+            "PostModelSwitch",
+        ] {
+            assert!(EVENTS.contains(&name), "{name}");
+            assert!(fixture(&format!("{name}.json"))["hook_event_name"] == name);
+        }
+        for name in [
+            "PreModelSwitch",
+            "FileChanged",
+            "CwdChanged",
+            "PermissionDenied",
+        ] {
+            assert!(!EVENTS.contains(&name), "{name} is not registered");
+        }
+    }
+
+    #[test]
+    fn pre_and_post_compact_toggle_compacting() {
+        let mut state = TabHookState::default();
+        apply(&mut state, "PreCompact.json");
+        assert!(state.compacting);
+        assert_eq!(state.activity, TabActivity::Working);
+        apply(&mut state, "PostCompact.json");
+        assert!(!state.compacting);
+    }
+
+    #[test]
+    fn post_model_switch_sets_the_model_and_a_new_session_clears_it() {
+        let mut state = TabHookState::default();
+        apply(&mut state, "PostModelSwitch.json");
+        assert_eq!(state.model.as_deref(), Some("claude-haiku-4-5-20251001"));
+        apply(&mut state, "SessionStart.json");
+        assert_eq!(state.model, None);
+    }
+
+    #[test]
+    fn post_tool_batch_ends_the_listed_tools() {
+        let batch = forward::reduce(&fixture("PostToolBatch.json"));
+        let ids: Vec<String> = batch["batch_tool_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert!(!ids.is_empty());
+        let mut state = TabHookState::default();
+        for id in &ids {
+            state.apply(
+                &json!({"hook_event_name": "PreToolUse", "tool_use_id": id}),
+                1,
+            );
+        }
+        state.apply(
+            &json!({"hook_event_name": "PreToolUse", "tool_use_id": "other"}),
+            1,
+        );
+        state.apply(&batch, 2);
+        assert!(state.tool_running, "the unlisted tool still runs");
+        assert_eq!(state.running_tools.len(), 1);
+        state.apply(
+            &json!({"hook_event_name": "PostToolUse", "tool_use_id": "other"}),
+            3,
+        );
+        assert!(!state.tool_running);
+    }
+
+    #[test]
+    fn a_post_tool_batch_cut_at_the_cap_forwards_no_ids_and_changes_nothing() {
+        let cut = forward::prefix_fields(
+            br#"{"session_id":"s","hook_event_name":"PostToolBatch","tool_calls":[{"tool_name":"Bash","tool_use_id":"t1","tool_inp"#,
+        );
+        assert!(cut.get("batch_tool_ids").is_none());
+        let mut state = TabHookState::default();
+        state.apply(
+            &json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1"}),
+            1,
+        );
+        state.apply(&cut, 2);
+        assert!(state.tool_running, "nothing was removed");
+    }
+
+    #[test]
+    fn every_recorded_fixture_reduces_to_kept_or_derived_keys_only() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/fixtures/claude-2.1.287/hooks");
+        let mut seen = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let payload: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let out = forward::reduce(&payload);
+            for key in out.as_object().unwrap().keys() {
+                assert!(
+                    forward::KEPT_FIELDS.contains(&key.as_str())
+                        || key == "background_running"
+                        || key == "batch_tool_ids",
+                    "{path:?} forwards {key}"
+                );
+            }
+            let text = out.to_string();
+            for banned in [
+                "compact_summary",
+                "custom_instructions",
+                "tool_input",
+                "tool_response",
+                "file_path",
+                "\"cwd\"",
+                "old_cwd",
+                "new_cwd",
+                "transcript_path",
+            ] {
+                assert!(!text.contains(banned), "{path:?} forwards {banned}");
+            }
+            seen += 1;
+        }
+        assert!(seen >= 16, "{seen} fixtures");
+    }
+
+    #[test]
+    fn a_compaction_with_no_post_compact_is_cleared_by_the_next_turn_event() {
+        for next in [
+            json!({"hook_event_name": "Stop"}),
+            json!({"hook_event_name": "StopFailure"}),
+            json!({"hook_event_name": "UserPromptSubmit"}),
+            json!({"hook_event_name": "PreToolUse", "tool_use_id": "t"}),
+            json!({"hook_event_name": "SessionEnd"}),
+            json!({"hook_event_name": "SessionStart"}),
+        ] {
+            let mut state = TabHookState::default();
+            state.apply(&json!({"hook_event_name": "PreCompact"}), 1);
+            assert!(state.compacting);
+            state.apply(&next, 2);
+            assert!(!state.compacting, "{next}");
+        }
+        let mut state = TabHookState::default();
+        state.apply(&json!({"hook_event_name": "PreCompact"}), 1);
+        state.exited();
+        assert!(!state.compacting);
     }
 }

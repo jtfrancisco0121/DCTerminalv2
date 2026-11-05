@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { flightContent, flightSession } from "../flight/api";
+import { flightContent, flightReplayFile, flightReplayTrack, flightSession } from "../flight/api";
 import { ORCHESTRATION } from "../flight/types";
 import type {
   AgentNode,
@@ -7,6 +7,7 @@ import type {
   Failure,
   FlightEvent,
   Phase,
+  ReplayTrackOut,
   SessionView,
   SnapshotInfo,
   TraceTarget,
@@ -20,9 +21,14 @@ import {
   orchestrationStatusText,
   orchestrationText,
   orchestrationTone,
+  replayDisabledReason,
 } from "../run/words";
 import { errorText } from "./InlineNotice";
+import { ExportDialog } from "./ExportDialog";
+import { FilePane, type FileState } from "./FilePane";
 import { Pill } from "./Pill";
+import { ReplayTrack } from "./ReplayTrack";
+import { RerunCheck } from "./RerunCheck";
 
 /** At most this many pages are fetched to bring a failure's event into the list. */
 const MAX_JUMP_PAGES = 50;
@@ -237,6 +243,12 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
   const [copied, setCopied] = useState(false);
   const [lane, setLane] = useState<Lane>("both");
   const [prFilter, setPrFilter] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [replay, setReplay] = useState(false);
+  const [track, setTrack] = useState<ReplayTrackOut | null>(null);
+  const [trackError, setTrackError] = useState<string | null>(null);
+  const [cursor, setCursor] = useState(0);
+  const [fileState, setFileState] = useState<FileState | null>(null);
   const focusRef = useRef<string | undefined>(focus);
   const scrollTo = useRef<string | null>(null);
   const page = useRef<HTMLElement>(null);
@@ -397,6 +409,65 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
     );
   };
 
+  /** The Event list follows the replay cursor: a loaded Event is selected, another one is loaded around. */
+  const followCursor = (entries: ReplayTrackOut["entries"], index: number) => {
+    const entry = entries[index];
+    if (!entry) return;
+    setContent(null);
+    if (byId.has(entry.id)) {
+      scrollTo.current = entry.id;
+      select(entry.id);
+    } else {
+      focusRef.current = entry.id;
+      void load(undefined);
+    }
+    if (entry.kind === "file.change") {
+      setFileState({ id: entry.id, state: "loading" });
+      flightReplayFile(target, entry.id).then(
+        (out) => setFileState((now) => (now?.id === entry.id ? { id: entry.id, state: "ready", out } : now)),
+        (err: unknown) =>
+          setFileState((now) => (now?.id === entry.id ? { id: entry.id, state: "error", message: errorText(err) } : now)),
+      );
+    } else {
+      setFileState(null);
+    }
+  };
+
+  const moveCursor = (index: number) => {
+    if (!track) return;
+    const to = Math.min(Math.max(0, index), Math.max(0, track.entries.length - 1));
+    setCursor(to);
+    followCursor(track.entries, to);
+  };
+
+  const leaveReplay = () => {
+    setReplay(false);
+    setTrack(null);
+    setTrackError(null);
+    setFileState(null);
+  };
+
+  const enterReplay = async () => {
+    // Replay steps through every Event: the agent and lane filters would hide some.
+    setAgent(undefined);
+    setLane("both");
+    setPrFilter(null);
+    setFailureId(null);
+    setContent(null);
+    setReplay(true);
+    setTrack(null);
+    setTrackError(null);
+    try {
+      const out = await flightReplayTrack(target);
+      setTrack(out);
+      const at = Math.max(0, out.entries.findIndex((e) => e.id === selected));
+      setCursor(at);
+      followCursor(out.entries, at);
+    } catch (err) {
+      setTrackError(errorText(err));
+    }
+  };
+
   const onListKey = (event: KeyboardEvent<HTMLDivElement>) => {
     const at = rows.findIndex((r) => r.id === selected);
     if (event.key === "ArrowDown") {
@@ -423,6 +494,9 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
     else if (event.key === "Escape" && content) {
       event.stopPropagation();
       setContent(null);
+    } else if (event.key === "Escape" && replay) {
+      event.stopPropagation();
+      leaveReplay();
     }
   };
 
@@ -441,6 +515,29 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
         <span className="trace-actions">
           {view && !off && <span className="hint">{view.trace}</span>}
           {view?.snapshot && !off && <SnapshotPill info={view.snapshot} />}
+          {view && (
+            <span className="replay-toggle">
+              <button
+                type="button"
+                className="secondary-button"
+                aria-pressed={replay}
+                disabled={replayDisabledReason(events.length, off) !== null}
+                title={replayDisabledReason(events.length, off) ?? undefined}
+                onClick={() => (replay ? leaveReplay() : void enterReplay())}
+              >
+                Replay
+              </button>
+            </span>
+          )}
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={!view || off}
+            title={off ? "AgentFlight is off for this account (Settings › Activity)." : undefined}
+            onClick={() => setExporting(true)}
+          >
+            Export
+          </button>
           {onSearch && (
             <button type="button" className="secondary-button" onClick={onSearch}>
               Search
@@ -539,7 +636,14 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
                 </ul>
               )}
               <h3>Agents</h3>
-              <AgentTree nodes={view.agents} agent={agent} onPick={setAgent} />
+              <AgentTree
+                nodes={view.agents}
+                agent={agent}
+                onPick={(id) => {
+                  if (replay) leaveReplay();
+                  setAgent(id);
+                }}
+              />
               {agent && (
                 <button type="button" className="secondary-button" onClick={() => setAgent(undefined)}>
                   All agents
@@ -565,7 +669,18 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
                   )}
                 </div>
               )}
-              {lanes && (
+              {replay && (
+                <div className="trace-replay" data-testid="trace-replay">
+                  {trackError && <p className="error">Could not read the replay track: {trackError}</p>}
+                  {!trackError && !track && (
+                    <div className="replay-skeleton" aria-busy="true" aria-label="Loading the replay track" data-testid="replay-loading" />
+                  )}
+                  {track && track.status === "ok" && (
+                    <ReplayTrack entries={track.entries} cursor={cursor} onCursor={moveCursor} truncated={track.truncated} />
+                  )}
+                </div>
+              )}
+              {lanes && !replay && (
                 <div
                   className="trace-lanes"
                   role="radiogroup"
@@ -604,6 +719,7 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
                   </button>
                 </p>
               )}
+              <div className={`trace-split${replay && fileState ? " trace-split-file" : ""}`}>
               <div className="trace-list" ref={list} onScroll={onScroll} role="presentation">
                 <div
                   className="trace-events"
@@ -706,6 +822,9 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
                 )}
               </div>
 
+              {replay && fileState && <FilePane file={fileState} />}
+              </div>
+
               {content && (
                 <div className="trace-content" data-testid="trace-content">
                   {content.state === "loading" && <p className="hint">Reading the line…</p>}
@@ -720,6 +839,9 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
                     <>
                       {shown && <EventFields event={shown} phase={view?.phases?.[shown.id]} />}
                       <pre className={`trace-pre${shown && isRun(shown) ? " trace-pre-run" : ""}`}>{content.out.text}</pre>
+                      {replay && shown && target.runDir && shown.kind === "check.end" && prOf(shown) && (
+                        <RerunCheck runDir={target.runDir} pr={prOf(shown)!} appCheck={shown.attrs.source === "app"} />
+                      )}
                       <p className="hint">
                         {content.out.redactions} redacted
                         {shown ? ` · source ${shown.content.ref.file.split(/[\\/]/).pop()} @ ${shown.content.ref.offset}+${shown.content.ref.len}` : ""}
@@ -742,6 +864,9 @@ export function TracePanel({ target, agent: initialAgent, focus, onClose, onSear
             </div>
           </div>
         </>
+      )}
+      {exporting && view && !off && (
+        <ExportDialog target={target} capturePolicy={view.policy} trace={view.trace} onClose={() => setExporting(false)} />
       )}
     </section>
   );

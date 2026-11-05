@@ -359,3 +359,134 @@ export interface EvalResults {
   running: number;
   failed: number;
 }
+
+/** What `flight_export_preview` returns (host.rs `ExportPreview`): the payload's counts, never its text. */
+export type ExportPolicy = "metadata" | "full";
+export type ExportEncoding = "json" | "protobuf";
+
+export interface ExportField {
+  field: string;
+  /** How many spans or events carry the attribute. */
+  count: number;
+  leaves: number;
+}
+
+export interface ExportPreview {
+  /** The policy actually used (`full` is clamped to `metadata` without its conditions). */
+  policy: ExportPolicy;
+  encoding: ExportEncoding;
+  endpoint: string;
+  spans: number;
+  events: number;
+  bytes: number;
+  digest: string;
+  fields: ExportField[];
+  warnings: string[];
+  /** The endpoint is on this machine. */
+  loopback: boolean;
+  capturePolicy: CapturePolicy;
+}
+
+export interface ExportSent {
+  endpoint: string;
+  spans: number;
+  status: number;
+}
+
+/** One tick of the replay track (host.rs `ReplayEntry`): eight keys, never a path. */
+export interface ReplayEntry {
+  id: string;
+  at: string;
+  kind: string;
+  name: string | null;
+  status: string | null;
+  /** How many files a `file.change` touched; null for other kinds. */
+  file: number | null;
+  /** `skill`, `app` or `stop-check` for a `check.end`. */
+  checkSource: string | null;
+  pr: string | null;
+}
+
+export interface ReplayTrackOut {
+  /** `ok`, or `off` when the policy lets nothing be read. */
+  status: string;
+  entries: ReplayEntry[];
+  truncated: boolean;
+}
+
+export interface ReplayStop {
+  /** The 1-based edit of the file that does not apply. */
+  at: number;
+  reason: string;
+}
+
+/** The file after one recorded edit (host.rs `ReplayFile`). */
+export interface ReplayFileOut {
+  /** `ok` (text is set), `off` or `unavailable` (see `reason`). */
+  status: "ok" | "off" | "unavailable";
+  reason: string | null;
+  /** Relative to the PR's worktree. */
+  path: string | null;
+  pr: string | null;
+  text: string | null;
+  redactions: number;
+  truncated: boolean;
+  edit: number | null;
+  edits: number;
+  stopped: ReplayStop | null;
+}
+
+/** What the recorded check said (rerun.rs `Recorded`). */
+export interface RerunRecorded {
+  result: string;
+  exitCode: number | null;
+  finishedAt: string | null;
+  clean: boolean | null;
+}
+
+/** `flight_replay_check_info`: what the re-run confirmation shows, or why there is none. */
+export interface RerunInfo {
+  reason: string | null;
+  command: string | null;
+  setup: string | null;
+  /** The recorded check folder relative to the PR's worktree; empty for its root. */
+  cwd: string;
+  commit: string | null;
+  clean: boolean | null;
+  recorded: RerunRecorded | null;
+  /** A re-run runs somewhere in the app. */
+  running: boolean;
+}
+
+export type RerunState =
+  | "preparing"
+  | "setup"
+  | "running"
+  | "pass"
+  | "fail"
+  | "timeout"
+  | "error"
+  | "stopped"
+  | "interrupted";
+
+/** One re-run (rerun.rs `RerunRecord`). */
+export interface RerunRecord {
+  schema: number;
+  runId: string;
+  pr: string;
+  n: number;
+  repo: string;
+  worktree: string;
+  commit: string;
+  command: string;
+  setup: string | null;
+  cwd: string;
+  recorded: RerunRecorded;
+  state: RerunState;
+  exitCode: number | null;
+  startedAt: string;
+  finishedAt: string | null;
+  detail: string | null;
+  log: string;
+  scratchLeft?: boolean;
+}

@@ -27,7 +27,7 @@ import {
   type TerminalSettings,
 } from "../bridge";
 import { accountsProblem, addAccount, MAX_ACCOUNTS } from "../settings/accounts";
-import { ATTENTION_KINDS, PUSH_KINDS } from "../run/words";
+import { ATTENTION_KINDS, DEFAULT_EXPORT_ENDPOINT, PUSH_KINDS } from "../run/words";
 import { THEME_CHOICES } from "../theme";
 import { detectPlatform, revealLabel, type Platform } from "../terminal/keys";
 import { Dialog } from "./Dialog";
@@ -298,6 +298,7 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
   };
 
   const [editor, setEditor] = useState(view.ui.editorCommand ?? "");
+  const [endpointDraft, setEndpointDraft] = useState(view.observe?.exportEndpoint ?? DEFAULT_EXPORT_ENDPOINT);
 
   const saveEditor = async () => {
     try {
@@ -314,11 +315,31 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
       const observe = await setObserveSettings({
         hooksAllTabs: view.observe?.hooksAllTabs ?? true,
         evalEnabled: view.observe?.evalEnabled ?? false,
+        ...(view.observe?.exportEndpoint ? { exportEndpoint: view.observe.exportEndpoint } : {}),
         ...patch,
       });
       setNotice({ tone: "info", text });
       onSaved({ ...view, observe });
     } catch (err) {
+      setNotice({ tone: "error", text: errorText(err) });
+    }
+  };
+
+  const saveEndpoint = async () => {
+    const wanted = endpointDraft.trim();
+    if (wanted === (view.observe?.exportEndpoint ?? DEFAULT_EXPORT_ENDPOINT)) return;
+    try {
+      const observe = await setObserveSettings({
+        hooksAllTabs: view.observe?.hooksAllTabs ?? true,
+        evalEnabled: view.observe?.evalEnabled ?? false,
+        exportEndpoint: wanted,
+      });
+      setEndpointDraft(observe.exportEndpoint ?? wanted);
+      setNotice({ tone: "info", text: "Export endpoint saved." });
+      onSaved({ ...view, observe });
+    } catch (err) {
+      // The old value is kept; say why this one was refused.
+      setEndpointDraft(view.observe?.exportEndpoint ?? DEFAULT_EXPORT_ENDPOINT);
       setNotice({ tone: "error", text: errorText(err) });
     }
   };
@@ -716,6 +737,23 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
           Eval mode
         </label>
         <p className="hint">Runs the same request several times on your own subscription. Nothing is pushed or posted.</p>
+        <label className="field-label">
+          Export endpoint
+          <input
+            className="text-input"
+            aria-label="Export endpoint"
+            value={endpointDraft}
+            onChange={(event) => setEndpointDraft(event.target.value)}
+            onBlur={() => void saveEndpoint()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void saveEndpoint();
+            }}
+          />
+        </label>
+        <p className="hint">
+          Where Export sends a trace by default (OTLP over http or https). Phoenix listens on{" "}
+          {DEFAULT_EXPORT_ENDPOINT} by default.
+        </p>
         <h3>Session Inspector</h3>
         <p className="hint">
           What the trace may read from each account&apos;s session logs. Content is shown only when you open an event

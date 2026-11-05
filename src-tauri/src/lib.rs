@@ -131,6 +131,7 @@ pub fn run() {
             app.manage(observe_state);
             app.manage(observe::attention::AttentionState::default());
             app.manage(flight::host::FlightCache::default());
+            app.manage(flight::host::ExportState::default());
             flight::host::spawn_index(app.handle());
             for note in store::take_recovery_notes() {
                 eprintln!("DCTerminalv2: {note}");
@@ -263,6 +264,16 @@ pub fn run() {
             commands::flight::flight_compare,
             commands::flight::flight_eval_results,
             commands::flight::flight_run_share,
+            commands::flight::flight_export_preview,
+            commands::flight::flight_export_send,
+            commands::flight::flight_export_save,
+            commands::flight::flight_replay_track,
+            commands::flight::flight_replay_file,
+            commands::flight::flight_replay_check_info,
+            commands::flight::flight_replay_check,
+            commands::flight::flight_replay_check_stop,
+            commands::flight::flight_replay_checks,
+            commands::flight::flight_replay_check_log,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

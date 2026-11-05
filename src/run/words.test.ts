@@ -513,3 +513,22 @@ describe("eval words", () => {
     expect(evalDistText({ min: null, median: null, max: null, of: 0 })).toBe("no figures");
   });
 });
+
+describe("re-run words", () => {
+  it("maps every re-run state to words and a tone", async () => {
+    const { rerunStateText, rerunStateTone, rerunActive, lastLines, rerunTitle, REPLAY_LABEL } = await import("./words");
+    const states = ["preparing", "setup", "running", "pass", "fail", "timeout", "error", "stopped", "interrupted"];
+    for (const state of states) {
+      expect(rerunStateText(state), state).not.toBe("");
+      expect(rerunStateText(state)).not.toBe(state === "timeout" ? "timeout" : "");
+    }
+    expect(states.map(rerunStateTone)).toEqual([
+      "running", "running", "running", "success", "danger", "danger", "danger", "muted", "muted",
+    ]);
+    expect(states.filter(rerunActive)).toEqual(["preparing", "setup", "running"]);
+    expect(rerunStateText("interrupted")).toBe("interrupted (the app quit)");
+    expect(REPLAY_LABEL).toEqual({ recorded: "recorded", rerun: "re-run", fresh: "new execution" });
+    expect(rerunTitle("PR2", "3f2a9c1abcdef")).toBe("Re-run PR2's check at 3f2a9c1");
+    expect(lastLines("a\nb\nc\n", 2)).toBe("b\nc");
+  });
+});

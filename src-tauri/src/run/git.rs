@@ -32,6 +32,48 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// `git -C <dir> <args>`: stdout byte for byte on success (a file's content keeps its last newline), else the
+/// first stderr line. Reads at most `max` bytes of it: more is an error.
+pub fn git_bytes(dir: &Path, args: &[&str], max: usize) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut child = crate::platform::quiet_command("git")
+        .args(["-c", "core.fsmonitor=false"])
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .spawn()
+        .map_err(|err| format!("git: {err}"))?;
+    let mut out = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        // One byte past the cap says "too large" without reading a huge object.
+        let _ = stdout.take(max as u64 + 1).read_to_end(&mut out);
+    }
+    if out.len() > max {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("too large".into());
+    }
+    let mut err = String::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        let _ = stderr.read_to_string(&mut err);
+    }
+    let status = child.wait().map_err(|e| format!("git: {e}"))?;
+    if status.success() {
+        Ok(out)
+    } else {
+        Err(err
+            .lines()
+            .next()
+            .unwrap_or("git failed")
+            .trim()
+            .to_string())
+    }
+}
+
 /// The top of the work tree `folder` is in, if any.
 pub fn work_tree_top(folder: &Path) -> Option<PathBuf> {
     git(folder, &["rev-parse", "--show-toplevel"])

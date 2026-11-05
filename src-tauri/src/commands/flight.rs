@@ -207,3 +207,257 @@ pub async fn flight_run_share(
     .await
     .map_err(|e| e.to_string())
 }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPreviewRequest {
+    #[serde(flatten)]
+    pub target: Target,
+    #[serde(flatten)]
+    pub export: host::ExportRequest,
+    /// Empty or missing: the endpoint of Settings.
+    pub endpoint: Option<String>,
+}
+
+/// Builds the Export payload for a Trace and keeps its bytes. Reads on a worker thread, holds no store lock.
+#[tauri::command]
+pub async fn flight_export_preview(
+    app: AppHandle,
+    settings: State<'_, Mutex<SettingsStore>>,
+    cache: State<'_, FlightCache>,
+    export: State<'_, host::ExportState>,
+    request: ExportPreviewRequest,
+) -> Result<host::ExportPreview, String> {
+    let (claude, default_endpoint) = {
+        let guard = settings.lock().map_err(|e| e.to_string())?;
+        (
+            guard.claude().clone(),
+            guard.observe().export_endpoint.clone(),
+        )
+    };
+    let query = query_for(&app, &request.target)?;
+    let cache = cache.inner().clone();
+    let state = export.inner().clone();
+    let endpoint = request
+        .endpoint
+        .filter(|e| !e.trim().is_empty())
+        .unwrap_or(default_endpoint);
+    tauri::async_runtime::spawn_blocking(move || {
+        host::export_preview(
+            &claude,
+            &query,
+            &cache,
+            &Opens::default(),
+            &state,
+            &request.export,
+            &endpoint,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSendRequest {
+    pub digest: String,
+    pub endpoint: String,
+}
+
+/// Posts the previewed bytes. An unknown digest is refused.
+#[tauri::command]
+pub async fn flight_export_send(
+    export: State<'_, host::ExportState>,
+    request: ExportSendRequest,
+) -> Result<host::ExportSent, String> {
+    let state = export.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        host::export_send(
+            &state,
+            &host::export_agent(),
+            &request.digest,
+            &request.endpoint,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSaveRequest {
+    pub digest: String,
+    pub path: String,
+}
+
+/// Writes the previewed bytes to the picked file.
+#[tauri::command]
+pub async fn flight_export_save(
+    export: State<'_, host::ExportState>,
+    request: ExportSaveRequest,
+) -> Result<(), String> {
+    let state = export.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        host::export_save(&state, &request.digest, &PathBuf::from(request.path))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The replay track of a Trace: one tick per Event, no path. Read-only, on a worker thread.
+#[tauri::command]
+pub async fn flight_replay_track(
+    app: AppHandle,
+    settings: State<'_, Mutex<SettingsStore>>,
+    cache: State<'_, FlightCache>,
+    target: Target,
+) -> Result<host::ReplayTrack, String> {
+    let claude = settings.lock().map_err(|e| e.to_string())?.claude().clone();
+    let query = query_for(&app, &target)?;
+    let cache = cache.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        host::replay_track(&claude, &query, &cache, &Opens::default())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayFileRequest {
+    #[serde(flatten)]
+    pub target: Target,
+    pub event_id: String,
+}
+
+/// The file a `file.change` Event changed, rebuilt as it was after that edit (read-only; nothing recorded runs).
+#[tauri::command]
+pub async fn flight_replay_file(
+    app: AppHandle,
+    settings: State<'_, Mutex<SettingsStore>>,
+    cache: State<'_, FlightCache>,
+    request: ReplayFileRequest,
+) -> Result<host::ReplayFile, String> {
+    let claude = settings.lock().map_err(|e| e.to_string())?.claude().clone();
+    let query = query_for(&app, &request.target)?;
+    let cache = cache.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        host::replay_file(
+            &claude,
+            &query,
+            &cache,
+            &Opens::default(),
+            &request.event_id,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RerunTarget {
+    pub run_dir: String,
+    pub pr: String,
+}
+
+/// A run's folder, checked, and its account's policy (not `off`).
+fn rerun_run_dir(
+    app: &AppHandle,
+    settings: &State<'_, Mutex<SettingsStore>>,
+    run_dir: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    let data = crate::data_dir::app_data_dir(app).path;
+    let dir = crate::run::checked_run_dir(&data, run_dir)?;
+    let claude = settings.lock().map_err(|e| e.to_string())?.claude().clone();
+    host::replay_gate(&claude, &dir)?;
+    Ok((data, dir))
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RerunInfoOut {
+    #[serde(flatten)]
+    pub info: crate::run::rerun::Info,
+    /// A re-run runs somewhere in the app.
+    pub running: bool,
+}
+
+/// What the re-run confirmation shows, or why there is none (read-only).
+#[tauri::command]
+pub async fn flight_replay_check_info(
+    app: AppHandle,
+    settings: State<'_, Mutex<SettingsStore>>,
+    request: RerunTarget,
+) -> Result<RerunInfoOut, String> {
+    let (_, dir) = rerun_run_dir(&app, &settings, &request.run_dir)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut info = crate::run::rerun::info(&dir, &request.pr);
+        let running = crate::run::rerun::running();
+        if info.reason.is_none() && running {
+            info.reason = Some(crate::run::rerun::ALREADY_RUNNING.to_string());
+        }
+        RerunInfoOut { info, running }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Starts a check re-run at the recorded commit in a scratch worktree (one at a time in the app).
+#[tauri::command]
+pub async fn flight_replay_check(
+    app: AppHandle,
+    settings: State<'_, Mutex<SettingsStore>>,
+    request: RerunTarget,
+) -> Result<crate::run::rerun::RerunRecord, String> {
+    let (data, dir) = rerun_run_dir(&app, &settings, &request.run_dir)?;
+    tauri::async_runtime::spawn_blocking(move || crate::run::rerun::start(&data, &dir, &request.pr))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Stops the running re-run; its result is `stopped` and its scratch worktree is removed.
+#[tauri::command]
+pub fn flight_replay_check_stop() -> Result<(), String> {
+    crate::run::rerun::stop()
+}
+
+/// The re-run records of a run (newest first per PR).
+#[tauri::command]
+pub async fn flight_replay_checks(
+    app: AppHandle,
+    run_dir: String,
+) -> Result<Vec<crate::run::rerun::RerunRecord>, String> {
+    let data = crate::data_dir::app_data_dir(&app).path;
+    let dir = crate::run::checked_run_dir(&data, &run_dir)?;
+    let run_id = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || crate::run::rerun::list(&data, &run_id))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RerunLogRequest {
+    pub run_dir: String,
+    pub pr: String,
+    pub n: u32,
+}
+
+/// A re-run's log (the last 256 KiB of it).
+#[tauri::command]
+pub async fn flight_replay_check_log(
+    app: AppHandle,
+    request: RerunLogRequest,
+) -> Result<String, String> {
+    let data = crate::data_dir::app_data_dir(&app).path;
+    let dir = crate::run::checked_run_dir(&data, &request.run_dir)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::run::rerun::read_log(&data, &dir, &request.pr, request.n)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

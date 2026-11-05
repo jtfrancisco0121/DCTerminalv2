@@ -16,7 +16,7 @@ mod state_store;
 mod state_types;
 
 pub(crate) use json_io::{
-    append_run_file, create_run_log, read_capped, write_run_file, CappedError,
+    append_run_file, append_run_log, create_run_log, read_capped, write_run_file, CappedError,
 };
 pub use json_io::{read_json_or_recover, take_recovery_notes, write_json_atomic};
 pub use settings_store::{
