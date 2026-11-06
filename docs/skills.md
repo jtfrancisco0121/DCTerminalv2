@@ -131,6 +131,7 @@ $DCV2_MEMORY_DIR/
 - `scripts/skill-e2e/state_test.sh`: unit test of `state.sh` (no Claude call; `gh` is a stub, the remote a local bare repo).
 - `scripts/skill-e2e/memory_test.sh`: unit test of `memory.sh` (ids, caps, secrets, pinned lines, headers, staleness, compose, status).
 - `scripts/skill-e2e/stop_check_test.sh`: unit test of the Stop/SubagentStop hook.
+- `scripts/skill-e2e/qa_browser_test.sh`: unit test of `scripts/qa-browser.mjs` against a stub CDP endpoint (no browser, no network).
 - `scripts/skill-e2e/plugin_test.sh`: static checks: `VERSION`, every skill/agent reads its role file, every role has the trust rule, hooks and launch settings parse, scripts pass `bash -n`.
 - `scripts/skill-e2e/golden.sh [multi dep fix]` (R7, before every release): three toy workspaces through the whole run, in parallel, launched as the app does (`--settings`, the composed memory prompt, `DCV2_MEMORY_DIR`): two independent repos with onboard first and `DCV2_MAX_IMPLEMENTERS=1`; a PR that depends on another; a check that already fails for a reason the request does not name. Asserts gates, `report.md`, `memory-update.md`, memory written only via `memory.sh`, ordering, and untouched main checkouts.
 - `scripts/skill-e2e/standalone.sh [roles...]`: each standalone skill loads, reads its role file and replies; read-only roles leave the repo untouched.
