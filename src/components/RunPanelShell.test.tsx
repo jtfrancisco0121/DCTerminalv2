@@ -86,10 +86,10 @@ describe("RunPanelShell", () => {
   });
 
   it("a storage that throws does not break the render or the controls", () => {
-    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+    vi.spyOn(window.localStorage, "getItem").mockImplementation(() => {
       throw new Error("blocked");
     });
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
       throw new Error("full");
     });
     shell();
