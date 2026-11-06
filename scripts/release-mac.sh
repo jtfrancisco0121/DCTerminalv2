@@ -2,6 +2,7 @@
 # Build, seal, check and package DCTerminalv2 as a DMG on this Mac, then print its SHA-256.
 #
 #   scripts/release-mac.sh              build DCTerminalv2_<version>_aarch64.dmg (Apple silicon host)
+#   scripts/release-mac.sh --universal  build DCTerminalv2_<version>_universal.dmg (arm64 + x86_64, any host)
 #   scripts/release-mac.sh --publish    also create the GitHub release v<version> from the built commit
 #
 # macOS only, bash 3.2 and BSD tools. Nothing leaves this machine without --publish.
@@ -9,18 +10,24 @@
 # Refuses, before building anything: a dirty tree (untracked files included), versions that
 # disagree (package.json, src-tauri/tauri.conf.json, src-tauri/Cargo.toml; plugin/VERSION,
 # plugin/.claude-plugin/plugin.json), and a host that is not arm64 (the default DMG is labelled
-# aarch64). With --publish also: an existing tag v<version> (local or remote), no gh, and a HEAD
+# aarch64) unless --universal. With --universal also: a missing Rust target (the message names the
+# `rustup target add` line). With --publish also: an existing tag v<version> (local or remote), no gh, and a HEAD
 # that is not the tip of the remote default branch.
 #
 # Order: build the app (and dcv2-hook), add dcv2-hook to Contents/MacOS when missing, sign ad hoc
 # (`codesign --force --deep --sign -`), verify the seal (`--verify --deep --strict`), make the DMG
 # (hdiutil, UDZO), mount it read-only, verify the app inside it, detach (always, even on failure),
-# print and save the SHA-256. With --publish, read the remote tip again, refuse unless it still equals
+# print and save the SHA-256. --universal builds `--target universal-apple-darwin`, builds dcv2-hook for both
+# Apple targets and joins them with `lipo -create` unless the bundled copy is already universal, and fails
+# unless `lipo -archs` lists arm64 and x86_64 for the app binary and dcv2-hook (before and after the DMG).
+# With --publish, read the remote tip again, refuse unless it still equals
 # HEAD, and create the release with --target <HEAD sha> so the tag points at the built commit.
 set -euo pipefail
 
 ROOT="${RELEASE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 APP_NAME="DCTerminalv2.app"
+UNIVERSAL=0
+APPLE_TARGETS="aarch64-apple-darwin x86_64-apple-darwin"
 VOLUME_NAME="DCTerminalv2"
 
 say() { printf '==> %s\n' "$*"; }
@@ -69,6 +76,49 @@ require_host_arch() { # <universal: 0|1>
   if [ "$1" != 1 ] && [ "$arch" != "arm64" ]; then
     die "this host is $arch, and the default DMG is labelled aarch64. Build on Apple silicon, or pass --universal."
   fi
+}
+
+# --- the universal build (--universal) ---------------------------------------------------------
+
+require_rust_targets() {
+  local installed missing="" t
+  command -v rustup >/dev/null 2>&1 || die "--universal needs rustup. Install it, then: rustup target add $APPLE_TARGETS"
+  installed="$(rustup target list --installed 2>/dev/null)" || die "rustup target list failed."
+  for t in $APPLE_TARGETS; do
+    printf '%s\n' "$installed" | grep -qx "$t" || missing="$missing $t"
+  done
+  if [ -n "$missing" ]; then
+    die "a Rust target is missing. Run: rustup target add${missing}"
+  fi
+}
+
+# Whether `lipo -archs <file>` lists both architectures.
+has_both_archs() {
+  local archs
+  archs="$(lipo -archs "$1" 2>/dev/null)" || return 1
+  case " $archs " in *" arm64 "*) ;; *) return 1 ;; esac
+  case " $archs " in *" x86_64 "*) ;; *) return 1 ;; esac
+}
+
+require_both_archs() { # <file> <what>
+  has_both_archs "$1" || die "$2 is not universal: lipo -archs lists '$(lipo -archs "$1" 2>/dev/null)' for $1 (need arm64 and x86_64)."
+}
+
+# dcv2-hook built for both Apple targets, joined into the bundle with lipo unless the bundled copy already
+# lists both (Tauri may or may not bundle a universal one).
+add_universal_hook() { # <app>
+  local dest="$1/Contents/MacOS/dcv2-hook" t part parts=""
+  if [ -x "$dest" ] && has_both_archs "$dest"; then return 0; fi
+  for t in $APPLE_TARGETS; do
+    part="$ROOT/src-tauri/target/$t/release/dcv2-hook"
+    [ -x "$part" ] || die "no hook forwarder at $part."
+    parts="$parts $part"
+  done
+  say "Joining the hook forwarders with lipo"
+  rm -f "$dest"
+  # shellcheck disable=SC2086
+  lipo -create -output "$dest" $parts || die "lipo -create failed."
+  chmod 755 "$dest"
 }
 
 # --- the remote (only with --publish) ----------------------------------------------------------
@@ -147,6 +197,10 @@ verify_app() { # <app> <what>
   main="$(bundle_binary "$1")"
   [ -x "$main" ] || die "$2: the app binary $main is missing or not executable."
   [ -x "$1/Contents/MacOS/dcv2-hook" ] || die "$2: dcv2-hook is not in Contents/MacOS."
+  if [ "$UNIVERSAL" = 1 ]; then
+    require_both_archs "$main" "$2: the app binary"
+    require_both_archs "$1/Contents/MacOS/dcv2-hook" "$2: dcv2-hook"
+  fi
 }
 
 # --- the DMG -----------------------------------------------------------------------------------
@@ -208,7 +262,8 @@ main() {
   for arg in "$@"; do
     case "$arg" in
       --publish) publish=1 ;;
-      -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+      --universal) universal=1 ;;
+      -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
       *) die "unknown option: $arg" ;;
     esac
   done
@@ -217,24 +272,37 @@ main() {
   require_clean_tree
   require_versions_match
   require_host_arch "$universal"
+  if [ "$universal" = 1 ]; then
+    UNIVERSAL=1
+    require_rust_targets
+  fi
   local version tag
   version="$(app_version)"
   tag="v$version"
   [ "$publish" = 0 ] || require_publish_ready "$tag"
 
   trap cleanup EXIT
-  local bundle_root="$ROOT/src-tauri/target/release/bundle"
+  local bundle_root="$ROOT/src-tauri/target/release/bundle" label=aarch64 t
+  [ "$universal" = 0 ] || { bundle_root="$ROOT/src-tauri/target/universal-apple-darwin/release/bundle"; label=universal; }
   local app="$bundle_root/macos/$APP_NAME"
   local hook="$ROOT/src-tauri/target/release/dcv2-hook"
-  local dmg="$bundle_root/dmg/DCTerminalv2_${version}_aarch64.dmg"
+  local dmg="$bundle_root/dmg/DCTerminalv2_${version}_${label}.dmg"
 
   say "Building the app"
-  (cd "$ROOT" && npx tauri build --bundles app) || die "the app build failed."
-  say "Building the hook forwarder"
-  cargo build --release --manifest-path "$ROOT/src-tauri/Cargo.toml" --bin dcv2-hook || die "the hook forwarder build failed."
+  if [ "$universal" = 1 ]; then
+    (cd "$ROOT" && npx tauri build --bundles app --target universal-apple-darwin) || die "the universal app build failed."
+    for t in $APPLE_TARGETS; do
+      say "Building the hook forwarder for $t"
+      cargo build --release --manifest-path "$ROOT/src-tauri/Cargo.toml" --bin dcv2-hook --target "$t" || die "the hook forwarder build for $t failed."
+    done
+  else
+    (cd "$ROOT" && npx tauri build --bundles app) || die "the app build failed."
+    say "Building the hook forwarder"
+    cargo build --release --manifest-path "$ROOT/src-tauri/Cargo.toml" --bin dcv2-hook || die "the hook forwarder build failed."
+  fi
   [ -d "$app" ] || die "no build at $app."
 
-  add_hook "$app" "$hook"
+  if [ "$universal" = 1 ]; then add_universal_hook "$app"; else add_hook "$app" "$hook"; fi
   sign_app "$app"
   verify_app "$app" "the built app"
   mkdir -p "$(dirname "$dmg")"

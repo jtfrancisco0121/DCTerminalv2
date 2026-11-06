@@ -64,7 +64,8 @@ for a in "$@"; do [ "$prev" = "--manifest-path" ] && mp="$a"; [ "$prev" = "--tar
 dir="$(dirname "$mp")/target"
 if [ -n "$target" ]; then out="$dir/$target/release"; else out="$dir/release"; fi
 mkdir -p "$out"
-printf 'hook %s\n' "${target:-${STUB_HOOK_ARCHS:-arm64}}" > "$out/dcv2-hook"; chmod 755 "$out/dcv2-hook"
+case "$target" in aarch64-apple-darwin) arch=arm64 ;; x86_64-apple-darwin) arch=x86_64 ;; *) arch="${STUB_HOOK_ARCHS:-arm64}" ;; esac
+printf 'hook %s\n' "$arch" > "$out/dcv2-hook"; chmod 755 "$out/dcv2-hook"
 exit 0
 EOF
   # codesign: --verify fails for a path matching STUB_VERIFY_FAIL (built: the build folder; mounted: anywhere else).
@@ -106,8 +107,18 @@ case "$1" in
   -archs) sed -n '1s/^[a-z]* //p' "$2" ;;
   -create) out=""; prev=""; for a in "$@"; do [ "$prev" = "-output" ] && out="$a"; prev="$a"; done
            archs=""; for a in "$@"; do case "$a" in -*|"$out") ;; *) archs="$archs $(sed -n '1s/^[a-z]* //p' "$a")" ;; esac; done
+           [ "${STUB_LIPO_BROKEN:-}" = 1 ] && archs=" arm64"
            printf 'hook%s\n' "$archs" > "$out" ;;
 esac
+exit 0
+EOF
+  cat > "$BIN/rustup" <<'EOF'
+#!/bin/sh
+echo "rustup $*" >> "$STUB_LOG"
+if [ "$1 $2 $3" = "target list --installed" ]; then
+  printf '%s\n' "${STUB_RUSTUP_TARGETS-aarch64-apple-darwin
+x86_64-apple-darwin}"
+fi
 exit 0
 EOF
   cat > "$BIN/gh" <<'EOF'
@@ -127,7 +138,7 @@ export STUB_LOG="$LOG" STUB_DIR="$d"
 # A temp repo that looks like the real one for the script: versions, a bare origin, one pushed commit.
 fresh() {
   rm -rf "$W/repo" "$ORIGIN" "$W/other" "$LOG" "$d/built" "$d/mounted" "$d/released"; : > "$LOG"
-  unset STUB_ARCH STUB_VERIFY_FAIL STUB_BUILD_FAIL STUB_BUNDLE_HOOK STUB_MAIN_ARCHS STUB_HOOK_ARCHS STUB_GH_BRANCH
+  unset STUB_ARCH STUB_VERIFY_FAIL STUB_BUILD_FAIL STUB_BUNDLE_HOOK STUB_MAIN_ARCHS STUB_HOOK_ARCHS STUB_GH_BRANCH STUB_LIPO_BROKEN STUB_RUSTUP_TARGETS
   mkdir -p "$R/src-tauri" "$R/plugin/.claude-plugin"
   printf '{\n  "name": "x",\n  "version": "1.2.3"\n}\n' > "$R/package.json"
   printf '{\n  "productName": "DCTerminalv2",\n  "version": "1.2.3",\n  "bundle": {}\n}\n' > "$R/src-tauri/tauri.conf.json"
@@ -209,7 +220,42 @@ sum="$(shasum -a 256 "$DMG" | awk '{ print $1 }')"
 has "  the printed SHA-256 equals shasum -a 256" "SHA-256: $sum"
 check "  the .sha256 file holds it" [ "$(cat "$DMG.sha256")" = "$sum  DCTerminalv2_1.2.3_aarch64.dmg" ]
 check "  without --publish gh was never called" [ ! -e "$d/released" ] ; ! calls | grep -q "^gh " && ok "  and the gh stub recorded no call at all" || bad "  gh was called: $(calls | grep '^gh ')"
+check "  the default build stays aarch64: no --target, no rustup, no lipo" [ -z "$(calls | grep -E '^(rustup|lipo) |--target')" ]
 check "  the order: build, hook, then the signature" [ "$(calls | grep -n -m1 '^npx ' | cut -d: -f1)" -lt "$(calls | grep -n -m1 '^codesign --force' | cut -d: -f1)" ]
+
+echo "# --universal"
+UDMG="$R/src-tauri/target/universal-apple-darwin/release/bundle/dmg/DCTerminalv2_1.2.3_universal.dmg"
+UAPP="$R/src-tauri/target/universal-apple-darwin/release/bundle/macos/DCTerminalv2.app"
+fresh; export STUB_RUSTUP_TARGETS="aarch64-apple-darwin"
+run_main --universal
+check "a missing Rust target stops the script" [ "$rc" != 0 ]; has "  prints the exact rustup line" "rustup target add x86_64-apple-darwin"; check "  nothing was built" not_built
+fresh; export STUB_RUSTUP_TARGETS=""
+run_main --universal
+check "no installed Apple target: both are named" [ "$rc" != 0 ]; has "  prints the rustup line" "rustup target add aarch64-apple-darwin x86_64-apple-darwin"; check "  nothing was built" not_built
+fresh; export STUB_MAIN_ARCHS="arm64 x86_64" STUB_BUNDLE_HOOK=1 STUB_HOOK_ARCHS=arm64 STUB_ARCH=x86_64
+run_main --universal
+check "--universal builds on an Intel host, with a single-arch bundled hook" [ "$rc" = 0 ]
+check "  the DMG is named universal" [ -f "$UDMG" ]
+calls | grep -q "^npx tauri build --bundles app --target universal-apple-darwin" && ok "  tauri built the universal target" || bad "  calls: $(calls | grep '^npx')"
+calls | grep -q "^cargo build --release .* --bin dcv2-hook --target aarch64-apple-darwin" && calls | grep -q "^cargo build --release .* --bin dcv2-hook --target x86_64-apple-darwin" && ok "  dcv2-hook was built for both targets" || bad "  calls: $(calls | grep '^cargo')"
+calls | grep -q "^lipo -create -output $UAPP/Contents/MacOS/dcv2-hook " && ok "  the single-arch hook was joined with lipo -create" || bad "  calls: $(calls | grep '^lipo')"
+check "  the bundled hook now lists both architectures" [ "$(lipo -archs "$UAPP/Contents/MacOS/dcv2-hook")" = "arm64 x86_64" ]
+check "  the app binary path is the lowercase CFBundleExecutable one" [ "$(bundle_binary "$UAPP")" = "$UAPP/Contents/MacOS/dcterminalv2" ]
+lipo_line="$(calls | grep -n -m1 '^lipo -create' | cut -d: -f1)"; sign_line="$(calls | grep -n -m1 '^codesign --force' | cut -d: -f1)"
+check "  it signed after the lipo" [ "$lipo_line" -lt "$sign_line" ]
+check "  the volume is detached" [ ! -s "$d/mounted" ]
+fresh; export STUB_MAIN_ARCHS="arm64 x86_64" STUB_BUNDLE_HOOK=1 STUB_HOOK_ARCHS="arm64 x86_64"
+run_main --universal
+check "a bundled hook that is already universal is not joined again" [ "$rc" = 0 ]; check "  no lipo -create" [ -z "$(calls | grep '^lipo -create')" ]
+fresh; export STUB_MAIN_ARCHS="arm64"
+run_main --universal
+check "an app binary with one architecture fails the script" [ "$rc" != 0 ]; has "  says which" "the app binary is not universal"; check "  no DMG was made" [ ! -e "$UDMG" ]
+fresh; export STUB_MAIN_ARCHS="arm64 x86_64" STUB_LIPO_BROKEN=1
+run_main --universal
+check "a dcv2-hook with one architecture after lipo fails the script" [ "$rc" != 0 ]; has "  says which" "dcv2-hook is not universal"; check "  no DMG was made" [ ! -e "$UDMG" ]
+fresh; export STUB_MAIN_ARCHS="arm64 x86_64" STUB_VERIFY_FAIL=mounted
+run_main --universal
+check "a bad seal on the universal DMG's app stops the script, detached" [ "$rc" != 0 ]; check "  nothing is left mounted" [ ! -s "$d/mounted" ]
 
 echo "# a bad seal stops the script"
 fresh; export STUB_VERIFY_FAIL=mounted
