@@ -656,6 +656,68 @@ pub struct RunSettings {
     /// `--permission-mode` of an Eagle-Eye orchestrator tab: `auto` by default, empty: the account's own mode.
     #[serde(default = "default_orchestrator_permission_mode")]
     pub orchestrator_permission_mode: String,
+    /// Triage schedule: at most one triage run per entry per local day (docs/run-folder.md, Triage mode).
+    #[serde(default)]
+    pub triage_schedule: Vec<TriageSchedule>,
+}
+
+/// One scheduled triage: a ClickUp list of an account, a local time of day, and the folder the run starts in.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TriageSchedule {
+    pub account_id: String,
+    pub list_id: String,
+    /// Local `HH:MM`.
+    pub time: String,
+    pub on: bool,
+    /// The start folder of the triage run (a git repo or a folder of repos).
+    #[serde(default)]
+    pub folder: String,
+}
+
+pub const MAX_TRIAGE_SCHEDULE: usize = 12;
+
+/// `HH:MM` (24 h) as minutes since midnight.
+pub fn parse_hhmm(text: &str) -> Option<u32> {
+    let (h, m) = text.split_once(':')?;
+    if h.len() != 2 || m.len() != 2 {
+        return None;
+    }
+    let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
+    (h < 24 && m < 60).then_some(h * 60 + m)
+}
+
+/// The schedule as saved: trimmed, each entry named by a valid time, account, list and (when on) a folder.
+pub fn clean_triage_schedule(next: Vec<TriageSchedule>) -> Result<Vec<TriageSchedule>, String> {
+    if next.len() > MAX_TRIAGE_SCHEDULE {
+        return Err(format!(
+            "At most {MAX_TRIAGE_SCHEDULE} triage schedule rows."
+        ));
+    }
+    next.into_iter()
+        .map(|e| {
+            let entry = TriageSchedule {
+                account_id: e.account_id.trim().to_string(),
+                list_id: e.list_id.trim().to_string(),
+                time: e.time.trim().to_string(),
+                on: e.on,
+                folder: e.folder.trim().to_string(),
+            };
+            if parse_hhmm(&entry.time).is_none() {
+                return Err(format!(
+                    "Triage schedule time {:?}: use HH:MM, for example 08:00.",
+                    entry.time
+                ));
+            }
+            if entry.account_id.is_empty() || !crate::clickup::valid_id(&entry.list_id) {
+                return Err("Triage schedule: pick an account and a list id.".into());
+            }
+            if entry.on && entry.folder.is_empty() {
+                return Err("Triage schedule: a row that is on needs a folder to start in.".into());
+            }
+            Ok(entry)
+        })
+        .collect()
 }
 
 fn default_orchestrator_model() -> String {
@@ -754,6 +816,7 @@ impl Default for RunSettings {
             auto_cleanup: true,
             orchestrator_model: default_orchestrator_model(),
             orchestrator_permission_mode: default_orchestrator_permission_mode(),
+            triage_schedule: Vec::new(),
         }
     }
 }
@@ -894,6 +957,7 @@ impl SettingsStore {
             auto_cleanup: next.auto_cleanup,
             orchestrator_model: model,
             orchestrator_permission_mode: mode,
+            triage_schedule: clean_triage_schedule(next.triage_schedule)?,
         };
         self.save()
     }
@@ -1125,6 +1189,58 @@ mod tests {
             serde_json::from_str(r#"{"setup":"npm ci","copyFiles":[],"liveTests":true}"#).unwrap();
         assert!(!old.receipt);
         assert!(old.live_tests);
+    }
+
+    #[test]
+    fn the_triage_schedule_loads_empty_from_an_old_file_and_refuses_a_bad_row() {
+        let old: RunSettings = serde_json::from_str(r#"{"maxImplementers": 3}"#).unwrap();
+        assert!(old.triage_schedule.is_empty());
+        let row = |time: &str, list: &str, on: bool, folder: &str| TriageSchedule {
+            account_id: "default".into(),
+            list_id: list.into(),
+            time: time.into(),
+            on,
+            folder: folder.into(),
+        };
+        let ok =
+            clean_triage_schedule(vec![row(" 08:30 ", "901800112233", true, " /w/app ")]).unwrap();
+        assert_eq!(
+            (ok[0].time.as_str(), ok[0].folder.as_str()),
+            ("08:30", "/w/app")
+        );
+        for bad in [
+            row("8:30", "901", true, "/w"),
+            row("24:00", "901", true, "/w"),
+            row("08:60", "901", true, "/w"),
+            row("08:00", "", true, "/w"),
+            row("08:00", "a b", true, "/w"),
+            row("08:00", "901", true, ""),
+        ] {
+            assert!(clean_triage_schedule(vec![bad.clone()]).is_err(), "{bad:?}");
+        }
+        assert!(
+            clean_triage_schedule(vec![row("08:00", "901", false, "")]).is_ok(),
+            "an off row needs no folder"
+        );
+        let dir = TempDir::new("settings_triage");
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        let mut next = store.run().clone();
+        next.triage_schedule = vec![row("07:15", "901", true, "/w/app")];
+        store.set_run(next.clone()).unwrap();
+        assert_eq!(
+            SettingsStore::open(dir.path())
+                .unwrap()
+                .run()
+                .triage_schedule,
+            next.triage_schedule
+        );
+        next.triage_schedule = vec![row("nope", "901", true, "/w/app")];
+        assert!(store.set_run(next).is_err());
+        assert_eq!(
+            store.run().triage_schedule.len(),
+            1,
+            "the saved schedule stays"
+        );
     }
 
     #[test]

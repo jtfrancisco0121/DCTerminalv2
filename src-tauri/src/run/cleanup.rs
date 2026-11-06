@@ -747,6 +747,7 @@ mod tests {
 
     // ---- the app's QA server pass --------------------------------------------------------------
 
+    #[cfg(unix)]
     fn backdate(path: &Path, age: Duration) {
         let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
         file.set_modified(std::time::SystemTime::now() - age)
@@ -755,6 +756,7 @@ mod tests {
 
     /// A run folder under `data/runs` at `stage`, its status.json `status_age` old, with a QA server record
     /// `record_age` old for the live process `pid` (group `pid`), recorded with `start`.
+    #[cfg(unix)]
     fn qa_run(
         data: &Path,
         id: &str,
@@ -805,7 +807,9 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     const OLD: Duration = Duration::from_secs(40 * 60);
+    #[cfg(unix)]
     const FRESH: Duration = Duration::from_secs(60);
 
     #[cfg(unix)]

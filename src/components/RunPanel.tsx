@@ -414,6 +414,11 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
         <div className="run-stage" data-testid="run-stage">
           {stageText(view.stage, view.eval)}
         </div>
+        {view.runMode === "triage" && view.stage === "done" && (
+          <div className="hint run-triage-notice" role="status" data-testid="triage-notice">
+            Proposal ready: review it in Runs › Triage
+          </div>
+        )}
         <Stepper
           stage={view.stage}
           waitingFor={view.waitingFor}

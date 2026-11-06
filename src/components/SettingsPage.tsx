@@ -25,6 +25,7 @@ import {
   type RunSettings,
   type SettingsView,
   type TerminalSettings,
+  type TriageScheduleRow,
 } from "../bridge";
 import { accountsProblem, addAccount, MAX_ACCOUNTS } from "../settings/accounts";
 import { ATTENTION_KINDS, DEFAULT_EXPORT_ENDPOINT, PUSH_KINDS } from "../run/words";
@@ -98,7 +99,60 @@ const runKey = (r: RunSettings) =>
     usageHoldPercent: r.usageHoldPercent ?? null,
     batchPushes: r.batchPushes ?? true,
     autoStartWaves: r.autoStartWaves ?? false,
+    triageSchedule: r.triageSchedule ?? [],
   });
+
+/**
+ * Settings › Runs › Triage schedule: per row a ClickUp list of an account, a local time and the start folder. At most one
+ * triage run per row per day starts on its own, and none while the list's last proposal has not been answered.
+ */
+export function TriageSchedule({
+  rows,
+  accounts,
+  onChange,
+}: {
+  rows: TriageScheduleRow[];
+  accounts: { id: string; name: string }[];
+  onChange: (rows: TriageScheduleRow[]) => void;
+}) {
+  const set = (at: number, patch: Partial<TriageScheduleRow>) => onChange(rows.map((r, i) => (i === at ? { ...r, ...patch } : r)));
+  return (
+    <fieldset className="triage-schedule" data-testid="triage-schedule">
+      <legend>Triage schedule</legend>
+      <p className="hint">
+        Once a day at the time given, triage the open tickets of a ClickUp list (its proposal waits in Runs › Triage). None starts while the last
+        proposal of that list has not been answered.
+      </p>
+      {rows.map((row, at) => (
+        <div key={at} className="triage-schedule-row">
+          <label className="check-label">
+            <input type="checkbox" aria-label={`Triage schedule row ${at + 1} on`} checked={row.on} onChange={(event) => set(at, { on: event.target.checked })} /> On
+          </label>
+          <select className="text-input text-input-narrow" aria-label={`Triage schedule row ${at + 1} account`} value={row.accountId} onChange={(event) => set(at, { accountId: event.target.value })}>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+          <input className="text-input text-input-narrow" aria-label={`Triage schedule row ${at + 1} list id`} placeholder="list id" value={row.listId} onChange={(event) => set(at, { listId: event.target.value })} />
+          <input className="text-input text-input-narrow" type="time" aria-label={`Triage schedule row ${at + 1} time`} value={row.time} onChange={(event) => set(at, { time: event.target.value })} />
+          <input className="text-input" aria-label={`Triage schedule row ${at + 1} folder`} placeholder="folder to start in" value={row.folder} onChange={(event) => set(at, { folder: event.target.value })} />
+          <button type="button" className="link-button" aria-label={`Remove triage schedule row ${at + 1}`} onClick={() => onChange(rows.filter((_, i) => i !== at))}>
+            Remove
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="secondary-button"
+        onClick={() => onChange([...rows, { accountId: accounts[0]?.id ?? "", listId: "", time: "08:00", on: false, folder: "" }])}
+      >
+        Add a triage schedule row
+      </button>
+    </fieldset>
+  );
+}
 
 /** "Unsaved changes" beside a section's Save button. */
 function UnsavedMarker({ show }: { show: boolean }) {
@@ -828,6 +882,11 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
             }}
           />
         </label>
+        <TriageSchedule
+          rows={runSettings.triageSchedule ?? []}
+          accounts={view.accounts.map((a) => ({ id: a.id, name: a.name }))}
+          onChange={(triageSchedule) => setRun({ ...runSettings, triageSchedule })}
+        />
         <div className="button-row">
           <button type="button" className="primary-button" onClick={() => void saveRun()}>
             Save run settings

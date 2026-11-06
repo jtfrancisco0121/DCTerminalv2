@@ -375,6 +375,8 @@ export const RUN_STEPS: ReadonlyArray<{ key: string; label: string }> = [
 
 /** An epic-plan run only plans: it never builds or ships (plugin/scripts/state.sh). */
 export const EPIC_PLAN_STEPS: ReadonlyArray<string> = ["planning", "plan-approval", "done"];
+/** A triage run only proposes: it plans, then is done (there is no stop #1 or #2). */
+export const TRIAGE_STEPS: ReadonlyArray<string> = ["planning", "done"];
 
 /**
  * An eval run plans, builds and reviews, then ends at `ship-approval` with nothing to approve (state.sh refuses the
@@ -399,6 +401,7 @@ export function prsDone(prs: ReadonlyArray<{ state: string | null }>): number {
 
 function stepSetFor(mode: string | null | undefined): ReadonlyArray<{ key: string; label: string }> {
   if (mode === "eval") return EVAL_STEPS;
+  if (mode === "triage") return RUN_STEPS.filter((step) => TRIAGE_STEPS.includes(step.key));
   return mode === "epic-plan" ? RUN_STEPS.filter((step) => EPIC_PLAN_STEPS.includes(step.key)) : RUN_STEPS;
 }
 

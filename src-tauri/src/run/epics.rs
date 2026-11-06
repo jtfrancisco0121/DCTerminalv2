@@ -197,14 +197,25 @@ fn read_json(path: &Path) -> Option<Value> {
         .and_then(|t| serde_json::from_str(&t).ok())
 }
 
-/// The epic-plan runs that reached `done`, newest first.
+/// The epic-plan runs that reached `done`, and the triage runs that reached `done` with an approved record (AD-15),
+/// newest first.
 pub fn epic_runs(data: &Path) -> Vec<PathBuf> {
     super::folder::list_runs(data)
         .into_iter()
         .filter(|r| !r.adopted && r.stage.as_deref() == Some("done"))
         .map(|r| PathBuf::from(r.run_dir))
-        .filter(|d| read_json(&d.join("meta.json")).is_some_and(|m| m["mode"] == "epic-plan"))
+        .filter(|d| {
+            read_json(&d.join("meta.json")).is_some_and(|m| {
+                m["mode"] == "epic-plan"
+                    || (m["mode"] == "triage" && super::triage::approved_waves(d).is_some())
+            })
+        })
         .collect()
+}
+
+/// A triage run's groups ride the epic dispatcher as waves (`source: triage`).
+fn is_triage_epic(run_dir: &Path) -> bool {
+    super::folder::run_mode_of(run_dir).as_deref() == Some("triage")
 }
 
 /// The ticket ids of the epic run's tickets.json.
@@ -222,7 +233,12 @@ fn ticket_ids(run_dir: &Path) -> HashSet<String> {
 
 /// The specs of an epic run, or why they cannot be offered.
 pub fn specs_of(run_dir: &Path) -> Result<Vec<WaveSpec>, String> {
-    let waves = read_json(&run_dir.join("waves.json")).ok_or("waves.json is missing")?;
+    // A triage run's waves come from the operator's signed approval, never from a file in the run folder.
+    let waves = if is_triage_epic(run_dir) {
+        super::triage::approved_waves(run_dir).ok_or("the triage proposal is not approved")?
+    } else {
+        read_json(&run_dir.join("waves.json")).ok_or("waves.json is missing")?
+    };
     validate_waves(&waves, &ticket_ids(run_dir))
 }
 
@@ -330,12 +346,19 @@ pub fn queue_wave(data: &Path, epic_dir: &Path, n: u32) -> Result<String, String
             ticket_ids: spec.tickets.clone(),
         }),
         review_mode: meta["reviewMode"].as_str().map(String::from),
-        bmad_mode: meta["bmad"]["mode"].as_str().map(String::from),
+        // An epic-plan wave keeps its run's BMAD mode; a triage run's own `off` is never copied (the operator's
+        // default applies, AD-15).
+        bmad_mode: if is_triage_epic(epic_dir) {
+            None
+        } else {
+            meta["bmad"]["mode"].as_str().map(String::from)
+        },
         force: None,
         repos: None,
         max_implementers: None,
         run_mode: None,
         dispatch_entry_id: None,
+        triage_list_id: None,
         eval: None,
     };
     let label = format!("Wave {n}: {}", spec.title);
@@ -350,6 +373,10 @@ pub fn queue_wave(data: &Path, epic_dir: &Path, n: u32) -> Result<String, String
                 d.epics.last_mut().expect("just pushed")
             }
         };
+        if is_triage_epic(epic_dir) {
+            epic.source = Some("triage".into());
+            epic.auto_start = true;
+        }
         if epic.wave_runs.iter().any(|r| r.n == n) {
             return Err(format!("wave {n} was already started"));
         }
@@ -382,13 +409,16 @@ pub fn auto_start(app: &AppHandle) {
         .try_state::<std::sync::Mutex<crate::store::SettingsStore>>()
         .and_then(|s| s.lock().ok().map(|s| s.run().auto_start_waves))
         .unwrap_or(false);
-    if !on {
-        return;
-    }
-    let data = data_dir(app);
+    auto_start_in(&data_dir(app), on);
+}
+
+/// The queueing of ready waves: every epic when `all` (`run.autoStartWaves`), else only approved triage epics, which
+/// always start their ready groups (AD-15).
+pub fn auto_start_in(data: &Path, all: bool) {
+    let data = data.to_path_buf();
     let state = dispatch::load(&data);
     for view in views(&data, &state) {
-        if view.problem.is_some() {
+        if view.problem.is_some() || !(all || is_triage_epic(Path::new(&view.run_dir))) {
             continue;
         }
         for card in view.cards.iter().filter(|c| c.state == "ready") {
@@ -427,6 +457,10 @@ pub fn wave_ready_events(app: &AppHandle) -> Vec<crate::observe::attention::Even
                     d.epics.last_mut().expect("just pushed")
                 }
             };
+            if is_triage_epic(Path::new(&view.run_dir)) {
+                epic.source = Some("triage".into());
+                epic.auto_start = true;
+            }
             let fresh: Vec<u32> = ready
                 .iter()
                 .copied()

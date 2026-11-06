@@ -203,6 +203,41 @@ fn read_signed<T: DeserializeOwned>(
         .map_err(|_| TAMPERED.to_string())
 }
 
+/// The signed triage records (AD-14, AD-16): the operator's approval and the log of what was sent to ClickUp.
+pub const TRIAGE_APPROVAL_FILE: &str = "triage-approval.json";
+pub const TRIAGE_POSTED_FILE: &str = "triage-posted.json";
+
+fn triage_name(name: &str) -> Result<(), String> {
+    if name == TRIAGE_APPROVAL_FILE || name == TRIAGE_POSTED_FILE {
+        Ok(())
+    } else {
+        Err(format!("{name} is not a triage record"))
+    }
+}
+
+/// Reads one signed triage record; `Ok(None)` when it is not there, `Err(TAMPERED)` on a bad MAC.
+pub fn read_triage<T: DeserializeOwned>(
+    key: &Key,
+    data: &Path,
+    run_dir: &Path,
+    name: &str,
+) -> Result<Option<T>, String> {
+    triage_name(name)?;
+    read_signed(key, data, run_dir, name)
+}
+
+/// Writes one signed triage record (atomic).
+pub fn write_triage<T: Serialize>(
+    key: &Key,
+    data: &Path,
+    run_dir: &Path,
+    name: &str,
+    value: &T,
+) -> Result<(), String> {
+    triage_name(name)?;
+    write_signed(key, data, run_dir, name, value)
+}
+
 /// Removes a run's records (a Start that failed).
 pub fn remove(data: &Path, run_dir: &Path) {
     if let Ok(dir) = trust_dir(data, run_dir) {

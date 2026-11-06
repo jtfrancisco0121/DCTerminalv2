@@ -30,6 +30,7 @@ pub mod rerun;
 pub mod slop;
 pub mod status;
 pub mod timeline;
+pub mod triage;
 
 use crate::commands::{tab_summary, TabSummary};
 use crate::paths::validate_working_folder;
@@ -522,6 +523,9 @@ pub struct StartParams {
     /// One run of an eval group: recorded in meta.json `eval` (only the dispatcher sets it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eval: Option<folder::EvalRef>,
+    /// A triage run: the ClickUp list it triages (recorded in meta.json `triage.listId`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage_list_id: Option<String>,
 }
 
 #[tauri::command]
@@ -554,6 +558,7 @@ pub async fn start_run(
         run_mode,
         dispatch_entry_id: None,
         eval: None,
+        triage_list_id: None,
     };
     blocking(move || start_run_inner(&app, params)).await
 }
@@ -575,6 +580,7 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
         run_mode,
         dispatch_entry_id,
         eval,
+        triage_list_id,
     } = params;
     // A dispatcher start (queue, wave, eval) runs in the background: it must
     // not switch the tab the user is looking at.
@@ -629,6 +635,13 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
         let detected: Vec<String> = found.repos.iter().map(|r| r.name.clone()).collect();
         let repos_limit = folder::repos_limit_for(&detected, repos.as_deref())?;
         let max_implementers = max_implementers.map(|n| n.clamp(1, MAX_IMPLEMENTERS_LIMIT));
+        // A triage run (AD-13) plans only: BMAD is off, whatever the caller said.
+        let is_triage = run_mode.as_deref() == Some("triage");
+        let bmad_mode = if is_triage {
+            Some("off".to_string())
+        } else {
+            bmad_mode
+        };
         let meta = folder::RunMeta {
             plugin_version: launch::plugin_version(&plugin),
             claude_version: ctx.provider.detect().version,
@@ -644,6 +657,7 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
             eval,
             orchestrator_model: ctx.orchestrator.0.clone(),
             orchestrator_mode: ctx.orchestrator.1.clone(),
+            triage_list_id: triage_list_id.filter(|_| is_triage),
         };
         if meta.mode.is_some() && clickup.as_ref().is_none_or(|c| c.ticket_ids.is_empty()) {
             return Err(

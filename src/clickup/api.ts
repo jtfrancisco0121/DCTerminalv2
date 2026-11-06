@@ -156,3 +156,60 @@ export const clickupAutoPostConsent = (runDir: string, writebackSha: string) =>
 export const clickupAutoPostNow = (runDir: string) => invoke<void>("clickup_auto_post_now", { runDir });
 export const clickupSetAutoPost = (accountId: string, on: boolean) =>
   invoke<void>("clickup_set_auto_post", { accountId, on });
+
+// ---- Triage (docs/run-folder.md, "Triage mode"; src-tauri/src/run/triage.rs) -------------------------------------
+
+export type TriageGroup = { n: number; title: string; tickets: string[]; dependsOn: number[]; why: string };
+export type TriageSuggestion = { index: number; title: string; why: string; description: string };
+export type TriageProposal = {
+  groups: TriageGroup[];
+  needsYou: { ticket: string; reason: string }[];
+  suggestions: TriageSuggestion[];
+  closes: { ticket: string; why: string }[];
+  outOfScope: { ticket: string; reason: string }[];
+  /** Ticket id to name, from the run's snapshot. */
+  names?: Record<string, string>;
+};
+
+/** The operator's signed decision: what was approved, with the exact text of each ticked create. */
+export type TriageApproval = {
+  schema: number;
+  triageDigest: string;
+  decision: "approved" | "rejected";
+  groups: TriageGroup[];
+  creates: { index: number; name: string; description: string }[];
+  closes: string[];
+  at: string;
+};
+
+/** One ClickUp write's result: `sending`, `posted`, `failed` (Retry), `maybe` (not resent) or `blocked` (looks like a secret). */
+export type TriagePost = { result: string; at: string; message?: string | null };
+
+export type TriageView = {
+  runDir: string;
+  runId: string;
+  listId: string | null;
+  proposal: TriageProposal | null;
+  digest: string;
+  approval: TriageApproval | null;
+  posted: { items: Record<string, TriagePost> } | null;
+  /** Why the proposal cannot be shown or decided ("The proposal changed. Review it again."). */
+  problem: string | null;
+};
+
+/** What the operator edited: the groups kept (in order, numbered by position), the suggested tickets ticked, the tickets to close. */
+export type TriageEdits = {
+  groups: { title: string; tickets: string[]; dependsOn: number[]; why: string }[];
+  creates: number[];
+  closes: string[];
+};
+
+export type TriageApplied = { item: string; result: string; message: string };
+
+export const triageStart = (windowId: string | null, listId: string, folder: string) =>
+  invoke<string>("triage_start", { windowId, listId, folder });
+export const triageBlocking = (listId: string) => invoke<string | null>("triage_blocking", { listId });
+export const triageOverview = () => invoke<TriageView[]>("triage_overview");
+export const triageApprove = (runDir: string, triageDigest: string, decision: "approved" | "rejected", edits: TriageEdits | null) =>
+  invoke<TriageApproval>("triage_approve", { runDir, triageDigest, decision, edits });
+export const triageApply = (runDir: string) => invoke<TriageApplied[]>("triage_apply", { runDir });

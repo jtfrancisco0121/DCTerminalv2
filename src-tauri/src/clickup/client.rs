@@ -499,6 +499,27 @@ impl<'a> ClickUp<'a> {
         self.write(WriteMethod::Post, &path, &body, "task")
     }
 
+    /// Write 3 (AD-16, triage): creates a task in `list_id` (`POST /list/{id}/task`) with a name and a description.
+    /// Called only from `run/triage.rs` `apply`, after the operator's signed approval and per-item tick, and sends only
+    /// the text stored in that record (a source-scan test holds the call sites to that file).
+    pub fn create_task(
+        &self,
+        list_id: &str,
+        name: &str,
+        description: &str,
+    ) -> Result<(), ClickUpError> {
+        if !valid_id(list_id) {
+            return Err(ClickUpError::BadId);
+        }
+        let body = serde_json::json!({ "name": name, "description": description });
+        self.write(
+            WriteMethod::Post,
+            &format!("/list/{list_id}/task"),
+            &body,
+            "list",
+        )
+    }
+
     /// Write 2 of 2 (C3): moves `task` to `status` (`PUT /task/{id}`). The
     /// body holds the status and nothing else.
     pub fn set_status(&self, task: &TaskRef, status: &str) -> Result<(), ClickUpError> {
@@ -1145,9 +1166,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_client_has_exactly_two_writes_and_nothing_else_reaches_send() {
+    fn the_client_has_exactly_three_writes_and_nothing_else_reaches_send() {
         let source = client_source();
-        // Every write goes through `self.write(`, and there are two.
+        // Every write goes through `self.write(`, and there are three: a comment, a status and (AD-16, triage) a new
+        // task; `create_task` is called only from run/triage.rs (a source scan there holds it to that).
         let writes: Vec<&str> = source
             .lines()
             .filter(|line| line.contains("self.write("))
@@ -1157,6 +1179,7 @@ pub(crate) mod tests {
             writes,
             [
                 r#"self.write(WriteMethod::Post, &path, &body, "task")"#,
+                "self.write(", // create_task
                 r#"self.write(WriteMethod::Put, &path, &body, "task")"#,
             ]
         );
@@ -1167,16 +1190,15 @@ pub(crate) mod tests {
             2,
             "the match arm and `write`"
         );
-        for banned in [
-            "Delete",
-            "Patch",
-            "assignees",
-            "description\":",
-            "/attachment",
-            "/checklist",
-        ] {
+        for banned in ["Delete", "Patch", "assignees", "/attachment", "/checklist"] {
             assert!(!source.contains(banned), "{banned} in client.rs");
         }
+        // The one place a description is sent is the new-task body.
+        assert_eq!(
+            source.matches("description\":").count(),
+            1,
+            "only create_task sends a description"
+        );
         // Every method that sends: reads are GETs, the rest are these two.
         let api = Recorded::default()
             .on("/team", ok(r#"{"teams":[]}"#.into()))
@@ -1191,7 +1213,8 @@ pub(crate) mod tests {
                 ok(r#"{"tasks":[]}"#.into()),
             )
             .on("POST /task/t1/comment", ok("{}".into()))
-            .on("PUT /task/t1", ok("{}".into()));
+            .on("PUT /task/t1", ok("{}".into()))
+            .on("POST /list/l1/task", ok("{}".into()));
         let (gate, clock, token) = (Gate::new(), FakeClock::at(NOW), token());
         let client = ClickUp::with(&api, &token, &gate, &clock);
         let task = TaskRef::Id("t1".into());
@@ -1202,6 +1225,7 @@ pub(crate) mod tests {
         client.list_tasks("l1").unwrap();
         client.post_comment(&task, "c").unwrap();
         client.set_status(&task, "s").unwrap();
+        client.create_task("l1", "n", "d").unwrap();
         let writes: Vec<(String, String)> = api
             .writes
             .lock()
@@ -1214,9 +1238,10 @@ pub(crate) mod tests {
             [
                 ("POST".to_string(), "/task/t1/comment".to_string()),
                 ("PUT".to_string(), "/task/t1".to_string()),
+                ("POST".to_string(), "/list/l1/task".to_string()),
             ]
         );
-        assert_eq!(api.paths().len(), 7);
+        assert_eq!(api.paths().len(), 8);
     }
 
     /// Counts calls in flight; each one takes a moment.
