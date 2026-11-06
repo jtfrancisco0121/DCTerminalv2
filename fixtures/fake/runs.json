@@ -13,9 +13,12 @@
         "updatedAt": "2026-10-22T13:40:00Z",
         "title": "Add multiply()",
         "prCount": 2,
-        "repos": ["mathlib"],
+        "repos": [
+          "mathlib"
+        ],
         "repoCount": 1
       }
     ]
-  }
+  },
+  "run_qa_image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 }

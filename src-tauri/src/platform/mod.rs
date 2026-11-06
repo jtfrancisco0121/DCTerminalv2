@@ -352,6 +352,33 @@ pub fn kill_tree(child: &Child) {
     kill_tree_pid(child.id());
 }
 
+/// The start time of a live process as text (Unix: `ps -o lstart= -p <pid>`, whitespace squeezed, so it is the same
+/// text `dcv2_portable.proc_start_time` records for a QA server); None when the pid is gone. Windows: None
+/// (unsupported: a recorded QA group is never killed there).
+pub fn process_start_time(pid: u32) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::process::Stdio;
+        let out = quiet_command("ps")
+            .args(["-o", "lstart=", "-p", &pid.to_string()])
+            .env("LC_ALL", "C")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        (out.status.success() && !text.is_empty()).then_some(text)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// [`kill_tree`] for a pid alone (the check runner keeps only pids).
 pub fn kill_tree_pid(pid: u32) {
     use std::process::Stdio;
@@ -380,6 +407,20 @@ mod tests {
     use super::*;
     use serde_json::Value;
     use std::collections::{HashMap, HashSet};
+
+    #[cfg(unix)]
+    #[test]
+    fn a_live_childs_start_time_is_stable_and_none_after_it_exits() {
+        let mut cmd = quiet_command("sleep");
+        cmd.arg("30");
+        spawn_group(&mut cmd);
+        let mut child = cmd.spawn().unwrap();
+        let first = process_start_time(child.id()).expect("a live child has a start time");
+        assert_eq!(process_start_time(child.id()), Some(first));
+        kill_tree(&child);
+        child.wait().unwrap();
+        assert_eq!(process_start_time(child.id()), None);
+    }
 
     #[test]
     fn creation_flags_are_computed_in_one_place() {

@@ -78,7 +78,22 @@
           "result": "pass",
           "tried": 2,
           "total": 2,
-          "path": "reviews/PR1-qa1.md"
+          "failed": 0,
+          "path": "reviews/PR1-qa1.md",
+          "criteria": [
+            {
+              "id": "S1.1",
+              "result": "PASS",
+              "text": "Start button visible",
+              "image": "S1.1"
+            },
+            {
+              "id": "S1.2",
+              "result": "PASS",
+              "text": "Run panel shows Planning",
+              "image": "S1.2"
+            }
+          ]
         }
       },
       {

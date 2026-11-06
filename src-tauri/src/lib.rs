@@ -235,6 +235,7 @@ pub fn run() {
             run::run_worktrees,
             run::remove_run_worktrees,
             run::read_run_file,
+            run::qa_image::run_qa_image,
             run::memory_status,
             run::read_memory_file,
             clickup::commands::clickup_token_status,

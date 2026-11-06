@@ -22,6 +22,7 @@ pub mod launch;
 pub mod link;
 pub mod memory;
 pub mod preview;
+pub mod qa_image;
 pub mod record;
 pub mod repos;
 pub mod requests;
@@ -323,9 +324,9 @@ pub fn live_run_tab<'a>(
     })
 }
 
-/// Focuses the live tab of `run_dir`, if any. Lock order: StateStore
-/// (copied out), then the registry, then StateStore again.
-fn focus_live_run_tab(app: &AppHandle, run_dir: &Path) -> Result<Option<TabSummary>, String> {
+/// The live run tab of `run_dir`, if any (see [`live_run_tab`]). Lock order: StateStore
+/// (copied out), then the registry.
+fn live_tab_of(app: &AppHandle, run_dir: &Path) -> Result<Option<crate::store::TabRecord>, String> {
     let tabs: Vec<crate::store::TabRecord> = {
         let state = app.state::<Mutex<StateStore>>();
         let state = state.lock().map_err(|e| e.to_string())?;
@@ -339,7 +340,19 @@ fn focus_live_run_tab(app: &AppHandle, run_dir: &Path) -> Result<Option<TabSumma
             .map(|t| t.id.clone())
             .collect()
     };
-    let Some(tab) = live_run_tab(&tabs, run_dir, |id| live.contains(id)).cloned() else {
+    Ok(live_run_tab(&tabs, run_dir, |id| live.contains(id)).cloned())
+}
+
+/// Whether a live run tab holds `run_dir` (the QA server pass keeps a live run's servers). A lock problem counts as
+/// live: nothing is stopped on a doubt.
+pub fn run_has_live_tab(app: &AppHandle, run_dir: &Path) -> bool {
+    live_tab_of(app, run_dir).map_or(true, |tab| tab.is_some())
+}
+
+/// Focuses the live tab of `run_dir`, if any. Lock order: StateStore
+/// (copied out), then the registry, then StateStore again.
+fn focus_live_run_tab(app: &AppHandle, run_dir: &Path) -> Result<Option<TabSummary>, String> {
+    let Some(tab) = live_tab_of(app, run_dir)? else {
         return Ok(None);
     };
     focus_tab(app, &tab.id)

@@ -244,6 +244,19 @@ export function reviewText(pr: PrView): string | null {
   return parts.join(", ");
 }
 
+/**
+ * The QA pill of a PR: "QA trying…" while it is in state `qa` with no result yet, then "QA n/m passed", "QA failed" or
+ * "QA could not run". null when QA did not apply (no result and not in state `qa`).
+ */
+export function qaPill(pr: Pick<PrView, "state" | "qa">): { text: string; tone: Tone } | null {
+  const qa = pr.qa;
+  if (!qa) return pr.state === "qa" ? { text: "QA trying…", tone: "running" } : null;
+  if (qa.result === "pass") return { text: `QA ${Math.max(0, qa.tried - qa.failed)}/${qa.total} passed`, tone: "success" };
+  if (qa.result === "fail") return { text: "QA failed", tone: "danger" };
+  if (qa.result === "error") return { text: "QA could not run", tone: "warn" };
+  return null;
+}
+
 /** A link the opener may open (http/https only). */
 export function safeUrl(url: string | null): string | null {
   return url && /^https?:\/\//i.test(url) ? url : null;
