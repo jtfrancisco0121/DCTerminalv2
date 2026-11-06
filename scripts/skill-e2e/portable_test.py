@@ -50,6 +50,80 @@ class Backend(unittest.TestCase):
             p.check_argv("x", "nt", {"DCV2_BASH_EXE": "bash"})
 
 
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+@unittest.skipIf(os.name == "nt", "POSIX recorded groups")
+class RecordedGroups(unittest.TestCase):
+    """proc_start_time / kill_recorded_group (QA servers): a recorded group is killed only while its leader is the
+    process that was recorded."""
+
+    def spawn(self):
+        return p.spawn_group(["sleep", "60"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_start_time_of_a_live_child_is_stable_and_none_after_it_exits(self):
+        proc = self.spawn()
+        try:
+            first = p.proc_start_time(proc.pid)
+            self.assertTrue(first)
+            self.assertEqual(first, p.proc_start_time(proc.pid))
+        finally:
+            p.kill_group(proc)
+            proc.wait()
+        self.assertIsNone(p.proc_start_time(proc.pid))
+
+    def test_a_match_kills_the_group(self):
+        proc = self.spawn()
+        try:
+            start = p.proc_start_time(proc.pid)
+            self.assertEqual(p.kill_recorded_group(proc.pid, proc.pid, start), "killed")
+            proc.wait(timeout=5)
+            self.assertFalse(alive(proc.pid))
+        finally:
+            p.kill_group(proc)
+            proc.wait()
+
+    def test_a_wrong_start_time_is_a_mismatch_and_kills_nothing(self):
+        proc = self.spawn()
+        try:
+            self.assertEqual(p.kill_recorded_group(proc.pid, proc.pid, "Thu Jan  1 00:00:00 1970"), "mismatch")
+            self.assertIsNone(proc.poll())
+            self.assertEqual(p.kill_recorded_group(proc.pid, proc.pid, ""), "mismatch")
+            self.assertEqual(p.kill_recorded_group(proc.pid, proc.pid, None), "mismatch")
+            self.assertIsNone(proc.poll())
+        finally:
+            p.kill_group(proc)
+            proc.wait()
+
+    def test_a_dead_leader_is_gone(self):
+        proc = self.spawn()
+        start = p.proc_start_time(proc.pid)
+        p.kill_group(proc)
+        proc.wait()
+        self.assertEqual(p.kill_recorded_group(proc.pid, proc.pid, start), "gone")
+
+    def test_nonsense_ids_are_never_killed(self):
+        self.assertEqual(p.kill_recorded_group(0, 0, "x"), "mismatch")
+        self.assertEqual(p.kill_recorded_group(1, 1, "x"), "mismatch")
+        self.assertEqual(p.kill_recorded_group("12", "12", "x"), "mismatch")
+
+    def test_the_windows_backend_is_unsupported_and_kills_nothing(self):
+        proc = self.spawn()
+        try:
+            start = p.proc_start_time(proc.pid)
+            self.assertEqual(p.kill_recorded_group(proc.pid, proc.pid, start, backend=p._Nt), "unsupported")
+            self.assertIsNone(proc.poll())
+            self.assertIsNone(p.proc_start_time(proc.pid, backend=p._Nt))
+        finally:
+            p.kill_group(proc)
+            proc.wait()
+
+
 @unittest.skipIf(os.name == "nt", "POSIX lock")
 class PosixLock(unittest.TestCase):
     def test_a_second_holder_times_out_with_the_exact_message(self):

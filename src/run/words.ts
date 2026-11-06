@@ -39,6 +39,7 @@ export function prStateTone(state: string | null | undefined): Tone {
       return "success";
     case "building":
     case "reviewing":
+    case "qa":
       return "running";
     case "fixing":
       return "warn";
@@ -169,6 +170,7 @@ const PR_STATES: Record<string, string> = {
   pending: "waiting",
   building: "building",
   reviewing: "in review",
+  qa: "trying in the app",
   fixing: "fixing review findings",
   reviewed: "reviewed",
   "needs-attention": "needs attention",

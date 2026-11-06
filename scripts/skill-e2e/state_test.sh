@@ -683,6 +683,27 @@ rhas "  findings: CRITICAL, HIGH and MEDIUM counted, LOW not, counts only" "- ME
 rhasnt "  no finding text in the Receipt" "SECRET-FINDING-TEXT"
 rhas "  guard blocks per rule id" "- Guard blocks (whole run): 3 (path-outside-run x2, shell-write x1)"
 rhas "  decisions, one stating a contradiction" "- Decisions recorded in the approved plan: 2; 1 state a contradiction of the decision log"
+rqa() {   # rqa <json qa value or null>: the recorded prs[].qa of PR2 (only state.sh qa writes it; the test sets it directly)
+  python3 - "$RUN/status.json" "$1" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1])); q = json.loads(sys.argv[2])
+(st["prs"][1].__setitem__("qa", q) if q else st["prs"][1].pop("qa", None))
+json.dump(st, open(sys.argv[1], "w"))
+PY
+}
+rqa '{"round":2,"result":"pass","tried":2,"total":2,"path":"reviews/PR2-qa2.md"}'
+rship "ship-pr of a QA-passed PR (receipt on)"
+[[ "$(grep -cF -- "- QA: 2/2 criteria tried in the app (all passed)" "$B2")" == 2 ]] && ok "  the QA line is in Verification and in the Receipt" || bad "  QA lines: $(grep -n 'QA' "$B2")"
+python3 - "$B2" <<'PY' && ok "  one QA line is in Verification, before Tickets" || bad "  body: $(cat "$B2")"
+import sys
+t = open(sys.argv[1]).read()
+assert t.index("## Verification") < t.index("- QA: 2/2") < t.index("## Tickets")
+PY
+rhasnt "  no criterion text or image path in the body" "reviews/qa"
+rqa '{"round":2,"result":"fail","tried":2,"total":2,"failed":1,"path":"reviews/PR2-qa2.md"}'
+rship "ship-pr of a QA-failed (waived) PR"
+rhas "  says how many failed" "- QA: 2/2 criteria tried in the app (1 failed)"
+rqa null
 rhas "  trace link and code" "[dcterminalv2://run/r-t](dcterminalv2://run/r-t) (\`dcterminalv2://run/r-t\`)"
 SC="$(grep -F -- "- Plan scope:" "$B2" || true)"
 [[ "$SC" == "- Plan scope: 3 of 7 changed files outside the plan: \`calc/multiply.py\`, \`docs/only-in-findings.md\`, \`other/x.txt\`" ]] \
@@ -1554,7 +1575,255 @@ expect 1 "normal run: a recorded plan.approval.by eval no longer validates" eput
 has "  names the allowed values" "by: user|test"
 unset DCV2_RUN_DIR
 
+echo "# QA: serve, verdict, gate and PR body (S5)"
+QW="$d/qw"; QR="$QW/qr"; QRUN="$d/runs/r-q"; mkdir -p "$QR" "$QRUN"
+git -C "$QR" init -q -b main; git -C "$QR" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+QBASE="$(git -C "$QR" rev-parse HEAD)"
+printf 'folder: %s\n' "$QW" > "$QRUN/request.md"
+cat > "$QRUN/plan.md" <<'EOF'
+# Plan
+## Stories
+### S1: Start screen
+- Acceptance criteria:
+  - [ ] unit test passes
+  - [ ] (app) Open the start screen: the Start button is visible
+  - [ ] (app) Press Start: the run panel shows Planning
+## Pull requests
+### PR1: One
+- Stories: S1
+## Manual steps
+None.
+## Risks
+none
+EOF
+# The QA stub server: a node HTTP server on $PORT (no bare python3: the 2026-11-01 decision).
+QSERVE='node -e "require(\"http\").createServer((q,r)=>r.end(\"ok\")).listen(+process.env.PORT,\"127.0.0.1\")"'
+qrepos() { python3 - "$QRUN/repos.json" "$QR" "$1" "$2" <<'PY'
+import json, sys
+f, repo, cmd, url = sys.argv[1:5]
+entry = {"name": "qr", "path": repo, "check": None}
+if cmd:
+    entry["qa"] = {"command": cmd, "url": url}
+json.dump({"schema": 1, "repos": [entry]}, open(f, "w"))
+PY
+}
+qstatus() { python3 - "$QRUN" "$QR" "$QW" "$QBASE" "$@" <<'PY'
+import json, os, sys
+run, repo, ws, base, stage = sys.argv[1:6]
+state = sys.argv[6] if len(sys.argv) > 6 else "pending"
+extra = sys.argv[7] if len(sys.argv) > 7 else ""
+rid = os.path.basename(run)
+pr = {"id": "PR1", "title": "PR 1", "repo": "qr", "repoPath": repo, "branch": f"dcv2/{rid}-pr1", "base": "main", "baseCommit": base,
+      "worktree": f"{ws}/qr-worktrees/dcv2-{rid}-pr1", "dependsOn": [], "stories": {"done": 1, "total": 1, "ids": ["S1"]}, "commits": 1,
+      "check": {"command": "true", "result": "pass", "summary": None}, "review": {"round": 1, "verdict": "APPROVED", "openFindings": 0, "path": None},
+      "prUrl": None, "state": state, "note": None}
+doc = {"schema": 1, "runId": rid, "stage": stage, "waitingFor": None, "folder": ws,
+       "plan": {"path": "plan.md", "reviewRound": 1, "verdict": "APPROVED", "openFindings": 0, "approved": True,
+                "risk": {"round": 1, "verdict": "NO BLOCKING RISKS", "openFindings": 0, "path": "reviews/risk-round1.md"}},
+       "prs": [pr] if stage not in ("planning", "plan-approval") else [], "ship": None, "writeback": None, "error": None}
+exec(extra)
+print(json.dumps(doc))
+PY
+}
+qput() { bash "$STATE" put "$QRUN/status.json"; }
+export DCV2_RUN_DIR="$QRUN"
+qrepos "$QSERVE" "http://127.0.0.1:%PORT%/"
+expect 0 "QA run: put planning" qput < <(qstatus planning)
+expect 0 "QA run: put plan-approval" qput < <(qstatus plan-approval "" 'doc["waitingFor"]="plan-approval"')
+expect 0 "QA run: approve plan" bash "$STATE" approve "$QRUN" plan user
+expect 0 "QA run: worktree" bash "$STATE" worktree "$QRUN" "$QR" PR1 "$QBASE"
+QWT="$QW/qr-worktrees/dcv2-r-q-pr1"
+has "  printed" "worktree=$QWT"
+expect 0 "QA run: put building with PR1 in state qa" qput < <(qstatus building qa)
+is "  agent is qa" "$QRUN/status.json" prs.0.agent '"qa"'
+expect 0 "QA run: busy_ids does not count qa (cap 1 still allows building PRs)" env DCV2_MAX_IMPLEMENTERS=1 bash "$STATE" put "$QRUN/status.json" < <(qstatus building qa)
+
+echo "# QA serve"
+expect 0 "qa-serve start" bash "$STATE" qa-serve "$QRUN" PR1 start
+has "  prints the url" "url=http://127.0.0.1:"
+QURL="$(sed -n 's/^url=//p' <<<"$out" | head -1)"
+[[ -f "$QRUN/logs/.qa-serve-PR1.json" ]] && ok "  record written" || bad "  no record"
+QPID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["leader"])' "$QRUN/logs/.qa-serve-PR1.json")"
+QPG="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pgid"])' "$QRUN/logs/.qa-serve-PR1.json")"
+[[ "$(python3 -c 'import json,sys; print(bool(json.load(open(sys.argv[1]))["start"]))' "$QRUN/logs/.qa-serve-PR1.json")" == True ]] && ok "  record has the leader's start time" || bad "  no start time"
+curl -s --noproxy '*' "$QURL" | grep -q ok && ok "  the server answers on the chosen port" || bad "  server does not answer at $QURL"
+kill -0 "$QPID" 2>/dev/null && ok "  the server keeps running after state.sh returned" || bad "  the server died with state.sh"
+# a record whose leader start time differs is not killed
+cp "$QRUN/logs/.qa-serve-PR1.json" "$d/qa-rec.bak"
+python3 - "$QRUN/logs/.qa-serve-PR1.json" <<'PY'
+import json, sys
+f = sys.argv[1]; r = json.load(open(f)); r["start"] = "Thu Jan  1 00:00:00 1970"; json.dump(r, open(f, "w"))
+PY
+expect 0 "qa-serve stop with a wrong start time" bash "$STATE" qa-serve "$QRUN" PR1 stop
+has "  mismatch" "stopped=mismatch"
+kill -0 "$QPID" 2>/dev/null && ok "  the process with a reused-looking pid is not killed" || bad "  killed a process whose start time differs"
+[[ ! -f "$QRUN/logs/.qa-serve-PR1.json" ]] && ok "  the record is deleted" || bad "  record kept"
+cp "$d/qa-rec.bak" "$QRUN/logs/.qa-serve-PR1.json"
+expect 0 "qa-serve stop" bash "$STATE" qa-serve "$QRUN" PR1 stop
+has "  killed" "stopped=killed"
+sleep 0.3
+kill -0 "$QPID" 2>/dev/null && bad "  the server is still running after stop" || ok "  no process left after stop"
+curl -s --noproxy '*' -m 2 "$QURL" >/dev/null 2>&1 && bad "  the port still answers" || ok "  the port is free again"
+[[ ! -f "$QRUN/logs/.qa-serve-PR1.json" ]] && ok "  record deleted after stop" || bad "  record kept after stop"
+# refusals
+qrepos "$QSERVE" "http://example.com:%PORT%/"
+expect 1 "qa-serve refuses a non-loopback URL" bash "$STATE" qa-serve "$QRUN" PR1 start
+qrepos "$QSERVE" "http://localhost.evil.com:%PORT%/"
+expect 1 "qa-serve refuses http://localhost.evil.com" bash "$STATE" qa-serve "$QRUN" PR1 start
+qrepos "" ""
+expect 1 "qa-serve with QA off in repos.json" bash "$STATE" qa-serve "$QRUN" PR1 start
+qrepos "$QSERVE" "http://127.0.0.1:%PORT%/"
+python3 - "$QRUN/status.json" <<'PY'
+import json, sys
+f = sys.argv[1]; d = json.load(open(f)); d["prs"][0]["worktree"] = "/tmp/not-the-canonical-worktree"; json.dump(d, open(f, "w"))
+PY
+expect 1 "qa-serve refuses a non-canonical worktree" bash "$STATE" qa-serve "$QRUN" PR1 start
+has "  names the canonical worktree" "$QWT"
+expect 0 "QA run: status back to the canonical worktree" qput < <(qstatus building qa)
+# an early exit (the port was taken between probe and bind) is retried once on a new port
+rm -f "$d/qa-first"
+qrepos "if [ ! -f $d/qa-first ]; then touch $d/qa-first; exit 1; fi; exec $QSERVE" "http://127.0.0.1:%PORT%/"
+expect 0 "qa-serve retries a first serve that exits early" bash "$STATE" qa-serve "$QRUN" PR1 start
+has "  second try serves" "url=http://127.0.0.1:"
+expect 0 "qa-serve stop after the retry" bash "$STATE" qa-serve "$QRUN" PR1 stop
+qrepos "exit 1" "http://127.0.0.1:%PORT%/"
+expect 3 "qa-serve whose command always exits fails" bash "$STATE" qa-serve "$QRUN" PR1 start
+has "  says serve=failed with a reason" "serve=failed reason="
+qrepos "sleep 30" "http://127.0.0.1:%PORT%/"
+expect 3 "qa-serve with no HTTP answer fails within the wait" env DCV2_QA_WAIT=2 bash "$STATE" qa-serve "$QRUN" PR1 start
+has "  says no answer" "no HTTP answer"
+[[ ! -f "$QRUN/logs/.qa-serve-PR1.json" ]] && ok "  no record left by the failed serve" || bad "  record left"
+qrepos "$QSERVE" "http://127.0.0.1:%PORT%/"
+# the 30 min reaper, cleanup and the failed transition
+start_qa() { qput < <(qstatus building qa) >/dev/null 2>&1; bash "$STATE" qa-serve "$QRUN" PR1 start >"$d/qa-start.out" 2>&1; python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["leader"])' "$QRUN/logs/.qa-serve-PR1.json"; }
+gone() { sleep 0.3; if kill -0 "$1" 2>/dev/null; then bad "  $2: process $1 still running"; else ok "  $2: no process left"; fi; }
+QP="$(start_qa)"
+touch -t 202001010000 "$QRUN/logs/.qa-serve-PR1.json"
+expect 0 "put with the PR still in qa leaves an old server alone" qput < <(qstatus building qa)
+kill -0 "$QP" 2>/dev/null && ok "  a PR still in qa keeps its server" || bad "  server killed while the PR is in qa"
+expect 0 "put with the PR no longer in qa reaps an old server" qput < <(qstatus building reviewing)
+gone "$QP" "30 min reaper"
+QP="$(start_qa)"
+expect 0 "a fresh server survives a put" qput < <(qstatus building reviewing)
+kill -0 "$QP" 2>/dev/null && ok "  fresh server kept" || bad "  fresh server killed"
+python3 - "$QRUN/status.json" <<'PY'
+import json, sys
+f = sys.argv[1]; d = json.load(open(f)); d["prs"][0]["state"] = "qa"; json.dump(d, open(f, "w"))
+PY
+expect 0 "put stage failed stops every recorded server" qput < <(qstatus failed qa 'doc["error"]="boom"')
+gone "$QP" "stage failed"
+[[ ! -f "$QRUN/logs/.qa-serve-PR1.json" ]] && ok "  record deleted" || bad "  record kept after failed"
+QP="$(start_qa)"
+python3 - "$QRUN/status.json" <<'PY'
+import json, sys
+f = sys.argv[1]; d = json.load(open(f)); d["stage"] = "failed"; d["error"] = "boom"; json.dump(d, open(f, "w"))
+PY
+expect 0 "cleanup stops a recorded server" bash "$STATE" cleanup "$QRUN"
+gone "$QP" "cleanup"
+if grep -n 'killpg' "$STATE" >/dev/null; then bad "state.sh contains killpg (kills go through dcv2_portable)"; else ok "state.sh has no killpg"; fi
+python3 - "$QRUN/status.json" <<'PY'
+import json, sys
+f = sys.argv[1]; d = json.load(open(f)); d["stage"] = "building"; d["error"] = None; d["prs"][0]["state"] = "qa"; json.dump(d, open(f, "w"))
+PY
+
+echo "# QA verdict and the reviewed gate"
+mkdir -p "$QRUN/reviews/qa"
+printf '## Verdict\nAPPROVED\n\n## Criteria → tests\n| Story | Criterion | Proving test |\n|---|---|---|\n| S1 | unit | a_test::x |\n| S1 | start button | manual: app |\n| S1 | run panel | manual: app |\n' > "$QRUN/reviews/PR1-round1.md"
+expect 1 "reviewed refused without a QA pass (QA on, visible criteria)" qput < <(qstatus building reviewed)
+expect 0 "clean review: gate PASS" bash "$STATE" gate "$QRUN" PR1 PASS "no findings"
+expect 1 "reviewed refused with a PASS gate but no QA result" qput < <(qstatus building reviewed)
+has "  says QA" "needs a QA pass"
+echo png > "$QRUN/reviews/qa/S1.1.png"; echo png > "$QRUN/reviews/qa/S1.2.png"
+printf 'QA: pass\nS1.1 | PASS | Start button visible | reviews/qa/S1.1.png\nS1.2 | PASS | Planning shown | reviews/qa/S1.2.png\n' > "$QRUN/reviews/PR1-qa1.md"
+expect 1 "qa refuses a round that is not the PR's" bash "$STATE" qa "$QRUN" PR1 2
+printf 'QA: pass\nS1.1 | PASS | ok | reviews/qa/S1.1.png\n' > "$QRUN/reviews/PR1-qa1.md"
+expect 1 "qa refuses a file with a criterion missing" bash "$STATE" qa "$QRUN" PR1 1
+has "  names the missing id" "no row for S1.2"
+printf 'QA: pass\nS1.1 | PASS | ok | reviews/qa/S1.1.png\nS1.2 | PASS | ok | reviews/qa/missing.png\n' > "$QRUN/reviews/PR1-qa1.md"
+expect 1 "qa refuses a screenshot that does not exist" bash "$STATE" qa "$QRUN" PR1 1
+printf 'QA: pass\nS1.1 | PASS | ok | ../../x.png\nS1.2 | PASS | ok | reviews/qa/S1.2.png\n' > "$QRUN/reviews/PR1-qa1.md"
+expect 1 "qa refuses a screenshot outside reviews/qa" bash "$STATE" qa "$QRUN" PR1 1
+printf 'QA: pass\nS1.1 | PASS | ok | reviews/qa/S1.1.png\nS1.2 | FAIL | not shown | reviews/qa/S1.2.png\n' > "$QRUN/reviews/PR1-qa1.md"
+expect 1 "qa refuses a first line that disagrees with the rows" bash "$STATE" qa "$QRUN" PR1 1
+printf 'QA: pass\nS1.1 | PASS | Start button visible | reviews/qa/S1.1.png\nS1.2 | PASS | Planning shown | reviews/qa/S1.2.png\n' > "$QRUN/reviews/PR1-qa1.md"
+expect 0 "qa pass" bash "$STATE" qa "$QRUN" PR1 1
+has "  prints the result" "qa=pass 2/2"
+is "  PR1 reviewed" "$QRUN/status.json" prs.0.state '"reviewed"'
+is "  qa recorded" "$QRUN/status.json" prs.0.qa.result '"pass"'
+is "  tried and total" "$QRUN/status.json" prs.0.qa.tried 2
+expect 0 "put keeps the recorded qa" qput < <(qstatus building reviewed 'doc["prs"][0]["qa"]={"round":1,"result":"fail","tried":1,"total":2,"path":"x"}')
+is "  recorded qa kept, not the put's" "$QRUN/status.json" prs.0.qa.result '"pass"'
+qreset() {   # qreset <state> <round>: PR1 back to <state> at review round <round>, no recorded qa, no gate
+  python3 - "$QRUN/status.json" "$1" "$2" <<'PY'
+import json, sys
+f = sys.argv[1]; d = json.load(open(f)); pr = d["prs"][0]
+pr["state"] = sys.argv[2]; pr["review"]["round"] = int(sys.argv[3]); pr.pop("qa", None); pr["note"] = None
+json.dump(d, open(f, "w"))
+PY
+  rm -f "$QRUN/gates/PR1.yml"
+}
+qreview() {  # qreview <round>: an APPROVED review file with a full criteria table
+  printf '## Verdict\nAPPROVED\n\n## Criteria → tests\n| Story | Criterion | Proving test |\n|---|---|---|\n| S1 | unit | a_test::x |\n| S1 | start button | manual: app |\n| S1 | run panel | manual: app |\n' > "$QRUN/reviews/PR1-round$1.md"
+}
+qreviewed() { qput < <(qstatus building reviewed "doc['prs'][0]['review']['round']=$1"); }
+
+echo "# QA fail: a FAIL gate the user can waive (round 3)"
+qreset qa 3; qreview 3
+expect 0 "round 3 clean review: gate PASS" bash "$STATE" gate "$QRUN" PR1 PASS "no findings"
+echo png > "$QRUN/reviews/qa/S1.3.png"
+printf 'QA: fail\nS1.1 | PASS | Start button visible | reviews/qa/S1.1.png\nS1.2 | FAIL | Planning not shown | reviews/qa/S1.3.png\n' > "$QRUN/reviews/PR1-qa3.md"
+expect 0 "qa fail" bash "$STATE" qa "$QRUN" PR1 3
+has "  prints the verdict" "qa=fail 2/2 failed=1"
+is "  PR1 stays in qa for the fix round" "$QRUN/status.json" prs.0.state '"qa"'
+grep -q '^gate: FAIL$' "$QRUN/gates/PR1.yml" && grep -q '^reason: "QA: 1/2 criteria failed"$' "$QRUN/gates/PR1.yml" && grep -q '^round: 3$' "$QRUN/gates/PR1.yml" && ok "  a FAIL gate for the same round, naming QA" || bad "  gate: $(cat "$QRUN/gates/PR1.yml")"
+expect 1 "reviewed refused after a QA fail" qreviewed 3
+expect 0 "WAIVED over the QA FAIL gate (the user's reason)" bash "$STATE" gate "$QRUN" PR1 WAIVED "user: ship anyway, QA failed on the planning text"
+expect 0 "reviewed accepted after the waiver" qreviewed 3
+is "  the recorded QA fail is kept" "$QRUN/status.json" prs.0.qa.result '"fail"'
+
+echo "# QA error: nothing can waive it"
+qreset qa 2; qreview 2
+expect 0 "round 2 clean review: gate PASS" bash "$STATE" gate "$QRUN" PR1 PASS "no findings"
+printf 'QA: error - no Chrome-family browser found\n' > "$QRUN/reviews/PR1-qa2.md"
+expect 3 "qa error" bash "$STATE" qa "$QRUN" PR1 2
+is "  PR1 needs attention" "$QRUN/status.json" prs.0.state '"needs-attention"'
+python3 -c 'import json,sys; sys.exit(0 if "QA could not run" in json.load(open(sys.argv[1]))["prs"][0]["note"] else 1)' "$QRUN/status.json" && ok "  the note says QA could not run" || bad "  note: $(field "$QRUN/status.json" prs.0.note)"
+grep -q '^gate: PASS$' "$QRUN/gates/PR1.yml" && ok "  no gate was written for an error" || bad "  gate: $(cat "$QRUN/gates/PR1.yml")"
+expect 1 "WAIVED over the PASS gate refused" bash "$STATE" gate "$QRUN" PR1 WAIVED "user: ship anyway"
+expect 1 "reviewed refused after a QA error" qreviewed 2
+expect 0 "gate FAIL" bash "$STATE" gate "$QRUN" PR1 FAIL "something"
+expect 0 "WAIVED over FAIL" bash "$STATE" gate "$QRUN" PR1 WAIVED "user: ship anyway"
+expect 1 "reviewed refused with a QA error even under a WAIVED (waived: FAIL) gate" qreviewed 2
+has "  names the QA error" "QA error"
+
+echo "# a user waiver over a review-round FAIL (QA never ran)"
+qreset reviewing 3
+expect 0 "round 3 review FAIL gate" bash "$STATE" gate "$QRUN" PR1 FAIL "1 MEDIUM left"
+expect 0 "WAIVED over the review FAIL" bash "$STATE" gate "$QRUN" PR1 WAIVED "user: ship anyway"
+expect 0 "reviewed accepted with no QA result" qreviewed 3
+python3 -c 'import json,sys; sys.exit(0 if "qa" not in json.load(open(sys.argv[1]))["prs"][0] else 1)' "$QRUN/status.json" && ok "  no prs[].qa was invented" || bad "  qa recorded"
+
+echo "# a waiver over CONCERNS cannot skip QA"
+qreset reviewing 3; qreview 3
+expect 0 "gate CONCERNS" bash "$STATE" gate "$QRUN" PR1 CONCERNS "1 LOW"
+expect 0 "WAIVED over CONCERNS" bash "$STATE" gate "$QRUN" PR1 WAIVED "user: fine"
+expect 1 "reviewed refused: a clean round must still pass QA" qreviewed 3
+
+echo "# QA off, or no visible criterion: today's flow"
+qreset reviewing 3; qreview 3
+expect 0 "gate PASS" bash "$STATE" gate "$QRUN" PR1 PASS "no findings"
+qrepos "" ""
+expect 0 "reviewed accepted with QA off in repos.json" qreviewed 3
+qrepos "$QSERVE" "http://127.0.0.1:%PORT%/"
+qreset reviewing 3; qreview 3
+expect 0 "gate PASS again" bash "$STATE" gate "$QRUN" PR1 PASS "no findings"
+cp "$QRUN/plan.md" "$d/qa-plan.bak"; sed -i.bak 's/(app) //' "$QRUN/plan.md"; rm -f "$QRUN/plan.md.bak"
+expect 0 "reviewed accepted when the plan has no (app) criterion" qreviewed 3
+cp "$d/qa-plan.bak" "$QRUN/plan.md"
+unset DCV2_RUN_DIR
+
 echo "# no usable Python (W2)"
+
 nopy="$d/nopy"; mkdir -p "$nopy"; ln -sf "$(command -v bash)" "$nopy/bash"
 expect 1 "state.sh preflight with no Python 3.8+ says so" env PATH="$nopy" "$BASH" "$STATE" preflight "$RUN"
 has "  names the three commands" "tried python3, python, py -3"

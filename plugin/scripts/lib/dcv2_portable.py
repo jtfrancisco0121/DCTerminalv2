@@ -6,6 +6,8 @@ difference of the plugin's Python lives here (docs/launch.md, docs/run-folder.md
 
 - `lock` / `unlock`: an exclusive file lock with a bound (POSIX `fcntl.flock`, Windows `msvcrt.locking`).
 - `spawn_group` / `kill_group`: a child in its own group, killed with its descendants.
+- `proc_start_time` / `kill_recorded_group`: kill a group recorded by an earlier call, only while its leader is the process
+  that was recorded (QA servers; Windows: unsupported, kills nothing).
 - `ident(p)`: the identity of a path, for comparisons only. `real_path(p)`: the path to open, store, print or use as a
   cwd. Never pass an `ident` result to open(), os.path.join, cwd=, print or a JSON write.
 - `replace`: an atomic replace that retries a transient sharing error on Windows.
@@ -61,6 +63,26 @@ class _Posix:
         except OSError:
             pass
 
+    @staticmethod
+    def start_time(pid):
+        """`ps -o lstart=` text of the pid (the same text the app compares), or None when it is gone."""
+        try:
+            r = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               stdin=subprocess.DEVNULL, env=dict(os.environ, LC_ALL="C"), timeout=10, universal_newlines=True)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+        text = " ".join((r.stdout or "").split())
+        return text if r.returncode == 0 and text else None
+
+    @staticmethod
+    def kill_group_id(pgid):
+        import signal
+        try:
+            os.killpg(int(pgid), signal.SIGKILL)
+            return True
+        except (OSError, ValueError):
+            return False
+
 
 class _Nt:
     name = "nt"
@@ -95,6 +117,14 @@ class _Nt:
                            stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
         except OSError:
             pass
+
+    @staticmethod
+    def start_time(pid):
+        return None  # unsupported: a pid's start time is not read on Windows
+
+    @staticmethod
+    def kill_group_id(pgid):
+        return False  # unsupported: a pid-only taskkill could hit a reused pid
 
 
 def _backend(os_name):
@@ -134,6 +164,31 @@ def spawn_group(args, backend=None, **kw):
 def kill_group(proc, backend=None):
     """Kills a spawn_group child and everything it started; never raises."""
     (backend or _current()).kill(proc)
+
+
+def proc_start_time(pid, backend=None):
+    """The start time of a live pid as text (POSIX: `ps -o lstart=`), None when the pid is gone or the OS cannot say."""
+    return (backend or _current()).start_time(pid)
+
+
+def kill_recorded_group(pgid, leader_pid, start_time, backend=None):
+    """Kills a process group recorded by an earlier call, only while its leader is still the process that was recorded.
+    Returns `killed`, `gone` (the leader is not running), `mismatch` (the pid now belongs to another process; nothing
+    is killed) or `unsupported` (Windows: nothing is killed). Never raises."""
+    be = backend or _current()
+    try:
+        if be is _Nt or be.name == "nt":
+            return "unsupported"
+        if not isinstance(pgid, int) or not isinstance(leader_pid, int) or pgid <= 1 or leader_pid <= 1 or not start_time:
+            return "mismatch"
+        now = be.start_time(leader_pid)
+        if now is None:
+            return "gone"
+        if now != start_time:
+            return "mismatch"
+        return "killed" if be.kill_group_id(pgid) else "gone"
+    except Exception:
+        return "mismatch"
 
 
 # ---- bash for repo checks -------------------------------------------------------------------------------------------

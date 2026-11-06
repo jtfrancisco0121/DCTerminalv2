@@ -15,6 +15,11 @@
 #                                             record the user's yes at stop #1 / #2 (test: only when
 #                                             DCV2_TEST_MODE has auto-approve); ship also sets stage shipping
 #   state.sh plan <run> prs|tickets|stories   print only that part of plan.md
+#   state.sh plan <run> qa <PR>               print `S<n>.<k>` TAB `<criterion>` for the PR's `- [ ] (app) ...` criteria
+#   state.sh qa-serve <run> <PR> start|stop   QA (repos.json qa on): start the PR's build detached on a free loopback port
+#                                             (prints `url=<url>` or `serve=failed reason=...`, exit 3), or stop it
+#   state.sh qa <run> <PR> <round>            read reviews/<PR>-qa<round>.md and record prs[].qa; pass -> reviewed, fail -> a
+#                                             FAIL gate for the round, error -> needs-attention
 #   state.sh waves <run>                      epic-plan run: check waves.md (every ticket in exactly one wave or out of scope,
 #                                             3 to 6 tickets per wave, dependencies on earlier waves only); on pass write
 #                                             waves.json and record status.json waves {digest, at}
@@ -94,7 +99,7 @@ sys.path.insert(0, os.environ["DCV2_LIB_DIR"])  # set by state.sh itself, from i
 import dcv2_portable as portable
 
 STAGES = ["planning", "plan-approval", "building", "ship-approval", "shipping", "done", "failed"]
-STATES = ["pending", "building", "drafted", "reviewing", "fixing", "reviewed", "needs-attention", "opened", "pushed", "local-only"]
+STATES = ["pending", "building", "drafted", "reviewing", "qa", "fixing", "reviewed", "needs-attention", "opened", "pushed", "local-only"]
 COMMENT_CAP = 60000
 GITHUB_STAGES = ("building", "ship-approval", "shipping")
 PLUGIN_ROOT = os.environ.get("DCV2_PLUGIN_ROOT", "")
@@ -107,7 +112,7 @@ APP_FILES = ("tickets.json", "meta.json", "repos.json", "writeback-posted.json",
 REQUEST_KINDS = ("recheck", "cleanup", "tickets", "selftest")
 REQUEST_ID = re.compile(r"^\d{8}T\d{6}Z(?:-\d+)?-(" + "|".join(REQUEST_KINDS) + r")$")
 ISO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
-AGENT_FOR_STATE = {"building": "implementer", "fixing": "implementer", "reviewing": "pr-reviewer"}
+AGENT_FOR_STATE = {"building": "implementer", "fixing": "implementer", "reviewing": "pr-reviewer", "qa": "qa"}
 GATES = ("PASS", "CONCERNS", "FAIL", "WAIVED")
 
 
@@ -574,7 +579,11 @@ def validate_status(doc, run):
         if not (isinstance(rnd, int) and 0 <= rnd <= 3):
             p.append(f"{pid}: review.round must be an int 0-3")
             rnd = 0
-        if state in ("reviewing", "fixing") and rnd < 1:
+        qa = pr.get("qa")
+        if qa is not None and not (isinstance(qa, dict) and qa.get("result") in ("pass", "fail", "error") and isinstance(qa.get("round"), int)
+                                   and isinstance(qa.get("tried"), int) and isinstance(qa.get("total"), int) and isinstance(qa.get("path"), str)):
+            p.append(f"{pid}: qa must be {{round, result pass|fail|error, tried, total, path}} (written only by `state.sh qa`)")
+        if state in ("reviewing", "qa", "fixing") and rnd < 1:
             p.append(f"{pid}: state {state} needs review.round = the round in flight (1-3), set when the round starts")
         if state == "reviewed" and result not in ("pass", "none"):
             p.append(f"{pid}: reviewed needs check.result pass or none (got {result!r}); a failing or broken check means needs-attention")
@@ -650,6 +659,13 @@ def prepare_status(doc, old, trusted, run_dir=None):
             if pr.get("prUrl") not in (None, o.get("prUrl")):
                 notes.append(f"note: {pr.get('id')}.prUrl is set only by state.sh; kept the recorded value ({o.get('prUrl')})")
             pr["prUrl"] = o.get("prUrl")
+        if not trusted:  # qa is written only by `state.sh qa`
+            if pr.get("qa") != o.get("qa"):
+                notes.append(f"note: {pr.get('id')}.qa is set only by `state.sh qa`; kept the recorded value")
+            if o.get("qa") is not None:
+                pr["qa"] = o["qa"]
+            else:
+                pr.pop("qa", None)
         if not trusted:  # draft and comments are written only by state.sh's GitHub commands
             for k in ("draft", "comments"):
                 if k in o:
@@ -785,6 +801,9 @@ def gates(doc, run, old=None, plan_trace=True):
         why = waves_current(run, doc)
         if why:
             return f"NOT WRITTEN: epic-plan run: {why}", out
+    why = qa_gate_refusal(run, doc)
+    if why:
+        return why, out
     if tm["halt"] and not resumed(run):
         pid = tm["halt"]
         prs = {p.get("id"): p for p in doc.get("prs") or [] if isinstance(p, dict)}
@@ -841,6 +860,7 @@ def write_status(run, doc, trusted=False, plan_trace=True):
         die(refusal)
     atomic_write(dest, json.dumps(doc, indent=2) + "\n")
     log_pr_states(run, old, doc)
+    qa_sweep(run, doc)
     if doc.get("stage") in ("done", "failed"):
         try:
             write_report(run)
@@ -2041,6 +2061,9 @@ def receipt_lines(run, st, pr):
     gate = read_gate(run, pid)
     if gate and gate.get("gate"):
         out.append(f"- Gate: {gate['gate']}")
+    qa_line = qa_body_line(pr)
+    if qa_line:
+        out.append(qa_line)
     # Findings per severity and round: counts only, MEDIUM and above (reviews/<PR>-round<n>.md).
     rounds = review_round_files(run, pid)
     if rounds:
@@ -2160,6 +2183,9 @@ def build_body(run, st, pr, kind):
     ac = ((load_json(os.path.join(run, "app-checks.json")) or {}).get("checks") or {}).get(pid)
     if isinstance(ac, dict) and ac.get("result") and ac.get("result") != "running":
         ver.append(f"- App re-run of the check: {ac['result']}" + (f" at {str(ac['head'])[:7]}" if ac.get("head") else ""))
+    qa_line = qa_body_line(pr)
+    if qa_line:
+        ver.append(qa_line)
     for dep in pr.get("dependsOn") or []:
         d = prs.get(dep) or {}
         ver.append(f"- Depends on: {d.get('prUrl') or dep + ' (branch ' + str(d.get('branch') or '-') + ')'}")
@@ -2614,6 +2640,290 @@ def cmd_gate(run, pid, gate, reason, review=None):
     print(f"wrote gates/{pid}.yml: {gate}")
 
 
+# ---- QA: serving the PR's build and recording the verdict (docs/run-folder.md, "QA") ------------------------------------
+QA_STALE_SECONDS = 30 * 60
+QA_WAIT_MAX = 120
+QA_SHOT = re.compile(r"^reviews/qa/[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.png$")
+
+
+def qa_body_line(pr):
+    """The one QA line of a PR body (counts only: no criterion text, no image path), or None."""
+    qa = pr.get("qa")
+    if not (isinstance(qa, dict) and qa.get("result") in ("pass", "fail") and isinstance(qa.get("tried"), int) and isinstance(qa.get("total"), int)):
+        return None
+    failed = qa.get("failed") if isinstance(qa.get("failed"), int) else None
+    how = "all passed" if qa["result"] == "pass" else (f"{failed} failed" if failed else "some failed")
+    return f"- QA: {qa['tried']}/{qa['total']} criteria tried in the app ({how})"
+
+
+def qa_record_path(run, pid):
+    return os.path.join(run, "logs", f".qa-serve-{pid}.json")
+
+
+def qa_record_ids(run):
+    try:
+        names = sorted(os.listdir(os.path.join(run, "logs")))
+    except OSError:
+        return []
+    return [m.group(1) for m in (re.fullmatch(r"\.qa-serve-(PR\d+)\.json", n) for n in names) if m]
+
+
+def run_stage(run):
+    st = load_json(os.path.join(run, "status.json"))
+    return (st.get("stage") if isinstance(st, dict) else None) or "building"
+
+
+def qa_stop_record(run, pid):
+    """Stops the server recorded for the PR: the group is killed only while its leader is the recorded process
+    (portable.kill_recorded_group); the record goes away unless this OS cannot kill. Returns killed|gone|mismatch|unsupported|none."""
+    path = qa_record_path(run, pid)
+    rec = load_json(path)
+    if not isinstance(rec, dict):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return "none"
+    res = portable.kill_recorded_group(rec.get("pgid"), rec.get("leader"), rec.get("start"))
+    if res != "unsupported":
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    append_log(run, run_stage(run), f"{pid} qa server {res}" + (" (record kept: this OS cannot stop it)" if res == "unsupported" else ""))
+    return res
+
+
+def qa_sweep(run, doc):
+    """After a status write: a run at stage failed has no server left; a server older than 30 min whose PR is no longer
+    in state qa is stopped. A problem here never fails the write."""
+    try:
+        states = {p.get("id"): p.get("state") for p in doc.get("prs") or [] if isinstance(p, dict)}
+        for pid in qa_record_ids(run):
+            path = qa_record_path(run, pid)
+            old = time.time() - os.path.getmtime(path) > QA_STALE_SECONDS
+            if doc.get("stage") == "failed" or (states.get(pid) != "qa" and old):
+                qa_stop_record(run, pid)
+    except (OSError, AttributeError, TypeError, ValueError) as e:
+        print(f"note: qa servers not swept ({type(e).__name__})", file=sys.stderr)
+
+
+def qa_gate_refusal(run, doc):
+    """`reviewed` for a QA-on PR with visible criteria needs a QA pass for the current review round. A user's WAIVED
+    over a FAIL gate (a review-round FAIL, where QA never ran, or the QA FAIL gate) also lets it through; a QA error
+    and a waiver over CONCERNS do not."""
+    plan = None
+    for pr in doc.get("prs") or []:
+        if not isinstance(pr, dict) or pr.get("state") != "reviewed" or not isinstance(pr.get("repoPath"), str):
+            continue
+        if not repo_entry(run, pr["repoPath"]).get("qa"):
+            continue
+        pid = pr.get("id")
+        plan = read(os.path.join(run, "plan.md")) if plan is None else plan
+        if not plan_qa_criteria(plan, pid):
+            continue
+        rnd = (pr.get("review") or {}).get("round") if isinstance(pr.get("review"), dict) else None
+        qa = pr.get("qa") if isinstance(pr.get("qa"), dict) else {}
+        current = qa if qa.get("round") == rnd else {}
+        if current.get("result") == "pass":
+            continue
+        g = read_gate(run, pid) or {}
+        if g.get("gate") == "WAIVED" and g.get("waived") == "FAIL" and g.get("round") == rnd and current.get("result") in (None, "fail"):
+            continue
+        seen = f"QA {current['result']}" if current.get("result") else "no QA result"
+        return (f"NOT WRITTEN: {pid}: reviewed needs a QA pass for review round {rnd} (this repo has QA on and the plan has criteria marked "
+                f"(app)); {seen}. Run QA (`state.sh qa-serve` then `state.sh qa {pid} {rnd}`); only the user's WAIVED over a FAIL gate skips "
+                "a QA fail, never a QA error or a waiver over CONCERNS")
+    return None
+
+
+def qa_loopback(url):
+    from urllib.parse import urlsplit
+    try:
+        u = urlsplit(url)
+        u.port  # raises ValueError on a bad port
+    except ValueError:
+        return False
+    return u.scheme == "http" and u.username is None and u.password is None and (u.hostname or "").lower() in ("127.0.0.1", "localhost", "::1")
+
+
+def qa_free_port():
+    import socket
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+    finally:
+        s.close()
+
+
+def qa_probe(url):
+    import urllib.error
+    import urllib.request
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # loopback only: never through a proxy
+    try:
+        opener.open(urllib.request.Request(url), timeout=2).close()
+        return True
+    except urllib.error.HTTPError:
+        return True  # the server answered
+    except Exception:
+        return False
+
+
+def qa_start_once(run, pid, wt, qa, wait):
+    """(url, None) once the server answered, else (None, 'early'|'timeout'|<reason>). The caller's Popen is the leader."""
+    port = qa_free_port()
+    cmd = str(qa["command"]).replace("%PORT%", str(port))
+    url = str(qa["url"]).replace("%PORT%", str(port))
+    if not qa_loopback(url):
+        return None, "the QA URL is not an http URL on 127.0.0.1, localhost or [::1]"
+    logp = os.path.join(run, "logs", f"{pid}-qa-serve.txt")
+    os.makedirs(os.path.dirname(logp), exist_ok=True)
+    try:
+        fd = os.open(logp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError as e:
+        return None, f"cannot open {logp} ({e.strerror})"
+    try:
+        proc = portable.spawn_group(portable.check_argv(cmd), cwd=wt, env=dict(os.environ, PORT=str(port), DCV2_QA_PORT=str(port)),
+                                    stdin=subprocess.DEVNULL, stdout=fd, stderr=subprocess.STDOUT)
+    except OSError as e:
+        return None, f"cannot start the command ({e.strerror})"
+    finally:
+        os.close(fd)
+    atomic_write(qa_record_path(run, pid), json.dumps({"pgid": proc.pid, "leader": proc.pid, "start": portable.proc_start_time(proc.pid),
+                                                     "port": port, "url": url, "at": now()}) + "\n")
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            portable.kill_group(proc)  # our own, just spawned
+            qa_drop_record(run, pid)
+            return None, "early"
+        if qa_probe(url):
+            return url, None
+        time.sleep(0.3)
+    portable.kill_group(proc)
+    qa_drop_record(run, pid)
+    return None, "timeout"
+
+
+def qa_drop_record(run, pid):
+    try:
+        os.remove(qa_record_path(run, pid))
+    except OSError:
+        pass
+
+
+def cmd_qa_serve(run, pid, action):
+    run = this_run(run, "NO QA SERVE")
+    if action not in ("start", "stop"):
+        die("usage: state.sh qa-serve <run> <PR> start|stop")
+    st = load_status(run)
+    qa_sweep(run, st)
+    if action == "stop":
+        res = qa_stop_record(run, pid)
+        print(f"stopped={res}")
+        return
+    pr, _ = canonical_pr(run, st, pid, "NO QA SERVE")
+    if pr.get("state") != "qa":
+        die(f"NO QA SERVE: {pid} is {pr.get('state')}; set it to state qa first")
+    qa = repo_entry(run, pr.get("repoPath") or "").get("qa")
+    if not (isinstance(qa, dict) and isinstance(qa.get("command"), str) and qa["command"].strip() and isinstance(qa.get("url"), str)):
+        die(f"NO QA SERVE: QA is not on for {pid}'s repo (repos.json qa)")
+    if not qa_loopback(qa["url"].replace("%PORT%", "1")):
+        die("NO QA SERVE: the QA URL in repos.json is not an http URL on 127.0.0.1, localhost or [::1]")
+    wait = QA_WAIT_MAX
+    env_wait = os.environ.get("DCV2_QA_WAIT", "")
+    if re.fullmatch(r"\d{1,3}", env_wait) and 1 <= int(env_wait) <= QA_WAIT_MAX:
+        wait = int(env_wait)  # tests only shorten the wait; it is never longer than 120 s
+    qa_stop_record(run, pid)  # a leftover server of an earlier round
+    url, why = qa_start_once(run, pid, pr["worktree"], qa, wait)
+    if why == "early":
+        url, why = qa_start_once(run, pid, pr["worktree"], qa, wait)  # the port may have been taken between probe and bind
+    if url:
+        append_log(run, st.get("stage") or "building", f"{pid} qa server up at {url}")
+        print(f"url={url}")
+        return
+    reason = {"early": f"the command exited before it answered (see logs/{pid}-qa-serve.txt)",
+              "timeout": f"no HTTP answer within {wait} s (see logs/{pid}-qa-serve.txt)"}.get(why, why)
+    append_log(run, st.get("stage") or "building", f"{pid} qa server failed: {reason}")
+    print(f"serve=failed reason={reason}")
+    sys.exit(3)
+
+
+def cmd_qa(run, pid, rnd):
+    run = this_run(run, "NOT RECORDED")
+    if not re.fullmatch(r"[1-3]", str(rnd)):
+        die("NOT RECORDED: round must be 1, 2 or 3")
+    rnd = int(rnd)
+    st = load_status(run)
+    pr = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == pid), None)
+    if pr is None:
+        die(f"NOT RECORDED: no {pid} in status.json")
+    if pr.get("state") != "qa" or (pr.get("review") or {}).get("round") != rnd:
+        die(f"NOT RECORDED: {pid} must be in state qa at review round {rnd} (now {pr.get('state')}, round {(pr.get('review') or {}).get('round')})")
+    want = [l.split("\t", 1)[0] for l in plan_qa_criteria(read(os.path.join(run, "plan.md")), pid)]
+    if not want:
+        die(f"NOT RECORDED: {pid} has no criteria marked (app) in the plan")
+    rel = f"reviews/{pid}-qa{rnd}.md"
+    path = os.path.join(run, rel)
+    if os.path.islink(path) or not os.path.isfile(path):
+        die(f"NOT RECORDED: {rel} does not exist")
+    lines = read(path).splitlines()
+    head = re.match(r"^QA:\s*(pass|fail|error)\b\s*(.*)$", lines[0].strip(), re.I) if lines else None
+    if not head:
+        die(f"NOT RECORDED: the first line of {rel} must be `QA: pass|fail|error`")
+    said, detail = head.group(1).lower(), head.group(2).strip(" -:—")
+    rows, problems = {}, []
+    for line in lines[1:]:
+        m = re.match(r"^\s*(?:[-*]\s*)?(S\d+\.\d+)\s*\|\s*(PASS|FAIL|ERROR)\s*\|(.*)$", line)
+        if not m:
+            continue
+        cid, res, rest = m.group(1), m.group(2), [x.strip() for x in m.group(3).split("|")]
+        if cid not in want:
+            problems.append(f"{cid} is not a criterion of {pid}")
+        elif cid in rows:
+            problems.append(f"{cid} appears twice")
+        shot = rest[-1] if len(rest) >= 2 and rest[-1] else ""
+        if shot:
+            shot_path = os.path.join(run, shot)
+            if not QA_SHOT.match(shot) or os.path.islink(shot_path) or not os.path.isfile(shot_path):
+                problems.append(f"{cid}: screenshot {shot[:60]!r} must be an existing reviews/qa/<name>.png")
+        rows[cid] = res
+    failed = sum(1 for r in rows.values() if r == "FAIL")
+    tried = sum(1 for r in rows.values() if r in ("PASS", "FAIL"))
+    if said == "error":
+        result = "error"
+    else:
+        missing = [c for c in want if c not in rows]
+        if missing:
+            problems.append("no row for " + ", ".join(missing))
+        result = "error" if "ERROR" in rows.values() else ("fail" if failed else "pass")
+        if not problems and result != said:
+            problems.append(f"the first line says {said} but the rows say {result}")
+    if problems:
+        die(f"NOT RECORDED: {rel}: " + "; ".join(problems[:8]))
+    pr["qa"] = {"round": rnd, "result": result, "tried": tried, "total": len(want), "path": rel}
+    if failed:
+        pr["qa"]["failed"] = failed
+    if result == "pass":
+        pr["state"] = "reviewed"
+        pr.pop("note", None)
+    elif result == "error":
+        pr["state"], pr["note"] = "needs-attention", ("QA could not run: " + (detail or "see " + rel))[:300]
+    for m in write_status(run, st, trusted=True):
+        print(m)
+    if result == "fail":
+        reason = f"QA: {failed}/{len(want)} criteria failed"
+        os.makedirs(os.path.join(run, "gates"), exist_ok=True)
+        atomic_write(os.path.join(run, "gates", f"{pid}.yml"),
+                     f"gate: FAIL\nreason: {json.dumps(reason)}\nupdated: {now()}\nreview: {json.dumps(rel)}\nround: {rnd}\n")
+        append_log(run, st.get("stage") or "building", f"{pid} gate FAIL: {reason}")
+    append_log(run, st.get("stage") or "building", f"{pid} qa round {rnd}: {result}, {tried}/{len(want)} tried" + (f", {failed} failed" if failed else ""))
+    print(f"qa={result} {tried}/{len(want)}" + (f" failed={failed}" if failed else ""))
+    if result == "error":
+        sys.exit(3)
+
+
 LOCK_NAMES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json", "Cargo.lock", "go.sum", "poetry.lock",
               "Pipfile.lock", "composer.lock", "Gemfile.lock", "uv.lock", "bun.lockb", "bun.lock"}
 OTHER_MANIFESTS = {"Gemfile", "Pipfile", "composer.json", "pom.xml", "build.gradle", "build.gradle.kts", "setup.py", "setup.cfg",
@@ -2991,6 +3301,8 @@ def cmd_cleanup(run):
     st = load_status(run)
     if st.get("stage") not in ("done", "failed"):
         die(f"NOT CLEANED: cleanup runs only at stage done or failed (stage {st.get('stage')})")
+    for qpid in qa_record_ids(run):  # no QA server outlives the run
+        qa_stop_record(run, qpid)
     run_id = os.path.basename(run)
     g = guard_rec(run)
     repos = {norm(r) for r in g.get("repos") or [] if isinstance(r, str)}  # identities, for the membership test below
@@ -3103,7 +3415,7 @@ def main(argv):
     cmd, args = (argv[0] if argv else ""), argv[1:]
     need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0,
             "gate": 4, "report": 1, "mode": 1, "draft-pr": 2, "push": 2, "post-review": 3, "comment": 4, "ready": 2, "bmad-size": 2, "bmad-init": 1, "bmad-check": 1,
-            "cleanup": 1, "waves": 1, "scope": 2, "request": 2, "request-wait": 2}
+            "cleanup": 1, "waves": 1, "scope": 2, "request": 2, "request-wait": 2, "qa-serve": 3, "qa": 3}
     if cmd not in need or len(args) < need[cmd]:
         die("usage: see the header of state.sh", 2)
     if cmd == "preflight": cmd_preflight(args[0], "resume" in args[1:])
@@ -3131,6 +3443,8 @@ def main(argv):
     elif cmd == "bmad-size": cmd_bmad_size(args[0], args[1], args[2:])
     elif cmd == "bmad-init": cmd_bmad_init(args[0])
     elif cmd == "bmad-check": cmd_bmad_check(args[0])
+    elif cmd == "qa-serve": cmd_qa_serve(args[0], args[1], args[2])
+    elif cmd == "qa": cmd_qa(args[0], args[1], args[2])
     elif cmd == "cleanup": cmd_cleanup(args[0])
     elif cmd == "request": cmd_request(args[0], args[1])
     elif cmd == "request-wait": cmd_request_wait(args[0], args[1], args[2:])
