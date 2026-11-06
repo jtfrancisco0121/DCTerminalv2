@@ -20,10 +20,14 @@ export type Repo = {
   liveTests?: boolean;
   /** Receipts in this repo's PR bodies (repos.json `receipt`); off by default. */
   receipt?: boolean;
+  /** Try PRs in the app (repos.json `qa`); absent when off. */
+  qa?: QaSetup | null;
 };
 
 /** One repo's worktree setup (app settings, keyed by the repo's real path). */
-export type RepoSetup = { setup: string | null; copyFiles: string[]; liveTests?: boolean; receipt?: boolean };
+/** "Try PRs in the app (QA)": the serve command and the loopback URL (`%PORT%` is the free port). */
+export type QaSetup = { command: string; url: string };
+export type RepoSetup = { setup: string | null; copyFiles: string[]; liveTests?: boolean; receipt?: boolean; qa?: QaSetup | null };
 
 /** `github`: draft PRs + one review comment per round; `local`: the quiet local loop. */
 export type ReviewMode = "github" | "local";

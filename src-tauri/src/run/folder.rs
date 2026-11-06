@@ -806,6 +806,7 @@ mod tests {
             copy_files: vec![],
             live_tests: false,
             receipt: false,
+            qa: None,
         };
         let repos = vec![repo("a"), repo("b"), repo("c")];
         let meta = |mode: Option<&str>| RunMeta {
@@ -864,6 +865,7 @@ mod tests {
             copy_files: vec![],
             live_tests: false,
             receipt: false,
+            qa: None,
         }];
         let make = |mode: Option<&str>| {
             let meta = RunMeta {
@@ -910,6 +912,7 @@ mod tests {
             copy_files: vec![],
             live_tests: false,
             receipt: false,
+            qa: None,
         };
         let repos = vec![repo("a"), repo("b")];
         let limit = repos_limit_for(&["a".into(), "b".into()], Some(&["b".to_string()])).unwrap();
@@ -942,6 +945,7 @@ mod tests {
             copy_files: vec![],
             live_tests: false,
             receipt: false,
+            qa: None,
         }];
         let make = |n: Option<u32>, request: &str| {
             let meta = RunMeta {
@@ -1015,6 +1019,7 @@ mod tests {
             copy_files: vec![".env".into()],
             live_tests: true,
             receipt: true,
+            qa: None,
         }];
         let meta = RunMeta {
             plugin_version: Some("abc123".into()),
