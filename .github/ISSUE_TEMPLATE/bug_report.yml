@@ -1,0 +1,30 @@
+name: Bug report
+description: Something does not work as described
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Open ...\n2. Click ..."
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version and OS
+      placeholder: "DCTerminalv2 0.1.0, macOS 15 (Apple silicon)"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output or screenshots
+      description: Redact tokens, keys and personal paths first.
