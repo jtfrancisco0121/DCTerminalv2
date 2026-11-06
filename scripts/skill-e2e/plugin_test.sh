@@ -168,6 +168,15 @@ for r in planner plan-reviewer; do
   grep -qF 'visible criteria marker' "$P/roles/$r.md" && grep -qF '`(app)`' "$P/roles/$r.md" && ok "  $r.md describes the (app) marker" || bad "  $r.md lacks the visible criteria marker"
 done
 
+echo "# every pipeline agent is a guard pipeline role (an agent missing from PIPE_RE or ROLES is treated as the orchestrator)"
+for f in "$P"/agents/*.md; do
+  name="$(basename "$f" .md)"
+  grep -E '^PIPE_RE=' "$P/scripts/guard.sh" | grep -qE "[(|]$name[|)]" && ok "  $name is in guard.sh PIPE_RE" || bad "  $name is missing from guard.sh PIPE_RE"
+  grep -E '^ROLES = ' "$P/scripts/guard.sh" | grep -qF "\"$name\"" && ok "  $name is in guard.sh ROLES" || bad "  $name is missing from guard.sh ROLES"
+done
+grep -qF 'dcv2:qa' "$P/skills/eagle-eye/SKILL.md" && grep -qF 'qa-serve' "$P/skills/eagle-eye/SKILL.md" && grep -qF 'S qa-serve <run> <PR id> stop' "$P/skills/eagle-eye/SKILL.md" \
+  && ok "  eagle-eye SKILL.md describes the qa step and always stops the server" || bad "  SKILL.md: no QA step"
+
 echo "# scripts parse"
 for f in "$P"/scripts/*.sh "$P"/scripts/lib/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do
   bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"

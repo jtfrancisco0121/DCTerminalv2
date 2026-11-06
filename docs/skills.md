@@ -30,6 +30,7 @@ A role's skill and its sub-agent both start by reading `${CLAUDE_PLUGIN_ROOT}/ro
 | Recommendation | `/dcv2:recommendation` | none | (session's) |
 | Codebase Audit | `/dcv2:codebase-audit` | none | (session's) |
 | Onboard | `/dcv2:onboard` | none | (session's) |
+| QA | `/dcv2:qa` | `dcv2:qa` (Eagle-Eye Step 3, after a clean review round of a QA-on PR) | sonnet |
 | Memory updater | none | `dcv2:memory-updater` (Eagle-Eye Step 5, end of a Developer session) | haiku |
 
 Standalone skills run on the session's own model (`claude --model ...`).
