@@ -321,7 +321,6 @@ pub fn review_mode_of(run_dir: &Path) -> String {
         .unwrap_or_else(|| "local".into())
 }
 
-/// meta.json's `mode`: `epic-plan`, or `None` for a normal run (missing or unknown).
 /// The ClickUp list a triage run was started for (meta.json `triage.listId`).
 pub fn triage_list_of(run_dir: &Path) -> Option<String> {
     read_json_value(&run_dir.join("meta.json"))?
@@ -331,6 +330,7 @@ pub fn triage_list_of(run_dir: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
+/// meta.json's `mode`: `epic-plan`, or `None` for a normal run (missing or unknown).
 pub fn run_mode_of(run_dir: &Path) -> Option<String> {
     read_json_value(&run_dir.join("meta.json"))
         .and_then(|m| m.get("mode").and_then(Value::as_str).map(str::to_string))

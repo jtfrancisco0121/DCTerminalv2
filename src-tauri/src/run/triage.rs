@@ -249,6 +249,26 @@ fn local_date(created_at: &str) -> Option<chrono::NaiveDate> {
 
 static SCHEDULE_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// How long a failed scheduled start waits before it is tried again.
+const START_RETRY: Duration = Duration::from_secs(30 * 60);
+
+/// Last failed scheduled start per list, so a failure is not retried on every 2 s tick.
+static FAILED_STARTS: std::sync::Mutex<BTreeMap<String, SystemTime>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// True when the list's last scheduled start failed less than `START_RETRY` ago.
+fn start_backing_off(
+    failed: &BTreeMap<String, SystemTime>,
+    list_id: &str,
+    now: SystemTime,
+) -> bool {
+    failed.get(list_id).is_some_and(|at| {
+        now.duration_since(*at)
+            .map(|d| d < START_RETRY)
+            .unwrap_or(true)
+    })
+}
+
 /// The dispatcher tick's part: starts at most one due scheduled triage, on its own thread (a ClickUp read).
 pub fn schedule_tick(app: &AppHandle) {
     use std::sync::atomic::Ordering;
@@ -268,7 +288,11 @@ pub fn schedule_tick(app: &AppHandle) {
         return;
     };
     let runs = triage_runs(&data);
+    let failed = FAILED_STARTS.lock().map(|f| f.clone()).unwrap_or_default();
     let due = entries.into_iter().find(|entry| {
+        if start_backing_off(&failed, &entry.list_id, now) {
+            return false;
+        }
         let newest = runs
             .iter()
             .find(|r| r.list_id.as_deref() == Some(entry.list_id.as_str()));
@@ -289,7 +313,22 @@ pub fn schedule_tick(app: &AppHandle) {
         return;
     };
     std::thread::spawn(move || {
-        let _ = start_for(&data, &entry.account_id, &entry.folder, &entry.list_id);
+        let result = start_for(&data, &entry.account_id, &entry.folder, &entry.list_id);
+        if let Ok(mut failed) = FAILED_STARTS.lock() {
+            match &result {
+                Ok(_) => {
+                    failed.remove(&entry.list_id);
+                }
+                Err(why) => {
+                    // Once per backoff window: the next try is 30 minutes away.
+                    eprintln!(
+                        "scheduled triage for list {} did not start: {why}",
+                        entry.list_id
+                    );
+                    failed.insert(entry.list_id.clone(), SystemTime::now());
+                }
+            }
+        }
         SCHEDULE_BUSY.store(false, Ordering::SeqCst);
     });
 }

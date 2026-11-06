@@ -873,3 +873,22 @@ fn create_task_is_called_only_from_the_triage_module() {
         .collect();
     assert_eq!(callers, ["run/triage.rs"], "the only caller of create_task");
 }
+
+#[test]
+fn a_failed_scheduled_start_is_not_tried_again_on_the_next_tick() {
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+    let mut failed = BTreeMap::new();
+    assert!(!start_backing_off(&failed, "L1", t0));
+    failed.insert("L1".to_string(), t0);
+    assert!(start_backing_off(
+        &failed,
+        "L1",
+        t0 + Duration::from_secs(2)
+    ));
+    assert!(!start_backing_off(
+        &failed,
+        "L2",
+        t0 + Duration::from_secs(2)
+    ));
+    assert!(!start_backing_off(&failed, "L1", t0 + START_RETRY));
+}
