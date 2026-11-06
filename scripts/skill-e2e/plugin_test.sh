@@ -164,6 +164,10 @@ for c in 'qa-serve' 'state.sh qa ' 'plan <run> qa' 'state.sh triage' 'run_qa_ima
 done
 grep -q 'dcv2:qa' "$ROOT/docs/skills.md" && ok "  skills.md names dcv2:qa" || bad "  skills.md lacks dcv2:qa"
 
+for r in planner plan-reviewer; do
+  grep -qF 'visible criteria marker' "$P/roles/$r.md" && grep -qF '`(app)`' "$P/roles/$r.md" && ok "  $r.md describes the (app) marker" || bad "  $r.md lacks the visible criteria marker"
+done
+
 echo "# scripts parse"
 for f in "$P"/scripts/*.sh "$P"/scripts/lib/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do
   bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"

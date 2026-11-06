@@ -1156,9 +1156,13 @@ def cmd_plan(run, what, arg=None):
     if what == "why":
         print(plan_pr_why(text, arg or ""))
         return
+    if what == "qa":
+        for line in plan_qa_criteria(text, arg or ""):
+            print(line)
+        return
     heading = {"prs": "Pull requests", "tickets": "Tickets", "decisions": "Decisions"}.get(what)
     if not heading:
-        die("usage: state.sh plan <run> prs|tickets|stories|decisions|why <PR>")
+        die("usage: state.sh plan <run> prs|tickets|stories|decisions|why <PR>|qa <PR>")
     m = re.search(rf"^##\s+{heading}\s*$(.*?)(?=^##\s|\Z)", text, re.M | re.S)
     print((f"## {heading}" + m.group(1)).rstrip() if m else f"(plan.md has no ## {heading} section)")
 
@@ -2784,6 +2788,23 @@ def plan_pr_why(plan, pid):
             wl = re.search(r"^\s*-\s*Why:\s*(.*?)\s*$", m.group(2), re.M)
             return wl.group(1) if wl else ""
     return ""
+
+
+def plan_qa_criteria(plan, pid):
+    """`S<n>.<k>` TAB `<text>` for the criteria marked `- [ ] (app) ...` of a PR's stories: story order, k the 1-based
+    index among that story's marked criteria (so editing an unmarked criterion never moves an id)."""
+    blocks = {}
+    for m in re.finditer(r"^###\s+(S\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan, re.M | re.S):
+        blocks[m.group(1)] = m.group(2)
+    out = []
+    for sid in plan_pr_stories(plan).get(pid, []):
+        k = 0
+        for line in blocks.get(sid, "").splitlines():
+            cm = re.match(r"^\s*[-*]\s*\[[ xX]\]\s*\(app\)\s*(\S.*?)\s*$", line)
+            if cm:
+                k += 1
+                out.append(f"{sid}.{k}\t{cm.group(1)}")
+    return out
 
 
 def plan_pr_stories(plan):

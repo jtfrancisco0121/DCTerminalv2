@@ -283,6 +283,41 @@ has "  has t1" "- t1 | T-1"; hasnt "  stops before Risks" "secret risk text"
 expect 0 "plan stories" bash "$STATE" plan "$RUN" stories
 has "  story headings" "### S2: Prefix results"; hasnt "  headings only" "Tickets: t1"
 
+echo "# plan qa: the visible criteria marker (S3)"
+QP="$d/qaplan"; mkdir -p "$QP"
+cat > "$QP/plan.md" <<'EOF'
+# Plan
+## Stories
+### S1: Start screen
+- Acceptance criteria:
+  - [ ] unit test passes
+  - [ ] (app) Open the start screen: the Start button is visible
+  - [x] (app) Press Start: the run panel shows "Planning"
+### S2: Settings
+- Acceptance criteria:
+  - [ ] (app)   Open Settings: the QA box is listed
+### S3: Other repo
+- Acceptance criteria:
+  - [ ] (app) belongs to PR2
+## Pull requests
+### PR1: One
+- Stories: S1, S2
+### PR2: Two
+- Stories: S3
+EOF
+expect 0 "plan qa PR1" bash "$STATE" plan "$QP" qa PR1
+[[ "$(cut -f1 <<<"$out" | tr '\n' ' ')" == "S1.1 S1.2 S2.1 " ]] && ok "  ids S1.1 S1.2 S2.1 in story order" || bad "  ids: $out"
+has "  text after the marker is tab separated" $'S1.1\tOpen the start screen: the Start button is visible'
+has "  a checked marked criterion counts" $'S1.2\tPress Start'
+has "  extra spaces after the marker are trimmed" $'S2.1\tOpen Settings: the QA box is listed'
+hasnt "  the unmarked criterion is not listed" "unit test passes"
+hasnt "  another PR's story is not listed" "belongs to PR2"
+sed -i.bak 's/unit test passes/unit test passes, edited/' "$QP/plan.md"; rm -f "$QP/plan.bak"
+expect 0 "plan qa PR1 after editing an unmarked criterion" bash "$STATE" plan "$QP" qa PR1
+[[ "$(cut -f1 <<<"$out" | tr '\n' ' ')" == "S1.1 S1.2 S2.1 " ]] && ok "  ids unchanged" || bad "  ids moved: $out"
+expect 0 "plan qa on a plan without the marker" bash "$STATE" plan "$RUN" qa PR1
+[[ -z "$out" ]] && ok "  prints nothing" || bad "  unmarked plan printed: $out"
+
 expect 0 "plan why, none yet" bash "$STATE" plan "$RUN" why PR1
 [[ -z "$out" ]] && ok "  no Why line gives an empty result" || bad "  why: $out"
 expect 0 "plan decisions, none yet" bash "$STATE" plan "$RUN" decisions

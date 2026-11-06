@@ -98,6 +98,9 @@ Write the plan in exactly this shape (Markdown). Keep each section complete on i
 - Acceptance criteria:
   - [ ] <objectively verifiable criterion>
   - [ ] <...>
+  - [ ] (app) <criterion a person can check in the app's UI>
+
+The `(app)` marker is the **visible criteria marker**: put `(app)` right after the checkbox only on a criterion that can be checked by looking at the running app's UI, and write it so it names what to open and what to see (for example `(app) Open the start screen: the "Start" button is visible`). When the repo has QA on, the QA step tries exactly these criteria in a browser; leave the marker off anything a test or a log proves, and do not add it to a repo with no UI.
 
 ## Pull requests
 
