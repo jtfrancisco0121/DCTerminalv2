@@ -10,8 +10,21 @@ import { applyTheme, cachedTheme } from "./theme";
 // try/catch and falls back to the default.
 applyTheme(cachedTheme());
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+function mount() {
+  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  );
+}
+
+// `npm run dev:fake` (QA): a faked backend is installed before the first render. Every `invoke` is lazy (none runs at
+// module load), and a release build drops this branch: `MODE` is a literal there and `npm run check` scans dist/.
+if (import.meta.env.MODE === "fake") {
+  void import("./fake/install").then((fake) => {
+    fake.installFakeBackend();
+    mount();
+  });
+} else {
+  mount();
+}

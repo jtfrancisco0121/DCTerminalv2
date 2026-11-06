@@ -30,6 +30,7 @@ A role's skill and its sub-agent both start by reading `${CLAUDE_PLUGIN_ROOT}/ro
 | Recommendation | `/dcv2:recommendation` | none | (session's) |
 | Codebase Audit | `/dcv2:codebase-audit` | none | (session's) |
 | Onboard | `/dcv2:onboard` | none | (session's) |
+| QA | `/dcv2:qa` | `dcv2:qa` (Eagle-Eye Step 3, after a clean review round of a QA-on PR) | sonnet |
 | Memory updater | none | `dcv2:memory-updater` (Eagle-Eye Step 5, end of a Developer session) | haiku |
 
 Standalone skills run on the session's own model (`claude --model ...`).
@@ -131,8 +132,15 @@ $DCV2_MEMORY_DIR/
 - `scripts/skill-e2e/state_test.sh`: unit test of `state.sh` (no Claude call; `gh` is a stub, the remote a local bare repo).
 - `scripts/skill-e2e/memory_test.sh`: unit test of `memory.sh` (ids, caps, secrets, pinned lines, headers, staleness, compose, status).
 - `scripts/skill-e2e/stop_check_test.sh`: unit test of the Stop/SubagentStop hook.
+- `scripts/skill-e2e/qa_browser_test.sh`: unit test of `scripts/qa-browser.mjs` against a stub CDP endpoint (no browser, no network).
 - `scripts/skill-e2e/plugin_test.sh`: static checks: `VERSION`, every skill/agent reads its role file, every role has the trust rule, hooks and launch settings parse, scripts pass `bash -n`.
 - `scripts/skill-e2e/golden.sh [multi dep fix]` (R7, before every release): three toy workspaces through the whole run, in parallel, launched as the app does (`--settings`, the composed memory prompt, `DCV2_MEMORY_DIR`): two independent repos with onboard first and `DCV2_MAX_IMPLEMENTERS=1`; a PR that depends on another; a check that already fails for a reason the request does not name. Asserts gates, `report.md`, `memory-update.md`, memory written only via `memory.sh`, ordering, and untouched main checkouts.
 - `scripts/skill-e2e/standalone.sh [roles...]`: each standalone skill loads, reads its role file and replies; read-only roles leave the repo untouched.
 
 The unit tests run on python3 3.9+ (macOS's system python3 included). The live tests (`run.sh`, `golden.sh`, `standalone.sh`) use the current Claude account; none of them touches a real repo.
+
+## QA and triage (0.10.0)
+
+- `dcv2:qa` (sub-agent, sonnet): tries a PR's `(app)` criteria in the running app through `scripts/qa-browser.mjs` (a headless Chrome-family browser) and writes `reviews/PR<n>-qa<r>.md` plus screenshots. Standalone: `/dcv2:qa` on a branch with criteria in your words.
+- The Planner marks criteria checkable in the app as `- [ ] (app) <criterion>`; the Plan Reviewer checks each is concrete.
+- Planner `pass=triage` (with `plugin/roles/triage.md`) proposes the next runs from open tickets; see run-folder.md, Triage mode.

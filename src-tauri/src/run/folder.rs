@@ -129,6 +129,8 @@ pub struct RunMeta {
     pub orchestrator_model: Option<String>,
     /// The `--permission-mode` the orchestrator tab was started with; `None` is recorded as null.
     pub orchestrator_mode: Option<String>,
+    /// A triage run (`mode: triage`): the ClickUp list whose open tickets it proposes runs for; `None` otherwise.
+    pub triage_list_id: Option<String>,
 }
 
 /// One run of an eval group, as meta.json's `eval` records it.
@@ -217,7 +219,7 @@ pub fn finished_eval(eval: Option<&EvalRef>, stage: Option<&str>) -> bool {
 }
 
 /// The run modes meta.json can record (`mode`); a normal run has none.
-pub const RUN_MODES: &[&str] = &["epic-plan"];
+pub const RUN_MODES: &[&str] = &["epic-plan", "triage"];
 
 /// The review modes meta.json can record.
 pub const REVIEW_MODES: &[&str] = &["github", "local"];
@@ -319,6 +321,15 @@ pub fn review_mode_of(run_dir: &Path) -> String {
         .unwrap_or_else(|| "local".into())
 }
 
+/// The ClickUp list a triage run was started for (meta.json `triage.listId`).
+pub fn triage_list_of(run_dir: &Path) -> Option<String> {
+    read_json_value(&run_dir.join("meta.json"))?
+        .get("triage")?
+        .get("listId")?
+        .as_str()
+        .map(str::to_string)
+}
+
 /// meta.json's `mode`: `epic-plan`, or `None` for a normal run (missing or unknown).
 pub fn run_mode_of(run_dir: &Path) -> Option<String> {
     read_json_value(&run_dir.join("meta.json"))
@@ -385,6 +396,9 @@ pub fn create_run(
     }
     if let Some(id) = meta.dispatch_entry_id.as_deref() {
         meta_json["dispatchEntryId"] = json!(id);
+    }
+    if let Some(list) = meta.triage_list_id.as_deref() {
+        meta_json["triage"] = json!({"listId": list});
     }
     if let Some(n) = meta.max_implementers {
         meta_json["maxImplementers"] = json!(n.clamp(1, MAX_IMPLEMENTERS_LIMIT));
@@ -806,6 +820,7 @@ mod tests {
             copy_files: vec![],
             live_tests: false,
             receipt: false,
+            qa: None,
         };
         let repos = vec![repo("a"), repo("b"), repo("c")];
         let meta = |mode: Option<&str>| RunMeta {
@@ -864,6 +879,7 @@ mod tests {
             copy_files: vec![],
             live_tests: false,
             receipt: false,
+            qa: None,
         }];
         let make = |mode: Option<&str>| {
             let meta = RunMeta {
@@ -910,6 +926,7 @@ mod tests {
             copy_files: vec![],
             live_tests: false,
             receipt: false,
+            qa: None,
         };
         let repos = vec![repo("a"), repo("b")];
         let limit = repos_limit_for(&["a".into(), "b".into()], Some(&["b".to_string()])).unwrap();
@@ -942,6 +959,7 @@ mod tests {
             copy_files: vec![],
             live_tests: false,
             receipt: false,
+            qa: None,
         }];
         let make = |n: Option<u32>, request: &str| {
             let meta = RunMeta {
@@ -1015,6 +1033,7 @@ mod tests {
             copy_files: vec![".env".into()],
             live_tests: true,
             receipt: true,
+            qa: None,
         }];
         let meta = RunMeta {
             plugin_version: Some("abc123".into()),
@@ -1031,6 +1050,7 @@ mod tests {
             eval: None,
             orchestrator_model: None,
             orchestrator_mode: None,
+            triage_list_id: None,
         };
         assert!(create_run(dir.path(), Path::new("/w"), &repos, &[], "  ", &meta).is_err());
         let one = create_run(

@@ -130,6 +130,23 @@ pub struct PrView {
     pub ci_error: Option<String>,
     /// The PR's state on GitHub: `OPEN`, `MERGED` or `CLOSED`; None until read.
     pub pr_state: Option<String>,
+    /// `prs[].qa` (written by `state.sh qa`) with the criterion rows of its QA file; None when QA did not run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qa: Option<QaView>,
+}
+
+/// One PR's QA result: the recorded verdict and, read app-side from `reviews/PR<n>-qa<r>.md`, its criterion rows.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QaView {
+    pub round: Option<i64>,
+    /// `pass`, `fail` or `error`.
+    pub result: String,
+    pub tried: i64,
+    pub total: i64,
+    pub failed: i64,
+    pub path: Option<String>,
+    pub criteria: Vec<super::qa_image::QaCriterion>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -397,8 +414,24 @@ fn parse_pr(pr: &Value, index: usize) -> PrView {
                     .collect()
             })
             .unwrap_or_default(),
+        qa: parse_qa(pr.get("qa")),
         ..PrView::default()
     }
+}
+
+/// `prs[].qa`: a verdict of `pass`, `fail` or `error` with its counts; anything else is no QA result.
+fn parse_qa(qa: Option<&Value>) -> Option<QaView> {
+    let qa = qa?;
+    let result = s(qa, "result").filter(|r| matches!(r.as_str(), "pass" | "fail" | "error"))?;
+    Some(QaView {
+        round: i(qa, "round"),
+        result,
+        tried: i(qa, "tried")?,
+        total: i(qa, "total")?,
+        failed: i(qa, "failed").unwrap_or(0),
+        path: s(qa, "path"),
+        criteria: Vec::new(),
+    })
 }
 
 /// `gates/<PR>.yml`: flat `key: value` lines (quotes stripped). None when
@@ -667,6 +700,11 @@ pub fn read_run(run_dir: &Path, checks_running: bool) -> RunView {
     let repo_checks = repo_checks(run_dir);
     for pr in &mut view.prs {
         pr.gate = read_gate(run_dir, &pr.id);
+        if let Some(qa) = pr.qa.as_mut() {
+            if let Some(rel) = qa.path.as_deref() {
+                qa.criteria = super::qa_image::read_qa_rows(run_dir, &pr.id, rel);
+            }
+        }
         if let Some(gh) = github.prs.get(&pr.id) {
             pr.ci = Some(gh.ci.clone());
             pr.ci_at = Some(gh.at.clone()).filter(|at| !at.is_empty());
@@ -733,6 +771,36 @@ mod tests {
     use super::*;
     use crate::test_support::TempDir;
     use serde_json::json;
+
+    #[test]
+    fn a_prs_qa_result_and_its_rows_are_read_and_a_pr_without_qa_has_none() {
+        let dir = TempDir::new("status_qa");
+        std::fs::create_dir_all(dir.join("reviews")).unwrap();
+        std::fs::write(
+            dir.join("reviews/PR1-qa1.md"),
+            "QA: fail\nS1.1 | PASS | ok | reviews/qa/S1.1.png\nS1.2 | FAIL | missing | reviews/qa/S1.2.png\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("status.json"),
+            json!({"schema": 1, "stage": "building", "prs": [
+                {"id": "PR1", "qa": {"round": 1, "result": "fail", "tried": 2, "total": 2, "failed": 1, "path": "reviews/PR1-qa1.md"}},
+                {"id": "PR2", "qa": {"round": 1, "result": "maybe", "tried": 1, "total": 1, "path": "x"}},
+                {"id": "PR3"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let view = read_run(dir.path(), false);
+        let qa = view.prs[0].qa.as_ref().expect("PR1 has a QA result");
+        assert_eq!(
+            (qa.result.as_str(), qa.tried, qa.total, qa.failed),
+            ("fail", 2, 2, 1)
+        );
+        assert_eq!(qa.criteria.len(), 2);
+        assert_eq!(qa.criteria[0].id, "S1.2", "failed first");
+        assert!(view.prs[1].qa.is_none(), "an unknown result is no result");
+        assert!(view.prs[2].qa.is_none());
+    }
 
     #[test]
     fn github_ci_and_pr_state_come_from_the_app_written_file_only() {

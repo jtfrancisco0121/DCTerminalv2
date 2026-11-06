@@ -487,6 +487,56 @@ pub struct RepoSetup {
     /// collapsed Receipt to this repo's PR bodies. Off by default.
     #[serde(default)]
     pub receipt: bool,
+    /// "Try PRs in the app (QA)" (repos.json `qa`): off when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qa: Option<QaSetup>,
+}
+
+/// The command that serves a PR's build for QA and the loopback URL it answers on. `%PORT%` in either is the
+/// free port `state.sh qa-serve` chose (docs/run-folder.md, QA).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QaSetup {
+    pub command: String,
+    pub url: String,
+}
+
+/// Whether `url` is `http://` with a loopback host (`127.0.0.1`, `localhost`, `[::1]`), by parsing the authority
+/// (a prefix match would accept `http://localhost.evil.com`). The port may be `%PORT%`.
+pub fn loopback_http_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') || authority.contains(char::is_whitespace) {
+        return false;
+    }
+    let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
+        let Some((host, tail)) = inner.split_once(']') else {
+            return false;
+        };
+        let port = if tail.is_empty() {
+            ""
+        } else if let Some(port) = tail.strip_prefix(':') {
+            port
+        } else {
+            return false;
+        };
+        (format!("[{host}]"), port)
+    } else {
+        match authority.split_once(':') {
+            Some((host, port)) => (host.to_string(), port),
+            None => (authority.to_string(), ""),
+        }
+    };
+    let port_ok = port.is_empty()
+        || port == "%PORT%"
+        || (port.len() <= 5 && port.chars().all(|c| c.is_ascii_digit()));
+    port_ok
+        && matches!(
+            host.to_ascii_lowercase().as_str(),
+            "127.0.0.1" | "localhost" | "[::1]"
+        )
 }
 
 pub const MAX_COPY_FILES: usize = 20;
@@ -535,11 +585,35 @@ pub fn clean_repo_setup(next: RepoSetup) -> Result<RepoSetup, String> {
     if files.len() > MAX_COPY_FILES {
         return Err(format!("At most {MAX_COPY_FILES} files to copy."));
     }
+    let qa = match next.qa {
+        None => None,
+        Some(qa) => {
+            let command = qa.command.trim().to_string();
+            let url = qa.url.trim().to_string();
+            if command.is_empty()
+                || command.contains(['\n', '\r', '\0'])
+                || command.chars().count() > MAX_SETUP_CHARS
+            {
+                return Err(
+                    "QA command: enter one line (at most 400 characters), for example npm run dev:fake."
+                        .into(),
+                );
+            }
+            if !loopback_http_url(&url) {
+                return Err(
+                    "QA URL: use http:// with 127.0.0.1, localhost or [::1], for example http://127.0.0.1:%PORT%/."
+                        .into(),
+                );
+            }
+            Some(QaSetup { command, url })
+        }
+    };
     Ok(RepoSetup {
         setup,
         copy_files: files,
         live_tests: next.live_tests,
         receipt: next.receipt,
+        qa,
     })
 }
 
@@ -582,6 +656,68 @@ pub struct RunSettings {
     /// `--permission-mode` of an Eagle-Eye orchestrator tab: `auto` by default, empty: the account's own mode.
     #[serde(default = "default_orchestrator_permission_mode")]
     pub orchestrator_permission_mode: String,
+    /// Triage schedule: at most one triage run per entry per local day (docs/run-folder.md, Triage mode).
+    #[serde(default)]
+    pub triage_schedule: Vec<TriageSchedule>,
+}
+
+/// One scheduled triage: a ClickUp list of an account, a local time of day, and the folder the run starts in.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TriageSchedule {
+    pub account_id: String,
+    pub list_id: String,
+    /// Local `HH:MM`.
+    pub time: String,
+    pub on: bool,
+    /// The start folder of the triage run (a git repo or a folder of repos).
+    #[serde(default)]
+    pub folder: String,
+}
+
+pub const MAX_TRIAGE_SCHEDULE: usize = 12;
+
+/// `HH:MM` (24 h) as minutes since midnight.
+pub fn parse_hhmm(text: &str) -> Option<u32> {
+    let (h, m) = text.split_once(':')?;
+    if h.len() != 2 || m.len() != 2 {
+        return None;
+    }
+    let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
+    (h < 24 && m < 60).then_some(h * 60 + m)
+}
+
+/// The schedule as saved: trimmed, each entry named by a valid time, account, list and (when on) a folder.
+pub fn clean_triage_schedule(next: Vec<TriageSchedule>) -> Result<Vec<TriageSchedule>, String> {
+    if next.len() > MAX_TRIAGE_SCHEDULE {
+        return Err(format!(
+            "At most {MAX_TRIAGE_SCHEDULE} triage schedule rows."
+        ));
+    }
+    next.into_iter()
+        .map(|e| {
+            let entry = TriageSchedule {
+                account_id: e.account_id.trim().to_string(),
+                list_id: e.list_id.trim().to_string(),
+                time: e.time.trim().to_string(),
+                on: e.on,
+                folder: e.folder.trim().to_string(),
+            };
+            if parse_hhmm(&entry.time).is_none() {
+                return Err(format!(
+                    "Triage schedule time {:?}: use HH:MM, for example 08:00.",
+                    entry.time
+                ));
+            }
+            if entry.account_id.is_empty() || !crate::clickup::valid_id(&entry.list_id) {
+                return Err("Triage schedule: pick an account and a list id.".into());
+            }
+            if entry.on && entry.folder.is_empty() {
+                return Err("Triage schedule: a row that is on needs a folder to start in.".into());
+            }
+            Ok(entry)
+        })
+        .collect()
 }
 
 fn default_orchestrator_model() -> String {
@@ -680,6 +816,7 @@ impl Default for RunSettings {
             auto_cleanup: true,
             orchestrator_model: default_orchestrator_model(),
             orchestrator_permission_mode: default_orchestrator_permission_mode(),
+            triage_schedule: Vec::new(),
         }
     }
 }
@@ -820,6 +957,7 @@ impl SettingsStore {
             auto_cleanup: next.auto_cleanup,
             orchestrator_model: model,
             orchestrator_permission_mode: mode,
+            triage_schedule: clean_triage_schedule(next.triage_schedule)?,
         };
         self.save()
     }
@@ -1054,6 +1192,128 @@ mod tests {
     }
 
     #[test]
+    fn the_triage_schedule_loads_empty_from_an_old_file_and_refuses_a_bad_row() {
+        let old: RunSettings = serde_json::from_str(r#"{"maxImplementers": 3}"#).unwrap();
+        assert!(old.triage_schedule.is_empty());
+        let row = |time: &str, list: &str, on: bool, folder: &str| TriageSchedule {
+            account_id: "default".into(),
+            list_id: list.into(),
+            time: time.into(),
+            on,
+            folder: folder.into(),
+        };
+        let ok =
+            clean_triage_schedule(vec![row(" 08:30 ", "901800112233", true, " /w/app ")]).unwrap();
+        assert_eq!(
+            (ok[0].time.as_str(), ok[0].folder.as_str()),
+            ("08:30", "/w/app")
+        );
+        for bad in [
+            row("8:30", "901", true, "/w"),
+            row("24:00", "901", true, "/w"),
+            row("08:60", "901", true, "/w"),
+            row("08:00", "", true, "/w"),
+            row("08:00", "a b", true, "/w"),
+            row("08:00", "901", true, ""),
+        ] {
+            assert!(clean_triage_schedule(vec![bad.clone()]).is_err(), "{bad:?}");
+        }
+        assert!(
+            clean_triage_schedule(vec![row("08:00", "901", false, "")]).is_ok(),
+            "an off row needs no folder"
+        );
+        let dir = TempDir::new("settings_triage");
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        let mut next = store.run().clone();
+        next.triage_schedule = vec![row("07:15", "901", true, "/w/app")];
+        store.set_run(next.clone()).unwrap();
+        assert_eq!(
+            SettingsStore::open(dir.path())
+                .unwrap()
+                .run()
+                .triage_schedule,
+            next.triage_schedule
+        );
+        next.triage_schedule = vec![row("nope", "901", true, "/w/app")];
+        assert!(store.set_run(next).is_err());
+        assert_eq!(
+            store.run().triage_schedule.len(),
+            1,
+            "the saved schedule stays"
+        );
+    }
+
+    #[test]
+    fn an_old_repo_setup_without_qa_loads_as_off() {
+        let old: RepoSetup =
+            serde_json::from_str(r#"{"setup":"npm ci","copyFiles":[],"receipt":true}"#).unwrap();
+        assert_eq!(old.qa, None);
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(!text.contains("qa"), "off writes no qa key: {text}");
+    }
+
+    #[test]
+    fn a_qa_setting_needs_a_command_and_a_loopback_http_url() {
+        let with = |command: &str, url: &str| RepoSetup {
+            qa: Some(QaSetup {
+                command: command.into(),
+                url: url.into(),
+            }),
+            ..Default::default()
+        };
+        let ok =
+            clean_repo_setup(with(" npm run dev:fake ", " http://127.0.0.1:%PORT%/ ")).unwrap();
+        assert_eq!(ok.qa.unwrap().command, "npm run dev:fake");
+        for url in [
+            "http://localhost:3000/",
+            "http://[::1]:%PORT%/x",
+            "http://127.0.0.1/",
+            "http://LOCALHOST:8080",
+        ] {
+            assert!(clean_repo_setup(with("npm run dev", url)).is_ok(), "{url}");
+        }
+        for url in [
+            "http://localhost.evil.com/",
+            "http://localhost.evil.com:3000/",
+            "http://example.com/",
+            "https://127.0.0.1:3000/",
+            "http://127.0.0.1@evil.com/",
+            "http://evil.com/@127.0.0.1",
+            "http://127.0.0.1:abc/",
+            "127.0.0.1:3000",
+            "",
+        ] {
+            let err = clean_repo_setup(with("npm run dev", url)).unwrap_err();
+            assert!(err.contains("QA URL"), "{url}: {err}");
+        }
+        let err = clean_repo_setup(with("  ", "http://127.0.0.1:%PORT%/")).unwrap_err();
+        assert!(err.contains("QA command"), "{err}");
+    }
+
+    #[test]
+    fn a_refused_qa_save_keeps_the_previous_values() {
+        let dir = TempDir::new("settings_qa");
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        let good = RepoSetup {
+            qa: Some(QaSetup {
+                command: "npm run dev:fake".into(),
+                url: "http://127.0.0.1:%PORT%/".into(),
+            }),
+            ..Default::default()
+        };
+        let saved = store.set_repo_setup("/w/a", good).unwrap();
+        let bad = RepoSetup {
+            qa: Some(QaSetup {
+                command: "npm run dev:fake".into(),
+                url: "http://localhost.evil.com/".into(),
+            }),
+            ..Default::default()
+        };
+        assert!(store.set_repo_setup("/w/a", bad).is_err());
+        assert_eq!(store.repo_setup("/w/a"), Some(&saved));
+    }
+
+    #[test]
     fn worktree_setup_is_checked_and_auto_post_defaults_off() {
         let dir = TempDir::new("settings_setup");
         let mut store = SettingsStore::open(dir.path()).unwrap();
@@ -1077,6 +1337,7 @@ mod tests {
                 copy_files: vec![bad.into()],
                 live_tests: false,
                 receipt: false,
+                qa: None,
             };
             assert!(store.set_repo_setup("/w/a", next).is_err(), "{bad}");
         }
@@ -1093,6 +1354,7 @@ mod tests {
                     ],
                     live_tests: true,
                     receipt: true,
+                    qa: None,
                 },
             )
             .unwrap();
@@ -1108,6 +1370,7 @@ mod tests {
                     copy_files: vec![],
                     live_tests: false,
                     receipt: false,
+                    qa: None,
                 }
             )
             .is_err());

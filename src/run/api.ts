@@ -20,10 +20,14 @@ export type Repo = {
   liveTests?: boolean;
   /** Receipts in this repo's PR bodies (repos.json `receipt`); off by default. */
   receipt?: boolean;
+  /** Try PRs in the app (repos.json `qa`); absent when off. */
+  qa?: QaSetup | null;
 };
 
 /** One repo's worktree setup (app settings, keyed by the repo's real path). */
-export type RepoSetup = { setup: string | null; copyFiles: string[]; liveTests?: boolean; receipt?: boolean };
+/** "Try PRs in the app (QA)": the serve command and the loopback URL (`%PORT%` is the free port). */
+export type QaSetup = { command: string; url: string };
+export type RepoSetup = { setup: string | null; copyFiles: string[]; liveTests?: boolean; receipt?: boolean; qa?: QaSetup | null };
 
 /** `github`: draft PRs + one review comment per round; `local`: the quiet local loop. */
 export type ReviewMode = "github" | "local";
@@ -163,6 +167,23 @@ export type PrView = {
   ciError?: string | null;
   /** The PR's state on GitHub: `OPEN`, `MERGED`, `CLOSED`; null until read. */
   prState?: string | null;
+  /** QA (trying the PR in the app): the recorded result and its criterion rows; null/absent when QA did not run. */
+  qa?: QaView | null;
+};
+
+/** One criterion row of a PR's QA file; `image` is the screenshot's file stem for `runQaImage`. */
+export type QaCriterion = { id: string; result: "PASS" | "FAIL" | "ERROR" | string; text: string; image: string | null };
+
+export type QaView = {
+  round: number | null;
+  /** `pass`, `fail` or `error`. */
+  result: "pass" | "fail" | "error" | string;
+  tried: number;
+  total: number;
+  failed: number;
+  path: string | null;
+  /** Failed first. */
+  criteria: QaCriterion[];
 };
 
 /** BMAD planning of a run (auto or on); absent for older runs and runs with it off. */
@@ -357,6 +378,8 @@ export const prWorktreeAction = (runDir: string, prId: string, action: PrWorktre
   invoke<TabSummary | null>("pr_worktree_action", { runDir, prId, action, windowId });
 export const removeRunWorktrees = (runDir: string, prIds: string[]) =>
   invoke<RemoveResult[]>("remove_run_worktrees", { runDir, prIds });
+/** A QA screenshot of the run as a `data:image/png` URL (rejects when the app refuses the file). */
+export const runQaImage = (runDir: string, name: string) => invoke<string>("run_qa_image", { runDir, name });
 export const readRunFile = (runDir: string, path: string) => invoke<string>("read_run_file", { runDir, path });
 export const memoryStatus = (folder: string) => invoke<MemoryStatus>("memory_status", { folder });
 export const readMemoryFile = (path: string) => invoke<string>("read_memory_file", { path });

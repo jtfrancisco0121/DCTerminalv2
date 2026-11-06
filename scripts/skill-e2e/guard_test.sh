@@ -531,6 +531,45 @@ json.dump({"schema": 1, "stage": "building", "plan": {"approval": {"by": "user",
 PY
 b 2 "" "$STATE ready $RUN PR1"                                                             # by path: still gated
 b 0 "" "$STATE draft-pr $RUN PR1"
+
+echo "# the qa agent (S6): its own result files only, read-only git, no MCP, no orchestrator verbs"
+mkdir -p "$RUN/reviews/qa" "$RUN/logs"
+for who in dcv2:qa qa; do
+  w 0 "$who" "$RUN/reviews/PR1-qa1.md"
+  w 0 "$who" "$RUN/reviews/qa/S1.1.png"
+  w 0 "$who" "$RUN/logs/PR1-qa1-browser.txt"
+  w 2 "$who" "$WT/a.js"
+  w 2 "$who" "$R/a.js"
+  w 2 "$who" "$RUN/plan.md"
+  w 2 "$who" "$RUN/reviews/PR1-round1.md"
+  w 2 "$who" "$RUN/reviews/qa/../PR1-round1.md"
+  w 2 "$who" "$RUN/reviews/qa/sub/x.png"
+  w 2 "$who" "$RUN/status.json"
+  w 2 "$who" "$RUN/gates/PR1.yml"
+done
+b 0 dcv2:qa "node $ROOT/plugin/scripts/qa-browser.mjs --out $RUN/reviews/qa --steps /dev/null"
+b 0 dcv2:qa "echo 'QA: pass' > $RUN/reviews/PR1-qa1.md"
+b 2 dcv2:qa "echo x > $WT/a.js"
+b 2 dcv2:qa "echo x > $RUN/plan.md"
+b 2 dcv2:qa "git -C $WT commit -m x"
+b 2 dcv2:qa "git -C $WT stash"
+b 2 dcv2:qa "git -C $WT checkout -b x"
+b 2 dcv2:qa "git -C $WT push origin HEAD"
+b 0 dcv2:qa "git -C $WT diff main...HEAD && git -C $WT log --oneline -n 5"
+b 2 dcv2:qa "gh pr create --title x"
+mcp 2 dcv2:qa mcp__x__get_issue
+mcp 2 dcv2:qa mcp__x__list_issues
+mcp 2 dcv2:qa mcp__x__update_issue
+for sub in ready ship-pr cleanup request qa-serve qa; do
+  b 2 dcv2:qa "bash $STATE $sub $RUN PR1 1"
+  b 2 dcv2:qa "$STATE $sub $RUN PR1 1"
+done
+expect 2 "the qa agent with no DCV2_RUN_DIR" "$(payload dcv2:qa Write file_path "$RUN/reviews/PR1-qa1.md")" -u DCV2_RUN_DIR
+for who in dcv2:implementer dcv2:pr-reviewer dcv2:planner; do
+  b 2 "$who" "bash $STATE qa-serve $RUN PR1 start"
+  b 2 "$who" "bash $STATE qa $RUN PR1 1"
+done
+b 0 "" "bash $STATE qa-serve $RUN PR1 stop"
 for c in "gh api -iX PUT repos/o/r/x" "gh api -iXPUT repos/o/r/x" "gh api -XPATCH repos/o/r/x" "gh api --method POST repos/o/r/x" \
          "gh api --method=delete repos/o/r/x" "gh api -X put repos/o/r/x" "gh api -if body=x repos/o/r/x" "gh api --raw-field=a=b x"; do   # MED 4
   b 2 "" "$c"
@@ -574,6 +613,8 @@ for who in "" dcv2:implementer; do                                  # requests/ 
   w 2 "$who" "$RUN/app-github.json"
   w 2 "$who" "$RUN/waves.json"                                     # written only by state.sh waves
   b 2 "$who" "echo '{}' > $RUN/waves.json"
+  w 2 "$who" "$RUN/triage.json"                                    # written only by state.sh triage
+  b 2 "$who" "echo '{}' > $RUN/triage.json"
   b 2 "$who" "echo '{}' > $RUN/app-github.json"
   b 2 "$who" "echo '{}' > $RUN/requests/20261027T100000Z-recheck.result.json"
   b 2 "$who" "mkdir -p $RUN/requests/a"

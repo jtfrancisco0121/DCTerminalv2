@@ -47,7 +47,8 @@ for f in "$P"/agents/*.md; do
 done
 for f in "$P"/roles/*.md; do
   name="$(basename "$f" .md)"
-  [[ -f "$P/skills/$name/SKILL.md" || -f "$P/agents/$name.md" ]] && ok "role $name is used" || bad "role $name used by no skill or agent"
+  # A role is used by its own skill or agent, or is read by another one (the Planner's triage pass reads roles/triage.md).
+  { [[ -f "$P/skills/$name/SKILL.md" || -f "$P/agents/$name.md" ]] || grep -rqF "roles/$name.md" "$P/skills" "$P/agents"; } && ok "role $name is used" || bad "role $name used by no skill or agent"
   grep -qF "the code is the truth" "$f" && ok "  role $name has the trust rule" || bad "role $name lacks the trust rule (memory is a hint, the code is the truth)"
 done
 
@@ -157,6 +158,32 @@ grep -qF '`NO MEMORY` only when' "$MU" && ok "  role: NO MEMORY only for present
 grep -qF 'only at paths `memory.sh` prints' "$MA" && ok "  agent: only printed paths" || bad "  memory-updater agent: no printed-paths rule"
 grep -qF 'is `FAILED` with its message, never `NO MEMORY`' "$MA" && ok "  agent: FAILED rule" || bad "  memory-updater agent: no FAILED rule"
 grep -qF 'memory.sh id <repo>' "$DV" && ok "  developer skill step 8 passes the repo id" || bad "  developer SKILL.md step 8 does not pass id"
+
+echo "# QA and triage commands are documented (0.10.0)"
+for c in 'qa-serve' 'state.sh qa ' 'plan <run> qa' 'state.sh triage' 'run_qa_image' 'triage_start' 'triage_approve' 'triage_apply' 'triageSchedule' 'create_task'; do
+  { grep -qF "$c" "$ROOT/docs/launch.md" || grep -qF "$c" "$ROOT/docs/run-folder.md"; } && ok "  docs name $c" || bad "  docs do not name $c"
+done
+grep -q 'dcv2:qa' "$ROOT/docs/skills.md" && ok "  skills.md names dcv2:qa" || bad "  skills.md lacks dcv2:qa"
+
+for r in planner plan-reviewer; do
+  grep -qF 'visible criteria marker' "$P/roles/$r.md" && grep -qF '`(app)`' "$P/roles/$r.md" && ok "  $r.md describes the (app) marker" || bad "  $r.md lacks the visible criteria marker"
+done
+
+echo "# every pipeline agent is a guard pipeline role (an agent missing from PIPE_RE or ROLES is treated as the orchestrator)"
+for f in "$P"/agents/*.md; do
+  name="$(basename "$f" .md)"
+  grep -E '^PIPE_RE=' "$P/scripts/guard.sh" | grep -qE "[(|]$name[|)]" && ok "  $name is in guard.sh PIPE_RE" || bad "  $name is missing from guard.sh PIPE_RE"
+  grep -E '^ROLES = ' "$P/scripts/guard.sh" | grep -qF "\"$name\"" && ok "  $name is in guard.sh ROLES" || bad "  $name is missing from guard.sh ROLES"
+done
+grep -qF 'dcv2:qa' "$P/skills/eagle-eye/SKILL.md" && grep -qF 'qa-serve' "$P/skills/eagle-eye/SKILL.md" && grep -qF 'S qa-serve <run> <PR id> stop' "$P/skills/eagle-eye/SKILL.md" \
+  && ok "  eagle-eye SKILL.md describes the qa step and always stops the server" || bad "  SKILL.md: no QA step"
+
+QS="$P/skills/qa/SKILL.md"
+[[ -f "$QS" ]] && grep -qF '${CLAUDE_PLUGIN_ROOT}/roles/qa.md' "$QS" && ok "standalone /dcv2:qa reads roles/qa.md" || bad "skills/qa/SKILL.md missing or does not read roles/qa.md"
+grep -qF 'Never edit, commit, stash or switch branches in the user' "$QS" && ok "  forbids edits, commits and branch switches in the user's checkout" || bad "  qa skill: no checkout rule"
+grep -qF 'Cleanup on every exit path' "$QS" && grep -qF 'git worktree remove --force' "$QS" && grep -qF 'stop the server you started' "$QS" \
+  && ok "  stops the server and removes its worktree on every exit path" || bad "  qa skill: no server stop / worktree removal"
+grep -qF 'not by a prefix' "$QS" && ok "  checks the URL host, not a prefix" || bad "  qa skill: no loopback host rule"
 
 echo "# scripts parse"
 for f in "$P"/scripts/*.sh "$P"/scripts/lib/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do

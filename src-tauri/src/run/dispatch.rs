@@ -109,6 +109,12 @@ pub struct Epic {
     pub started: Vec<u32>,
     #[serde(default)]
     pub wave_runs: Vec<WaveRun>,
+    /// `triage`: the epic is an approved triage proposal (docs/run-folder.md); absent for an epic-plan run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// A triage epic's ready waves are queued on every tick whatever `run.autoStartWaves` says.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_start: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -497,6 +503,7 @@ pub fn on_tick(app: &AppHandle, tab_run_dirs: &HashSet<String>) {
         let _ = with(&data, |d| recover(d, &started));
     }
     super::epics::auto_start(app);
+    super::triage::schedule_tick(app);
     let state = load(&data);
     app_check_tick(app, &state);
     if state.queue.is_empty() {
@@ -1515,6 +1522,7 @@ pub fn eval_params(
             max_implementers: folder::max_implementers_of(source),
             run_mode: None,
             dispatch_entry_id: None,
+            triage_list_id: None,
             eval: Some(folder::EvalRef {
                 group: group.to_string(),
                 index,
@@ -1809,6 +1817,7 @@ mod tests {
             max_implementers: None,
             run_mode: None,
             dispatch_entry_id: None,
+            triage_list_id: None,
             eval: None,
         }
     }
@@ -2142,6 +2151,7 @@ mod tests {
             copy_files: vec![],
             live_tests: false,
             receipt: false,
+            qa: None,
         }];
         let meta = RunMeta {
             account_id: "a".into(),

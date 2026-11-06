@@ -39,16 +39,31 @@ function RepoRow({ repo, onSaved }: { repo: Repo; onSaved?: () => void }) {
   const [files, setFiles] = useState((repo.copyFiles ?? []).join("\n"));
   const [liveTests, setLiveTests] = useState(repo.liveTests ?? false);
   const [receipt, setReceipt] = useState(repo.receipt ?? false);
+  const [qaOn, setQaOn] = useState(Boolean(repo.qa));
+  const [qaCommand, setQaCommand] = useState(repo.qa?.command ?? "");
+  const [qaUrl, setQaUrl] = useState(repo.qa?.url ?? "http://127.0.0.1:%PORT%/");
   const [note, setNote] = useState<{ tone: "hint" | "error"; text: string } | null>(null);
+  const errorId = `qa-error-${repo.name}`;
   const save = async () => {
     setNote(null);
-    const next: RepoSetup = { setup: setup.trim() || null, copyFiles: parseCopyFiles(files), liveTests, receipt };
+    const next: RepoSetup = {
+      setup: setup.trim() || null,
+      copyFiles: parseCopyFiles(files),
+      liveTests,
+      receipt,
+      qa: qaOn ? { command: qaCommand, url: qaUrl } : null,
+    };
     try {
       const saved = await setRepoSetup(repo.path, next);
       setSetup(saved.setup ?? "");
       setFiles(saved.copyFiles.join("\n"));
       setLiveTests(saved.liveTests ?? false);
       setReceipt(saved.receipt ?? false);
+      setQaOn(Boolean(saved.qa));
+      if (saved.qa) {
+        setQaCommand(saved.qa.command);
+        setQaUrl(saved.qa.url);
+      }
       setNote({ tone: "hint", text: "Saved." });
       onSaved?.();
     } catch (err) {
@@ -99,11 +114,54 @@ function RepoRow({ repo, onSaved }: { repo: Repo; onSaved?: () => void }) {
         Receipts in PR bodies (a collapsed section with agents, minutes, tokens and the five-hour window share; a
         public PR body shows this usage)
       </label>
+      <label className="check-label">
+        <input
+          type="checkbox"
+          aria-label={`Try PRs in the app (QA) for ${repo.name}`}
+          checked={qaOn}
+          onChange={(event) => setQaOn(event.target.checked)}
+        />{" "}
+        Try PRs in the app (QA): after a clean review, a headless browser tries the plan&apos;s in-app criteria on a
+        local copy of the PR. A change applies to the next run.
+      </label>
+      {qaOn && (
+        <>
+          <label className="field-label">
+            QA start command (it must read the PORT environment variable)
+            <input
+              className="text-input"
+              aria-label={`QA command of ${repo.name}`}
+              aria-describedby={note?.tone === "error" ? errorId : undefined}
+              value={qaCommand}
+              placeholder="npm run dev:fake"
+              onChange={(event) => setQaCommand(event.target.value)}
+            />
+          </label>
+          <label className="field-label">
+            QA URL (http, on 127.0.0.1, localhost or [::1]; %PORT% is the free port)
+            <input
+              className="text-input"
+              aria-label={`QA URL of ${repo.name}`}
+              aria-describedby={note?.tone === "error" ? errorId : undefined}
+              value={qaUrl}
+              onChange={(event) => setQaUrl(event.target.value)}
+            />
+          </label>
+        </>
+      )}
       <div className="button-row">
         <button type="button" className="secondary-button" onClick={() => void save()}>
           Save
         </button>
-        {note && <span className={note.tone}>{note.text}</span>}
+        {note && (
+          <span
+            id={note.tone === "error" ? errorId : undefined}
+            className={note.tone}
+            role={note.tone === "error" ? "alert" : undefined}
+          >
+            {note.text}
+          </span>
+        )}
       </div>
     </li>
   );

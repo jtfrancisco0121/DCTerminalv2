@@ -21,6 +21,8 @@ import { TextDialog } from "./RunPanel";
 import { QueueSection } from "./QueueSection";
 import { BatchOverview } from "./BatchOverview";
 import { EpicsSection } from "./EpicsSection";
+import { TriageSection } from "./TriageSection";
+import { TriageStartDialog } from "./TriageStartDialog";
 
 type Props = {
   windowId: string;
@@ -43,6 +45,7 @@ export function RunsView({ windowId, onClose, onStarted, onAnalytics, onEvalResu
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<{ title: string; text: string } | null>(null);
+  const [triageOpen, setTriageOpen] = useState(false);
 
   useEffect(() => {
     runOverview().then(
@@ -98,6 +101,13 @@ export function RunsView({ windowId, onClose, onStarted, onAnalytics, onEvalResu
       <QueueSection />
       <BatchOverview onEvalResults={onEvalResults} />
       <EpicsSection />
+      <div className="button-row">
+        <button type="button" className="secondary-button" onClick={() => setTriageOpen(true)}>
+          Triage open tickets…
+        </button>
+      </div>
+      <TriageSection />
+      {triageOpen && <TriageStartDialog windowId={windowId} onClose={() => setTriageOpen(false)} onStarted={() => {}} />}
       <div className="runs-filters">
         <input
           className="text-input"

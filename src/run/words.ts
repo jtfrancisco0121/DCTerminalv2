@@ -39,6 +39,7 @@ export function prStateTone(state: string | null | undefined): Tone {
       return "success";
     case "building":
     case "reviewing":
+    case "qa":
       return "running";
     case "fixing":
       return "warn";
@@ -169,6 +170,7 @@ const PR_STATES: Record<string, string> = {
   pending: "waiting",
   building: "building",
   reviewing: "in review",
+  qa: "trying in the app",
   fixing: "fixing review findings",
   reviewed: "reviewed",
   "needs-attention": "needs attention",
@@ -240,6 +242,19 @@ export function reviewText(pr: PrView): string | null {
   if (verdict) parts.push(verdict);
   if (openFindings) parts.push(`${openFindings} open`);
   return parts.join(", ");
+}
+
+/**
+ * The QA pill of a PR: "QA trying…" while it is in state `qa` with no result yet, then "QA n/m passed", "QA failed" or
+ * "QA could not run". null when QA did not apply (no result and not in state `qa`).
+ */
+export function qaPill(pr: Pick<PrView, "state" | "qa">): { text: string; tone: Tone } | null {
+  const qa = pr.qa;
+  if (!qa) return pr.state === "qa" ? { text: "QA trying…", tone: "running" } : null;
+  if (qa.result === "pass") return { text: `QA ${Math.max(0, qa.tried - qa.failed)}/${qa.total} passed`, tone: "success" };
+  if (qa.result === "fail") return { text: "QA failed", tone: "danger" };
+  if (qa.result === "error") return { text: "QA could not run", tone: "warn" };
+  return null;
 }
 
 /** A link the opener may open (http/https only). */
@@ -360,6 +375,8 @@ export const RUN_STEPS: ReadonlyArray<{ key: string; label: string }> = [
 
 /** An epic-plan run only plans: it never builds or ships (plugin/scripts/state.sh). */
 export const EPIC_PLAN_STEPS: ReadonlyArray<string> = ["planning", "plan-approval", "done"];
+/** A triage run only proposes: it plans, then is done (there is no stop #1 or #2). */
+export const TRIAGE_STEPS: ReadonlyArray<string> = ["planning", "done"];
 
 /**
  * An eval run plans, builds and reviews, then ends at `ship-approval` with nothing to approve (state.sh refuses the
@@ -384,6 +401,7 @@ export function prsDone(prs: ReadonlyArray<{ state: string | null }>): number {
 
 function stepSetFor(mode: string | null | undefined): ReadonlyArray<{ key: string; label: string }> {
   if (mode === "eval") return EVAL_STEPS;
+  if (mode === "triage") return RUN_STEPS.filter((step) => TRIAGE_STEPS.includes(step.key));
   return mode === "epic-plan" ? RUN_STEPS.filter((step) => EPIC_PLAN_STEPS.includes(step.key)) : RUN_STEPS;
 }
 

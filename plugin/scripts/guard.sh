@@ -7,10 +7,11 @@
 # text cannot reach it. The run's allowed worktrees are listed in <run>/.guard.json, which
 # only `state.sh worktree` writes.
 #
-# Pipeline sub-agents (agent_type implementer, planner, plan-reviewer, risk-reviewer, pr-reviewer, memory-updater,
+# Pipeline sub-agents (agent_type implementer, planner, plan-reviewer, risk-reviewer, pr-reviewer, qa, memory-updater,
 # with or without the "dcv2:" prefix):
 #   - Edit/Write: the real path (symlinks and .. resolved) must be inside the run folder, or,
-#     for the implementer only, inside one of the run's recorded worktrees.
+#     for the implementer only, inside one of the run's recorded worktrees. The qa agent may write only its own
+#     result files: reviews/PR<n>-qa<r>.md, reviews/qa/<name>.png and logs/PR<n>-qa<r>*.txt in the run folder.
 #   - Bash: never `git push`, `gh pr`, `gh api` (or gh issue/repo/release writes). Git commands
 #     that change anything are allowed only for the implementer inside a recorded worktree;
 #     elsewhere only read-only git. Redirects, tee, sed -i, cp/mv/rm/touch/mkdir etc. into a
@@ -61,7 +62,7 @@
 # (no Python, a payload that does not parse) cannot be logged.
 # Exit 2 blocks the tool call (stderr is shown to the model).
 input="$(cat)"
-PIPE_RE='"agent_type"[[:space:]]*:[[:space:]]*"(dcv2:)?(implementer|planner|plan-reviewer|risk-reviewer|pr-reviewer|memory-updater)"'
+PIPE_RE='"agent_type"[[:space:]]*:[[:space:]]*"(dcv2:)?(implementer|planner|plan-reviewer|risk-reviewer|pr-reviewer|qa|memory-updater)"'
 
 # The plugin folder this script lives in (pure bash: no dirname, the PATH may be broken).
 gdir="${BASH_SOURCE[0]%/*}"; [[ "$gdir" != "${BASH_SOURCE[0]}" ]] || gdir="."
@@ -105,7 +106,7 @@ try:
 except Exception:
     sys.exit(3)
 
-ROLES = ("implementer", "planner", "plan-reviewer", "risk-reviewer", "pr-reviewer", "memory-updater")
+ROLES = ("implementer", "planner", "plan-reviewer", "risk-reviewer", "pr-reviewer", "qa", "memory-updater")
 # Sub-agents that also run in a standalone session (no run); there they write nothing with Edit/Write.
 UNBOUND_OK = ("memory-updater", "risk-reviewer")
 agent = str(data.get("agent_type") or "")
@@ -161,9 +162,12 @@ if run:
 # (the ClickUp snapshot and records, meta.json, the app's own check results).
 PROTECTED = ("status.json", "writeback.json", ".guard.json",
              "tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json", "app-usage.json",
-             "app-cleanup.json", "app-github.json", "app-receipt.json", "waves.json", "guard.log")
+             "app-cleanup.json", "app-github.json", "app-receipt.json", "waves.json", "triage.json", "guard.log")
 who = agent or "the orchestrator"
 where = "your worktree or the run folder" if role == "implementer" else "the run folder"
+QA_WRITE = re.compile(r"^(reviews/PR\d+-qa\d\.md|reviews/qa/[A-Za-z0-9][A-Za-z0-9._-]*\.png|logs/PR\d+-qa\d[A-Za-z0-9._-]*\.txt)$")
+if role == "qa":
+    where = "the run folder, and there only reviews/PR<n>-qa<r>.md, reviews/qa/<name>.png and logs/PR<n>-qa<r>*.txt"
 
 
 # Every block has one rule id from this table (the kebab-case key). The id, never the message, is what logs/guard.log records.
@@ -342,6 +346,9 @@ GUARD_PLUGIN = portable.real_path(sys.argv[1]) if len(sys.argv) > 1 and sys.argv
 def write_allowed(p):
     if role in UNBOUND_OK and not run:
         return False
+    if role == "qa":  # only its own result files, never the worktree or any other run file
+        rp = real(p, "/")
+        return bool(run) and inside(rp, run) and bool(QA_WRITE.match(os.path.relpath(rp, real(run, "/")).replace(os.sep, "/")))
     if inside(p, run):
         return True
     return role == "implementer" and any(inside(p, w) for w in worktrees)
@@ -511,6 +518,8 @@ def check_write(t, cwd):
         block("bmad-config", BMAD_CFG_MSG)
     if not pipeline and main_checkout(p):
         block("main-checkout-write", f"the orchestrator never writes into a repo's main checkout ({p}).")
+    if role == "qa" and not write_allowed(p):
+        block("outside-allowed-write", f"{who} may write only {where}, not {p}, from Bash.")
     if pipeline and not write_allowed(p) and in_checkout(p):
         block("outside-allowed-write", f"{who} may not write {p} from Bash: it is in a git checkout outside {where}.")
 
@@ -864,7 +873,7 @@ def check_state_sh(args):
     ship approval (state.sh checks too)."""
     sub = next((a for a in args[1:] if not a.startswith("-")), "")
     if pipeline:
-        if sub in GH_STATE + ("ready", "ship-pr", "cleanup", "request"):
+        if sub in GH_STATE + ("ready", "ship-pr", "cleanup", "request", "qa-serve", "qa"):
             block("state-github-subagent", f"{who} never runs `state.sh {sub}`: only the orchestrator touches GitHub.")
         return
     if sub in GH_STATE:

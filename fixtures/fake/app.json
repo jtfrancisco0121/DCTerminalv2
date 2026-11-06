@@ -1,0 +1,32 @@
+{
+  "window_context": {
+    "id": "main",
+    "accountId": "default",
+    "accountName": "Personal",
+    "title": "DCTerminalv2 (faked backend)",
+    "config": {"path": "/fake/.claude", "display": "~/.claude", "source": "default", "exists": true},
+    "accountMissing": false
+  },
+  "get_app_state": {"windowId": "main", "activeTabId": null, "tabs": [], "closedTabs": []},
+  "recent_folders": ["/fake/work/app", "/fake/work/api"],
+  "attention_summary": {"needsYou": 0, "activeRuns": 0},
+  "active_runs": [],
+  "run_tabs": [],
+  "terminal_resume_id": null,
+  "pty_set_scheme": null,
+  "get_claude_usage": {"configDir": "/fake/.claude", "windows": []},
+  "claude_status": {"found": true, "path": "/fake/bin/claude", "version": "0.0.0-fake", "error": null},
+  "claude_version_status": {"installed": "0.0.0-fake", "latest": null, "state": "unknown"},
+  "claude_account_logins": [],
+  "memory_status": {"present": false},
+  "paths_exist": [],
+  "take_run_link": null,
+  "dev_import_status": {"available": false},
+  "notification_permission": "denied",
+  "push_status": {"saved": []},
+  "detect_folder_repos": {"kind": "repo", "repos": [{"name": "app", "path": "/fake/work/app", "check": "npm test", "setup": null, "copyFiles": []}]},
+  "dispatch_overview": {"queue": [], "running": [], "epics": []},
+  "dispatch_runs": [],
+  "epics_overview": [],
+  "batch_overview": []
+}

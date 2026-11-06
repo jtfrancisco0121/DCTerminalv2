@@ -137,7 +137,12 @@ export type RunSettings = {
   orchestratorModel?: string;
   /** `--permission-mode` of an Eagle-Eye orchestrator tab (backend default `auto`); "" is the account's own mode. */
   orchestratorPermissionMode?: string;
+  /** Scheduled triage: at most one triage run per row per local day. */
+  triageSchedule?: TriageScheduleRow[];
 };
+
+/** One scheduled triage: a ClickUp list of an account, a local time and the folder the run starts in. */
+export type TriageScheduleRow = { accountId: string; listId: string; time: string; on: boolean; folder: string };
 
 export type ObserveSettings = {
   /** "Track activity in every Claude tab" (default on). */

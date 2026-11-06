@@ -33,6 +33,7 @@ import {
   minutesText,
   planReviewTone,
   prsDone,
+  prStateText,
   prStateTone,
   PUSH_KINDS,
   relativeDate,
@@ -150,6 +151,8 @@ describe("tones", () => {
     for (const state of ["reviewed", "opened", "drafted", "pushed", "local-only"]) expect(prStateTone(state)).toBe("success");
     expect(prStateTone("building")).toBe("running");
     expect(prStateTone("reviewing")).toBe("running");
+    expect(prStateTone("qa")).toBe("running");
+    expect(prStateText("qa")).toBe("trying in the app");
     expect(prStateTone("fixing")).toBe("warn");
     expect(prStateTone("needs-attention")).toBe("danger");
     expect(prStateTone("pending")).toBe("muted");

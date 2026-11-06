@@ -38,6 +38,12 @@ pub fn spawn_afk_sweeps(app: &AppHandle) {
         loop {
             let data = data_dir(&cleanup_app);
             let enabled = auto_cleanup_on(&cleanup_app);
+            // QA servers of a run nobody is driving any more, whatever the clean-up setting says and in any stage.
+            cleanup::sweep_qa_servers(
+                &data,
+                &|dir| super::run_has_live_tab(&cleanup_app, dir),
+                std::time::SystemTime::now(),
+            );
             cleanup::sweep(&data, enabled, &GhCli, &mut asked, cleanup::ASK_EVERY);
             // CI and PR state, whatever the clean-up setting says.
             github::sweep(&data, &GhCi, &mut github_asked, github::ASK_EVERY);

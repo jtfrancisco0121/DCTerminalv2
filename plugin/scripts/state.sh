@@ -15,6 +15,14 @@
 #                                             record the user's yes at stop #1 / #2 (test: only when
 #                                             DCV2_TEST_MODE has auto-approve); ship also sets stage shipping
 #   state.sh plan <run> prs|tickets|stories   print only that part of plan.md
+#   state.sh plan <run> qa <PR>               print `S<n>.<k>` TAB `<criterion>` for the PR's `- [ ] (app) ...` criteria
+#   state.sh triage <run>                     triage run: check triage.md (every ticket in exactly one group, Needs you, Close or Out
+#                                             of scope; dependencies on earlier groups only); on a pass write triage.json and record
+#                                             status.json triage {digest, at}
+#   state.sh qa-serve <run> <PR> start|stop   QA (repos.json qa on): start the PR's build detached on a free loopback port
+#                                             (prints `url=<url>` or `serve=failed reason=...`, exit 3), or stop it
+#   state.sh qa <run> <PR> <round>            read reviews/<PR>-qa<round>.md and record prs[].qa; pass -> reviewed, fail -> a
+#                                             FAIL gate for the round, error -> needs-attention
 #   state.sh waves <run>                      epic-plan run: check waves.md (every ticket in exactly one wave or out of scope,
 #                                             3 to 6 tickets per wave, dependencies on earlier waves only); on pass write
 #                                             waves.json and record status.json waves {digest, at}
@@ -94,7 +102,7 @@ sys.path.insert(0, os.environ["DCV2_LIB_DIR"])  # set by state.sh itself, from i
 import dcv2_portable as portable
 
 STAGES = ["planning", "plan-approval", "building", "ship-approval", "shipping", "done", "failed"]
-STATES = ["pending", "building", "drafted", "reviewing", "fixing", "reviewed", "needs-attention", "opened", "pushed", "local-only"]
+STATES = ["pending", "building", "drafted", "reviewing", "qa", "fixing", "reviewed", "needs-attention", "opened", "pushed", "local-only"]
 COMMENT_CAP = 60000
 GITHUB_STAGES = ("building", "ship-approval", "shipping")
 PLUGIN_ROOT = os.environ.get("DCV2_PLUGIN_ROOT", "")
@@ -107,7 +115,7 @@ APP_FILES = ("tickets.json", "meta.json", "repos.json", "writeback-posted.json",
 REQUEST_KINDS = ("recheck", "cleanup", "tickets", "selftest")
 REQUEST_ID = re.compile(r"^\d{8}T\d{6}Z(?:-\d+)?-(" + "|".join(REQUEST_KINDS) + r")$")
 ISO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
-AGENT_FOR_STATE = {"building": "implementer", "fixing": "implementer", "reviewing": "pr-reviewer"}
+AGENT_FOR_STATE = {"building": "implementer", "fixing": "implementer", "reviewing": "pr-reviewer", "qa": "qa"}
 GATES = ("PASS", "CONCERNS", "FAIL", "WAIVED")
 
 
@@ -256,10 +264,20 @@ def epic_mode(run):
     return isinstance(m, dict) and m.get("mode") == "epic-plan"
 
 
+def triage_mode(run):
+    """meta.json mode == "triage" (written by the app at Start): the run only proposes the next runs from open tickets and
+    builds nothing. Missing or any other value = not a triage run."""
+    m = load_json(os.path.join(run, "meta.json"))
+    return isinstance(m, dict) and m.get("mode") == "triage"
+
+
 def epic_refuse(run, what):
     if epic_mode(run):
         die(f"{what}: this is an epic-plan run (meta.json mode epic-plan): it only plans waves; no worktree, branch or PR is made. "
             "Each wave is started as its own run after the plan is approved.")
+    if triage_mode(run):
+        die(f"{what}: this is a triage run (meta.json mode triage): it only proposes the next runs; no worktree, branch or PR is made. "
+            "The proposal is approved in the app (Runs > Triage).")
 
 
 def eval_of(run):
@@ -316,6 +334,24 @@ def waves_current(run, doc):
     wj = load_json(os.path.join(run, "waves.json"))
     if not isinstance(wj, dict) or wj.get("digest") != cur:
         return "waves.json does not match waves.md: run `state.sh waves <run>` again"
+    return None
+
+
+def triage_digest(run):
+    import hashlib
+    t = read(os.path.join(run, "triage.md"))
+    return hashlib.sha256(t.encode()).hexdigest() if t else None
+
+
+def triage_current(run, doc):
+    """None when triage.md, triage.json and status.json's recorded triage digest all agree, else the reason."""
+    cur = triage_digest(run)
+    if not cur:
+        return "triage.md is missing: write it and run `state.sh triage <run>`"
+    rec = doc.get("triage") if isinstance(doc, dict) else None
+    tj = load_json(os.path.join(run, "triage.json"))
+    if not isinstance(rec, dict) or rec.get("digest") != cur or not isinstance(tj, dict) or tj.get("digest") != cur:
+        return "triage.md changed (or `state.sh triage <run>` has not passed on it): run it again and make it pass"
     return None
 
 
@@ -523,6 +559,14 @@ def validate_status(doc, run):
             p.append(f"stage {stage} is not allowed in an epic-plan run (it only plans waves: planning, plan-approval, done)")
         if doc.get("prs"):
             p.append("prs must stay empty in an epic-plan run (no PR is made)")
+    t = doc.get("triage")
+    if t is not None and not (isinstance(t, dict) and isinstance(t.get("digest"), str) and t["digest"]):
+        p.append("triage must be an object {digest, at} (written only by state.sh triage)")
+    if triage_mode(run):
+        if stage in ("plan-approval", "building", "ship-approval", "shipping") or doc.get("waitingFor"):
+            p.append(f"stage {stage} is not allowed in a triage run (it only proposes: planning, done, failed; there is no stop #1 or #2)")
+        if doc.get("prs"):
+            p.append("prs must stay empty in a triage run (no PR is made)")
     if eval_of(run):
         if doc.get("waitingFor") == "ship-approval":
             p.append("an eval run never waits for ship approval: it ends at ship-approval with waitingFor null")
@@ -531,9 +575,9 @@ def validate_status(doc, run):
     paused = doc.get("paused")
     if paused is not None and not (isinstance(paused, dict) and isinstance(paused.get("reason"), str) and paused["reason"]):
         p.append("paused must be null or {reason: <one line>, at: <UTC>}")
-    if stage in POST_APPROVAL and not (plan or {}).get("approval"):
+    if stage in POST_APPROVAL and not (plan or {}).get("approval") and not (stage == "done" and triage_mode(run)):
         p.append(f"stage {stage} needs the plan approved first: after the user's yes run `state.sh approve <run> plan user`")
-    if stage in ("shipping", "done") and not doc.get("shipApproval") and not (stage == "done" and epic_mode(run)):
+    if stage in ("shipping", "done") and not doc.get("shipApproval") and not (stage == "done" and (epic_mode(run) or triage_mode(run))):
         p.append(f"stage {stage} needs the ship approval first: after the user's yes run `state.sh approve <run> ship user`")
     if stage == "failed" and not doc.get("error"):
         p.append("stage failed needs error set (one line)")
@@ -574,7 +618,11 @@ def validate_status(doc, run):
         if not (isinstance(rnd, int) and 0 <= rnd <= 3):
             p.append(f"{pid}: review.round must be an int 0-3")
             rnd = 0
-        if state in ("reviewing", "fixing") and rnd < 1:
+        qa = pr.get("qa")
+        if qa is not None and not (isinstance(qa, dict) and qa.get("result") in ("pass", "fail", "error") and isinstance(qa.get("round"), int)
+                                   and isinstance(qa.get("tried"), int) and isinstance(qa.get("total"), int) and isinstance(qa.get("path"), str)):
+            p.append(f"{pid}: qa must be {{round, result pass|fail|error, tried, total, path}} (written only by `state.sh qa`)")
+        if state in ("reviewing", "qa", "fixing") and rnd < 1:
             p.append(f"{pid}: state {state} needs review.round = the round in flight (1-3), set when the round starts")
         if state == "reviewed" and result not in ("pass", "none"):
             p.append(f"{pid}: reviewed needs check.result pass or none (got {result!r}); a failing or broken check means needs-attention")
@@ -632,6 +680,12 @@ def prepare_status(doc, old, trusted, run_dir=None):
             doc["waves"] = old["waves"]
         else:
             doc.pop("waves", None)
+        if doc.get("triage") is not None and doc.get("triage") != old.get("triage"):
+            notes.append("note: status.json triage is set only by `state.sh triage`; kept the recorded value")
+        if old.get("triage") is not None:
+            doc["triage"] = old["triage"]
+        else:
+            doc.pop("triage", None)
     if isinstance(doc.get("plan"), dict):
         doc["plan"]["approved"] = bool(doc["plan"].get("approval"))
     doc.setdefault("shipApproval", None)
@@ -650,6 +704,13 @@ def prepare_status(doc, old, trusted, run_dir=None):
             if pr.get("prUrl") not in (None, o.get("prUrl")):
                 notes.append(f"note: {pr.get('id')}.prUrl is set only by state.sh; kept the recorded value ({o.get('prUrl')})")
             pr["prUrl"] = o.get("prUrl")
+        if not trusted:  # qa is written only by `state.sh qa`
+            if pr.get("qa") != o.get("qa"):
+                notes.append(f"note: {pr.get('id')}.qa is set only by `state.sh qa`; kept the recorded value")
+            if o.get("qa") is not None:
+                pr["qa"] = o["qa"]
+            else:
+                pr.pop("qa", None)
         if not trusted:  # draft and comments are written only by state.sh's GitHub commands
             for k in ("draft", "comments"):
                 if k in o:
@@ -785,6 +846,9 @@ def gates(doc, run, old=None, plan_trace=True):
         why = waves_current(run, doc)
         if why:
             return f"NOT WRITTEN: epic-plan run: {why}", out
+    why = qa_gate_refusal(run, doc)
+    if why:
+        return why, out
     if tm["halt"] and not resumed(run):
         pid = tm["halt"]
         prs = {p.get("id"): p for p in doc.get("prs") or [] if isinstance(p, dict)}
@@ -793,7 +857,11 @@ def gates(doc, run, old=None, plan_trace=True):
             if others or stage != "building":
                 return f"NOT WRITTEN: test-mode halt-after={pid}: {pid} is reviewed, so the run must stop now with stage 'building' and every other PR 'pending'. Write that, log 'halted after {pid} (test-mode)', reply 'HALTED after {pid}' and stop.", out
             out.append(f"HALT (test-mode): {pid} is reviewed. Log 'halted after {pid} (test-mode)', reply 'HALTED after {pid}' and stop now. Launch nothing else.")
-    if stage == "done" and epic_mode(run):
+    if stage == "done" and triage_mode(run):
+        why = triage_current(run, doc)
+        if why:
+            return f"NOT WRITTEN: triage run: stage done needs a current proposal: {why}", out
+    elif stage == "done" and epic_mode(run):
         why = waves_current(run, doc)
         if why:
             return f"NOT WRITTEN: epic-plan run: stage done needs the approved waves: {why}", out
@@ -841,6 +909,7 @@ def write_status(run, doc, trusted=False, plan_trace=True):
         die(refusal)
     atomic_write(dest, json.dumps(doc, indent=2) + "\n")
     log_pr_states(run, old, doc)
+    qa_sweep(run, doc)
     if doc.get("stage") in ("done", "failed"):
         try:
             write_report(run)
@@ -932,6 +1001,8 @@ def cmd_preflight(run, resume=False):
     print(f"bmad={bmad_mode(run)}")
     if epic_mode(run):
         print("mode=epic-plan")
+    if triage_mode(run):
+        print("mode=triage")
     ev = eval_of(run)
     if ev:
         print(f"eval={ev['index']}/{ev['of']} group={ev['group']}")
@@ -946,6 +1017,8 @@ def cmd_preflight(run, resume=False):
 
 
 def cmd_approve(run, what, by):
+    if triage_mode(run):
+        die("NOT APPROVED: a triage run has no stop #1 or #2: its proposal is approved in the app (Runs > Triage), and nothing in the run approves it")
     if what not in ("plan", "ship") or by not in ("user", "test", "eval"):
         die("usage: state.sh approve <run> plan|ship user|test (plan eval: eval runs only)")
     if by == "eval" and what != "plan":
@@ -1156,9 +1229,13 @@ def cmd_plan(run, what, arg=None):
     if what == "why":
         print(plan_pr_why(text, arg or ""))
         return
+    if what == "qa":
+        for line in plan_qa_criteria(text, arg or ""):
+            print(line)
+        return
     heading = {"prs": "Pull requests", "tickets": "Tickets", "decisions": "Decisions"}.get(what)
     if not heading:
-        die("usage: state.sh plan <run> prs|tickets|stories|decisions|why <PR>")
+        die("usage: state.sh plan <run> prs|tickets|stories|decisions|why <PR>|qa <PR>")
     m = re.search(rf"^##\s+{heading}\s*$(.*?)(?=^##\s|\Z)", text, re.M | re.S)
     print((f"## {heading}" + m.group(1)).rstrip() if m else f"(plan.md has no ## {heading} section)")
 
@@ -1269,6 +1346,138 @@ def cmd_waves(run):
         print(m)
     append_log(run, st.get("stage") or "planning", f"waves checked: {len(waves)} wave(s), {in_scope} ticket(s), {len(out_of_scope)} out of scope")
     print(f"waves=pass {len(waves)} wave(s), {in_scope} ticket(s) in scope, {len(out_of_scope)} out of scope")
+
+
+GROUP_HEAD = re.compile(r"^##\s+Group\s+(\d+)\s*:\s*(\S.*?)\s*$", re.M)
+
+
+def cmd_triage(run):
+    """Check triage.md (docs/run-folder.md, Triage mode): every snapshot ticket in exactly one group, Needs you, Close or
+    Out of scope; dependencies on earlier groups only. On a pass write triage.json and record status.json triage."""
+    run = os.path.abspath(run)
+    if not triage_mode(run):
+        die("NOT WRITTEN: triage is for a triage run (meta.json mode triage)")
+    if bmad_mode(run) != "off":
+        die("NOT WRITTEN: a triage run has BMAD off (meta.json bmad.mode off)")
+    text = read(os.path.join(run, "triage.md"))
+    if not text:
+        die(f"NOT WRITTEN: no triage.md in {run}")
+    snap = load_json(os.path.join(run, "tickets.json"))
+    tasks = snap.get("tasks", snap) if isinstance(snap, dict) else snap
+    if not isinstance(tasks, list) or not tasks:
+        die("NOT WRITTEN: a triage run needs tickets.json with at least one ticket")
+    keys, ids = {}, []
+    for t in tasks:
+        if not isinstance(t, dict) or not t.get("id"):
+            continue
+        tid = str(t["id"])
+        ids.append(tid)
+        keys[tid.lower()] = tid
+        if t.get("custom_id"):
+            keys[str(t["custom_id"]).lower()] = tid
+    problems, groups, needs, closes, out_of_scope, suggestions = [], [], [], [], [], []
+    heads = list(GROUP_HEAD.finditer(text))
+    sections = {}
+    for name in ("Needs you", "Suggested tickets", "Close", "Out of scope"):
+        sm = re.search(rf"(?ms)^##\s+{name}\s*$(.*?)(?=^##\s|\Z)", text)
+        sections[name] = (sm.start(), sm.group(1)) if sm else None
+    first_other = min([v[0] for v in sections.values() if v] or [len(text)])
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        end = min(end, first_other) if first_other > m.start() else end
+        body = text[m.end():end]
+        n = int(m.group(1))
+        if n != i + 1:
+            problems.append(f"Group {n} is out of order (groups are numbered 1, 2, 3 ... in order)")
+        tl = re.search(r"(?m)^\s*-\s*Tickets:\s*(.+?)\s*$", body)
+        dl = re.search(r"(?m)^\s*-\s*Depends on:\s*(.+?)\s*$", body)
+        wl = re.search(r"(?m)^\s*-\s*Why:\s*(\S.*?)\s*$", body)
+        refs = [x.strip() for x in re.split(r"[,\s]+", tl.group(1)) if x.strip()] if tl else []
+        if not refs:
+            problems.append(f"Group {n} has no `- Tickets:` line")
+        if not dl:
+            problems.append(f"Group {n} has no `- Depends on:` line (`none` or `Group <n>`)")
+        if not wl:
+            problems.append(f"Group {n} has no `- Why:` line")
+        tickets = []
+        for r in refs:
+            tid = keys.get(r.lower())
+            if not tid:
+                problems.append(f"Group {n} names {r}, which is not in tickets.json")
+            else:
+                tickets.append(tid)
+        deps, nprob = [], len(problems)
+        if dl and dl.group(1).strip().lower() not in ("none", "-", "n/a"):
+            for d in re.findall(r"(?i)\bgroup\s+(\d+)\b|^\s*(\d+)\s*$", dl.group(1)):
+                k = int(d[0] or d[1])
+                if k >= n:
+                    problems.append(f"Group {n} depends on Group {k}: dependencies name earlier groups only")
+                elif k < 1:
+                    problems.append(f"Group {n} depends on a group that does not exist")
+                else:
+                    deps.append(k)
+            if not deps and len(problems) == nprob:
+                problems.append(f"Group {n}: cannot read `Depends on: {dl.group(1).strip()[:60]}` (use `none` or `Group <n>`)")
+        groups.append({"n": n, "title": m.group(2), "tickets": tickets, "dependsOn": sorted(set(deps)), "why": wl.group(1) if wl else ""})
+
+    def ticket_lines(name, into, label):
+        sec = sections[name]
+        if not sec:
+            return
+        for line in sec[1].splitlines():
+            lm = re.match(r"^\s*[-*]\s*(\S+?)\s*:\s*(\S.*)$", line)
+            if lm:
+                tid = keys.get(lm.group(1).lower())
+                if not tid:
+                    problems.append(f"{name} names {lm.group(1)}, which is not in tickets.json")
+                else:
+                    into.append({"ticket": tid, label: lm.group(2)})
+            elif re.match(r"^\s*[-*]\s*\S", line):
+                problems.append(f"{name} line {line.strip()[:50]!r} needs `- <ticket>: <reason>`")
+
+    ticket_lines("Needs you", needs, "reason")
+    ticket_lines("Close", closes, "why")
+    ticket_lines("Out of scope", out_of_scope, "reason")
+    if sections["Suggested tickets"]:
+        cur = None
+        for line in sections["Suggested tickets"][1].splitlines():
+            sm = re.match(r"^[-*]\s*(\S.*?)\s*:\s*(\S.*)$", line)
+            if sm:
+                cur = {"index": len(suggestions), "title": sm.group(1)[:200], "why": sm.group(2)[:500], "description": ""}
+                suggestions.append(cur)
+            elif cur is not None and re.match(r"^\s+\S", line):
+                cur["description"] = (cur["description"] + "\n" + line.strip()).strip()[:10000]
+    count = {}
+    for g in groups:
+        for t in g["tickets"]:
+            count[t] = count.get(t, 0) + 1
+    for lst in (needs, closes, out_of_scope):
+        for e in lst:
+            count[e["ticket"]] = count.get(e["ticket"], 0) + 1
+    for t in ids:
+        if count.get(t, 0) == 0:
+            problems.append(f"ticket {t} is in no group and not in Needs you, Close or Out of scope")
+        elif count[t] > 1:
+            problems.append(f"ticket {t} is in {count[t]} places (exactly one group, Needs you, Close or Out of scope)")
+    if not groups and not needs and not closes and not out_of_scope:
+        problems.append("no `## Group <n>: <title>` sections and no other placement")
+    if problems:
+        more = f"; and {len(problems) - 12} more" if len(problems) > 12 else ""
+        die("NOT WRITTEN: triage.md: " + "; ".join(problems[:12]) + more)
+    digest = triage_digest(run)
+    atomic_write(os.path.join(run, "triage.json"), json.dumps(
+        {"schema": 1, "runId": os.path.basename(run), "createdAt": now(), "digest": digest, "groups": groups, "needsYou": needs,
+         "suggestions": suggestions, "closes": closes, "outOfScope": out_of_scope}, indent=2) + "\n")
+    st = load_status(run)
+    st["triage"] = {"digest": digest, "at": now()}
+    for m in write_status(run, st, trusted=True, plan_trace=False):
+        print(m)
+    placed = sum(len(g["tickets"]) for g in groups)
+    append_log(run, st.get("stage") or "planning",
+               f"triage checked: {len(groups)} group(s), {placed} ticket(s) grouped, {len(needs)} need you, {len(closes)} to close, "
+               f"{len(suggestions)} suggested, {len(out_of_scope)} out of scope")
+    print(f"triage=pass {len(groups)} group(s), {placed} ticket(s) grouped, {len(needs)} need you, {len(closes)} to close, "
+          f"{len(suggestions)} suggested, {len(out_of_scope)} out of scope")
 
 
 def cmd_base(repo, run=None):
@@ -2037,6 +2246,9 @@ def receipt_lines(run, st, pr):
     gate = read_gate(run, pid)
     if gate and gate.get("gate"):
         out.append(f"- Gate: {gate['gate']}")
+    qa_line = qa_body_line(pr)
+    if qa_line:
+        out.append(qa_line)
     # Findings per severity and round: counts only, MEDIUM and above (reviews/<PR>-round<n>.md).
     rounds = review_round_files(run, pid)
     if rounds:
@@ -2156,6 +2368,9 @@ def build_body(run, st, pr, kind):
     ac = ((load_json(os.path.join(run, "app-checks.json")) or {}).get("checks") or {}).get(pid)
     if isinstance(ac, dict) and ac.get("result") and ac.get("result") != "running":
         ver.append(f"- App re-run of the check: {ac['result']}" + (f" at {str(ac['head'])[:7]}" if ac.get("head") else ""))
+    qa_line = qa_body_line(pr)
+    if qa_line:
+        ver.append(qa_line)
     for dep in pr.get("dependsOn") or []:
         d = prs.get(dep) or {}
         ver.append(f"- Depends on: {d.get('prUrl') or dep + ' (branch ' + str(d.get('branch') or '-') + ')'}")
@@ -2475,6 +2690,9 @@ def cmd_writeback(run, force):
     if epic_mode(run):
         print("epic-plan run: no writeback (the wave runs write back their tickets)")
         return
+    if triage_mode(run):
+        print("triage run: no writeback (the app applies the approved proposal)")
+        return
     if not os.path.isfile(os.path.join(run, "tickets.json")):
         print("no tickets.json: no writeback needed")
         return
@@ -2608,6 +2826,290 @@ def cmd_gate(run, pid, gate, reason, review=None):
     atomic_write(os.path.join(run, "gates", f"{pid}.yml"), body)
     append_log(run, st.get("stage") or "building", f"{pid} gate {gate}" + (" (waived by the user)" if gate == "WAIVED" else "") + f": {reason}")
     print(f"wrote gates/{pid}.yml: {gate}")
+
+
+# ---- QA: serving the PR's build and recording the verdict (docs/run-folder.md, "QA") ------------------------------------
+QA_STALE_SECONDS = 30 * 60
+QA_WAIT_MAX = 120
+QA_SHOT = re.compile(r"^reviews/qa/[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.png$")
+
+
+def qa_body_line(pr):
+    """The one QA line of a PR body (counts only: no criterion text, no image path), or None."""
+    qa = pr.get("qa")
+    if not (isinstance(qa, dict) and qa.get("result") in ("pass", "fail") and isinstance(qa.get("tried"), int) and isinstance(qa.get("total"), int)):
+        return None
+    failed = qa.get("failed") if isinstance(qa.get("failed"), int) else None
+    how = "all passed" if qa["result"] == "pass" else (f"{failed} failed" if failed else "some failed")
+    return f"- QA: {qa['tried']}/{qa['total']} criteria tried in the app ({how})"
+
+
+def qa_record_path(run, pid):
+    return os.path.join(run, "logs", f".qa-serve-{pid}.json")
+
+
+def qa_record_ids(run):
+    try:
+        names = sorted(os.listdir(os.path.join(run, "logs")))
+    except OSError:
+        return []
+    return [m.group(1) for m in (re.fullmatch(r"\.qa-serve-(PR\d+)\.json", n) for n in names) if m]
+
+
+def run_stage(run):
+    st = load_json(os.path.join(run, "status.json"))
+    return (st.get("stage") if isinstance(st, dict) else None) or "building"
+
+
+def qa_stop_record(run, pid):
+    """Stops the server recorded for the PR: the group is killed only while its leader is the recorded process
+    (portable.kill_recorded_group); the record goes away unless this OS cannot kill. Returns killed|gone|mismatch|unsupported|none."""
+    path = qa_record_path(run, pid)
+    rec = load_json(path)
+    if not isinstance(rec, dict):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return "none"
+    res = portable.kill_recorded_group(rec.get("pgid"), rec.get("leader"), rec.get("start"))
+    if res != "unsupported":
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    append_log(run, run_stage(run), f"{pid} qa server {res}" + (" (record kept: this OS cannot stop it)" if res == "unsupported" else ""))
+    return res
+
+
+def qa_sweep(run, doc):
+    """After a status write: a run at stage failed has no server left; a server older than 30 min whose PR is no longer
+    in state qa is stopped. A problem here never fails the write."""
+    try:
+        states = {p.get("id"): p.get("state") for p in doc.get("prs") or [] if isinstance(p, dict)}
+        for pid in qa_record_ids(run):
+            path = qa_record_path(run, pid)
+            old = time.time() - os.path.getmtime(path) > QA_STALE_SECONDS
+            if doc.get("stage") == "failed" or (states.get(pid) != "qa" and old):
+                qa_stop_record(run, pid)
+    except (OSError, AttributeError, TypeError, ValueError) as e:
+        print(f"note: qa servers not swept ({type(e).__name__})", file=sys.stderr)
+
+
+def qa_gate_refusal(run, doc):
+    """`reviewed` for a QA-on PR with visible criteria needs a QA pass for the current review round. A user's WAIVED
+    over a FAIL gate (a review-round FAIL, where QA never ran, or the QA FAIL gate) also lets it through; a QA error
+    and a waiver over CONCERNS do not."""
+    plan = None
+    for pr in doc.get("prs") or []:
+        if not isinstance(pr, dict) or pr.get("state") != "reviewed" or not isinstance(pr.get("repoPath"), str):
+            continue
+        if not repo_entry(run, pr["repoPath"]).get("qa"):
+            continue
+        pid = pr.get("id")
+        plan = read(os.path.join(run, "plan.md")) if plan is None else plan
+        if not plan_qa_criteria(plan, pid):
+            continue
+        rnd = (pr.get("review") or {}).get("round") if isinstance(pr.get("review"), dict) else None
+        qa = pr.get("qa") if isinstance(pr.get("qa"), dict) else {}
+        current = qa if qa.get("round") == rnd else {}
+        if current.get("result") == "pass":
+            continue
+        g = read_gate(run, pid) or {}
+        if g.get("gate") == "WAIVED" and g.get("waived") == "FAIL" and g.get("round") == rnd and current.get("result") in (None, "fail"):
+            continue
+        seen = f"QA {current['result']}" if current.get("result") else "no QA result"
+        return (f"NOT WRITTEN: {pid}: reviewed needs a QA pass for review round {rnd} (this repo has QA on and the plan has criteria marked "
+                f"(app)); {seen}. Run QA (`state.sh qa-serve` then `state.sh qa {pid} {rnd}`); only the user's WAIVED over a FAIL gate skips "
+                "a QA fail, never a QA error or a waiver over CONCERNS")
+    return None
+
+
+def qa_loopback(url):
+    from urllib.parse import urlsplit
+    try:
+        u = urlsplit(url)
+        u.port  # raises ValueError on a bad port
+    except ValueError:
+        return False
+    return u.scheme == "http" and u.username is None and u.password is None and (u.hostname or "").lower() in ("127.0.0.1", "localhost", "::1")
+
+
+def qa_free_port():
+    import socket
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+    finally:
+        s.close()
+
+
+def qa_probe(url):
+    import urllib.error
+    import urllib.request
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # loopback only: never through a proxy
+    try:
+        opener.open(urllib.request.Request(url), timeout=2).close()
+        return True
+    except urllib.error.HTTPError:
+        return True  # the server answered
+    except Exception:
+        return False
+
+
+def qa_start_once(run, pid, wt, qa, wait):
+    """(url, None) once the server answered, else (None, 'early'|'timeout'|<reason>). The caller's Popen is the leader."""
+    port = qa_free_port()
+    cmd = str(qa["command"]).replace("%PORT%", str(port))
+    url = str(qa["url"]).replace("%PORT%", str(port))
+    if not qa_loopback(url):
+        return None, "the QA URL is not an http URL on 127.0.0.1, localhost or [::1]"
+    logp = os.path.join(run, "logs", f"{pid}-qa-serve.txt")
+    os.makedirs(os.path.dirname(logp), exist_ok=True)
+    try:
+        fd = os.open(logp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError as e:
+        return None, f"cannot open {logp} ({e.strerror})"
+    try:
+        proc = portable.spawn_group(portable.check_argv(cmd), cwd=wt, env=dict(os.environ, PORT=str(port), DCV2_QA_PORT=str(port)),
+                                    stdin=subprocess.DEVNULL, stdout=fd, stderr=subprocess.STDOUT)
+    except OSError as e:
+        return None, f"cannot start the command ({e.strerror})"
+    finally:
+        os.close(fd)
+    atomic_write(qa_record_path(run, pid), json.dumps({"pgid": proc.pid, "leader": proc.pid, "start": portable.proc_start_time(proc.pid),
+                                                     "port": port, "url": url, "at": now()}) + "\n")
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            portable.kill_group(proc)  # our own, just spawned
+            qa_drop_record(run, pid)
+            return None, "early"
+        if qa_probe(url):
+            return url, None
+        time.sleep(0.3)
+    portable.kill_group(proc)
+    qa_drop_record(run, pid)
+    return None, "timeout"
+
+
+def qa_drop_record(run, pid):
+    try:
+        os.remove(qa_record_path(run, pid))
+    except OSError:
+        pass
+
+
+def cmd_qa_serve(run, pid, action):
+    run = this_run(run, "NO QA SERVE")
+    if action not in ("start", "stop"):
+        die("usage: state.sh qa-serve <run> <PR> start|stop")
+    st = load_status(run)
+    qa_sweep(run, st)
+    if action == "stop":
+        res = qa_stop_record(run, pid)
+        print(f"stopped={res}")
+        return
+    pr, _ = canonical_pr(run, st, pid, "NO QA SERVE")
+    if pr.get("state") != "qa":
+        die(f"NO QA SERVE: {pid} is {pr.get('state')}; set it to state qa first")
+    qa = repo_entry(run, pr.get("repoPath") or "").get("qa")
+    if not (isinstance(qa, dict) and isinstance(qa.get("command"), str) and qa["command"].strip() and isinstance(qa.get("url"), str)):
+        die(f"NO QA SERVE: QA is not on for {pid}'s repo (repos.json qa)")
+    if not qa_loopback(qa["url"].replace("%PORT%", "1")):
+        die("NO QA SERVE: the QA URL in repos.json is not an http URL on 127.0.0.1, localhost or [::1]")
+    wait = QA_WAIT_MAX
+    env_wait = os.environ.get("DCV2_QA_WAIT", "")
+    if re.fullmatch(r"\d{1,3}", env_wait) and 1 <= int(env_wait) <= QA_WAIT_MAX:
+        wait = int(env_wait)  # tests only shorten the wait; it is never longer than 120 s
+    qa_stop_record(run, pid)  # a leftover server of an earlier round
+    url, why = qa_start_once(run, pid, pr["worktree"], qa, wait)
+    if why == "early":
+        url, why = qa_start_once(run, pid, pr["worktree"], qa, wait)  # the port may have been taken between probe and bind
+    if url:
+        append_log(run, st.get("stage") or "building", f"{pid} qa server up at {url}")
+        print(f"url={url}")
+        return
+    reason = {"early": f"the command exited before it answered (see logs/{pid}-qa-serve.txt)",
+              "timeout": f"no HTTP answer within {wait} s (see logs/{pid}-qa-serve.txt)"}.get(why, why)
+    append_log(run, st.get("stage") or "building", f"{pid} qa server failed: {reason}")
+    print(f"serve=failed reason={reason}")
+    sys.exit(3)
+
+
+def cmd_qa(run, pid, rnd):
+    run = this_run(run, "NOT RECORDED")
+    if not re.fullmatch(r"[1-3]", str(rnd)):
+        die("NOT RECORDED: round must be 1, 2 or 3")
+    rnd = int(rnd)
+    st = load_status(run)
+    pr = next((p for p in st.get("prs") or [] if isinstance(p, dict) and p.get("id") == pid), None)
+    if pr is None:
+        die(f"NOT RECORDED: no {pid} in status.json")
+    if pr.get("state") != "qa" or (pr.get("review") or {}).get("round") != rnd:
+        die(f"NOT RECORDED: {pid} must be in state qa at review round {rnd} (now {pr.get('state')}, round {(pr.get('review') or {}).get('round')})")
+    want = [l.split("\t", 1)[0] for l in plan_qa_criteria(read(os.path.join(run, "plan.md")), pid)]
+    if not want:
+        die(f"NOT RECORDED: {pid} has no criteria marked (app) in the plan")
+    rel = f"reviews/{pid}-qa{rnd}.md"
+    path = os.path.join(run, rel)
+    if os.path.islink(path) or not os.path.isfile(path):
+        die(f"NOT RECORDED: {rel} does not exist")
+    lines = read(path).splitlines()
+    head = re.match(r"^QA:\s*(pass|fail|error)\b\s*(.*)$", lines[0].strip(), re.I) if lines else None
+    if not head:
+        die(f"NOT RECORDED: the first line of {rel} must be `QA: pass|fail|error`")
+    said, detail = head.group(1).lower(), head.group(2).strip(" -:—")
+    rows, problems = {}, []
+    for line in lines[1:]:
+        m = re.match(r"^\s*(?:[-*]\s*)?(S\d+\.\d+)\s*\|\s*(PASS|FAIL|ERROR)\s*\|(.*)$", line)
+        if not m:
+            continue
+        cid, res, rest = m.group(1), m.group(2), [x.strip() for x in m.group(3).split("|")]
+        if cid not in want:
+            problems.append(f"{cid} is not a criterion of {pid}")
+        elif cid in rows:
+            problems.append(f"{cid} appears twice")
+        shot = rest[-1] if len(rest) >= 2 and rest[-1] else ""
+        if shot:
+            shot_path = os.path.join(run, shot)
+            if not QA_SHOT.match(shot) or os.path.islink(shot_path) or not os.path.isfile(shot_path):
+                problems.append(f"{cid}: screenshot {shot[:60]!r} must be an existing reviews/qa/<name>.png")
+        rows[cid] = res
+    failed = sum(1 for r in rows.values() if r == "FAIL")
+    tried = sum(1 for r in rows.values() if r in ("PASS", "FAIL"))
+    if said == "error":
+        result = "error"
+    else:
+        missing = [c for c in want if c not in rows]
+        if missing:
+            problems.append("no row for " + ", ".join(missing))
+        result = "error" if "ERROR" in rows.values() else ("fail" if failed else "pass")
+        if not problems and result != said:
+            problems.append(f"the first line says {said} but the rows say {result}")
+    if problems:
+        die(f"NOT RECORDED: {rel}: " + "; ".join(problems[:8]))
+    pr["qa"] = {"round": rnd, "result": result, "tried": tried, "total": len(want), "path": rel}
+    if failed:
+        pr["qa"]["failed"] = failed
+    if result == "pass":
+        pr["state"] = "reviewed"
+        pr.pop("note", None)
+    elif result == "error":
+        pr["state"], pr["note"] = "needs-attention", ("QA could not run: " + (detail or "see " + rel))[:300]
+    for m in write_status(run, st, trusted=True):
+        print(m)
+    if result == "fail":
+        reason = f"QA: {failed}/{len(want)} criteria failed"
+        os.makedirs(os.path.join(run, "gates"), exist_ok=True)
+        atomic_write(os.path.join(run, "gates", f"{pid}.yml"),
+                     f"gate: FAIL\nreason: {json.dumps(reason)}\nupdated: {now()}\nreview: {json.dumps(rel)}\nround: {rnd}\n")
+        append_log(run, st.get("stage") or "building", f"{pid} gate FAIL: {reason}")
+    append_log(run, st.get("stage") or "building", f"{pid} qa round {rnd}: {result}, {tried}/{len(want)} tried" + (f", {failed} failed" if failed else ""))
+    print(f"qa={result} {tried}/{len(want)}" + (f" failed={failed}" if failed else ""))
+    if result == "error":
+        sys.exit(3)
 
 
 LOCK_NAMES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json", "Cargo.lock", "go.sum", "poetry.lock",
@@ -2784,6 +3286,23 @@ def plan_pr_why(plan, pid):
             wl = re.search(r"^\s*-\s*Why:\s*(.*?)\s*$", m.group(2), re.M)
             return wl.group(1) if wl else ""
     return ""
+
+
+def plan_qa_criteria(plan, pid):
+    """`S<n>.<k>` TAB `<text>` for the criteria marked `- [ ] (app) ...` of a PR's stories: story order, k the 1-based
+    index among that story's marked criteria (so editing an unmarked criterion never moves an id)."""
+    blocks = {}
+    for m in re.finditer(r"^###\s+(S\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan, re.M | re.S):
+        blocks[m.group(1)] = m.group(2)
+    out = []
+    for sid in plan_pr_stories(plan).get(pid, []):
+        k = 0
+        for line in blocks.get(sid, "").splitlines():
+            cm = re.match(r"^\s*[-*]\s*\[[ xX]\]\s*\(app\)\s*(\S.*?)\s*$", line)
+            if cm:
+                k += 1
+                out.append(f"{sid}.{k}\t{cm.group(1)}")
+    return out
 
 
 def plan_pr_stories(plan):
@@ -2970,6 +3489,8 @@ def cmd_cleanup(run):
     st = load_status(run)
     if st.get("stage") not in ("done", "failed"):
         die(f"NOT CLEANED: cleanup runs only at stage done or failed (stage {st.get('stage')})")
+    for qpid in qa_record_ids(run):  # no QA server outlives the run
+        qa_stop_record(run, qpid)
     run_id = os.path.basename(run)
     g = guard_rec(run)
     repos = {norm(r) for r in g.get("repos") or [] if isinstance(r, str)}  # identities, for the membership test below
@@ -3082,7 +3603,7 @@ def main(argv):
     cmd, args = (argv[0] if argv else ""), argv[1:]
     need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0,
             "gate": 4, "report": 1, "mode": 1, "draft-pr": 2, "push": 2, "post-review": 3, "comment": 4, "ready": 2, "bmad-size": 2, "bmad-init": 1, "bmad-check": 1,
-            "cleanup": 1, "waves": 1, "scope": 2, "request": 2, "request-wait": 2}
+            "cleanup": 1, "waves": 1, "scope": 2, "request": 2, "request-wait": 2, "qa-serve": 3, "qa": 3, "triage": 1}
     if cmd not in need or len(args) < need[cmd]:
         die("usage: see the header of state.sh", 2)
     if cmd == "preflight": cmd_preflight(args[0], "resume" in args[1:])
@@ -3090,6 +3611,7 @@ def main(argv):
     elif cmd == "put": cmd_put(args[0])
     elif cmd == "approve": cmd_approve(args[0], args[1], args[2])
     elif cmd == "waves": cmd_waves(args[0])
+    elif cmd == "triage": cmd_triage(args[0])
     elif cmd == "scope": cmd_scope(args[0], args[1])
     elif cmd == "plan": cmd_plan(args[0], args[1], args[2] if len(args) > 2 else None)
     elif cmd == "base": cmd_base(args[0], args[1] if len(args) > 1 else None)
@@ -3110,6 +3632,8 @@ def main(argv):
     elif cmd == "bmad-size": cmd_bmad_size(args[0], args[1], args[2:])
     elif cmd == "bmad-init": cmd_bmad_init(args[0])
     elif cmd == "bmad-check": cmd_bmad_check(args[0])
+    elif cmd == "qa-serve": cmd_qa_serve(args[0], args[1], args[2])
+    elif cmd == "qa": cmd_qa(args[0], args[1], args[2])
     elif cmd == "cleanup": cmd_cleanup(args[0])
     elif cmd == "request": cmd_request(args[0], args[1])
     elif cmd == "request-wait": cmd_request_wait(args[0], args[1], args[2:])

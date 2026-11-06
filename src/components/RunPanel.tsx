@@ -46,6 +46,7 @@ import {
 import { ClickUpRunSection } from "../clickup/ClickUpRunSection";
 import { FleetTimeline } from "./FleetTimeline";
 import { Pill } from "./Pill";
+import { QaSection } from "./QaSection";
 import { Stepper } from "./Stepper";
 import { checkLogPr, readCheckLog } from "../run/observe";
 import { RUN_STATE_EVENT, usePushRefresh } from "../run/events";
@@ -225,13 +226,14 @@ export function SlopCheck({ prId, onSlopCheck }: { prId: string; onSlopCheck: (p
 
 function PrRow({
   pr,
+  runDir,
   onOpenFile,
   onOpenUrl,
   worktrees,
   onPrAction,
   onCopyBranch,
   onSlopCheck,
-}: { pr: PrView } & Pick<ViewProps, "onOpenFile" | "onOpenUrl" | "onSlopCheck"> & PrActionProps) {
+}: { pr: PrView; runDir: string } & Pick<ViewProps, "onOpenFile" | "onOpenUrl" | "onSlopCheck"> & PrActionProps) {
   const wt = worktrees?.[pr.id];
   const why = !wt ? "Checking the worktree…" : wt.verified ? undefined : (wt.reason ?? "The worktree is not verified.");
   const act = (action: PrWorktreeAction, label: string) => (
@@ -312,6 +314,7 @@ function PrRow({
           {gate.text}
         </Pill>
       )}
+      <QaSection runDir={runDir} pr={pr} />
       {pr.note && <div className="run-pr-note">{pr.note}</div>}
       <div className="run-pr-actions" data-testid={`actions-${pr.id}`}>
         {pr.branch && (
@@ -411,6 +414,11 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
         <div className="run-stage" data-testid="run-stage">
           {stageText(view.stage, view.eval)}
         </div>
+        {view.runMode === "triage" && view.stage === "done" && (
+          <div className="hint run-triage-notice" role="status" data-testid="triage-notice">
+            Proposal ready: review it in Runs › Triage
+          </div>
+        )}
         <Stepper
           stage={view.stage}
           waitingFor={view.waitingFor}
@@ -462,6 +470,7 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
             <PrRow
               key={pr.id}
               pr={pr}
+              runDir={view.runDir}
               onOpenFile={onOpenFile}
               onOpenUrl={onOpenUrl}
               worktrees={worktrees}

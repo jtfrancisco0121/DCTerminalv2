@@ -595,6 +595,104 @@ pub fn cleanup_run(run_dir: &Path, lookup: &dyn PrLookup) -> Vec<CleanupRecord> 
     new
 }
 
+/// A QA server record older than this, of a run that is not live, is stopped (the plugin's own reaper uses the same
+/// 30 minutes for a PR that has left the `qa` state).
+pub const QA_STALE: Duration = Duration::from_secs(30 * 60);
+
+fn age_of(path: &Path, now: std::time::SystemTime) -> Option<Duration> {
+    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    Some(now.duration_since(modified).unwrap_or_default())
+}
+
+/// Stops the server one `logs/.qa-serve-PR<n>.json` records: its process group is killed only while the leader is
+/// still the process that was recorded (its start time, the same text `state.sh` recorded), so a reused pid is never
+/// killed. The record goes away on `killed`, `gone` and `mismatch`; on Windows (no start time) it is kept.
+fn stop_qa_record(path: &Path) -> &'static str {
+    let rec = read_json_value(path);
+    let field = |key: &str| {
+        rec.as_ref()
+            .and_then(|r| r.get(key))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| *n > 1)
+    };
+    let start = rec
+        .as_ref()
+        .and_then(|r| r.get("start"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let (Some(pgid), Some(leader), Some(start)) = (field("pgid"), field("leader"), start) else {
+        let _ = std::fs::remove_file(path);
+        return "mismatch";
+    };
+    if cfg!(windows) {
+        return "unsupported";
+    }
+    let outcome = match crate::platform::process_start_time(leader) {
+        None => "gone",
+        Some(now) if now == start => {
+            crate::platform::kill_tree_pid(pgid);
+            "killed"
+        }
+        Some(_) => "mismatch",
+    };
+    let _ = std::fs::remove_file(path);
+    outcome
+}
+
+/// The app's own pass over QA servers (separate from [`sweep`], which stays the merged-run pass gated by
+/// `run.autoCleanup` and stage `done`): called on every cleanup tick whatever that setting says. It visits every run
+/// of the app in any stage. A run is not live when no live run tab holds it (`is_live_run`) and either its stage is
+/// `done` or `failed` or its status.json has not changed for [`QA_STALE`]. For such a run each QA server record older
+/// than [`QA_STALE`] is stopped, which covers an orchestrator that died, an abandoned run and a run left at
+/// needs-attention.
+pub fn sweep_qa_servers(
+    data: &Path,
+    is_live_run: &dyn Fn(&Path) -> bool,
+    now: std::time::SystemTime,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for run in super::folder::list_runs(data) {
+        if run.adopted {
+            continue;
+        }
+        let dir = PathBuf::from(&run.run_dir);
+        let Ok(names) = std::fs::read_dir(dir.join("logs")) else {
+            continue;
+        };
+        let records: Vec<(String, PathBuf)> = names
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let pr = name
+                    .strip_prefix(".qa-serve-")?
+                    .strip_suffix(".json")?
+                    .to_string();
+                valid_pr_id(&pr).then(|| (pr, e.path()))
+            })
+            .collect();
+        if records.is_empty() || is_live_run(&dir) {
+            continue;
+        }
+        let finished = matches!(run.stage.as_deref(), Some("done" | "failed"));
+        let quiet = age_of(&dir.join("status.json"), now)
+            .or_else(|| age_of(&dir, now))
+            .is_some_and(|age| age > QA_STALE);
+        if !finished && !quiet {
+            continue;
+        }
+        for (pr, path) in records {
+            if age_of(&path, now).is_none_or(|age| age <= QA_STALE) {
+                continue;
+            }
+            let result = stop_qa_record(&path);
+            let _ = append_app_log(&dir, &format!("{pr} qa server {result} (app)"));
+            out.push(format!("{pr}: {result}"));
+        }
+    }
+    out
+}
+
 /// One pass over the app's own runs (adopted ones are the dev app's): each
 /// run that [`wants_cleanup`] and was not asked about within `ask_every`.
 /// Nothing at all when the setting is off.
@@ -646,6 +744,197 @@ mod tests {
     use std::collections::HashMap;
 
     const RUN: &str = "r-20261027-0900-abcd";
+
+    // ---- the app's QA server pass --------------------------------------------------------------
+
+    #[cfg(unix)]
+    fn backdate(path: &Path, age: Duration) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(std::time::SystemTime::now() - age)
+            .unwrap();
+    }
+
+    /// A run folder under `data/runs` at `stage`, its status.json `status_age` old, with a QA server record
+    /// `record_age` old for the live process `pid` (group `pid`), recorded with `start`.
+    #[cfg(unix)]
+    fn qa_run(
+        data: &Path,
+        id: &str,
+        stage: &str,
+        status_age: Duration,
+        record_age: Duration,
+        pid: u32,
+        start: &str,
+    ) -> PathBuf {
+        let dir = data.join("runs").join(id);
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        let status = dir.join("status.json");
+        std::fs::write(&status, json!({"schema": 1, "stage": stage}).to_string()).unwrap();
+        backdate(&status, status_age);
+        let record = dir.join("logs/.qa-serve-PR1.json");
+        std::fs::write(
+            &record,
+            json!({"pgid": pid, "leader": pid, "start": start, "port": 1530}).to_string(),
+        )
+        .unwrap();
+        backdate(&record, record_age);
+        dir
+    }
+
+    #[cfg(unix)]
+    struct Server(std::process::Child);
+
+    #[cfg(unix)]
+    impl Server {
+        fn start() -> (Self, String) {
+            let mut cmd = crate::platform::quiet_command("sleep");
+            cmd.arg("60");
+            crate::platform::spawn_group(&mut cmd);
+            let child = cmd.spawn().unwrap();
+            let start = crate::platform::process_start_time(child.id()).expect("a start time");
+            (Self(child), start)
+        }
+        fn alive(&mut self) -> bool {
+            self.0.try_wait().unwrap().is_none()
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Server {
+        fn drop(&mut self) {
+            crate::platform::kill_tree(&self.0);
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(unix)]
+    const OLD: Duration = Duration::from_secs(40 * 60);
+    #[cfg(unix)]
+    const FRESH: Duration = Duration::from_secs(60);
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stale_building_run_with_no_live_tab_loses_its_qa_server_with_auto_cleanup_off() {
+        let dir = TempDir::new("qa_sweep_building");
+        let (mut server, start) = Server::start();
+        let run = qa_run(
+            dir.path(),
+            "r-20261106-100000-aaaa",
+            "building",
+            OLD,
+            OLD,
+            server.0.id(),
+            &start,
+        );
+        // The merged-run pass is untouched and still does nothing when the setting is off.
+        let mut asked = HashMap::new();
+        assert!(sweep(dir.path(), false, &Fake::default(), &mut asked, ASK_EVERY).is_empty());
+        assert!(server.alive());
+        let out = sweep_qa_servers(dir.path(), &|_| false, std::time::SystemTime::now());
+        assert_eq!(out, ["PR1: killed"]);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!server.alive(), "the recorded group is gone");
+        assert!(
+            !run.join("logs/.qa-serve-PR1.json").exists(),
+            "the record is removed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_done_run_loses_its_qa_server_even_with_a_fresh_status_file() {
+        let dir = TempDir::new("qa_sweep_done");
+        let (mut server, start) = Server::start();
+        qa_run(
+            dir.path(),
+            "r-20261106-100000-bbbb",
+            "done",
+            FRESH,
+            OLD,
+            server.0.id(),
+            &start,
+        );
+        assert_eq!(
+            sweep_qa_servers(dir.path(), &|_| false, std::time::SystemTime::now()),
+            ["PR1: killed"]
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!server.alive());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_live_run_a_fresh_run_and_a_fresh_record_are_left_alone() {
+        let dir = TempDir::new("qa_sweep_alone");
+        let (mut live, s1) = Server::start();
+        let (mut fresh_status, s2) = Server::start();
+        let (mut fresh_record, s3) = Server::start();
+        let r1 = qa_run(
+            dir.path(),
+            "r-20261106-100000-cccc",
+            "building",
+            OLD,
+            OLD,
+            live.0.id(),
+            &s1,
+        );
+        let r2 = qa_run(
+            dir.path(),
+            "r-20261106-100000-dddd",
+            "building",
+            FRESH,
+            OLD,
+            fresh_status.0.id(),
+            &s2,
+        );
+        let r3 = qa_run(
+            dir.path(),
+            "r-20261106-100000-eeee",
+            "building",
+            OLD,
+            FRESH,
+            fresh_record.0.id(),
+            &s3,
+        );
+        let live_dir = std::fs::canonicalize(&r1).unwrap();
+        let out = sweep_qa_servers(
+            dir.path(),
+            &|d| std::fs::canonicalize(d).is_ok_and(|c| c == live_dir),
+            std::time::SystemTime::now(),
+        );
+        assert!(out.is_empty(), "{out:?}");
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(live.alive() && fresh_status.alive() && fresh_record.alive());
+        for run in [r1, r2, r3] {
+            assert!(run.join("logs/.qa-serve-PR1.json").exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_record_with_a_mismatched_start_time_is_not_killed() {
+        let dir = TempDir::new("qa_sweep_mismatch");
+        let (mut server, _) = Server::start();
+        let run = qa_run(
+            dir.path(),
+            "r-20261106-100000-ffff",
+            "failed",
+            OLD,
+            OLD,
+            server.0.id(),
+            "Thu Jan 1 00:00:00 1970",
+        );
+        assert_eq!(
+            sweep_qa_servers(dir.path(), &|_| false, std::time::SystemTime::now()),
+            ["PR1: mismatch"]
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            server.alive(),
+            "a process that is not the recorded one survives"
+        );
+        assert!(!run.join("logs/.qa-serve-PR1.json").exists());
+    }
 
     #[derive(Default)]
     struct Fake {

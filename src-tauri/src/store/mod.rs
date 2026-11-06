@@ -20,7 +20,7 @@ pub(crate) use json_io::{
 };
 pub use json_io::{read_json_or_recover, take_recovery_notes, write_json_atomic};
 pub use settings_store::{
-    ClaudeSettings, RepoSetup, RunSettings, SettingsStore, TerminalSettings, UiSettings,
+    ClaudeSettings, QaSetup, RepoSetup, RunSettings, SettingsStore, TerminalSettings, UiSettings,
 };
 pub use state_store::StateStore;
 #[cfg(test)]

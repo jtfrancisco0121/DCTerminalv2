@@ -33,6 +33,10 @@ pub struct Repo {
     /// true.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub receipt: bool,
+    /// "Try PRs in the app (QA)" (app setting): the serve command and the
+    /// loopback URL; written only when on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qa: Option<crate::store::QaSetup>,
 }
 
 impl Repo {
@@ -44,6 +48,7 @@ impl Repo {
             self.copy_files = s.copy_files.clone();
             self.live_tests = s.live_tests;
             self.receipt = s.receipt;
+            self.qa = s.qa.clone();
         }
         self
     }
@@ -103,6 +108,7 @@ fn repo_entry(path: &Path) -> Repo {
         copy_files: Vec::new(),
         live_tests: false,
         receipt: false,
+        qa: None,
     }
 }
 
@@ -180,6 +186,26 @@ mod tests {
         assert_eq!(on.to_json_for_test()["receipt"], true);
         let off = on.with_setup(Some(&crate::store::RepoSetup::default()));
         assert!(off.to_json_for_test().get("receipt").is_none());
+    }
+
+    #[test]
+    fn qa_is_absent_when_off_and_present_when_on() {
+        let plain = repo_entry(Path::new("/w/api"));
+        assert!(plain.to_json_for_test().get("qa").is_none());
+        let setup = crate::store::RepoSetup {
+            qa: Some(crate::store::QaSetup {
+                command: "npm run dev:fake".into(),
+                url: "http://127.0.0.1:%PORT%/".into(),
+            }),
+            ..Default::default()
+        };
+        let on = repo_entry(Path::new("/w/api")).with_setup(Some(&setup));
+        assert_eq!(
+            on.to_json_for_test()["qa"],
+            serde_json::json!({"command": "npm run dev:fake", "url": "http://127.0.0.1:%PORT%/"})
+        );
+        let off = on.with_setup(Some(&crate::store::RepoSetup::default()));
+        assert!(off.to_json_for_test().get("qa").is_none());
     }
 
     impl Repo {

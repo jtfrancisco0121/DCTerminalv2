@@ -36,12 +36,14 @@ const baseSteps = [
   { name: "npm test", cmd: "npm", args: ["test"] },
   // `tsc && vite build`: the type check, then the bundle.
   { name: "npm run build", cmd: "npm", args: ["run", "build"] },
+  // The faked backend (npm run dev:fake) must not be in the release bundle.
+  { name: "no faked backend in dist", cmd: "node", args: ["scripts/no-fake-in-dist.mjs"] },
 ];
 
 // Hermetic suites (each says "no Claude call"): stdlib bash and python only.
 // The live suites (run.sh, golden.sh, standalone.sh, bmad_spike.sh) call
 // Claude and are never part of the gate.
-export const PLUGIN_SUITES = ["guard", "state", "memory", "github", "stop_check", "plugin"];
+export const PLUGIN_SUITES = ["guard", "state", "memory", "github", "stop_check", "plugin", "qa_browser"];
 
 // A developer's own DCV2_* variables (a run's folder, a hook token, ...) must
 // not leak into the suites: they would pass or fail by the machine they run on.
