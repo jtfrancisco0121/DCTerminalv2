@@ -1,0 +1,21 @@
+{
+  "run_overview": {
+    "pluginDir": "/fake/plugin",
+    "pluginVersion": "0.10.0",
+    "roles": [],
+    "runs": [
+      {
+        "runId": "r-20261022-1304",
+        "runDir": "/fake/runs/r-20261022-1304",
+        "folder": "/abs/ws",
+        "createdAt": "2026-10-22T13:04:00Z",
+        "stage": "ship-approval",
+        "updatedAt": "2026-10-22T13:40:00Z",
+        "title": "Add multiply()",
+        "prCount": 2,
+        "repos": ["mathlib"],
+        "repoCount": 1
+      }
+    ]
+  }
+}

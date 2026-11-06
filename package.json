@@ -11,6 +11,7 @@
   "scripts": {
     "dev": "vite",
     "dev:app": "tauri dev",
+    "dev:fake": "vite --mode fake",
     "build": "tsc && vite build",
     "test": "vitest run",
     "check": "node scripts/local-check.mjs",

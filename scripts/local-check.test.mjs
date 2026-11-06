@@ -156,7 +156,7 @@ describe("spawnCommand", () => {
 
 describe("check steps", () => {
   it("runs fmt, clippy, cargo test, vitest and the build, in that order, then the plugin suites", () => {
-    const base = ["cargo fmt", "cargo clippy", "cargo test", "npm test", "npm run build"];
+    const base = ["cargo fmt", "cargo clippy", "cargo test", "npm test", "npm run build", "no faked backend in dist"];
     const suites = ["guard", "state", "memory", "github", "stop_check", "plugin", "qa_browser"].map(
       (name) => `plugin suite ${name}`,
     );

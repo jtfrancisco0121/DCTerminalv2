@@ -1,0 +1,11 @@
+{
+  "get_settings": {
+    "terminal": {"shell": "", "fontSize": 14, "optionAsMeta": true, "copyOnSelect": false},
+    "ui": {"theme": "github-dark"},
+    "claude": {"accounts": [{"id": "default", "name": "Personal"}]},
+    "accounts": [
+      {"id": "default", "name": "Personal", "config": {"path": "/fake/.claude", "display": "~/.claude", "source": "default", "exists": true}}
+    ],
+    "configDirEnv": null
+  }
+}

@@ -22,6 +22,8 @@ if ! command -v node >/dev/null 2>&1 || ! node -e 'process.exit(typeof WebSocket
   echo "skip: node 22+ with a global WebSocket is not available"; echo PASS; exit 0
 fi
 
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) echo "skip: qa-browser.mjs drives a macOS browser; its process-group tests are POSIX only"; echo PASS; exit 0 ;; esac
+
 RUN="$d/run"; mkdir -p "$RUN/reviews"
 export DCV2_RUN_DIR="$RUN"
 OUT="$RUN/reviews/qa"
