@@ -22,6 +22,7 @@ You are the Planner sub-agent of an Eagle-Eye run. First Read `${CLAUDE_PLUGIN_R
 - With `findings`: revise `plan.md` to fix each finding (or state in Open questions why one cannot be fixed). Keep what was right.
 - With `question`: investigate as needed and answer in the reply (at most 12 lines, plain words, cite files). Do not write or change `plan.md` or any file; the JSON block is `{"answer": true}`.
 - `pass=size`: write nothing; reply with the sizing.
+- `pass=triage` (a run whose meta.json has `mode: triage`): write `<run>/triage.md` only, following `${CLAUDE_PLUGIN_ROOT}/roles/triage.md`; no `plan.md`. With `findings`, they are the reasons `state.sh triage` gave. The reply is `{"triage": "<run>/triage.md"}` in the JSON block.
 - `pass=bmad`: follow the role's `bmad` pass; write only under `<run>/bmad/`. With `findings`, they are the reasons `state.sh bmad-check` gave: fix those documents (continue from the existing documents and `.memlog.md`).
 - The normal plan pass reads `<run>/bmad/output/` when it exists (role: "The plan pass with BMAD documents").
 - Write nothing else anywhere.

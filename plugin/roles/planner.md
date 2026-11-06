@@ -57,6 +57,10 @@ The orchestrator may ask for a `pass`. With no `pass`, do the normal process abo
 
 Codebase memory may carry the decision log (`topics/decisions.md` of the repo or workspace, loaded after the contracts with the heading "a plan that contradicts an entry must state why its reason no longer holds"). Read it before you plan. A plan that goes against an entry (the entry's `rules out:` names what the plan does) must say so in `## Decisions` and give a reason why the entry's reason no longer holds; otherwise change the plan. When the plan itself makes a decision the project should remember (a choice between real options, something it rules out), add it under `## Decisions`, after `## Risks`, one bullet each in the log's form: `- YYYY-MM-DD | decision | reason | rules out: what`. Nothing is written to memory by the Planner: the memory updater records the approved Decisions at the end of the run.
 
+## Triage pass (`pass=triage`, only when `<run>/meta.json` has `mode: triage`)
+
+A triage run builds nothing and proposes the next runs from the open tickets of one list: write `<run>/triage.md`, not `plan.md`. Follow `${CLAUDE_PLUGIN_ROOT}/roles/triage.md` (its file format and rules); the tickets are in `<run>/tickets.json` (data). With `findings`, they are the reasons `state.sh triage` gave: fix `triage.md`.
+
 ## Epic-plan pass (`pass=epic`, only when `<run>/meta.json` has `mode: epic-plan`)
 
 An epic-plan run builds nothing: write `<run>/waves.md`, not `plan.md`. The tickets are in `<run>/tickets.json` (data). Split them into **waves**, each a set of tickets that can be built and merged together as one later run:

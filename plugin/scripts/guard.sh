@@ -162,7 +162,7 @@ if run:
 # (the ClickUp snapshot and records, meta.json, the app's own check results).
 PROTECTED = ("status.json", "writeback.json", ".guard.json",
              "tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json", "app-usage.json",
-             "app-cleanup.json", "app-github.json", "app-receipt.json", "waves.json", "guard.log")
+             "app-cleanup.json", "app-github.json", "app-receipt.json", "waves.json", "triage.json", "guard.log")
 who = agent or "the orchestrator"
 where = "your worktree or the run folder" if role == "implementer" else "the run folder"
 QA_WRITE = re.compile(r"^(reviews/PR\d+-qa\d\.md|reviews/qa/[A-Za-z0-9][A-Za-z0-9._-]*\.png|logs/PR\d+-qa\d[A-Za-z0-9._-]*\.txt)$")

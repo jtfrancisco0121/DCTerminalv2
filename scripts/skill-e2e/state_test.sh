@@ -1575,6 +1575,75 @@ expect 1 "normal run: a recorded plan.approval.by eval no longer validates" eput
 has "  names the allowed values" "by: user|test"
 unset DCV2_RUN_DIR
 
+echo "# triage mode: triage.md, triage.json, refusals and done (S10)"
+T="$d/runs/r-tri"; mkdir -p "$T"; export DCV2_RUN_DIR="$T"
+printf 'folder: %s\n' "$WS" > "$T/request.md"
+printf '{"schema":1,"repos":[{"name":"r","path":"%s","check":null}]}\n' "$R" > "$T/repos.json"
+printf '{"schema":1,"mode":"triage","bmad":{"mode":"off"}}\n' > "$T/meta.json"
+python3 -c 'import json, sys
+json.dump({"tasks": [{"id": f"t{i}", "custom_id": f"C-{i}", "name": f"Ticket {i}"} for i in range(1, 7)]}, open(sys.argv[1], "w"))' "$T/tickets.json"
+tstatus() { python3 - "$T" "$1" <<'PY'
+import json, os, sys
+run, stage = sys.argv[1:3]
+print(json.dumps({"schema": 1, "runId": os.path.basename(run), "stage": stage, "waitingFor": None, "folder": "/x", "plan": None,
+                  "prs": [], "ship": None, "writeback": None, "error": None}))
+PY
+}
+tput() { bash "$STATE" put "$T/status.json"; }
+tri() { printf '%s\n' "$@" > "$T/triage.md"; }
+G1=("## Group 1: Foundations" "- Tickets: t1, C-2" "- Depends on: none" "- Why: everything else needs these")
+G2=("## Group 2: Features" "- Tickets: t3" "- Depends on: Group 1" "- Why: built on the foundations")
+REST=("## Needs you" "- t4: which provider?" "## Suggested tickets" "- Add a retry: the sync fails once" "  Retry the sync call twice with a short pause." "## Close" "- t5: already done in the code" "## Out of scope" "- t6: a separate project")
+expect 0 "triage: put planning" tput < <(tstatus planning)
+expect 1 "triage: refused with no triage.md" bash "$STATE" triage "$T"
+tri "${G1[@]}" "${G2[@]}" "## Needs you" "- t4: x" "## Close" "- t5: y"
+expect 1 "triage: a ticket placed nowhere is refused" bash "$STATE" triage "$T"
+has "  names the ticket" "ticket t6 is in no group"
+tri "${G1[@]}" "${G2[@]}" "## Group 3: Dup" "- Tickets: t3" "- Depends on: none" "- Why: x" "${REST[@]}"
+expect 1 "triage: a duplicate ticket is refused" bash "$STATE" triage "$T"
+has "  names it" "ticket t3 is in 2 places"
+tri "${G1[@]}" "## Group 2: Features" "- Tickets: t3, nope" "- Depends on: Group 1" "- Why: x" "${REST[@]}"
+expect 1 "triage: an unknown ticket is refused" bash "$STATE" triage "$T"
+has "  names it" "nope, which is not in tickets.json"
+tri "## Group 1: First" "- Tickets: t1, C-2" "- Depends on: Group 2" "- Why: x" "## Group 2: Second" "- Tickets: t3" "- Depends on: none" "- Why: y" "${REST[@]}"
+expect 1 "triage: a forward dependency is refused" bash "$STATE" triage "$T"
+has "  says earlier groups only" "dependencies name earlier groups only"
+tri "${G1[@]}" "## Group 2: Features" "- Tickets: t3" "- Depends on: Group 1" "${REST[@]}"
+expect 1 "triage: a group with no Why is refused" bash "$STATE" triage "$T"
+[[ ! -e "$T/triage.json" ]] && ok "  no triage.json after a refusal" || bad "  triage.json written"
+tri "${G1[@]}" "${G2[@]}" "${REST[@]}"
+expect 0 "triage: a valid proposal" bash "$STATE" triage "$T"
+has "  counts" "triage=pass 2 group(s), 3 ticket(s) grouped, 1 need you, 1 to close, 1 suggested, 1 out of scope"
+is "  triage.json schema 1" "$T/triage.json" schema 1
+is "  group 1 uses the ticket ids" "$T/triage.json" groups.0.tickets '["t1", "t2"]'
+is "  group 2 depends on 1" "$T/triage.json" groups.1.dependsOn '[1]'
+is "  the suggestion keeps its description" "$T/triage.json" suggestions.0.description '"Retry the sync call twice with a short pause."'
+python3 -c 'import hashlib,json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d["digest"]==hashlib.sha256(open(sys.argv[2]).read().encode()).hexdigest() else 1)' "$T/triage.json" "$T/triage.md" && ok "  digest is the sha-256 of triage.md" || bad "  digest"
+python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["triage"]["digest"] else 1)' "$T/status.json" && ok "  status.json triage digest recorded" || bad "  no triage digest in status.json"
+expect 1 "triage: worktree refused" bash "$STATE" worktree "$T" "$R" PR1 "$BASE"
+has "  says triage" "triage run"
+for c in draft-pr ship-pr push ready; do expect 1 "triage: $c refused" bash "$STATE" "$c" "$T" PR1; done
+expect 1 "triage: stage building refused" tput < <(tstatus building)
+expect 1 "triage: stage shipping refused" tput < <(tstatus shipping)
+expect 1 "triage: stage plan-approval refused" tput < <(tstatus plan-approval)
+expect 1 "triage: approve plan refused" bash "$STATE" approve "$T" plan user
+expect 1 "triage: approve ship refused" bash "$STATE" approve "$T" ship user
+expect 1 "triage: a non-empty prs[] refused" tput < <(tstatus planning | python3 -c 'import json,sys; d=json.load(sys.stdin); d["prs"]=[{"id":"PR1","state":"pending"}]; print(json.dumps(d))')
+expect 0 "triage: writeback does nothing" bash "$STATE" writeback "$T"
+has "  says no writeback" "triage run: no writeback"
+[[ ! -e "$T/writeback.json" ]] && ok "  no writeback.json" || bad "  writeback.json written"
+expect 0 "triage: preflight prints the mode" bash "$STATE" preflight "$T"
+has "  mode=triage" "mode=triage"
+echo "x" >> "$T/triage.md"
+expect 1 "triage: done refused on a stale digest" tput < <(tstatus done)
+has "  says triage.md changed" "triage.md changed"
+sed '$d' "$T/triage.md" > "$T/triage.tmp" && mv "$T/triage.tmp" "$T/triage.md"
+expect 0 "triage: done accepted with a current digest, no plan approval and no writeback.json" tput < <(tstatus done)
+is "  stage done" "$T/status.json" stage '"done"'
+expect 0 "triage: a forged triage field is not kept" tput < <(tstatus done | python3 -c 'import json,sys; d=json.load(sys.stdin); d["triage"]={"digest":"forged","at":"x"}; print(json.dumps(d))')
+python3 -c 'import json,sys; sys.exit(1 if json.load(open(sys.argv[1]))["triage"]["digest"]=="forged" else 0)' "$T/status.json" && ok "  the forged digest was not kept" || bad "  forged triage digest kept"
+unset DCV2_RUN_DIR
+
 echo "# QA: serve, verdict, gate and PR body (S5)"
 QW="$d/qw"; QR="$QW/qr"; QRUN="$d/runs/r-q"; mkdir -p "$QR" "$QRUN"
 git -C "$QR" init -q -b main; git -C "$QR" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init

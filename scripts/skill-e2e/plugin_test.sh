@@ -47,7 +47,8 @@ for f in "$P"/agents/*.md; do
 done
 for f in "$P"/roles/*.md; do
   name="$(basename "$f" .md)"
-  [[ -f "$P/skills/$name/SKILL.md" || -f "$P/agents/$name.md" ]] && ok "role $name is used" || bad "role $name used by no skill or agent"
+  # A role is used by its own skill or agent, or is read by another one (the Planner's triage pass reads roles/triage.md).
+  { [[ -f "$P/skills/$name/SKILL.md" || -f "$P/agents/$name.md" ]] || grep -rqF "roles/$name.md" "$P/skills" "$P/agents"; } && ok "role $name is used" || bad "role $name used by no skill or agent"
   grep -qF "the code is the truth" "$f" && ok "  role $name has the trust rule" || bad "role $name lacks the trust rule (memory is a hint, the code is the truth)"
 done
 

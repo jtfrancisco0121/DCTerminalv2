@@ -16,6 +16,9 @@
 #                                             DCV2_TEST_MODE has auto-approve); ship also sets stage shipping
 #   state.sh plan <run> prs|tickets|stories   print only that part of plan.md
 #   state.sh plan <run> qa <PR>               print `S<n>.<k>` TAB `<criterion>` for the PR's `- [ ] (app) ...` criteria
+#   state.sh triage <run>                     triage run: check triage.md (every ticket in exactly one group, Needs you, Close or Out
+#                                             of scope; dependencies on earlier groups only); on a pass write triage.json and record
+#                                             status.json triage {digest, at}
 #   state.sh qa-serve <run> <PR> start|stop   QA (repos.json qa on): start the PR's build detached on a free loopback port
 #                                             (prints `url=<url>` or `serve=failed reason=...`, exit 3), or stop it
 #   state.sh qa <run> <PR> <round>            read reviews/<PR>-qa<round>.md and record prs[].qa; pass -> reviewed, fail -> a
@@ -261,10 +264,20 @@ def epic_mode(run):
     return isinstance(m, dict) and m.get("mode") == "epic-plan"
 
 
+def triage_mode(run):
+    """meta.json mode == "triage" (written by the app at Start): the run only proposes the next runs from open tickets and
+    builds nothing. Missing or any other value = not a triage run."""
+    m = load_json(os.path.join(run, "meta.json"))
+    return isinstance(m, dict) and m.get("mode") == "triage"
+
+
 def epic_refuse(run, what):
     if epic_mode(run):
         die(f"{what}: this is an epic-plan run (meta.json mode epic-plan): it only plans waves; no worktree, branch or PR is made. "
             "Each wave is started as its own run after the plan is approved.")
+    if triage_mode(run):
+        die(f"{what}: this is a triage run (meta.json mode triage): it only proposes the next runs; no worktree, branch or PR is made. "
+            "The proposal is approved in the app (Runs > Triage).")
 
 
 def eval_of(run):
@@ -321,6 +334,24 @@ def waves_current(run, doc):
     wj = load_json(os.path.join(run, "waves.json"))
     if not isinstance(wj, dict) or wj.get("digest") != cur:
         return "waves.json does not match waves.md: run `state.sh waves <run>` again"
+    return None
+
+
+def triage_digest(run):
+    import hashlib
+    t = read(os.path.join(run, "triage.md"))
+    return hashlib.sha256(t.encode()).hexdigest() if t else None
+
+
+def triage_current(run, doc):
+    """None when triage.md, triage.json and status.json's recorded triage digest all agree, else the reason."""
+    cur = triage_digest(run)
+    if not cur:
+        return "triage.md is missing: write it and run `state.sh triage <run>`"
+    rec = doc.get("triage") if isinstance(doc, dict) else None
+    tj = load_json(os.path.join(run, "triage.json"))
+    if not isinstance(rec, dict) or rec.get("digest") != cur or not isinstance(tj, dict) or tj.get("digest") != cur:
+        return "triage.md changed (or `state.sh triage <run>` has not passed on it): run it again and make it pass"
     return None
 
 
@@ -528,6 +559,14 @@ def validate_status(doc, run):
             p.append(f"stage {stage} is not allowed in an epic-plan run (it only plans waves: planning, plan-approval, done)")
         if doc.get("prs"):
             p.append("prs must stay empty in an epic-plan run (no PR is made)")
+    t = doc.get("triage")
+    if t is not None and not (isinstance(t, dict) and isinstance(t.get("digest"), str) and t["digest"]):
+        p.append("triage must be an object {digest, at} (written only by state.sh triage)")
+    if triage_mode(run):
+        if stage in ("plan-approval", "building", "ship-approval", "shipping") or doc.get("waitingFor"):
+            p.append(f"stage {stage} is not allowed in a triage run (it only proposes: planning, done, failed; there is no stop #1 or #2)")
+        if doc.get("prs"):
+            p.append("prs must stay empty in a triage run (no PR is made)")
     if eval_of(run):
         if doc.get("waitingFor") == "ship-approval":
             p.append("an eval run never waits for ship approval: it ends at ship-approval with waitingFor null")
@@ -536,9 +575,9 @@ def validate_status(doc, run):
     paused = doc.get("paused")
     if paused is not None and not (isinstance(paused, dict) and isinstance(paused.get("reason"), str) and paused["reason"]):
         p.append("paused must be null or {reason: <one line>, at: <UTC>}")
-    if stage in POST_APPROVAL and not (plan or {}).get("approval"):
+    if stage in POST_APPROVAL and not (plan or {}).get("approval") and not (stage == "done" and triage_mode(run)):
         p.append(f"stage {stage} needs the plan approved first: after the user's yes run `state.sh approve <run> plan user`")
-    if stage in ("shipping", "done") and not doc.get("shipApproval") and not (stage == "done" and epic_mode(run)):
+    if stage in ("shipping", "done") and not doc.get("shipApproval") and not (stage == "done" and (epic_mode(run) or triage_mode(run))):
         p.append(f"stage {stage} needs the ship approval first: after the user's yes run `state.sh approve <run> ship user`")
     if stage == "failed" and not doc.get("error"):
         p.append("stage failed needs error set (one line)")
@@ -641,6 +680,12 @@ def prepare_status(doc, old, trusted, run_dir=None):
             doc["waves"] = old["waves"]
         else:
             doc.pop("waves", None)
+        if doc.get("triage") is not None and doc.get("triage") != old.get("triage"):
+            notes.append("note: status.json triage is set only by `state.sh triage`; kept the recorded value")
+        if old.get("triage") is not None:
+            doc["triage"] = old["triage"]
+        else:
+            doc.pop("triage", None)
     if isinstance(doc.get("plan"), dict):
         doc["plan"]["approved"] = bool(doc["plan"].get("approval"))
     doc.setdefault("shipApproval", None)
@@ -812,7 +857,11 @@ def gates(doc, run, old=None, plan_trace=True):
             if others or stage != "building":
                 return f"NOT WRITTEN: test-mode halt-after={pid}: {pid} is reviewed, so the run must stop now with stage 'building' and every other PR 'pending'. Write that, log 'halted after {pid} (test-mode)', reply 'HALTED after {pid}' and stop.", out
             out.append(f"HALT (test-mode): {pid} is reviewed. Log 'halted after {pid} (test-mode)', reply 'HALTED after {pid}' and stop now. Launch nothing else.")
-    if stage == "done" and epic_mode(run):
+    if stage == "done" and triage_mode(run):
+        why = triage_current(run, doc)
+        if why:
+            return f"NOT WRITTEN: triage run: stage done needs a current proposal: {why}", out
+    elif stage == "done" and epic_mode(run):
         why = waves_current(run, doc)
         if why:
             return f"NOT WRITTEN: epic-plan run: stage done needs the approved waves: {why}", out
@@ -952,6 +1001,8 @@ def cmd_preflight(run, resume=False):
     print(f"bmad={bmad_mode(run)}")
     if epic_mode(run):
         print("mode=epic-plan")
+    if triage_mode(run):
+        print("mode=triage")
     ev = eval_of(run)
     if ev:
         print(f"eval={ev['index']}/{ev['of']} group={ev['group']}")
@@ -966,6 +1017,8 @@ def cmd_preflight(run, resume=False):
 
 
 def cmd_approve(run, what, by):
+    if triage_mode(run):
+        die("NOT APPROVED: a triage run has no stop #1 or #2: its proposal is approved in the app (Runs > Triage), and nothing in the run approves it")
     if what not in ("plan", "ship") or by not in ("user", "test", "eval"):
         die("usage: state.sh approve <run> plan|ship user|test (plan eval: eval runs only)")
     if by == "eval" and what != "plan":
@@ -1293,6 +1346,138 @@ def cmd_waves(run):
         print(m)
     append_log(run, st.get("stage") or "planning", f"waves checked: {len(waves)} wave(s), {in_scope} ticket(s), {len(out_of_scope)} out of scope")
     print(f"waves=pass {len(waves)} wave(s), {in_scope} ticket(s) in scope, {len(out_of_scope)} out of scope")
+
+
+GROUP_HEAD = re.compile(r"^##\s+Group\s+(\d+)\s*:\s*(\S.*?)\s*$", re.M)
+
+
+def cmd_triage(run):
+    """Check triage.md (docs/run-folder.md, Triage mode): every snapshot ticket in exactly one group, Needs you, Close or
+    Out of scope; dependencies on earlier groups only. On a pass write triage.json and record status.json triage."""
+    run = os.path.abspath(run)
+    if not triage_mode(run):
+        die("NOT WRITTEN: triage is for a triage run (meta.json mode triage)")
+    if bmad_mode(run) != "off":
+        die("NOT WRITTEN: a triage run has BMAD off (meta.json bmad.mode off)")
+    text = read(os.path.join(run, "triage.md"))
+    if not text:
+        die(f"NOT WRITTEN: no triage.md in {run}")
+    snap = load_json(os.path.join(run, "tickets.json"))
+    tasks = snap.get("tasks", snap) if isinstance(snap, dict) else snap
+    if not isinstance(tasks, list) or not tasks:
+        die("NOT WRITTEN: a triage run needs tickets.json with at least one ticket")
+    keys, ids = {}, []
+    for t in tasks:
+        if not isinstance(t, dict) or not t.get("id"):
+            continue
+        tid = str(t["id"])
+        ids.append(tid)
+        keys[tid.lower()] = tid
+        if t.get("custom_id"):
+            keys[str(t["custom_id"]).lower()] = tid
+    problems, groups, needs, closes, out_of_scope, suggestions = [], [], [], [], [], []
+    heads = list(GROUP_HEAD.finditer(text))
+    sections = {}
+    for name in ("Needs you", "Suggested tickets", "Close", "Out of scope"):
+        sm = re.search(rf"(?ms)^##\s+{name}\s*$(.*?)(?=^##\s|\Z)", text)
+        sections[name] = (sm.start(), sm.group(1)) if sm else None
+    first_other = min([v[0] for v in sections.values() if v] or [len(text)])
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        end = min(end, first_other) if first_other > m.start() else end
+        body = text[m.end():end]
+        n = int(m.group(1))
+        if n != i + 1:
+            problems.append(f"Group {n} is out of order (groups are numbered 1, 2, 3 ... in order)")
+        tl = re.search(r"(?m)^\s*-\s*Tickets:\s*(.+?)\s*$", body)
+        dl = re.search(r"(?m)^\s*-\s*Depends on:\s*(.+?)\s*$", body)
+        wl = re.search(r"(?m)^\s*-\s*Why:\s*(\S.*?)\s*$", body)
+        refs = [x.strip() for x in re.split(r"[,\s]+", tl.group(1)) if x.strip()] if tl else []
+        if not refs:
+            problems.append(f"Group {n} has no `- Tickets:` line")
+        if not dl:
+            problems.append(f"Group {n} has no `- Depends on:` line (`none` or `Group <n>`)")
+        if not wl:
+            problems.append(f"Group {n} has no `- Why:` line")
+        tickets = []
+        for r in refs:
+            tid = keys.get(r.lower())
+            if not tid:
+                problems.append(f"Group {n} names {r}, which is not in tickets.json")
+            else:
+                tickets.append(tid)
+        deps, nprob = [], len(problems)
+        if dl and dl.group(1).strip().lower() not in ("none", "-", "n/a"):
+            for d in re.findall(r"(?i)\bgroup\s+(\d+)\b|^\s*(\d+)\s*$", dl.group(1)):
+                k = int(d[0] or d[1])
+                if k >= n:
+                    problems.append(f"Group {n} depends on Group {k}: dependencies name earlier groups only")
+                elif k < 1:
+                    problems.append(f"Group {n} depends on a group that does not exist")
+                else:
+                    deps.append(k)
+            if not deps and len(problems) == nprob:
+                problems.append(f"Group {n}: cannot read `Depends on: {dl.group(1).strip()[:60]}` (use `none` or `Group <n>`)")
+        groups.append({"n": n, "title": m.group(2), "tickets": tickets, "dependsOn": sorted(set(deps)), "why": wl.group(1) if wl else ""})
+
+    def ticket_lines(name, into, label):
+        sec = sections[name]
+        if not sec:
+            return
+        for line in sec[1].splitlines():
+            lm = re.match(r"^\s*[-*]\s*(\S+?)\s*:\s*(\S.*)$", line)
+            if lm:
+                tid = keys.get(lm.group(1).lower())
+                if not tid:
+                    problems.append(f"{name} names {lm.group(1)}, which is not in tickets.json")
+                else:
+                    into.append({"ticket": tid, label: lm.group(2)})
+            elif re.match(r"^\s*[-*]\s*\S", line):
+                problems.append(f"{name} line {line.strip()[:50]!r} needs `- <ticket>: <reason>`")
+
+    ticket_lines("Needs you", needs, "reason")
+    ticket_lines("Close", closes, "why")
+    ticket_lines("Out of scope", out_of_scope, "reason")
+    if sections["Suggested tickets"]:
+        cur = None
+        for line in sections["Suggested tickets"][1].splitlines():
+            sm = re.match(r"^[-*]\s*(\S.*?)\s*:\s*(\S.*)$", line)
+            if sm:
+                cur = {"index": len(suggestions), "title": sm.group(1)[:200], "why": sm.group(2)[:500], "description": ""}
+                suggestions.append(cur)
+            elif cur is not None and re.match(r"^\s+\S", line):
+                cur["description"] = (cur["description"] + "\n" + line.strip()).strip()[:10000]
+    count = {}
+    for g in groups:
+        for t in g["tickets"]:
+            count[t] = count.get(t, 0) + 1
+    for lst in (needs, closes, out_of_scope):
+        for e in lst:
+            count[e["ticket"]] = count.get(e["ticket"], 0) + 1
+    for t in ids:
+        if count.get(t, 0) == 0:
+            problems.append(f"ticket {t} is in no group and not in Needs you, Close or Out of scope")
+        elif count[t] > 1:
+            problems.append(f"ticket {t} is in {count[t]} places (exactly one group, Needs you, Close or Out of scope)")
+    if not groups and not needs and not closes and not out_of_scope:
+        problems.append("no `## Group <n>: <title>` sections and no other placement")
+    if problems:
+        more = f"; and {len(problems) - 12} more" if len(problems) > 12 else ""
+        die("NOT WRITTEN: triage.md: " + "; ".join(problems[:12]) + more)
+    digest = triage_digest(run)
+    atomic_write(os.path.join(run, "triage.json"), json.dumps(
+        {"schema": 1, "runId": os.path.basename(run), "createdAt": now(), "digest": digest, "groups": groups, "needsYou": needs,
+         "suggestions": suggestions, "closes": closes, "outOfScope": out_of_scope}, indent=2) + "\n")
+    st = load_status(run)
+    st["triage"] = {"digest": digest, "at": now()}
+    for m in write_status(run, st, trusted=True, plan_trace=False):
+        print(m)
+    placed = sum(len(g["tickets"]) for g in groups)
+    append_log(run, st.get("stage") or "planning",
+               f"triage checked: {len(groups)} group(s), {placed} ticket(s) grouped, {len(needs)} need you, {len(closes)} to close, "
+               f"{len(suggestions)} suggested, {len(out_of_scope)} out of scope")
+    print(f"triage=pass {len(groups)} group(s), {placed} ticket(s) grouped, {len(needs)} need you, {len(closes)} to close, "
+          f"{len(suggestions)} suggested, {len(out_of_scope)} out of scope")
 
 
 def cmd_base(repo, run=None):
@@ -2505,6 +2690,9 @@ def cmd_writeback(run, force):
     if epic_mode(run):
         print("epic-plan run: no writeback (the wave runs write back their tickets)")
         return
+    if triage_mode(run):
+        print("triage run: no writeback (the app applies the approved proposal)")
+        return
     if not os.path.isfile(os.path.join(run, "tickets.json")):
         print("no tickets.json: no writeback needed")
         return
@@ -3415,7 +3603,7 @@ def main(argv):
     cmd, args = (argv[0] if argv else ""), argv[1:]
     need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0,
             "gate": 4, "report": 1, "mode": 1, "draft-pr": 2, "push": 2, "post-review": 3, "comment": 4, "ready": 2, "bmad-size": 2, "bmad-init": 1, "bmad-check": 1,
-            "cleanup": 1, "waves": 1, "scope": 2, "request": 2, "request-wait": 2, "qa-serve": 3, "qa": 3}
+            "cleanup": 1, "waves": 1, "scope": 2, "request": 2, "request-wait": 2, "qa-serve": 3, "qa": 3, "triage": 1}
     if cmd not in need or len(args) < need[cmd]:
         die("usage: see the header of state.sh", 2)
     if cmd == "preflight": cmd_preflight(args[0], "resume" in args[1:])
@@ -3423,6 +3611,7 @@ def main(argv):
     elif cmd == "put": cmd_put(args[0])
     elif cmd == "approve": cmd_approve(args[0], args[1], args[2])
     elif cmd == "waves": cmd_waves(args[0])
+    elif cmd == "triage": cmd_triage(args[0])
     elif cmd == "scope": cmd_scope(args[0], args[1])
     elif cmd == "plan": cmd_plan(args[0], args[1], args[2] if len(args) > 2 else None)
     elif cmd == "base": cmd_base(args[0], args[1] if len(args) > 1 else None)
