@@ -177,6 +177,13 @@ done
 grep -qF 'dcv2:qa' "$P/skills/eagle-eye/SKILL.md" && grep -qF 'qa-serve' "$P/skills/eagle-eye/SKILL.md" && grep -qF 'S qa-serve <run> <PR id> stop' "$P/skills/eagle-eye/SKILL.md" \
   && ok "  eagle-eye SKILL.md describes the qa step and always stops the server" || bad "  SKILL.md: no QA step"
 
+QS="$P/skills/qa/SKILL.md"
+[[ -f "$QS" ]] && grep -qF '${CLAUDE_PLUGIN_ROOT}/roles/qa.md' "$QS" && ok "standalone /dcv2:qa reads roles/qa.md" || bad "skills/qa/SKILL.md missing or does not read roles/qa.md"
+grep -qF 'Never edit, commit, stash or switch branches in the user' "$QS" && ok "  forbids edits, commits and branch switches in the user's checkout" || bad "  qa skill: no checkout rule"
+grep -qF 'Cleanup on every exit path' "$QS" && grep -qF 'git worktree remove --force' "$QS" && grep -qF 'stop the server you started' "$QS" \
+  && ok "  stops the server and removes its worktree on every exit path" || bad "  qa skill: no server stop / worktree removal"
+grep -qF 'not by a prefix' "$QS" && ok "  checks the URL host, not a prefix" || bad "  qa skill: no loopback host rule"
+
 echo "# scripts parse"
 for f in "$P"/scripts/*.sh "$P"/scripts/lib/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do
   bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"
