@@ -136,3 +136,9 @@ $DCV2_MEMORY_DIR/
 - `scripts/skill-e2e/standalone.sh [roles...]`: each standalone skill loads, reads its role file and replies; read-only roles leave the repo untouched.
 
 The unit tests run on python3 3.9+ (macOS's system python3 included). The live tests (`run.sh`, `golden.sh`, `standalone.sh`) use the current Claude account; none of them touches a real repo.
+
+## QA and triage (0.10.0)
+
+- `dcv2:qa` (sub-agent, sonnet): tries a PR's `(app)` criteria in the running app through `scripts/qa-browser.mjs` (a headless Chrome-family browser) and writes `reviews/PR<n>-qa<r>.md` plus screenshots. Standalone: `/dcv2:qa` on a branch with criteria in your words.
+- The Planner marks criteria checkable in the app as `- [ ] (app) <criterion>`; the Plan Reviewer checks each is concrete.
+- Planner `pass=triage` (with `plugin/roles/triage.md`) proposes the next runs from open tickets; see run-folder.md, Triage mode.

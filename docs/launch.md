@@ -236,3 +236,11 @@ Hooks (run-safety hardening): `hooks/hooks.json` runs the guard on `Edit|Write|N
 Env assignments (run-safety hardening): `DCV2_MEMORY_DIR` is set at every dcv2 launch, so the guard's rule against assigning `DCV2_*`, `CLAUDE_PLUGIN_ROOT` and `CLAUDE_CONFIG_DIR` applies in every dcv2 tab, not only in Eagle-Eye runs: hand development such as `DCV2_RUN_DIR=… bash plugin/scripts/state.sh …`, `CLAUDE_CONFIG_DIR=… claude …` or `DCV2_TEST_MODE=…` typed through Claude in a dcv2 tab is refused. `env -u NAME …` and `unset NAME` still work, `DCV2_E2E_*` and a `DCV2_RUN_DIR` / `DCV2_MEMORY_DIR` equal to the session's own are allowed, and a plain terminal is unaffected. `memory.sh --root` is refused while `DCV2_MEMORY_DIR` is set.
 
 Guard without python3: with `DCV2_RUN_DIR` set the guard blocks every call when python3 is missing or broken (it cannot judge them); in a tab with only `DCV2_MEMORY_DIR` it blocks calls that name the memory or plugin folder (run-folder.md, Run-safety hardening).
+
+## QA and triage (plugin 0.10.0)
+
+- `state.sh qa-serve <run> <PR> start|stop`, `state.sh qa <run> <PR> <round>`, `state.sh plan <run> qa <PR>` and `state.sh triage <run>` are described in [run-folder.md](run-folder.md) (QA, Triage mode). The QA setting is per repo in Worktree setup and lands in repos.json `qa: {command, url}`.
+- `run_qa_image(runDir, name)` (app command): returns `<run>/reviews/qa/<name>.png` as a data URL for the run panel; own run folder only, a regular PNG, at most 5 MB.
+- `triage_start(listId)`, `triage_approve(runDir, triageDigest, decision, edits)` and `triage_apply(runDir)` (app commands). The setting `run.triageSchedule` (`[{accountId, listId, time, on}]`) starts at most one triage run per list per local day.
+- **ClickUp write contract widened by one call.** The app's ClickUp client still writes only comments and statuses, plus `create_task`, which is called only from `triage_apply` after the operator's signed approval and a per-item tick, and sends only text stored in the signed record.
+- `npm run dev:fake` serves the UI in a plain browser with a faked backend (`PORT` selects the port); it is development only and a release `dist/` never contains it.

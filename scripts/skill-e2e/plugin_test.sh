@@ -158,6 +158,12 @@ grep -qF 'only at paths `memory.sh` prints' "$MA" && ok "  agent: only printed p
 grep -qF 'is `FAILED` with its message, never `NO MEMORY`' "$MA" && ok "  agent: FAILED rule" || bad "  memory-updater agent: no FAILED rule"
 grep -qF 'memory.sh id <repo>' "$DV" && ok "  developer skill step 8 passes the repo id" || bad "  developer SKILL.md step 8 does not pass id"
 
+echo "# QA and triage commands are documented (0.10.0)"
+for c in 'qa-serve' 'state.sh qa ' 'plan <run> qa' 'state.sh triage' 'run_qa_image' 'triage_start' 'triage_approve' 'triage_apply' 'triageSchedule' 'create_task'; do
+  { grep -qF "$c" "$ROOT/docs/launch.md" || grep -qF "$c" "$ROOT/docs/run-folder.md"; } && ok "  docs name $c" || bad "  docs do not name $c"
+done
+grep -q 'dcv2:qa' "$ROOT/docs/skills.md" && ok "  skills.md names dcv2:qa" || bad "  skills.md lacks dcv2:qa"
+
 echo "# scripts parse"
 for f in "$P"/scripts/*.sh "$P"/scripts/lib/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do
   bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"
