@@ -39,7 +39,7 @@ Built with Tauri 2 (Rust in `src-tauri/`, React + xterm.js in `src/`) and the bu
 2. The app is signed ad hoc, not notarized, so macOS blocks the first open. Either run `xattr -dr com.apple.quarantine /Applications/DCTerminalv2.app`, or open it once, then click **Open Anyway** in **System Settings › Privacy & Security**.
 3. You still need the **Claude Code CLI** (`claude`, signed in), **git** and **python3**; Node.js 18+ only for BMAD planning. Rust and npm are needed only to build from source.
 
-Intel Macs and Windows: build from source below.
+Intel Macs: a universal DMG (`DCTerminalv2_<version>_universal.dmg`) is built with `scripts/release-mac.sh --universal`; it is not attached to every release, so otherwise build from source below. Windows: build from source below.
 
 ### From source (macOS)
 
@@ -58,7 +58,15 @@ What `install.sh` does:
 4. Copies the app to `/Applications` (or `~/Applications`), keeping the old copy until the new one is in place.
 5. Removes the quarantine flag (local install, not notarized).
 
-For a DMG, run `npm run release:mac`.
+For a DMG, run `scripts/release-mac.sh` (see [CONTRIBUTING.md](CONTRIBUTING.md#releases-maintainers)). It builds the app, signs it ad hoc, checks the seal on the app inside the mounted DMG and prints the SHA-256; it refuses a dirty tree and publishes nothing unless you pass `--publish`. Add `--universal` for an arm64 + x86_64 DMG (first run `rustup target add aarch64-apple-darwin x86_64-apple-darwin`).
+
+## Receipts
+
+An Eagle-Eye PR body can end with a collapsed **Receipt**: a short list of facts about how the run built the change. It shows the agents that ran and their minutes, tokens, the run's share of your five-hour usage window, the app's own re-run of the check, review rounds and the gate, how many MEDIUM and higher findings each round raised (counts only), changed files outside the plan, guard blocks, recorded decisions, and a trace link. Every line comes from a recorded source; a source that is missing gives no line. The Receipt is scanned for secrets on its own and is dropped (never the PR) if the scan matches.
+
+It is **off by default**, because a public PR body then shows usage. Turn it on per repo in the start screen: **Worktree setup**, **Receipts in PR bodies**. Only you can set it (it lives in the app's settings, not in the repo or a run).
+
+The trace link looks like `dcterminalv2://run/<runId>`. On macOS, with the app installed, opening it shows that run's Trace on the Mac that ran it. GitHub may not make the link clickable: copy it and paste it into the command palette (Cmd+K); **Open run link…** appears and opens the Trace.
 
 ### Windows
 
@@ -179,6 +187,8 @@ npm run dev:app                                      # tauri dev
 - [docs/run-folder.md](docs/run-folder.md): the run folder contract and run rules
 - [docs/skills.md](docs/skills.md): the plugin, roles, memory and guard
 - [docs/plans/](docs/plans/): dated design plans
+- [CONTRIBUTING.md](CONTRIBUTING.md): build, the gate, commit style and releases
+- [SECURITY.md](SECURITY.md): how to report a vulnerability
 
 ## License
 

@@ -805,6 +805,7 @@ mod tests {
             setup: None,
             copy_files: vec![],
             live_tests: false,
+            receipt: false,
         };
         let repos = vec![repo("a"), repo("b"), repo("c")];
         let meta = |mode: Option<&str>| RunMeta {
@@ -862,6 +863,7 @@ mod tests {
             setup: None,
             copy_files: vec![],
             live_tests: false,
+            receipt: false,
         }];
         let make = |mode: Option<&str>| {
             let meta = RunMeta {
@@ -907,6 +909,7 @@ mod tests {
             setup: None,
             copy_files: vec![],
             live_tests: false,
+            receipt: false,
         };
         let repos = vec![repo("a"), repo("b")];
         let limit = repos_limit_for(&["a".into(), "b".into()], Some(&["b".to_string()])).unwrap();
@@ -938,6 +941,7 @@ mod tests {
             setup: None,
             copy_files: vec![],
             live_tests: false,
+            receipt: false,
         }];
         let make = |n: Option<u32>, request: &str| {
             let meta = RunMeta {
@@ -1010,6 +1014,7 @@ mod tests {
             setup: None,
             copy_files: vec![".env".into()],
             live_tests: true,
+            receipt: true,
         }];
         let meta = RunMeta {
             plugin_version: Some("abc123".into()),
@@ -1051,6 +1056,7 @@ mod tests {
         assert_eq!(repos_json["repos"][0]["copyFiles"][0], ".env");
         assert!(repos_json["repos"][0]["setup"].is_null());
         assert_eq!(repos_json["repos"][0]["liveTests"], true);
+        assert_eq!(repos_json["repos"][0]["receipt"], true);
         assert!(meta_json.get("reviewMode").is_none(), "not recorded");
         assert_eq!(review_mode_of(run), "local");
         assert!(meta_json.get("bmad").is_none(), "no mode, nothing recorded");

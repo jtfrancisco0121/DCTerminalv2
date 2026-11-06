@@ -144,6 +144,8 @@ vi.mock("./run/api", () => ({
   detectFolderRepos: vi.fn(async () => ({ kind: "repo", repos: [{ name: "ws", path: "/w/ws", check: "npm test" }] })),
   startRun: (...args: unknown[]) => startRun(...(args as [])),
   resumeRun: vi.fn(),
+  takeRunLink: vi.fn(async () => null),
+  resolveRunLink: vi.fn(),
   readRun: vi.fn(async () => ({
     runId: "r-1",
     runDir: "/d/runs/r-1",
@@ -891,5 +893,109 @@ describe("App background starts", () => {
     } finally {
       context = personal;
     }
+  });
+});
+
+describe("App trace links", () => {
+  const RUN = "/d/runs/r-20261105-230341-7b3c";
+  const LINK = "dcterminalv2://run/r-20261105-230341-7b3c";
+
+  const reset = async () => {
+    const api = await import("./run/api");
+    vi.mocked(api.takeRunLink).mockReset().mockResolvedValue(null);
+    vi.mocked(api.resolveRunLink).mockReset();
+    state = { windowId: "main", activeTabId: "tab_1", tabs: [tab], closedTabs: [] };
+    return api;
+  };
+  const openPalette = async () => {
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "K", ctrlKey: true, shiftKey: true });
+    });
+    return screen.getByRole("combobox");
+  };
+  const type = (box: HTMLElement, text: string) => fireEvent.change(box, { target: { value: text } });
+  const traceOpenedFor = async (runDir: string) => {
+    const { flightSession } = await import("./flight/api");
+    expect(await screen.findByRole("region", { name: "Trace" })).toBeTruthy();
+    expect(vi.mocked(flightSession)).toHaveBeenCalledWith(expect.objectContaining({ runDir }));
+  };
+  const finish = () => {
+    cleanup();
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  };
+
+  it("a link waiting on load opens its Trace, once", async () => {
+    const api = await reset();
+    vi.mocked(api.takeRunLink).mockResolvedValueOnce({ runDir: RUN });
+    render(<App />);
+    await traceOpenedFor(RUN);
+    expect(api.takeRunLink).toHaveBeenCalledTimes(1);
+    finish();
+  });
+
+  it("a run-link event pulls the link, and an empty slot opens nothing", async () => {
+    const api = await reset();
+    render(<App />);
+    await screen.findByTestId("terminal");
+    await waitFor(() => expect(windowEvents.has("run-link")).toBe(true));
+    await act(async () => {
+      windowEvents.get("run-link")!({ payload: null });
+    });
+    expect(api.takeRunLink).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("region", { name: "Trace" })).toBeNull();
+    vi.mocked(api.takeRunLink).mockResolvedValueOnce({ runDir: RUN });
+    await act(async () => {
+      windowEvents.get("run-link")!({ payload: null });
+    });
+    await traceOpenedFor(RUN);
+    finish();
+  });
+
+  it("a refused link shows the message and opens no Trace", async () => {
+    const api = await reset();
+    vi.mocked(api.takeRunLink).mockResolvedValueOnce({ error: "Run r-20261105-230341-7b3c is not on this Mac" });
+    render(<App />);
+    expect(await screen.findByText(/Run r-20261105-230341-7b3c is not on this Mac/)).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Trace" })).toBeNull();
+    finish();
+  });
+
+  it("typing a valid link into the palette lists Open run link…, and choosing it opens the Trace", async () => {
+    const api = await reset();
+    vi.mocked(api.resolveRunLink).mockResolvedValue({ runDir: RUN });
+    const prompt = vi.spyOn(window, "prompt");
+    render(<App />);
+    await screen.findByTestId("terminal");
+    type(await openPalette(), LINK);
+    const row = await screen.findByRole("option", { name: /Open run link…/ });
+    expect(screen.getAllByRole("option")[0]).toBe(row);
+    fireEvent.click(row);
+    await traceOpenedFor(RUN);
+    expect(api.resolveRunLink).toHaveBeenCalledWith(LINK);
+    expect(prompt).not.toHaveBeenCalled();
+    prompt.mockRestore();
+    finish();
+  });
+
+  it("a malformed link-like query lists the item, and choosing it shows the message", async () => {
+    const api = await reset();
+    vi.mocked(api.resolveRunLink).mockResolvedValue({ error: "That run is not on this Mac" });
+    render(<App />);
+    await screen.findByTestId("terminal");
+    type(await openPalette(), "r-123");
+    fireEvent.click(await screen.findByRole("option", { name: /Open run link…/ }));
+    expect(await screen.findByText(/That run is not on this Mac/)).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Trace" })).toBeNull();
+    finish();
+  });
+
+  it("an ordinary query lists no link item", async () => {
+    await reset();
+    render(<App />);
+    await screen.findByTestId("terminal");
+    type(await openPalette(), "settings");
+    await screen.findByRole("option", { name: /Settings: Phone push/ });
+    expect(screen.queryByRole("option", { name: /Open run link…/ })).toBeNull();
+    finish();
   });
 });

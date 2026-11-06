@@ -11,6 +11,8 @@ import {
   envWithout,
   PLUGIN_SUITES,
   quoteCmdArg,
+  RELEASE_SKIP,
+  RELEASE_STEP,
   spawnCommand,
   steps,
   stepsFor,
@@ -158,8 +160,8 @@ describe("check steps", () => {
     const suites = ["guard", "state", "memory", "github", "stop_check", "plugin"].map(
       (name) => `plugin suite ${name}`,
     );
-    expect(stepsFor("darwin").map((step) => step.name)).toEqual([...base, ...suites]);
-    expect(stepsFor("linux").map((step) => step.name)).toEqual([...base, ...suites]);
+    expect(stepsFor("darwin").map((step) => step.name)).toEqual([...base, ...suites, RELEASE_STEP.name]);
+    expect(stepsFor("linux").map((step) => step.name)).toEqual([...base, ...suites, RELEASE_SKIP]);
     expect(steps.map((step) => step.name)).toEqual(stepsFor(process.platform).map((step) => step.name));
     const fmt = steps.find((step) => step.name === "cargo fmt");
     expect(fmt.args.slice(-2)).toEqual(["--", "--check"]);
@@ -170,10 +172,28 @@ describe("check steps", () => {
     const scripts = stepsFor("darwin")
       .filter((step) => step.cmd === "bash")
       .map((step) => step.args.join(" "));
-    expect(scripts).toEqual(PLUGIN_SUITES.map((name) => `scripts/skill-e2e/${name}_test.sh`));
+    expect(scripts).toEqual([
+      ...PLUGIN_SUITES.map((name) => `scripts/skill-e2e/${name}_test.sh`),
+      "scripts/skill-e2e/release_test.sh",
+    ]);
     for (const live of ["run.sh", "golden.sh", "standalone.sh", "bmad_spike.sh"]) {
       expect(stepsFor("darwin").some((step) => step.args.join(" ").includes(live))).toBe(false);
     }
+  });
+
+  it("runs the release script test on macOS only; other platforms show a visible skip note", () => {
+    const darwin = stepsFor("darwin");
+    expect(darwin.at(-1)).toBe(RELEASE_STEP);
+    expect(RELEASE_STEP.cmd).toBe("bash");
+    expect(RELEASE_STEP.args).toEqual(["scripts/skill-e2e/release_test.sh"]);
+    expect(RELEASE_STEP.removeEnvPrefix).toBe("DCV2_");
+    expect(darwin.some((step) => step.name === RELEASE_SKIP)).toBe(false);
+    for (const platform of ["linux", "win32"]) {
+      const list = stepsFor(platform, { bash: "bash" });
+      expect(list.some((step) => step.name === RELEASE_STEP.name)).toBe(false);
+      expect(list.at(-1)).toEqual({ name: RELEASE_SKIP, note: true });
+    }
+    expect(RELEASE_SKIP).toBe("skip: release script test (macOS only)");
   });
 
   it("runs every plugin suite on Windows, under the Git Bash it was given", () => {
@@ -206,7 +226,9 @@ describe("check steps", () => {
     expect(without.filter((step) => step.note).map((step) => step.name)).toEqual([CROSS_CLIPPY_SKIP]);
     expect(without.filter((step) => !step.note).map((step) => step.name)).toEqual(base);
     expect(CROSS_CLIPPY_SKIP).toBe("skip: Windows cross-clippy (brew install mingw-w64)");
-    expect(stepsFor("linux", { mingw: true }).map((step) => step.name)).toEqual(base);
+    expect(stepsFor("linux", { mingw: true }).filter((step) => !step.note).map((step) => step.name)).toEqual(
+      base.filter((name) => name !== RELEASE_STEP.name),
+    );
   });
 
   it("gives the suites an environment with no DCV2_ variable", () => {

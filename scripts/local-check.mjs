@@ -57,6 +57,19 @@ function pluginStepsWith(bash) {
   }));
 }
 
+/**
+ * The release script's hermetic test (stub npx, cargo, codesign, hdiutil, lipo, gh): macOS only, because
+ * scripts/release-mac.sh uses PlistBuddy, ditto and hdiutil. Other platforms get a visible skip note.
+ */
+export const RELEASE_STEP = {
+  name: "release script test",
+  cmd: "bash",
+  args: ["scripts/skill-e2e/release_test.sh"],
+  removeEnvPrefix: SUITE_ENV_PREFIX,
+};
+
+export const RELEASE_SKIP = "skip: release script test (macOS only)";
+
 /** The Windows cross-compile lint: compiles every `cfg(windows)` branch on a Mac. */
 export const CROSS_CLIPPY = {
   name: "cargo clippy (windows target)",
@@ -88,7 +101,11 @@ export function onPath(name, env = process.env) {
  * `opts.bash` (win32): the Git Bash that runs the plugin suites.
  */
 export function stepsFor(platform, opts = {}) {
-  if (platform === "win32") return [...baseSteps, ...pluginStepsWith(opts.bash ?? "bash")];
+  if (platform === "win32") {
+    return [...baseSteps, ...pluginStepsWith(opts.bash ?? "bash"), { name: RELEASE_SKIP, note: true }];
+  }
+  // The release script test follows the plugin suites on macOS; elsewhere a visible skip note.
+  const release = platform === "darwin" ? [RELEASE_STEP] : [{ name: RELEASE_SKIP, note: true }];
   const cross =
     platform === "darwin" && opts.mingw === true
       ? [CROSS_CLIPPY]
@@ -97,7 +114,7 @@ export function stepsFor(platform, opts = {}) {
         : [];
   // The cross-clippy step follows the host clippy: same lints, a second target.
   const [fmt, clippy, ...rest] = baseSteps;
-  return [fmt, clippy, ...cross, ...rest, ...pluginStepsWith("bash")];
+  return [fmt, clippy, ...cross, ...rest, ...pluginStepsWith("bash"), ...release];
 }
 
 /** The real inputs of the Git Bash resolver on this machine. */

@@ -224,6 +224,8 @@ pub fn run() {
             run::dispatch::dispatch_start_now,
             run::dispatch::dispatch_release,
             run::timeline::run_timeline,
+            run::link::take_run_link,
+            run::link::resolve_run_link,
             run::preview::preview_file,
             run::preview::preview_stat,
             run::preview::paths_exist,

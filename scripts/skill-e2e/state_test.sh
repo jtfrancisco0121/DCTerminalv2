@@ -558,6 +558,228 @@ st = json.load(open(sys.argv[1])); pr = st["prs"][1]; pr["prUrl"] = "https://git
 json.dump(st, open(sys.argv[1], "w"))
 PY
 
+echo "# Receipt (opt-in, collapsed section of the ship PR body)"
+cp "$RUN/plan.md" "$d/plan.receipt.bak"; [[ -e "$RUN/tickets.json" ]] && cp "$RUN/tickets.json" "$d/tickets.receipt.bak" || true
+cat > "$RUN/plan.md" <<'EOF'
+# Plan
+## Findings
+- `docs/only-in-findings.md` is mentioned here only.
+## Stories
+### S1: Fix multiply
+- PR: PR1
+- Changes:
+  - `calc/multiply.py`
+- Tickets: t1
+### S2: Prefix results
+- PR: PR2
+- Changes: in `lib/`, add the prefix.
+  - `lib2/named.txt`:
+    - add a line
+  - `flight/mod.rs`
+  - Not a path: `receipt_lines(run, st, pr)` and `receipt: true`.
+- Tests:
+  - `tests/prefix_test.sh`
+- Covers: FR-1
+- Tickets: T-2
+## Pull requests
+### PR1: Fix multiply
+- Repo: r
+- Stories: S1
+### PR2: Prefix
+- Repo: rr
+- Stories: S2
+- Why: results have no prefix without it
+## Manual steps
+None.
+## Tickets
+- t1 | T-1 | multiply adds | https://x/t1 | stories: S1 | ship status: in review
+- t2 | T-2 | prefix | https://x/t2 | stories: S2 | ship status: done
+## Decisions
+- 2026-11-06 | Receipt is opt-in | disclosure | rules out: always on
+- 2026-11-06 | Links open own runs only | safety, and this contradicts the decision log entry on adopted runs | rules out: adopted runs
+EOF
+printf '{"tasks":[{"id":"t2","custom_id":"T-2","name":"Prefix","url":"https://x/t2"}]}\n' > "$RUN/tickets.json"
+printf '{"schema": 1, "repos": [{"name": "rr", "path": "%s", "check": null, "receipt": true}]}\n' "$RR" > "$RUN/repos.json"
+mkdir -p "$WT2/lib" "$WT2/lib2" "$WT2/src-tauri/src/flight" "$WT2/tests" "$WT2/calc" "$WT2/docs" "$WT2/other"
+for f in lib/a.txt lib2/named.txt src-tauri/src/flight/mod.rs tests/prefix_test.sh calc/multiply.py docs/only-in-findings.md other/x.txt; do echo x > "$WT2/$f"; done
+git -C "$WT2" add lib lib2 src-tauri tests calc docs other
+git -C "$WT2" -c user.name=t -c user.email=t@t commit -q -m "S2: files for the receipt scope"
+[[ -d "$RUN/gates" ]] && cp -R "$RUN/gates" "$d/gates.receipt.bak" || true
+mkdir -p "$RUN/reviews" "$RUN/gates" "$RUN/logs"
+printf 'Eagle-Eye review — round 1: REQUEST CHANGES\n\n## Verdict\nREQUEST CHANGES\n\n## Findings\n1. CRITICAL — `a.py:1` — boom SECRET-FINDING-TEXT token=ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789\n2. HIGH — `a.py:2` — bad\n3. MEDIUM — `a.py:3` — meh\n4. LOW — `a.py:4` — nit\n' > "$RUN/reviews/PR2-round1.md"
+printf 'Eagle-Eye review — round 2: APPROVED\n\n## Verdict\nAPPROVED\n\n## Findings\nNone.\n' > "$RUN/reviews/PR2-round2.md"
+printf 'gate: PASS\nreason: ok\n' > "$RUN/gates/PR2.yml"
+printf '2026-11-06T10:00:00Z\tpath-outside-run\tEdit\tmain\t-\n2026-11-06T10:01:00Z\tpath-outside-run\tEdit\tmain\t-\n2026-11-06T10:02:00Z\tshell-write\tBash\tmain\t-\n' > "$RUN/logs/guard.log"
+cat > "$RUN/app-receipt.json" <<'EOF'
+{"schema": 1, "computedAt": "2026-11-06T10:00:00Z", "statusUpdatedAt": "t1",
+ "agents": [{"kind": "implementer", "count": 2, "activeMinutes": 4.0}, {"kind": "pr-reviewer", "count": 1, "activeMinutes": 1.5}],
+ "minutes": {"active": 12.3, "wait": 3.0}, "tokens": {"input": 1000, "output": 2000, "cacheWrite": 3000, "cacheRead": 4000000}, "windowShare": 0.125, "extra": "ignored"}
+EOF
+cp "$RUN/app-receipt.json" "$d/app-receipt.good"
+printf '{"schema": 1, "checks": {"PR2": {"result": "pass", "command": "npm test", "head": "abcdef1234567", "clean": true}}}\n' > "$RUN/app-checks.json"
+B2="$RUN/pr-bodies/PR2.md"
+rship() {   # rship <label>: PR2 back to pushed with no PR yet, then ship-pr; the body is $B2
+  python3 - "$RUN/status.json" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1])); pr = st["prs"][1]; pr["state"] = "pushed"; pr["prUrl"] = None; pr["note"] = None
+pr["review"] = {"round": 2, "verdict": "APPROVED", "openFindings": 0, "path": None}
+json.dump(st, open(sys.argv[1], "w"))
+PY
+  rm -f "$d/gh-has-pr" "$B2"; : > "$d/gh.log"
+  expect 0 "$1" bash "$STATE" ship-pr "$RUN" PR2
+}
+rhas()  { if grep -qF -- "$2" "$B2"; then ok "$1"; else bad "$1: no '$2' in: $(cat "$B2")"; fi; }
+rhasnt(){ if grep -qF -- "$2" "$B2"; then bad "$1: unexpected '$2'"; else ok "$1"; fi; }
+rship "ship-pr with a receipt-enabled repo"
+python3 - "$B2" <<'PY' && ok "  Receipt: after Tickets, before the footer, a closed <details> block" || bad "  body: $(cat "$B2")"
+import sys
+t = open(sys.argv[1]).read()
+i = [t.index(x) for x in ("## Tickets", "## Receipt\n\n<details>\n<summary>Eagle-Eye receipt</summary>\n\n- ", "\n\n</details>\n\nPlan: Eagle-Eye run")]
+assert i == sorted(i) and t.count("<details>") == 1 and "<details open" not in t and t.endswith("\n")
+PY
+rhas "  agents line (for the whole run, PR count, as of)" "- Agent implementer (for the whole run, 2 PRs, as of 2026-11-06T10:00:00Z): 2 run(s), 4.0 min active"
+rhas "  time line" "- Time (for the whole run, 2 PRs, as of 2026-11-06T10:00:00Z): 12.3 min active, 3.0 min waiting"
+rhas "  tokens line" "input 1,000, output 2,000, cache write 3,000, cache read 4,000,000"
+rhas "  window share line" "- Five-hour window share (for the whole run, 2 PRs, as of 2026-11-06T10:00:00Z): about 12.5%"
+rhas "  app check line" "- App re-run of the check \`npm test\`: pass at abcdef1"
+rhas "  review line" "- Review: 2 round(s), final verdict APPROVED"
+rhas "  gate line" "- Gate: PASS"
+rhas "  findings: CRITICAL, HIGH and MEDIUM counted, LOW not, counts only" "- MEDIUM+ findings (counts only): round 1: 1 CRITICAL, 1 HIGH, 1 MEDIUM; round 2: none"
+rhasnt "  no finding text in the Receipt" "SECRET-FINDING-TEXT"
+rhas "  guard blocks per rule id" "- Guard blocks (whole run): 3 (path-outside-run x2, shell-write x1)"
+rhas "  decisions, one stating a contradiction" "- Decisions recorded in the approved plan: 2; 1 state a contradiction of the decision log"
+rhas "  trace link and code" "[dcterminalv2://run/r-t](dcterminalv2://run/r-t) (\`dcterminalv2://run/r-t\`)"
+SC="$(grep -F -- "- Plan scope:" "$B2" || true)"
+[[ "$SC" == "- Plan scope: 3 of 7 changed files outside the plan: \`calc/multiply.py\`, \`docs/only-in-findings.md\`, \`other/x.txt\`" ]] \
+  && ok "  plan scope: inside = a directory in the first Changes line, a nested bullet, Tests, a crate-relative path; outside = another PR's story, ## Findings, anything else" || bad "  scope line: $SC"
+echo "# Receipt: each source removed in turn removes only its line"
+dropsrc() {   # dropsrc <label> <vanishing text> <moved paths...>: move the sources away, ship, restore
+  local label="$1" gone="$2"; shift 2
+  local p; for p in "$@"; do mv "$RUN/$p" "$RUN/$p.away"; done
+  rship "ship-pr without $label"
+  rhasnt "  its line is gone" "$gone"
+  rhas "  the trace line stays" "- Trace on the machine that ran it"
+  rhas "  the review line stays" "- Review: 2 round(s)"
+  for p in "$@"; do mv "$RUN/$p.away" "$RUN/$p"; done
+}
+dropsrc "app-checks.json" "- App re-run of the check \`npm test\`" app-checks.json
+dropsrc "the gate file" "- Gate: PASS" gates/PR2.yml
+dropsrc "the review files" "- MEDIUM+ findings" reviews/PR2-round1.md reviews/PR2-round2.md
+dropsrc "guard.log" "- Guard blocks" logs/guard.log
+dropsrc "app-receipt.json" "- Agent implementer" app-receipt.json
+rhas "  App facts: not recorded yet" "- App facts: not recorded yet"
+[[ "$(grep -cF "App facts: not recorded yet" "$B2")" == 1 ]] && ok "  said once" || bad "  said more than once"
+sed 's/"schema": 1/"schema": 2/' "$d/app-receipt.good" > "$RUN/app-receipt.json"
+rship "ship-pr with an app-receipt.json of another schema"
+rhasnt "  no app line" "- Agent implementer"; rhasnt "  and no 'not recorded yet' (the file exists)" "not recorded yet"
+cp "$d/app-receipt.good" "$RUN/app-receipt.json"
+cp "$RUN/plan.md" "$d/plan.keep"
+python3 - "$RUN/plan.md" <<'PY'
+import sys
+p = sys.argv[1]; t = open(p).read(); open(p, "w").write(t[:t.index("## Decisions")])
+PY
+rship "ship-pr with no Decisions in the plan"
+rhasnt "  no decisions line" "Decisions recorded"; rhas "  the rest stays" "- Gate: PASS"
+cp "$d/plan.keep" "$RUN/plan.md"
+echo "# Receipt: a secret in a Receipt fact drops the Receipt, not the PR"
+cp "$RUN/app-checks.json" "$d/app-checks.keep"
+printf '{"schema": 1, "checks": {"PR2": {"result": "pass", "command": "run --token=ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "head": "abcdef1"}}}\n' > "$RUN/app-checks.json"
+rship "ship-pr with a secret in the app check command"
+rhasnt "  no Receipt in the body" "## Receipt"; rhasnt "  and no secret in it" "ghp_"; rhas "  the rest of the body shipped" "## Tickets"
+grep -q " receipt dropped: the secret scan matched$" "$RUN/log.md" && ok "  log.md says receipt dropped, without the match" || bad "  log.md: $(tail -3 "$RUN/log.md")"
+grep -q "ghp_" "$RUN/log.md" && bad "  the secret reached log.md" || ok "  no secret in log.md"
+cp "$d/app-checks.keep" "$RUN/app-checks.json"
+echo "# Receipt: caps (40 lines, 4000 characters), cut inside the block"
+python3 - "$RUN/app-receipt.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1])); a["agents"] = [{"kind": f"agent-kind-{i:02d}", "count": 1, "activeMinutes": 1.0} for i in range(60)]
+json.dump(a, open(sys.argv[1], "w"))
+PY
+rship "ship-pr with an oversize Receipt"
+python3 - "$B2" <<'PY' && ok "  at most 40 lines and 4000 characters, cut line inside the block, block closed" || bad "  body: $(cat "$B2")"
+import re, sys
+t = open(sys.argv[1]).read()
+r = re.search(r"## Receipt\n.*?</details>", t, re.S).group(0)
+assert r.count("\n") + 1 <= 40 and len(r) <= 4000, (r.count("\n") + 1, len(r))
+assert "\n- … (cut) Full facts: run r-t\n\n</details>" in r and r.startswith("## Receipt\n\n<details>")
+PY
+cp "$d/app-receipt.good" "$RUN/app-receipt.json"
+echo "# Receipt: the 60000-character body cap spares the Receipt"
+cp "$RUN/plan.md" "$d/plan.small"
+python3 - "$RUN/plan.md" <<'PY'
+import sys
+p = sys.argv[1]; t = open(p).read()
+open(p, "w").write(t.replace("- Why: results have no prefix without it", "- Why: " + "w" * 70000))
+PY
+rship "ship-pr with a 70000-character Why and the receipt on"
+python3 - "$B2" <<'PY' && ok "  body at most 60000, cut note in the head, Receipt whole, footer kept" || bad "  body tail: $(tail -c 600 "$B2")"
+import sys
+t = open(sys.argv[1]).read()
+assert len(t) <= 60000 and "… (cut at " in t
+assert "<details>" in t and t.count("</details>") == 1 and t.index("… (cut at") < t.index("## Receipt")
+assert t.rstrip().endswith("Plan: Eagle-Eye run r-t") or "Plan: Eagle-Eye run r-t" in t.splitlines()[-1], t[-200:]
+assert "- Gate: PASS" in t
+PY
+printf '{"schema": 1, "repos": [{"name": "rr", "path": "%s", "check": null}]}\n' "$RR" > "$RUN/repos.json"
+rship "ship-pr with the receipt off and a 70000-character Why"
+python3 - "$B2" <<'PY' && ok "  byte-identical to today's capped body: exactly 60000 characters, cut at the end" || bad "  len $(wc -c < "$B2")"
+import sys
+t = open(sys.argv[1]).read()
+tail = "\n\n… (cut at 60000 characters) The full text is in the run folder."
+assert len(t) == 60000 and t.endswith(tail) and "## Receipt" not in t
+PY
+cp "$d/plan.small" "$RUN/plan.md"
+rship "ship-pr with the receipt off"
+rhasnt "  no Receipt section" "## Receipt"; rhasnt "  no details block" "<details>"
+sed "s/$(git -C "$WT2" rev-parse --short HEAD)/HEADSHA/" "$B2" > "$d/body.off"
+python3 - "$d/body.off" <<'PY' && ok "  byte-identical to the golden body" || bad "  body: $(cat "$d/body.off")"
+import sys
+GOLDEN = """## Why
+
+results have no prefix without it
+
+## What it adds
+
+- S2: Prefix results
+
+## Scope
+
+Areas: calc (1 file), docs (1 file), lib (1 file), lib2 (1 file), other (1 file), src-tauri (1 file), tests (1 file)
+
+## Review
+
+- Final: APPROVED (round 2)
+- Gate: PASS: ok
+
+Findings raised and fixed in a later round:
+- Round 1 HIGH: a.py:2 — bad
+- Round 1 MEDIUM: a.py:3 — meh
+
+## Verification
+
+- Check `true`: pass at HEADSHA
+- App re-run of the check: pass at abcdef1
+- Depends on: PR1 (branch dcv2/r-t-pr1)
+
+## Tickets
+
+- T-2: Prefix (https://x/t2)
+
+Plan: Eagle-Eye run r-t
+"""
+sys.exit(0 if open(sys.argv[1]).read() == GOLDEN else 1)
+PY
+echo "# Receipt: restore the fixtures"
+git -C "$WT2" reset -q --hard HEAD~1
+cp "$d/plan.receipt.bak" "$RUN/plan.md"; [[ -e "$d/tickets.receipt.bak" ]] && cp "$d/tickets.receipt.bak" "$RUN/tickets.json" || rm -f "$RUN/tickets.json"
+rm -rf "$RUN/reviews" "$RUN/gates" "$RUN/logs/guard.log"; [[ -d "$d/gates.receipt.bak" ]] && cp -R "$d/gates.receipt.bak" "$RUN/gates" || true
+rm -f "$RUN/app-receipt.json" "$RUN/app-checks.json" "$RUN/repos.json"
+python3 - "$RUN/status.json" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1])); pr = st["prs"][1]; pr["prUrl"] = "https://github.com/o/rr/pull/7"; pr["state"] = "opened"; pr["review"]["round"] = 1
+json.dump(st, open(sys.argv[1], "w"))
+PY
+
 echo "# writeback (5, 15)"
 cat > "$RUN/tickets.json" <<'EOF'
 {"tasks": [{"id": "t1", "custom_id": "T-1", "name": "multiply", "url": "https://x/t1", "list": {"statuses": ["to do", "in review"]}},
@@ -577,7 +799,7 @@ is "  file kept" "$RUN/writeback.json" app '"edited"'
 expect 0 "writeback --force" bash "$STATE" writeback "$RUN" --force
 expect 1 "put refuses writeback.json" bash "$STATE" put "$RUN/writeback.json" <<<'{}'
 expect 1 "put refuses requests/" bash "$STATE" put "$RUN/requests/20261027T100000Z-recheck.result.json" <<<'{"state": "done"}'
-for f in tickets.json meta.json writeback-posted.json tickets-pulls.json tickets-update.md app-checks.json app-cleanup.json app-github.json app-usage.json; do
+for f in tickets.json meta.json writeback-posted.json tickets-pulls.json tickets-update.md app-checks.json app-cleanup.json app-github.json app-usage.json app-receipt.json; do
   expect 1 "put refuses the app's $f" bash "$STATE" put "$RUN/$f" <<<'{}'
 done
 

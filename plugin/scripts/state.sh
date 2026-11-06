@@ -103,7 +103,7 @@ POST_APPROVAL = ("building", "ship-approval", "shipping", "done")
 SHIPPED = ("opened", "pushed", "local-only")
 # Run files only the app writes (docs/run-folder.md); `put` refuses them.
 APP_FILES = ("tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json", "app-usage.json",
-             "app-cleanup.json", "app-github.json")
+             "app-cleanup.json", "app-github.json", "app-receipt.json")
 REQUEST_KINDS = ("recheck", "cleanup", "tickets", "selftest")
 REQUEST_ID = re.compile(r"^\d{8}T\d{6}Z(?:-\d+)?-(" + "|".join(REQUEST_KINDS) + r")$")
 ISO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
@@ -1939,6 +1939,184 @@ def pr_ticket_lines(run, pr):
     return out
 
 
+RECEIPT_LINES_MAX, RECEIPT_CHARS_MAX, RECEIPT_LINE_MAX, RECEIPT_PATHS_MAX = 40, 4000, 400, 5
+RECEIPT_SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM")  # the FINDING regex; LOW is never counted
+RECEIPT_PATH_TOKEN = re.compile(r"^(?:[\w@+.-]+/)*[\w@+.-]+/?$")
+RECEIPT_FILE_EXT = re.compile(r"\.[A-Za-z0-9]{1,8}$")
+RECEIPT_SAFE_ID = re.compile(r"^[A-Za-z0-9][\w.:-]{0,63}$")
+
+
+def receipt_num(v):
+    """A JSON number (never a bool or text) or None."""
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and abs(v) < 1e15 else None
+
+
+def receipt_word(v, limit=40):
+    """A short label made of safe characters only, or None (agent kinds from app-receipt.json)."""
+    return v if isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9][\w .-]{0,%d}" % (limit - 1), v) else None
+
+
+def receipt_text(v, limit=200):
+    """One line, no backticks, capped; for the few free-text facts (a check command)."""
+    return " ".join(str(v).replace("`", "").split())[:limit]
+
+
+def planned_paths(plan, story_ids):
+    """Every backticked token that looks like a path (a `/` or a file extension, no spaces) in the whole `- Changes:` and
+    `- Tests:` blocks (the field's first line and every nested bullet, up to the next top-level `- <Field>:` line) of the
+    given stories in plan.md."""
+    out = []
+    for m in re.finditer(r"^###\s+(S\d+)\b(.*?)(?=^###\s|^##\s|\Z)", plan, re.M | re.S):
+        if m.group(1) not in story_ids:
+            continue
+        field = None
+        for line in m.group(2).splitlines():
+            top = re.match(r"^-\s+([A-Za-z][A-Za-z ]*):", line)
+            if top:
+                field = top.group(1).strip().lower()
+            if field not in ("changes", "tests"):
+                continue
+            for tok in re.findall(r"`([^`\n]+)`", line):
+                tok = tok.strip()
+                if tok.startswith("./"):
+                    tok = tok[2:]
+                if RECEIPT_PATH_TOKEN.match(tok) and ("/" in tok or RECEIPT_FILE_EXT.search(tok)):
+                    out.append(tok)
+    return out
+
+
+def path_in_plan(path, planned):
+    """A changed path is inside the plan when it equals a planned path, lies under a planned directory, or ends with a
+    planned path at a `/` boundary (a crate-relative `flight/mod.rs` matches `src-tauri/src/flight/mod.rs`)."""
+    for q in planned:
+        q = q.rstrip("/")
+        if q and (path == q or path.startswith(q + "/") or path.endswith("/" + q)):
+            return True
+    return False
+
+
+def receipt_lines(run, st, pr):
+    """The Receipt's `- ` lines (AD-2: only the facts of receipt-facts.md, each from its own source; a missing, unreadable
+    or wrong-schema source gives no line). Counts, minutes, ids, commands, short commits, rule ids, repo-relative paths."""
+    pid, out = pr.get("id"), []
+    prs = st.get("prs") or []
+    # App facts (app-receipt.json, written by the app only).
+    ar_path = os.path.join(run, "app-receipt.json")
+    if not os.path.lexists(ar_path):
+        out.append("- App facts: not recorded yet")
+    else:
+        ar = load_json(ar_path)
+        if isinstance(ar, dict) and ar.get("schema") == 1 and isinstance(ar.get("computedAt"), str) \
+                and re.fullmatch(r"[0-9T:.Z+-]{1,40}", ar["computedAt"]):
+            label = f"for the whole run, {len(prs)} PRs, as of {ar['computedAt']}"
+            for a in ar.get("agents") if isinstance(ar.get("agents"), list) else []:
+                kind = receipt_word(a.get("kind")) if isinstance(a, dict) else None
+                n, mins = (receipt_num(a.get("count")), receipt_num(a.get("activeMinutes"))) if kind else (None, None)
+                if kind and n is not None and mins is not None:
+                    out.append(f"- Agent {kind} ({label}): {int(n)} run(s), {mins:.1f} min active")
+            mn = ar.get("minutes") if isinstance(ar.get("minutes"), dict) else {}
+            if receipt_num(mn.get("active")) is not None and receipt_num(mn.get("wait")) is not None:
+                out.append(f"- Time ({label}): {mn['active']:.1f} min active, {mn['wait']:.1f} min waiting")
+            tk = ar.get("tokens") if isinstance(ar.get("tokens"), dict) else {}
+            names = (("input", "input"), ("output", "output"), ("cacheWrite", "cache write"), ("cacheRead", "cache read"))
+            if all(receipt_num(tk.get(k)) is not None for k, _ in names):
+                out.append(f"- Tokens ({label}): " + ", ".join(f"{n} {int(tk[k]):,}" for k, n in names))
+            share = receipt_num(ar.get("windowShare"))
+            if share is not None and 0 <= share <= 1:
+                out.append(f"- Five-hour window share ({label}): about {share * 100:.1f}%")
+    # The app's own re-run of the check (app-checks.json).
+    checks = load_json(os.path.join(run, "app-checks.json"))
+    ac = ((checks.get("checks") if isinstance(checks, dict) else None) or {}).get(pid)
+    if isinstance(ac, dict) and ac.get("result") in ("pass", "fail", "timeout", "error", "none") and ac.get("command"):
+        head = re.sub(r"[^0-9a-fA-F]", "", str(ac.get("head") or ""))[:7]
+        out.append(f"- App re-run of the check `{receipt_text(ac['command'])}`: {ac['result']}" + (f" at {head}" if head else ""))
+    # Review rounds, the final verdict and the gate (status.json, gates/<PR>.yml).
+    rev = pr.get("review") or {}
+    if receipt_num(rev.get("round")) is not None and rev.get("verdict"):
+        out.append(f"- Review: {int(rev['round'])} round(s), final verdict {receipt_text(rev['verdict'], 40)}")
+    gate = read_gate(run, pid)
+    if gate and gate.get("gate"):
+        out.append(f"- Gate: {gate['gate']}")
+    # Findings per severity and round: counts only, MEDIUM and above (reviews/<PR>-round<n>.md).
+    rounds = review_round_files(run, pid)
+    if rounds:
+        parts = []
+        for n, text in rounds:
+            c = {}
+            for sev, _ in FINDING.findall(text):
+                c[sev] = c.get(sev, 0) + 1
+            parts.append(f"round {n}: " + (", ".join(f"{c[v]} {v}" for v in RECEIPT_SEVERITIES if v in c) or "none"))
+        out.append("- MEDIUM+ findings (counts only): " + "; ".join(parts))
+    # Plan scope (AD-7, read as the plan's Decisions say): changed files against the PR's stories' Changes and Tests blocks.
+    _, _, changed = diff_paths(run, pid)
+    planned = planned_paths(read(os.path.join(run, "plan.md")), set((pr.get("stories") or {}).get("ids") or []))
+    if changed and planned:
+        outside = sorted(p for p in changed if not path_in_plan(p, planned))
+        if outside:
+            shown = ", ".join(f"`{p.replace('`', '')[:150]}`" for p in outside[:RECEIPT_PATHS_MAX])
+            more = f" and {len(outside) - RECEIPT_PATHS_MAX} more" if len(outside) > RECEIPT_PATHS_MAX else ""
+            out.append(f"- Plan scope: {len(outside)} of {len(changed)} changed files outside the plan: {shown}{more}")
+        else:
+            out.append(f"- Plan scope: all {len(changed)} changed files inside the plan")
+    # Guard blocks per rule id (logs/guard.log: rule ids only).
+    gl = os.path.join(run, "logs", "guard.log")
+    if os.path.isfile(gl) and not os.path.islink(gl):
+        counts = {}
+        for line in read(gl).splitlines():
+            f = line.split("\t")
+            if len(f) > 1 and re.fullmatch(r"[A-Za-z0-9_.:-]{1,60}", f[1]):
+                counts[f[1]] = counts.get(f[1], 0) + 1
+        total = sum(counts.values())
+        out.append("- Guard blocks (whole run): " + (f"{total} (" + ", ".join(f"{k} x{v}" for k, v in sorted(counts.items())) + ")" if total else "none"))
+    # Decisions recorded in the approved plan, and any that states a contradiction of the decision log.
+    m = re.search(r"^##\s+Decisions\s*$(.*?)(?=^##\s|\Z)", read(os.path.join(run, "plan.md")), re.M | re.S)
+    if m:
+        bullets = [l for l in m.group(1).splitlines() if re.match(r"^\s*-\s+\S", l)]
+        if bullets:
+            contra = sum(1 for l in bullets if re.search(r"\bcontradict(s|ed|ion)?\b", l, re.I))
+            out.append(f"- Decisions recorded in the approved plan: {len(bullets)}" + (f"; {contra} state a contradiction of the decision log" if contra else ""))
+    # The trace link.
+    rid = st.get("runId")
+    if isinstance(rid, str) and RECEIPT_SAFE_ID.match(rid):
+        link = f"dcterminalv2://run/{rid}"
+        out.append(f"- Trace on the machine that ran it: [{link}]({link}) (`{link}`)")
+    return [l[:RECEIPT_LINE_MAX] for l in out]
+
+
+def receipt_block(run, st, pr):
+    """The `## Receipt` section for a repo that opted in, or None: capped (40 lines, 4000 characters, a cut ends with a
+    line inside the block), neutralised, and secret-scanned on its own; a hit or a scanner that cannot run drops the whole
+    Receipt (a log.md line says why, never what matched)."""
+    lines = receipt_lines(run, st, pr)
+    if not lines:
+        return None
+
+    def render(bullets):
+        return "\n".join(["## Receipt", "", "<details>", "<summary>Eagle-Eye receipt</summary>", ""] + bullets + ["", "</details>"])
+
+    def fits(text):
+        return text.count("\n") + 1 <= RECEIPT_LINES_MAX and len(text) <= RECEIPT_CHARS_MAX
+
+    if not fits(render(lines)):
+        cut = f"- … (cut) Full facts: run {st.get('runId')}"
+        keep = list(lines)
+        while keep and not fits(render(keep + [cut])):
+            keep.pop()
+        lines = keep + [cut]
+    text = neutral(render(lines))
+    clean, _ = scan_secrets(text)
+    if clean is not True:
+        append_log(run, st.get("stage") or "shipping",
+                   "receipt dropped: " + ("the secret scan matched" if clean is False else "the secret scanner did not run"))
+        return None
+    return text
+
+
+class Body(str):
+    """A PR body; `parts` is (head, rest) when it carries a Receipt, so the body cap can spare the Receipt and footer."""
+    parts = None
+
+
 def build_body(run, st, pr, kind):
     """The one PR body builder (local ship-pr, github draft-pr and ready). Sections in a fixed order; a section with
     no data is left out. kind: ship | draft | final. Caps, neutral() and the secret scan are applied by title_and_body."""
@@ -1983,17 +2161,29 @@ def build_body(run, st, pr, kind):
         ver.append(f"- Depends on: {d.get('prUrl') or dep + ' (branch ' + str(d.get('branch') or '-') + ')'}")
     add("Verification", ver)
     add("Tickets", pr_ticket_lines(run, pr))
+    receipt = receipt_block(run, st, pr) if kind in ("ship", "final") and repo_entry(run, pr.get("repoPath")).get("receipt") is True else None
     foot = [f"Plan: Eagle-Eye run {st.get('runId')}"]
     if kind == "draft":
         foot = [f"\U0001F916 Eagle-Eye run {st.get('runId')} — review in progress. Each review round is posted as a comment; "
                 "this PR is marked ready for review only after the run's ship approval."]
+    if receipt:
+        head, rest = "\n\n".join(sections), "\n\n".join([receipt, "\n".join(foot)]) + "\n"
+        body = Body(head + ("\n\n" if head else "") + rest)
+        body.parts = (head, rest)
+        return body
     return "\n\n".join(sections + ["\n".join(foot)]) + "\n"
 
 
 def title_and_body(run, st, pr, body, what):
     """Neutralised, capped, secret-scanned title + body; the body is written to pr-bodies/<PR>.md."""
     title = capped(neutral(" ".join(str(pr.get("title") or pr["id"]).split())), "", TITLE_CAP).replace("\n", " ")
-    body = capped(neutral(body), "The full text is in the run folder.")
+    if getattr(body, "parts", None):
+        # A Receipt is whole or absent: the cap applies to the sections before it, sparing its length and the footer's.
+        head, rest = body.parts
+        sep = "\n\n" if head else ""
+        body = capped(neutral(head), "The full text is in the run folder.", COMMENT_CAP - len(sep) - len(rest)) + sep + rest
+    else:
+        body = capped(neutral(body), "The full text is in the run folder.")
     clean_text(run, st, pr, title + "\n" + body, "the PR title/body", what)
     f = os.path.join(run, "pr-bodies", f"{pr['id']}.md")
     os.makedirs(os.path.dirname(f), exist_ok=True)
@@ -2530,24 +2720,31 @@ def git_show(wt, rev, path):
     return r.stdout if r.returncode == 0 else ""
 
 
-def scope_lines(run, pid):
-    """Markdown lines for the PR body's Scope: areas touched (with file counts) and dependency changes.
-    Local git only. Returns [] when the worktree or base cannot be found."""
+def diff_paths(run, pid):
+    """(worktree, base, changed paths) of `git diff --numstat <base commit>..HEAD` in the PR's worktree; the paths are []
+    when the worktree or base cannot be found or git fails."""
     g = guard_rec(run)
     wt = (g.get("worktrees") or {}).get(pid)
     if not wt or not os.path.isdir(wt):
-        return []
+        return None, None, []
     base = scope_base(wt, (g.get("bases") or {}).get(pid))
     if not base:
-        return []
+        return wt, None, []
     r = git("-C", wt, "diff", "--numstat", "--no-renames", "-z", f"{base}..HEAD")
     if r.returncode != 0:
-        return []
+        return wt, base, []
     paths = []
     for rec in r.stdout.split("\0"):
         parts = rec.split("\t", 2)
         if len(parts) == 3 and parts[2]:
             paths.append(parts[2])
+    return wt, base, paths
+
+
+def scope_lines(run, pid):
+    """Markdown lines for the PR body's Scope: areas touched (with file counts) and dependency changes.
+    Local git only. Returns [] when the worktree or base cannot be found."""
+    wt, base, paths = diff_paths(run, pid)
     if not paths:
         return []
     areas = {}

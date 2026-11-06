@@ -30,6 +30,12 @@ use tauri::{AppHandle, Emitter, Manager, State};
 pub const NEW_WINDOW_ACCELERATOR: &str = "CmdOrCtrl+Shift+N";
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const NEW_WINDOW_EVENT: &str = "new-window";
+/// Sent to one window when a trace link arrived: it pulls the link with `take_run_link`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const RUN_LINK_EVENT: &str = "run-link";
+/// The URL scheme of the trace link (`src-tauri/Info.plist`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const RUN_LINK_SCHEME: &str = "dcterminalv2";
 /// A menu item for the page (`new-tab`, `close-tab`, `reopen-closed-tab`,
 /// `settings`), sent to the focused window with the item's id.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -537,6 +543,21 @@ pub fn handle_run_event(app: &AppHandle, event: tauri::RunEvent) {
         } if dock_reopen_creates_window(has_visible_windows) => {
             let _ = restore_a_window(app);
         }
+        // A `dcterminalv2://run/<runId>` link: keep the newest in the pending slot (also at a cold launch,
+        // before any window has loaded), bring a window up and tell it to pull. The event carries no link.
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Opened { urls } => {
+            let newest = urls
+                .iter()
+                .rev()
+                .find(|url| url.scheme() == RUN_LINK_SCHEME);
+            if let Some(url) = newest {
+                crate::run::link::PENDING.set(url.as_str());
+                if let Ok(label) = restore_a_window(app) {
+                    let _ = app.emit_to(label, RUN_LINK_EVENT, ());
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -984,7 +1005,7 @@ fn retitle(app: &AppHandle, label: &str) -> Result<(), String> {
 
 /// Show an existing window, or recreate the saved one (main, else the last
 /// record). Also what a second launch of the app does to this one.
-pub fn restore_a_window(app: &AppHandle) -> Result<(), String> {
+pub fn restore_a_window(app: &AppHandle) -> Result<String, String> {
     let label = {
         let state = app
             .try_state::<Mutex<StateStore>>()
@@ -1011,13 +1032,14 @@ pub fn restore_a_window(app: &AppHandle) -> Result<(), String> {
         let _ = window.show();
         let _ = window.set_focus();
         retitle(app, &label)?;
-        return Ok(());
+        return Ok(label);
     }
     if !window_is_saved(app, &label) {
         remember_window(app, &label, &first_account(app))?;
     }
     let title = title_for(app, &label);
-    build_window(app, &label, &title)
+    build_window(app, &label, &title)?;
+    Ok(label)
 }
 
 fn window_is_saved(app: &AppHandle, label: &str) -> bool {

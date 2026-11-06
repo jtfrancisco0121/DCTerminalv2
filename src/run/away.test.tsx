@@ -86,10 +86,10 @@ describe("useAwayNotice", () => {
   });
 
   it("shows nothing when localStorage is broken", () => {
-    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+    vi.spyOn(window.localStorage, "getItem").mockImplementation(() => {
       throw new Error("blocked");
     });
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
       throw new Error("blocked");
     });
     const { result } = render([line(30)]);

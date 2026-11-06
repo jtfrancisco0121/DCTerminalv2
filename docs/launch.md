@@ -207,6 +207,17 @@ One backend thread, `observe/attention.rs`, started at app setup (never from a c
 
 - **Split panes.** A tab has at most two panes. Split right / down (the tab's context menu, Cmd+D and Cmd+Shift+D; Ctrl+Shift+D and Ctrl+Shift+Alt+D elsewhere) adds a Shell pane in the tab's folder (`TabRecord.split`: direction, the first pane's share 0.2 to 0.8, the second pane's id, kind and folder; a state.json without it loads as before). The terminal id is the tab id for the first pane and `<tab id>:p2` for the second; the PTY registry, `live.ts` and `park.ts` key by terminal id, and closing a tab stops both terminals (`kill_tab_pty`), forgets both (`ObserveState::forget`), and counts both as live work on quit. The second pane is a Shell, so it has no hooks, tracker or usage line of its own and can never replace the first pane's. Cmd+Option+Arrow (Ctrl+Shift+Alt+Arrow elsewhere) moves between the panes; Cmd+W closes the focused pane when the tab has two (the tab when it has one). Closing the second pane leaves the tab as it was; closing the first pane stops both terminals and the second pane's shell restarts as the tab in its folder; a run's first pane is the run, so closing it closes the tab. The tab's dot shows its most urgent pane.
 
+## Trace link (`dcterminalv2://run/<runId>`)
+
+A run's Trace opens from a link, macOS only (Windows keeps compiling; there `take_run_link` returns nothing).
+
+- **Grammar.** `dcterminalv2://run/<runId>`, with runId `r-YYYYMMDD-HHMMSS-<4 lowercase hex>`. Whitespace around it is trimmed. A bare run id is accepted as well (the palette). Any query, fragment, extra path, other host or uppercase hex is refused. One Rust parser (`run/link.rs`) serves the URL handler and the palette.
+- **Resolution.** Only `<app data>/runs/<runId>` (the app's own runs, `record::own_run_dir`): an adopted run, an unknown run or a malformed id opens nothing and shows "Run <id> is not on this Mac" (the id only when it is well formed).
+- **Registration.** `src-tauri/Info.plist` (merged into the bundle) declares the scheme in `CFBundleURLTypes`, so it works from an installed bundle only. A dev bundle that also registers the scheme may receive the link and then says "not on this Mac".
+- **Pending slot.** The app's `RunEvent::Opened` handler stores the newest link text in one process-wide slot (newest wins; a malformed link is kept so the window can say so), restores a window, and sends it a payload-free `run-link` event. The window never reads the URL from the event: it pulls the slot with `take_run_link` (take-once) on load and on each `run-link` event, then calls `openTrace({runDir})`. A link that arrives at a cold launch, before any window has loaded, therefore waits in the slot, and a link opens at most once.
+- **Command palette.** Pasting a link or a bare run id into the palette query lists "Open run link…"; choosing it calls `resolve_run_link` (same parser and resolver) and opens the Trace. No `window.prompt` (it returns null in the webview).
+- **PR bodies.** The Receipt prints the link as a Markdown link plus inline code. GitHub may strip custom-scheme hrefs, so paste the code into the palette.
+
 ## Import from the dev app (release builds)
 
 Debug builds keep their data in `<identifier>.dev`, release builds in `<identifier>`. On first launch (offered once; `dev-import.json` records it) and from File › "Import from dev app…" (hidden in debug builds) the built app imports the dev app's session, reading `.dev` only:

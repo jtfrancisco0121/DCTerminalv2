@@ -19,6 +19,7 @@ pub mod git;
 pub mod github;
 pub mod janitor;
 pub mod launch;
+pub mod link;
 pub mod memory;
 pub mod preview;
 pub mod record;

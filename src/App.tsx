@@ -46,7 +46,16 @@ import { RunAnalytics } from "./components/RunAnalytics";
 import { RunDashboard } from "./components/RunDashboard";
 import { RunsView } from "./components/RunsView";
 import { StartScreen } from "./components/StartScreen";
-import { resumeRun, runOverview, startRun, type RunOverview, type StartedRun } from "./run/api";
+import {
+  resolveRunLink,
+  resumeRun,
+  runOverview,
+  startRun,
+  takeRunLink,
+  type RunLinkTarget,
+  type RunOverview,
+  type StartedRun,
+} from "./run/api";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { runFinished, stageText, tabProgress, type TabProgress } from "./run/words";
 import { SettingsPage } from "./components/SettingsPage";
@@ -261,6 +270,24 @@ function App() {
     setPage(null);
     setTrace({ target, agent, focus, fromSearch, fromCompare, fromEval });
   };
+  // A trace link (macOS `dcterminalv2://run/<runId>`) waits in the backend's slot until a window pulls it,
+  // once: on load and on each `run-link` event. A refusal is shown as a message.
+  const openTraceRef = useRef(openTrace);
+  openTraceRef.current = openTrace;
+  const showRunLink = useCallback((target: RunLinkTarget | null) => {
+    if (!target) return;
+    if (target.runDir) openTraceRef.current({ runDir: target.runDir });
+    else setMessage(target.error ?? "That run is not on this Mac");
+  }, []);
+  const pullRunLink = useCallback(
+    () => takeRunLink().then(showRunLink, (err: unknown) => reportError("Run link", err, { once: true })),
+    [showRunLink],
+  );
+  const pullRunLinkRef = useRef(pullRunLink);
+  pullRunLinkRef.current = pullRunLink;
+  useEffect(() => {
+    void pullRunLinkRef.current();
+  }, []);
   const openEvalResults = (group: string) => {
     setTrace(null);
     setDialog(null);
@@ -622,6 +649,8 @@ function App() {
       keep(win.listen<string>("focus-tab", () => void reloadRef.current()));
       // A background start made a tab here: reload only. The effect on `state` opens it.
       keep(win.listen<string>("tabs-changed", () => void reloadRef.current()));
+      // A trace link arrived: pull it (the event carries nothing).
+      keep(win.listen("run-link", () => void pullRunLinkRef.current()));
       keep(
         win.listen<string>("menu", (event) => {
           if (event.payload === "import-dev") {
@@ -680,6 +709,21 @@ function App() {
     if (!paletteOpen) return;
     runOverview().then(setPaletteRuns, (err: unknown) => reportError("Command palette", err, { once: true }));
   }, [paletteOpen]);
+
+  // A pasted link or run id becomes one row, "Open run link…", that takes its input from the palette query.
+  const linkItems = (query: string): PaletteItem[] => {
+    const text = query.trim();
+    if (!text.startsWith("dcterminalv2:") && !/^r-\d/.test(text)) return [];
+    return [
+      {
+        id: "run-link",
+        group: "Runs",
+        label: "Open run link…",
+        detail: text,
+        run: () => resolveRunLink(text).then(showRunLink),
+      },
+    ];
+  };
 
   const paletteItems = (): PaletteItem[] => {
     const items: PaletteItem[] = (state?.tabs ?? []).map((tab) => ({
@@ -1063,7 +1107,7 @@ function App() {
           }}
         />
       )}
-      {paletteOpen && <CommandPalette items={paletteItems()} onClose={() => setPaletteOpen(false)} />}
+      {paletteOpen && <CommandPalette items={paletteItems()} queryItems={linkItems} onClose={() => setPaletteOpen(false)} />}
       {confirmCloseMany && (
         <Dialog
           title="Close tabs?"

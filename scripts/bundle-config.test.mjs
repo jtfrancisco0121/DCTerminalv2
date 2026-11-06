@@ -30,6 +30,15 @@ describe("bundle config (AD-13)", () => {
   });
 });
 
+describe("trace link scheme (AD-8)", () => {
+  it("declares the dcterminalv2 URL scheme in src-tauri/Info.plist, which Tauri merges into the macOS bundle", () => {
+    const plist = readFileSync(path.join(import.meta.dirname, "..", "src-tauri", "Info.plist"), "utf8");
+    expect(plist).toMatch(/<key>CFBundleURLTypes<\/key>/);
+    expect(plist).toMatch(/<key>CFBundleURLSchemes<\/key>\s*<array>\s*<string>dcterminalv2<\/string>/);
+    expect(plist).toContain("<string>com.jtfrancisco.dcterminalv2.run</string>");
+  });
+});
+
 describe("verify-win-bundle", () => {
   it("passes an installer script that installs dcv2-hook.exe", () => {
     const script = [

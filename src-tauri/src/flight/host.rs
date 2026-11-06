@@ -11,6 +11,7 @@ use super::index::{
     self, Counts, Exclusion, Limits, PassStats, RunInput, SearchFilter, SearchOut, SessionInput,
     SourceStamp,
 };
+use super::receipt;
 use super::redact::{first_hit, redact};
 use super::replay;
 use super::schema::{sha256_hex, CapturePolicy, SourceRef};
@@ -888,8 +889,147 @@ pub fn spawn_index(app: &tauri::AppHandle) {
                         snapshot_pass(&claude, &dirs, &mut snapshots)
                     }));
                 }
+                // The receipt pass: own runs only, after the snapshot pass, in its own guard.
+                let (settings, usage) = (
+                    app.state::<Mutex<crate::store::SettingsStore>>(),
+                    app.state::<Mutex<crate::usage::UsageStore>>(),
+                );
+                let claude = settings.lock().map(|s| s.claude().clone()).ok();
+                if let Some(claude) = claude {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        receipt_pass(&data, &claude, &|config| {
+                            usage
+                                .lock()
+                                .map(|u| u.snapshot(config).history)
+                                .unwrap_or_default()
+                        })
+                    }));
+                }
             }
         });
+}
+
+// ---- the receipt pass (AD-3) ---------------------------------------------------------------
+
+/// The app's own run folders only (children of `<data>/runs`), never the adopted dev-app ones.
+fn own_run_dirs(data: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(crate::run::folder::runs_dir(data))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            !p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+        })
+        .filter_map(|p| crate::run::record::own_run_dir(data, &p.display().to_string()))
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+/// Whether one of the run's repos has the operator's `receipt: true` (repos.json).
+fn has_receipt_repo(run_dir: &Path) -> bool {
+    crate::run::folder::read_json_value(&run_dir.join("repos.json"))
+        .and_then(|v| v.get("repos").and_then(Value::as_array).cloned())
+        .is_some_and(|repos| {
+            repos
+                .iter()
+                .any(|r| r.get("receipt").and_then(Value::as_bool) == Some(true))
+        })
+}
+
+/// A link at the receipt file or its temp is never followed or replaced.
+fn receipt_target_is_safe(run_dir: &Path) -> bool {
+    [
+        receipt::FILE,
+        "app-receipt.json.tmp",
+        "app-receipt.json.bak",
+    ]
+    .iter()
+    .all(|name| {
+        std::fs::symlink_metadata(run_dir.join(name)).map_or(true, |m| !m.file_type().is_symlink())
+    })
+}
+
+/// The facts of one run, from its recorded sessions and log.md. Reads files only.
+fn receipt_facts(
+    claude: &ClaudeSettings,
+    run_dir: &Path,
+    status_updated_at: &str,
+    usage: &dyn Fn(&str) -> UsageHistory,
+) -> receipt::Facts {
+    use crate::run::record;
+    let lanes: Vec<(String, Option<i64>, Option<i64>)> = crate::run::timeline::timeline(run_dir)
+        .lanes
+        .into_iter()
+        .map(|l| (l.label, l.start_ms, l.finish_ms))
+        .collect();
+    let log = record::read_log(run_dir);
+    let active: f64 = record::minutes_by_stage(&log).values().sum();
+    let wait = crate::run::timeline::wait_and_span(&log).0.unwrap_or(0.0);
+    let sessions = record::read_record(run_dir)
+        .map(|r| r.sessions)
+        .unwrap_or_default();
+    let (tokens, _cost, span) = record::session_totals(&sessions);
+    // `share_of` reads a record; `done` has not run yet, so an in-memory one carries the activity span.
+    let in_memory = record::RunRecord {
+        first_activity: span.and_then(|(first, _)| record::rfc3339(first)),
+        last_activity: span.and_then(|(_, last)| record::rfc3339(last)),
+        ..Default::default()
+    };
+    let share = share_of(claude, run_dir, &in_memory, usage).five_hour;
+    receipt::Facts {
+        computed_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        status_updated_at: status_updated_at.to_string(),
+        agents: receipt::group_lanes(&lanes),
+        active_minutes: active,
+        wait_minutes: wait,
+        tokens: receipt::TokenTotals {
+            input: tokens.input,
+            output: tokens.output,
+            cache_write: tokens.cache_write_5m + tokens.cache_write_1h,
+            cache_read: tokens.cache_read,
+        },
+        window_share_points: share,
+    }
+}
+
+/// The receipt pass: for each own run at `ship-approval` or `shipping` whose repos.json has a repo with
+/// `receipt: true`, writes `app-receipt.json` (atomic, links refused) unless it already carries status.json's
+/// `updatedAt`. Returns the number of files written. Each run is isolated: one bad run does not stop the rest.
+pub fn receipt_pass(
+    data: &Path,
+    claude: &ClaudeSettings,
+    usage: &dyn Fn(&str) -> UsageHistory,
+) -> usize {
+    let mut written = 0;
+    for dir in own_run_dirs(data) {
+        let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let status = crate::run::folder::read_json_value(&dir.join("status.json"))?;
+            let stage = status.get("stage").and_then(Value::as_str).unwrap_or("");
+            let updated = status.get("updatedAt").and_then(Value::as_str);
+            // Cheap checks first; the file is read only for a run that could need it.
+            if !receipt::STAGES.contains(&stage) || !has_receipt_repo(&dir) {
+                return None;
+            }
+            let existing = crate::run::folder::read_json_value(&dir.join(receipt::FILE))
+                .and_then(|v| v["statusUpdatedAt"].as_str().map(str::to_string));
+            if !receipt::should_write(stage, true, updated, existing.as_deref()) {
+                return None;
+            }
+            if !receipt_target_is_safe(&dir) {
+                return None;
+            }
+            let facts = receipt_facts(claude, &dir, updated?, usage);
+            crate::store::write_json_atomic(&dir.join(receipt::FILE), &receipt::to_json(&facts))
+                .ok()
+        }));
+        if matches!(done, Ok(Some(()))) {
+            written += 1;
+        }
+    }
+    written
 }
 
 // ---- the run snapshot (CAP-11, AD-45) ----------------------------------------------------
@@ -5045,6 +5185,113 @@ mod tests {
         }
         let lib = std::fs::read_to_string(src.join("lib.rs")).unwrap();
         assert!(lib.contains("flight::host::spawn_index(app.handle())"));
+    }
+
+    // ---- the receipt pass (AD-3) ----
+
+    fn receipt_run(data: &Path, id: &str, stage: &str, updated: &str, receipt: bool) -> PathBuf {
+        let run = data.join("runs").join(id);
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(
+            run.join("status.json"),
+            json!({"schema": 1, "stage": stage, "updatedAt": updated}).to_string(),
+        )
+        .unwrap();
+        let mut repo = json!({"name": "api", "path": "/w/api", "check": null});
+        if receipt {
+            repo["receipt"] = json!(true);
+        }
+        std::fs::write(
+            run.join("repos.json"),
+            json!({"schema": 1, "repos": [repo]}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            run.join("log.md"),
+            "2026-11-06T10:00:00Z building start\n2026-11-06T10:06:00Z building done\n",
+        )
+        .unwrap();
+        run
+    }
+
+    #[test]
+    fn an_own_run_at_ship_approval_with_a_receipt_repo_gets_the_file_once_per_updated_at() {
+        let dir = TempDir::new("receipt_pass");
+        let data = dir.join("data");
+        let run = receipt_run(&data, "r-20261106-100000-abcd", "ship-approval", "t1", true);
+        let claude = settings(vec![]);
+        assert_eq!(receipt_pass(&data, &claude, &no_usage), 1);
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(run.join("app-receipt.json")).unwrap())
+                .unwrap();
+        assert_eq!(v["schema"], 1);
+        assert_eq!(v["statusUpdatedAt"], "t1");
+        assert_eq!(v["minutes"]["active"], 6.0);
+        assert!(v["windowShare"].is_null(), "no usage history: not known");
+        assert!(v["agents"].as_array().unwrap().is_empty());
+        // Same updatedAt: not rewritten.
+        assert_eq!(receipt_pass(&data, &claude, &no_usage), 0);
+        // A new updatedAt rewrites it.
+        std::fs::write(
+            run.join("status.json"),
+            json!({"schema": 1, "stage": "shipping", "updatedAt": "t2"}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(receipt_pass(&data, &claude, &no_usage), 1);
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(run.join("app-receipt.json")).unwrap())
+                .unwrap();
+        assert_eq!(v["statusUpdatedAt"], "t2");
+    }
+
+    #[test]
+    fn no_receipt_repo_an_early_stage_or_an_adopted_run_gets_no_file() {
+        let dir = TempDir::new("receipt_pass_none");
+        let data = dir.join("data");
+        let off = receipt_run(
+            &data,
+            "r-20261106-100000-0001",
+            "ship-approval",
+            "t1",
+            false,
+        );
+        let early = receipt_run(&data, "r-20261106-100000-0002", "building", "t1", true);
+        let adopted = dir.join("dev/runs/r-20261106-100000-0003");
+        std::fs::create_dir_all(&adopted).unwrap();
+        for name in ["status.json", "repos.json", "log.md"] {
+            let src = off.join(name);
+            std::fs::copy(&src, adopted.join(name)).unwrap();
+        }
+        std::fs::write(
+            adopted.join("repos.json"),
+            json!({"schema": 1, "repos": [{"name": "api", "path": "/w/api", "receipt": true}]})
+                .to_string(),
+        )
+        .unwrap();
+        crate::run::folder::adopt_runs(&data, std::slice::from_ref(&adopted)).unwrap();
+        assert_eq!(receipt_pass(&data, &settings(vec![]), &no_usage), 0);
+        for run in [&off, &early, &adopted.canonicalize().unwrap()] {
+            assert!(!run.join("app-receipt.json").exists(), "{}", run.display());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_at_the_receipt_file_or_its_temp_is_refused() {
+        for name in ["app-receipt.json", "app-receipt.json.tmp"] {
+            let dir = TempDir::new("receipt_pass_link");
+            let data = dir.join("data");
+            let run = receipt_run(&data, "r-20261106-100000-abcd", "ship-approval", "t1", true);
+            let elsewhere = dir.join("elsewhere.json");
+            std::fs::write(&elsewhere, "{}").unwrap();
+            std::os::unix::fs::symlink(&elsewhere, run.join(name)).unwrap();
+            assert_eq!(
+                receipt_pass(&data, &settings(vec![]), &no_usage),
+                0,
+                "{name}"
+            );
+            assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "{}");
+        }
     }
 
     // ---- flight_search (S8) ----

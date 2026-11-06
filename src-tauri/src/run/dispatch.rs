@@ -2141,6 +2141,7 @@ mod tests {
             setup: None,
             copy_files: vec![],
             live_tests: false,
+            receipt: false,
         }];
         let meta = RunMeta {
             account_id: "a".into(),

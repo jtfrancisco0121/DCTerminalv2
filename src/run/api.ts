@@ -18,10 +18,12 @@ export type Repo = {
   copyFiles?: string[];
   /** Live Claude tests allowed in this repo's checks (repos.json `liveTests`). */
   liveTests?: boolean;
+  /** Receipts in this repo's PR bodies (repos.json `receipt`); off by default. */
+  receipt?: boolean;
 };
 
 /** One repo's worktree setup (app settings, keyed by the repo's real path). */
-export type RepoSetup = { setup: string | null; copyFiles: string[]; liveTests?: boolean };
+export type RepoSetup = { setup: string | null; copyFiles: string[]; liveTests?: boolean; receipt?: boolean };
 
 /** `github`: draft PRs + one review comment per round; `local`: the quiet local loop. */
 export type ReviewMode = "github" | "local";
@@ -326,6 +328,12 @@ export function duplicateOf(err: unknown): DuplicateRun | null {
 }
 export const setRepoSetup = (repoPath: string, setup: RepoSetup) =>
   invoke<RepoSetup>("set_repo_setup", { repoPath, setup });
+/** What a trace link resolves to: the run folder to open, or the message to show (`dcterminalv2://run/<runId>`). */
+export type RunLinkTarget = { runDir?: string; error?: string };
+/** The link a macOS URL open left waiting for this window, once (null: none). */
+export const takeRunLink = () => invoke<RunLinkTarget | null>("take_run_link");
+/** Resolves a pasted link or run id against this Mac's own runs. */
+export const resolveRunLink = (text: string) => invoke<RunLinkTarget>("resolve_run_link", { text });
 export const resumeRun = (windowId: string, runDir: string) => invoke<StartedRun>("resume_run", { windowId, runDir });
 export const readRun = (runDir: string) => invoke<RunView>("read_run", { runDir });
 export const rerunChecks = (runDir: string) => invoke<void>("rerun_checks", { runDir });
