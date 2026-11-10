@@ -66,6 +66,24 @@ describe("WebQaTargets", () => {
     expect(screen.queryByText("No targets yet. Add one to test a web app from outside.")).toBeNull();
   });
 
+  it("refuses a target with no charter next to the Charters heading and sends nothing", async () => {
+    render(<WebQaTargets targets={[]} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add target" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Target name" }), { target: { value: "Prod" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Allowed URLs" }), { target: { value: "https://app.example.com/" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save target" }));
+    await screen.findByText("Add at least one charter.");
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Add charter" }));
+    expect(screen.queryByText("Add at least one charter.")).toBeNull();
+  });
+
+  it("lists a saved charterless target as having none to test with", () => {
+    render(<WebQaTargets targets={[{ ...staging, charters: [] }]} onSaved={() => {}} />);
+    expect(screen.getByText(/no charters: add one to test it/)).toBeTruthy();
+    expect(screen.queryByText(/0 charters/)).toBeNull();
+  });
+
   it("refuses an invalid URL with a message and sends nothing", async () => {
     render(<WebQaTargets targets={[]} onSaved={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "Add target" }));

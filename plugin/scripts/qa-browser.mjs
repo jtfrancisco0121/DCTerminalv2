@@ -6,8 +6,12 @@
 //
 // Steps, one JSON object per line, one JSON result line per step on stdout:
 //   {"op":"open","url":"http://127.0.0.1:1530/"}
-//   {"op":"click","selector":"button.start"}  or  {"op":"click","text":"Start"}
-//   {"op":"type","selector":"input","text":"hello"}   (selector optional: types into the focused element)
+//   {"op":"click","selector":"button.start"}  or  {"op":"click","text":"Start"}   (optional "within":"<selector>" searches only inside
+//                                                       that element; without it, matches inside the topmost open dialog come first.
+//                                                       A click lands only on what a person could click: a match that something else
+//                                                       covers at its centre is skipped, and when every match is covered, off screen or
+//                                                       hidden the step fails naming the coverer ("covered by <tag#id.class "text">"))
+//   {"op":"type","selector":"input","text":"hello"}   (selector optional: types into the focused element; optional "within")
 //   {"op":"press","key":"Enter"}                       (real key events: Enter, Escape, Tab, Space, arrows, PageUp,
 //                                                       PageDown, Home, End, Backspace, Delete, letters, digits)
 //   {"op":"press","key":"Meta+K"}  or  {"op":"press","key":"K","modifiers":["meta"]}   (alt, ctrl, meta, shift)
@@ -18,7 +22,8 @@
 //   {"op":"viewport","width":800,"height":800}        (sets the page size for the rest of the run: width 320..3840, height
 //                                                       240..2160, whole numbers; opens nothing)
 //   {"op":"wait-text","text":"Planning","timeoutMs":5000}
-//   {"op":"text","selector":"main"}                    (selector optional: the whole page)
+//   {"op":"text","selector":"main"}                    (selector optional: the whole page; optional "within": text of the selector
+//                                                       inside that element, or of the element itself when there is no selector)
 //   {"op":"screenshot","name":"S1.1"}                  (writes <out>/S1.1.png)
 //   {"op":"screenshot","name":"S1.2","fullPage":true}  (the whole page, beyond the viewport; same 5 MB cap, no file when over)
 //
@@ -261,6 +266,74 @@ export function keyEvents(step) {
   ];
 }
 
+/**
+ * The in-page finder of a click step. It runs in the page: the driver injects `(${pickTarget})(document, query)` into
+ * Runtime.evaluate, and the tests run the same function in jsdom, so it uses only its arguments and DOM globals reachable from
+ * `doc` (no closure variables, nothing imported). `query` is `{selector?, text?, within?}`. Returns `{x, y}` (the centre of the
+ * first match a click can reach), `{covered: "<what covers it>"}`, `{unreachable: "off screen"|"not visible"}`, `{error}` (a bad
+ * or unmatched `within` or selector), or null when nothing matches.
+ * Order: inside `within` when given; otherwise matches inside the topmost open dialog (a modal one before a plain popover, the
+ * last in document order) come before the rest. Each match is scrolled to the centre and hit-tested there with
+ * `elementFromPoint`: the element itself or one inside it must be on top.
+ */
+export function pickTarget(doc, query) {
+  const read = (e) => String((typeof e.innerText === "string" ? e.innerText : "") || e.textContent || e.value || e.getAttribute("aria-label") || "");
+  const name = (e) => {
+    const cls = typeof e.className === "string" ? e.className.trim().split(/\s+/).filter(Boolean) : [];
+    return `${e.tagName.toLowerCase()}${e.id ? "#" + e.id : ""}${cls.length ? "." + cls.join(".") : ""} "${read(e).replace(/\s+/g, " ").trim().slice(0, 40)}"`;
+  };
+  const shown = (e) => {
+    const r = e.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  let root = doc;
+  if (query.within) {
+    try {
+      root = doc.querySelector(query.within);
+    } catch {
+      return { error: "bad within selector" };
+    }
+    if (!root) return { error: "nothing matches within " + String(query.within).slice(0, 60) };
+  }
+  let found;
+  try {
+    if (query.selector) found = [...root.querySelectorAll(query.selector)];
+    else {
+      const want = String(query.text ?? "").toLowerCase();
+      found = [...root.querySelectorAll("button,a,[role=button],[role=menuitem],[role=tab],[role=option],option,input[type=button],input[type=submit],summary,label")].filter((e) =>
+        read(e).toLowerCase().includes(want),
+      );
+    }
+  } catch {
+    return { error: "bad selector" };
+  }
+  if (query.within && query.selector && root.matches && root.matches(query.selector) && !found.includes(root)) found.unshift(root);
+  if (!found.length) return null;
+  if (!query.within) {
+    const dialogs = [...doc.querySelectorAll("dialog[open],[role=dialog],[role=alertdialog],[aria-modal=true]")].filter(shown);
+    const modal = (d) => d.getAttribute("aria-modal") === "true" || (d.tagName === "DIALOG" && d.matches(":modal"));
+    const top = dialogs.filter(modal).pop() || dialogs.pop();
+    if (top) found = [...found.filter((e) => top.contains(e)), ...found.filter((e) => !top.contains(e))];
+  }
+  let first = null;
+  for (const el of found) {
+    if (el.scrollIntoView) el.scrollIntoView({ block: "center" });
+    const r = el.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    let why;
+    if (!shown(el)) why = { unreachable: "not visible" };
+    else {
+      const top = doc.elementFromPoint(x, y);
+      if (!top) why = { unreachable: "off screen" };
+      else if (top === el || el.contains(top)) return { x, y };
+      else why = { covered: name(top) };
+    }
+    first = first || why;
+  }
+  return first;
+}
+
 const validBy = (by) =>
   (typeof by === "number" && Number.isFinite(by)) ||
   (by && typeof by === "object" && !Array.isArray(by) && Object.keys(by).length > 0 &&
@@ -280,6 +353,10 @@ function validate(steps, web) {
     }
     if (s.op === "screenshot" && s.fullPage !== undefined && typeof s.fullPage !== "boolean") {
       refuse(`step ${i + 1}: fullPage must be true or false`);
+    }
+    if (s.within !== undefined) {
+      if (!["click", "type", "text"].includes(s.op)) refuse(`step ${i + 1}: within works only on click, type and text`);
+      if (typeof s.within !== "string" || !s.within.trim()) refuse(`step ${i + 1}: within must be a non-empty selector string`);
     }
     if (s.op === "press" && !keyEvents(s)) refuse(`step ${i + 1}: press needs a known key and modifiers from alt, ctrl, meta, shift`);
     if (s.op === "scroll") {
@@ -542,7 +619,8 @@ async function main() {
       throw new Error(`the page left loopback (${String(href).slice(0, 60)})`);
     }
   };
-  const center = (find) => `(() => { ${find} if (!el) return null; el.scrollIntoView({block:"center"}); const r = el.getBoundingClientRect(); return {x: r.left + r.width/2, y: r.top + r.height/2}; })()`;
+  // The page-side scope of type and text steps: `root` is the within element (or the document); "no-within" when it is missing.
+  const scope = (within) => (within ? `const root = document.querySelector(${JSON.stringify(String(within))}); if (!root) return "no-within";` : "const root = document;");
 
   const deadline = Date.now() + args.timeout * Math.max(1, steps.length);
   let failed = 0;
@@ -567,11 +645,12 @@ async function main() {
         await assertLoopbackPage();
         extra = { title: String((await evaluate("document.title")) ?? "").slice(0, 120) };
       } else if (s.op === "click") {
-        const find = s.selector
-          ? `const el = document.querySelector(${JSON.stringify(String(s.selector))});`
-          : `const want = ${JSON.stringify(String(s.text ?? ""))}.toLowerCase(); const el = [...document.querySelectorAll("button,a,[role=button],[role=menuitem],[role=tab],[role=option],option,input[type=button],input[type=submit],summary,label")].find((e) => ((e.innerText || e.value || e.getAttribute("aria-label") || "") + "").toLowerCase().includes(want));`;
-        const pos = await evaluate(center(find));
+        const query = { selector: s.selector ? String(s.selector) : undefined, text: s.text === undefined ? undefined : String(s.text), within: s.within };
+        const pos = await evaluate(`(${pickTarget.toString()})(document, ${JSON.stringify(query)})`);
         if (!pos) throw new Error("nothing to click");
+        if (pos.error) throw new Error(pos.error);
+        if (pos.covered) throw new Error(`covered by ${pos.covered}`);
+        if (pos.unreachable) throw new Error(`cannot click: ${pos.unreachable}`);
         for (const type of ["mousePressed", "mouseReleased"]) {
           await page("Input.dispatchMouseEvent", { type, x: pos.x, y: pos.y, button: "left", clickCount: 1 });
         }
@@ -588,16 +667,18 @@ async function main() {
         if (!value) throw new Error(`the test account has no ${s.secret}`);
         for (const v of [account.username, account.password]) if (typeof v === "string" && v) SECRETS.add(v);
         const target = s.selector ? JSON.stringify(String(s.selector)) : "null";
-        const found = await evaluate(`(() => { const el = ${target} ? document.querySelector(${target}) : document.activeElement; if (!el) return "none"; ${
+        const found = await evaluate(`(() => { ${scope(s.within)} const el = ${target} ? root.querySelector(${target}) : document.activeElement; if (!el || !root.contains(el)) return "none"; ${
           s.secret === "password" ? `if (!(el.tagName === "INPUT" && (el.getAttribute("type") || "").toLowerCase() === "password")) return "not-password";` : ""
         } el.focus(); return "ok"; })()`);
-        if (found === "none") throw new Error("nothing to type into");
+        if (found === "none" || found === "no-within") throw new Error(found === "none" ? "nothing to type into" : `nothing matches within ${String(s.within).slice(0, 60)}`);
         if (found === "not-password") throw new Error("the password is typed only into an input[type=password] field");
         await page("Input.insertText", { text: value });
       } else if (s.op === "type") {
-        if (s.selector) {
-          const ok = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(String(s.selector))}); if (!el) return false; el.focus(); return true; })()`);
-          if (!ok) throw new Error("nothing to type into");
+        if (s.selector || s.within) {
+          const pick = s.selector ? `root.querySelector(${JSON.stringify(String(s.selector))})` : "document.activeElement";
+          const ok = await evaluate(`(() => { ${scope(s.within)} const el = ${pick}; if (!el || !root.contains(el)) return "none"; el.focus(); return "ok"; })()`);
+          if (ok === "no-within") throw new Error(`nothing matches within ${String(s.within).slice(0, 60)}`);
+          if (!ok || ok === "none") throw new Error("nothing to type into");
         }
         await page("Input.insertText", { text: String(s.text ?? "") });
       } else if (s.op === "press") {
@@ -647,9 +728,11 @@ async function main() {
         }
         if (!seen) throw new Error(`text not seen: ${want.slice(0, 60)}`);
       } else if (s.op === "text") {
-        const value = s.selector
-          ? await evaluate(`(document.querySelector(${JSON.stringify(String(s.selector))}) || {}).innerText ?? null`)
-          : await evaluate("document.body ? document.body.innerText : ''");
+        const value = s.within
+          ? await evaluate(`(() => { ${scope(s.within).replace('return "no-within"', "return null")} const el = ${s.selector ? `root.querySelector(${JSON.stringify(String(s.selector))})` : "root"}; return el ? el.innerText : null; })()`)
+          : s.selector
+            ? await evaluate(`(document.querySelector(${JSON.stringify(String(s.selector))}) || {}).innerText ?? null`)
+            : await evaluate("document.body ? document.body.innerText : ''");
         if (value === null) throw new Error("nothing matches the selector");
         extra = { text: String(value).slice(0, MAX_TEXT) };
       } else if (s.op === "screenshot") {

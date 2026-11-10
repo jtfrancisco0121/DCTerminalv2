@@ -17,7 +17,7 @@ Act as a careful black-box tester of a deployed web app. You are given a target 
 ## How to try the app
 
 1. Read `<run>/webqa-target.json`: the allowlist, the charters (`id`, `title`, `text`, `mayChangeData`) and, when there was an earlier pass, the `previous` summary (use it only to look at known problems again, not to skip anything).
-2. For each charter write a steps file `<run>/webqa/steps/<charter id>.jsonl` and run the driver on it. Steps are `open`, `click`, `type`, `press`, `scroll`, `select`, `wait-text`, `text` and `screenshot` (see the header of the script). End with `{"op":"screenshot","name":"<charter id>"}`, which writes `webqa/shots/<charter id>.png`.
+2. For each charter write a steps file `<run>/webqa/steps/<charter id>.jsonl` and run the driver on it. Steps are `open`, `click`, `type`, `press`, `scroll`, `select`, `wait-text`, `text` and `screenshot` (see the header of the script). `click`, `type` and `text` take an optional `"within":"<selector>"`; a click on something another element covers fails with `covered by <what covers it>` instead of landing on it, so close the dialog or banner first or use `within`. End with `{"op":"screenshot","name":"<charter id>"}`, which writes `webqa/shots/<charter id>.png`.
 3. A step that fails (`ok:false`) is the evidence: report what it said. Try a charter once more only when the failure looks like slow loading.
 
 ## Result file

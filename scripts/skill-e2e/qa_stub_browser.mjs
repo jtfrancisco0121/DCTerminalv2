@@ -9,7 +9,8 @@
 // arrives while a page loads. STUB_NOT_PASSWORD=1: the field being typed into is not a password field. STUB_BLOCKED=1: two
 // requests to cdn.other.example fail with ERR_NAME_NOT_RESOLVED while the page loads. STUB_NETWORK=1: while the page loads, a
 // 404 document, a 404 fetch, a 404 image, a 500 script (twice), a 404 document of another origin, a failed fetch, a failed document
-// and a canceled request come in (see qa_browser_test.sh for what is printed outside and inside web mode).
+// and a canceled request come in (see qa_browser_test.sh for what is printed outside and inside web mode). STUB_COVERED=1: a click
+// step's finder (the expression with elementFromPoint) answers that something covers the target, {covered: 'div.overlay "Runs"'}.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
@@ -54,7 +55,11 @@ function answer(method, params) {
     case "Runtime.evaluate": {
       const e = String(params.expression);
       let value = null;
-      if (e === "location.href") value = url;
+      if (e.includes("elementFromPoint")) {
+        // The click finder (pickTarget): checked first, its source holds substrings the branches below look for.
+        logCall("click", { expression: e });
+        value = process.env.STUB_COVERED ? { covered: 'div.overlay "Runs"' } : { x: 10, y: 10 };
+      } else if (e === "location.href") value = url;
       else if (e.includes('getAttribute("type")')) value = process.env.STUB_NOT_PASSWORD ? "not-password" : "ok";
       else if (e === "document.readyState") value = "complete";
       else if (e === "document.title") value = "Stub page";
