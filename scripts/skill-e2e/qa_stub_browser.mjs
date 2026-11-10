@@ -7,7 +7,9 @@
 // log error and a console.log (which must not be reported). STUB_LEAK=1: the page text and the exception carry the secret
 // "s3cr3t-pw". STUB_REDIRECT=<url>: every navigation ends there. STUB_NAV_AWAY=<url>: a main-frame navigation event to <url>
 // arrives while a page loads. STUB_NOT_PASSWORD=1: the field being typed into is not a password field. STUB_BLOCKED=1: two
-// requests to cdn.other.example fail with ERR_NAME_NOT_RESOLVED while the page loads.
+// requests to cdn.other.example fail with ERR_NAME_NOT_RESOLVED while the page loads. STUB_NETWORK=1: while the page loads, a
+// 404 document, a 404 fetch, a 404 image, a 500 script (twice), a 404 document of another origin, a failed fetch, a failed document
+// and a canceled request come in (see qa_browser_test.sh for what is printed outside and inside web mode).
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
@@ -121,6 +123,25 @@ server.on("upgrade", (req, socket) => {
           send("Network.loadingFailed", { requestId: id, errorText: "net::ERR_NAME_NOT_RESOLVED" });
         }
       }
+      if (process.env.STUB_NETWORK && isTitle) {
+        const origin = new URL(url).origin;
+        const reqs = [
+          ["n1", "Document", url], ["n2", "Fetch", origin + "/api/x"], ["n3", "Image", origin + "/img.png"], ["n4", "Script", origin + "/app.js"],
+          ["n5", "Document", "https://other.example/frame"], ["n6", "Fetch", origin + "/down"], ["n8", "Document", origin + "/boom"], ["n7", "Fetch", origin + "/gone"],
+        ];
+        for (const [requestId, type, u] of reqs) send("Network.requestWillBeSent", { requestId, type, request: { url: u } });
+        const resp = (requestId, type, u, status) => send("Network.responseReceived", { requestId, type, response: { url: u, status } });
+        resp("n1", "Document", url, 404);
+        resp("n1", "Document", url, 404);
+        resp("n2", "Fetch", origin + "/api/x", 404);
+        resp("n3", "Image", origin + "/img.png", 404);
+        resp("n4", "Script", origin + "/app.js", 500);
+        resp("n4", "Script", origin + "/app.js", 500);
+        resp("n5", "Document", "https://other.example/frame", 404);
+        send("Network.loadingFailed", { requestId: "n6", errorText: "net::ERR_CONNECTION_REFUSED" });
+        send("Network.loadingFailed", { requestId: "n8", errorText: "net::ERR_CONNECTION_RESET" });
+        send("Network.loadingFailed", { requestId: "n7", errorText: "net::ERR_ABORTED", canceled: true });
+      }
       // The page's errors come before the answer of the title read, so they belong to the open step.
       if (process.env.STUB_PAGE_ERRORS && !sentErrors && isTitle) {
         sentErrors = true;
@@ -128,7 +149,7 @@ server.on("upgrade", (req, socket) => {
         event("Runtime.exceptionThrown", { exceptionDetails: { text: "Uncaught", exception: { description: "Error: boom at app.js:1" + (process.env.STUB_LEAK ? " pw=s3cr3t-pw" : "") } } });
         event("Runtime.consoleAPICalled", { type: "error", args: [{ type: "string", value: "request failed" }, { type: "number", value: 500 }] });
         event("Runtime.consoleAPICalled", { type: "log", args: [{ type: "string", value: "just a log" }] });
-        event("Log.entryAdded", { entry: { level: "error", text: "net::ERR_FAILED" } });
+        event("Log.entryAdded", { entry: { level: "error", text: "net::ERR_FAILED", url: "http://127.0.0.1:1530/missing.js" } });
         event("Log.entryAdded", { entry: { level: "info", text: "fine" } });
       }
       socket.write(frame(JSON.stringify(reply)));

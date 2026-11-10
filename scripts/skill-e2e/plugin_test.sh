@@ -96,6 +96,12 @@ assert re.search(r"`description` of every `dcv2:implementer` and `dcv2:pr-review
 PY
 done
 
+echo "# QA: a driver run with no step line is ERROR"
+for f in roles/qa.md skills/qa/SKILL.md; do
+  grep -qF 'printed no step line' "$P/$f" && grep -qF 'never `PASS`' "$P/$f" && ok "$f: no step line is ERROR, never PASS" || bad "$f lacks the no-step-line ERROR rule"
+done
+grep -qF 'for every criterion it was meant to try' "$P/roles/qa.md" && ok "qa.md names ERROR for every criterion" || bad "qa.md: ERROR for every criterion"
+
 echo "# commit body and version-bump rules (AD-10)"
 VFILES=('package.json` `version' 'src-tauri/Cargo.toml` `[package] version' 'src-tauri/tauri.conf.json` `version' 'plugin/VERSION' 'plugin/.claude-plugin/plugin.json` `version')
 for r in implementer developer; do

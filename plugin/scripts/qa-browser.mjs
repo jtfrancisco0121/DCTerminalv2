@@ -23,6 +23,9 @@
 // Page errors print as they are seen, between the step lines:
 //   {"event":"page-error","kind":"exception"|"console","message":"...","step":3}
 // (an uncaught exception, a console.error call, or an error entry of the browser's log; step 0 is before the first step)
+// A failed load or an error response prints {"event":"page-error","kind":"network","message":"404 Script","url":"...","step":3}; an error
+// entry of the browser's log carries "url" when the browser names one. In web mode only a failed or error response of the page's own
+// document (same origin as the last opened URL) prints a network line: 4xx fetch or image responses on real sites are normal.
 //
 // Web mode (web QA runs, docs/run-folder.md "Web QA mode"): on only when $DCV2_RUN_DIR holds a meta.json with mode "web-qa" and a
 // webqa-target.json. Then the allowlist of that file (and nothing else: no step, argument or environment variable can add to it)
@@ -30,8 +33,8 @@
 // <run>/webqa/shots, and a type step may carry {"secret":"username"|"password"} (the driver reads the test account itself, never
 // prints it, and types the password only into an input[type=password]).
 //
-// Exit: 0 all steps ok, 1 a step failed, 2 refused (non-loopback or non-allowlisted URL, bad out folder, bad step), 3 no Chrome-family
-// browser found. The browser runs in its own process group; it is killed on exit, on signals, and by a detached
+// Exit: 0 all steps ok, 1 a step failed, 2 refused or no step read (non-loopback or non-allowlisted URL, bad out folder, bad step, an
+// empty steps list), 3 no Chrome-family browser found. The browser runs in its own process group; it is killed on exit, on signals, and by a detached
 // watchdog when this process dies by SIGKILL.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -363,6 +366,7 @@ async function main() {
   }
   const steps = await readSteps(args.steps);
   validate(steps, web);
+  if (!steps.length) refuse("no steps read (no step lines printed)");
   const browser = findBrowser();
   if (!browser) refuse("no Chrome-family browser found", 3);
   fs.mkdirSync(args.out, { recursive: true });
@@ -435,6 +439,29 @@ async function main() {
   let currentStep = 0;
   let left = null; // a main-frame navigation outside the allowlist, seen by Page.frameNavigated (web mode)
   const requestHost = new Map();
+  const requests = new Map(); // requestId -> { url, type }: what a network page-error line names
+  const NET_TYPES = new Set(["Document", "Script", "Stylesheet", "Image", "Fetch", "XHR"]);
+  const netSeen = new Set(); // url + status already printed in the current step
+  let netStep = -1;
+  let pageOrigin = null; // origin of the last opened URL: the page's own origin
+  const netError = (id, what) => {
+    const r = requests.get(id);
+    if (!r || !NET_TYPES.has(r.type)) return;
+    // Web mode (real sites): only the page's own document. Outside it (the loopback app) every listed type prints.
+    if (web) {
+      let origin = null;
+      try {
+        origin = new URL(r.url).origin;
+      } catch {}
+      if (r.type !== "Document" || !pageOrigin || origin !== pageOrigin) return;
+    }
+    if (netStep !== currentStep) (netSeen.clear(), (netStep = currentStep));
+    const key = `${r.url} ${what}`;
+    if (netSeen.has(key) || netSeen.has(`log ${r.url}`)) return;
+    netSeen.add(key);
+    netSeen.add(`net ${r.url}`);
+    out({ event: "page-error", kind: "network", message: `${what} ${r.type}`.slice(0, 300), url: r.url.slice(0, 300), step: currentStep });
+  };
   const blocked = new Map(); // host -> failed requests: hosts the browser could not resolve because they are off the allowlist
   const pageError = (kind, message) => out({ event: "page-error", kind, message: String(message).slice(0, 300), step: currentStep });
   cdp.onEvent = (msg) => {
@@ -446,26 +473,43 @@ async function main() {
         left = url;
         page("Page.navigate", { url: "about:blank" }).catch(() => {});
       }
-    } else if (web && msg.method === "Network.requestWillBeSent") {
-      try {
-        requestHost.set(p.requestId, new URL(p.request?.url).hostname);
-      } catch {}
-    } else if (web && msg.method === "Network.loadingFailed" && /ERR_NAME_NOT_RESOLVED/.test(p.errorText || "")) {
-      const host = requestHost.get(p.requestId);
-      if (host) blocked.set(host, (blocked.get(host) || 0) + 1);
+    } else if (msg.method === "Network.requestWillBeSent") {
+      requests.set(p.requestId, { url: String(p.request?.url ?? ""), type: p.type });
+      if (requests.size > 2000) requests.delete(requests.keys().next().value);
+      if (web) {
+        try {
+          requestHost.set(p.requestId, new URL(p.request?.url).hostname);
+        } catch {}
+      }
+    } else if (msg.method === "Network.loadingFailed") {
+      if (web && /ERR_NAME_NOT_RESOLVED/.test(p.errorText || "")) {
+        const host = requestHost.get(p.requestId);
+        if (host) blocked.set(host, (blocked.get(host) || 0) + 1);
+      } else if (!p.canceled && !p.blockedReason) {
+        netError(p.requestId, String(p.errorText || "load failed"));
+      }
+    } else if (msg.method === "Network.responseReceived") {
+      const status = Number(p.response?.status);
+      if (status >= 400) netError(p.requestId, `HTTP ${status}`);
     } else if (msg.method === "Runtime.exceptionThrown") {
       const d = p.exceptionDetails || {};
       pageError("exception", d.exception?.description || d.text || "uncaught exception");
     } else if (msg.method === "Runtime.consoleAPICalled" && p.type === "error") {
       pageError("console", (p.args || []).map((a) => a.value ?? a.description ?? a.type).join(" "));
     } else if (msg.method === "Log.entryAdded" && p.entry?.level === "error") {
-      pageError("console", p.entry.text || "log error");
+      const url = typeof p.entry.url === "string" && p.entry.url ? p.entry.url.slice(0, 300) : null;
+      if (netStep !== currentStep) (netSeen.clear(), (netStep = currentStep));
+      // The same failure may also arrive as a network line (the request id names it): print it once.
+      if (url && (netSeen.has(`net ${url}`) || netSeen.has(`log ${url}`))) return;
+      if (url) netSeen.add(`log ${url}`);
+      const text = String(p.entry.text || "log error").slice(0, 300);
+      out(url ? { event: "page-error", kind: "console", message: text, url, step: currentStep } : { event: "page-error", kind: "console", message: text, step: currentStep });
     }
   };
   await page("Page.enable");
   await page("Runtime.enable");
   await page("Log.enable");
-  if (web) await page("Network.enable");
+  await page("Network.enable");
   const evaluate = async (expression) => {
     const r = await page("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.text || "script error");
@@ -494,6 +538,7 @@ async function main() {
 
   const deadline = Date.now() + args.timeout * Math.max(1, steps.length);
   let failed = 0;
+  let printed = 0;
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
     currentStep = i + 1;
@@ -502,6 +547,9 @@ async function main() {
       if (Date.now() > deadline) throw new Error("time limit reached");
       let extra = {};
       if (s.op === "open") {
+        try {
+          pageOrigin = new URL(s.url).origin;
+        } catch {}
         await page("Page.navigate", { url: s.url });
         await sleep(300);
         for (let k = 0; k < 50; k++) {
@@ -621,9 +669,11 @@ async function main() {
         left = null;
         throw new Error(`the page left the allowlist (${String(url).slice(0, 80)})`);
       }
+      printed++;
       out({ step: i + 1, op: s.op, ok: true, ms: Date.now() - t0, ...extra });
     } catch (e) {
       failed++;
+      printed++;
       out({ step: i + 1, op: s.op, ok: false, error: String(e.message || e).slice(0, 200) });
     }
   }
@@ -633,10 +683,23 @@ async function main() {
   }
   cdp.close();
   cleanup();
+  if (!printed) refuse("no steps read (no step lines printed)");
   process.exit(failed ? 1 : 0);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+// Whether this file is the program being run: real paths on both sides, so a start through a symlinked folder (macOS /var -> /private/var)
+// still runs main() instead of exiting 0 with no output.
+function isEntry() {
+  if (!process.argv[1]) return false;
+  const here = fileURLToPath(import.meta.url);
+  try {
+    return fs.realpathSync(here) === fs.realpathSync(process.argv[1]);
+  } catch {
+    return here === path.resolve(process.argv[1]);
+  }
+}
+
+if (isEntry()) {
   main().catch((e) => {
     process.stderr.write(`qa-browser: ${e.message || e}\n`);
     process.exit(1);

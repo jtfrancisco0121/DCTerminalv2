@@ -116,8 +116,33 @@ expect 0 "page errors do not fail the run" env STUB_PAGE_ERRORS=1 node "$QB" --o
 [[ "$(grep -c '"event":"page-error"' <<<"$out")" == 3 ]] && ok "  three page-error lines (exception, console, log)" || bad "  page-error lines: $out"
 has "  the exception line" '{"event":"page-error","kind":"exception","message":"Error: boom at app.js:1","step":1}'
 has "  the console.error line" '{"event":"page-error","kind":"console","message":"request failed 500","step":1}'
-has "  the log error line" '{"event":"page-error","kind":"console","message":"net::ERR_FAILED","step":1}'
+has "  the log error line carries the url" '{"event":"page-error","kind":"console","message":"net::ERR_FAILED","url":"http://127.0.0.1:1530/missing.js","step":1}'
 if grep -qF 'just a log' <<<"$out"; then bad "  console.log must not be reported"; else ok "  console.log is not reported"; fi
+
+echo "# started through a symlinked folder, and no step read"
+ln -s "$ROOT/plugin/scripts" "$d/linkdir"
+printf '%s\n' '{"op":"open","url":"http://127.0.0.1:1530/"}' '{"op":"wait-text","text":"Start","timeoutMs":1000}' > "$steps"
+expect 0 "through a symlinked folder the driver runs its steps and exits 0" node "$d/linkdir/qa-browser.mjs" --out "$OUT" --steps "$steps"
+[[ "$(grep -c '"ok":true' <<<"$out")" == 2 ]] && ok "  two ok step lines" || bad "  step lines: $out"
+printf '%s\n' '{"op":"open","url":"http://127.0.0.1:1530/"}' '{"op":"wait-text","text":"Never shown","timeoutMs":300}' > "$steps"
+expect 1 "through a symlinked folder a failing step exits 1" node "$d/linkdir/qa-browser.mjs" --out "$OUT" --steps "$steps"
+has "  the failure is printed" 'text not seen'
+: > "$steps"
+expect 2 "an empty steps file exits 2" node "$QB" --out "$OUT" --steps "$steps"
+has "  one-line stderr message" 'qa-browser: no steps read (no step lines printed)'
+[[ "$(grep -c . <<<"$out")" == 1 ]] && ok "  nothing else printed" || bad "  output: $out"
+printf '\n\n' > "$steps"
+expect 2 "a steps file of blank lines exits 2" node "$QB" --out "$OUT" --steps "$steps"
+
+echo "# network page errors carry the url"
+printf '%s\n' '{"op":"open","url":"http://127.0.0.1:1530/"}' '{"op":"text"}' > "$steps"
+expect 0 "outside web mode every failed load and error response prints, once" env STUB_NETWORK=1 node "$QB" --out "$OUT" --steps "$steps"
+[[ "$(grep -c '"kind":"network"' <<<"$out")" == 7 ]] && ok "  seven network lines (n1 n2 n3 n4 n5 n6 n8; duplicates and the canceled request are dropped)" || bad "  network lines: $out"
+has "  a 404 document names its url" '{"event":"page-error","kind":"network","message":"HTTP 404 Document","url":"http://127.0.0.1:1530/","step":1}'
+has "  a 404 image" '"message":"HTTP 404 Image","url":"http://127.0.0.1:1530/img.png"'
+has "  a 500 script" '"message":"HTTP 500 Script","url":"http://127.0.0.1:1530/app.js"'
+has "  a failed fetch" '"message":"net::ERR_CONNECTION_REFUSED Fetch","url":"http://127.0.0.1:1530/down"'
+if grep -qF '/gone' <<<"$out"; then bad "  a canceled request must not print"; else ok "  a canceled request does not print"; fi
 
 echo "# new step refusals"
 for bad_step in '{"op":"press","key":"Hyper+K"}' '{"op":"press","key":"K","modifiers":["super"]}' '{"op":"press","key":"F13"}' \
@@ -183,6 +208,18 @@ printf '%s\n' '{"op":"open","url":"https://app.example.com/"}' '{"op":"text"}' >
 expect 0 "blocked hosts are counted and reported in one line" webqa env STUB_BLOCKED=1 node "$QB" --out "$WOUT" --steps "$wsteps"
 [[ "$(grep -c 'blocked hosts' <<<"$out")" == 1 ]] && ok "  one blocked-hosts line" || bad "  blocked-hosts lines: $out"
 has "  names the count and the host" '"message":"blocked hosts: 1 (cdn.other.example)"'
+
+printf '%s\n' '{"op":"open","url":"https://app.example.com/login"}' '{"op":"text"}' > "$wsteps"
+expect 0 "web mode: only the page's own document failures print a network line" webqa env STUB_NETWORK=1 node "$QB" --out "$WOUT" --steps "$wsteps"
+[[ "$(grep -c '"kind":"network"' <<<"$out")" == 2 ]] && ok "  two network lines" || bad "  network lines: $out"
+has "  the 404 of the page's document" '{"event":"page-error","kind":"network","message":"HTTP 404 Document","url":"https://app.example.com/login","step":1}'
+has "  the failed document of the same origin" '"message":"net::ERR_CONNECTION_RESET Document","url":"https://app.example.com/boom"'
+for gone in '/api/x' '/img.png' '/down' 'other.example'; do
+  if grep -qF "$gone" <<<"$out"; then bad "  web mode must not print $gone"; else ok "  web mode does not print $gone"; fi
+done
+expect 0 "web mode: a blocked host prints only the blocked-host summary" webqa env STUB_BLOCKED=1 STUB_NETWORK=1 node "$QB" --out "$WOUT" --steps "$wsteps"
+[[ "$(grep -c 'cdn.other.example' <<<"$out")" == 1 ]] && ok "  blocked host named once" || bad "  blocked host lines: $out"
+has "  the summary is unchanged" '{"event":"page-error","kind":"console","message":"blocked hosts: 1 (cdn.other.example)","step":2}'
 
 echo "## the test account"
 : > "$slog"
