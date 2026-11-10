@@ -2470,7 +2470,7 @@ def receipt_lines(run, st, pr):
         ar = load_json(ar_path)
         if isinstance(ar, dict) and ar.get("schema") == 1 and isinstance(ar.get("computedAt"), str) \
                 and re.fullmatch(r"[0-9T:.Z+-]{1,40}", ar["computedAt"]):
-            label = f"for the whole run, {len(prs)} PRs, as of {ar['computedAt']}"
+            label = f"for the whole run, {len(prs)} {'PR' if len(prs) == 1 else 'PRs'}, as of {ar['computedAt']}"
             for a in ar.get("agents") if isinstance(ar.get("agents"), list) else []:
                 kind = receipt_word(a.get("kind")) if isinstance(a, dict) else None
                 n, mins = (receipt_num(a.get("count")), receipt_num(a.get("activeMinutes"))) if kind else (None, None)

@@ -56,6 +56,20 @@ const visible = () => screen.queryAllByTestId(/^run-r-/).map((el) => el.getAttri
 describe("RunsView", () => {
   afterEach(cleanup);
 
+  it("counts PRs with one plural rule: 1 PR, 2 PRs", async () => {
+    runs.push(
+      { ...base, runId: "r-3", runDir: "/d/runs/r-3", record: null, prCount: 1 },
+      { ...base, runId: "r-4", runDir: "/d/runs/r-4", record: null, prCount: 2 },
+    );
+    try {
+      render(<RunsView windowId="main" onClose={() => {}} onStarted={() => {}} />);
+      expect(within(await screen.findByTestId("run-r-3")).getByText("1 PR")).toBeTruthy();
+      expect(within(screen.getByTestId("run-r-4")).getByText("2 PRs")).toBeTruthy();
+    } finally {
+      runs.splice(2, 2);
+    }
+  });
+
   it("lists every run, labels the cost an estimate and shows — without a record", async () => {
     render(<RunsView windowId="main" onClose={() => {}} onStarted={() => {}} />);
     await screen.findByTestId("run-r-1");

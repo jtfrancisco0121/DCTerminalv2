@@ -6,6 +6,7 @@ import {
   gateTone,
   isKnownApproval,
   planReviewTone,
+  prCount,
   prStateText,
   prStateTone,
   reviewTone,
@@ -36,7 +37,7 @@ export function ApprovalCard({ view, waitingFor, onReadPlan, onGoToPrompt }: Pro
       {known && (
         <>
           <p className="hint" data-testid="approval-prs">
-            {view.prs.length} {view.prs.length === 1 ? "PR" : "PRs"}
+            {prCount(view.prs.length)}
           </p>
           <div className="approval-badges">
             {view.plan?.reviewRound != null && (

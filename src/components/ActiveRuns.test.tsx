@@ -37,6 +37,14 @@ describe("ActiveRuns", () => {
     vi.useRealTimers();
   });
 
+  it("says 1 PR for one PR and n PRs for more", async () => {
+    list = [run("one", { prsDone: 0, prsTotal: 1 }), run("two", { prsDone: 1, prsTotal: 2 })];
+    render(<ActiveRuns onClose={() => {}} onAllRuns={() => {}} />);
+    expect((await screen.findByTestId("active-one")).textContent).toContain("0/1 PR");
+    expect(screen.getByTestId("active-one").textContent).not.toContain("0/1 PRs");
+    expect(screen.getByTestId("active-two").textContent).toContain("1/2 PRs");
+  });
+
   it("words a finished eval run as finished, with no waiting flag", async () => {
     list = [run("e", { stage: "ship-approval", eval: { group: "b-1", index: 1, of: 2, source: "r-0" } })];
     render(<ActiveRuns onClose={() => {}} onAllRuns={() => {}} />);

@@ -79,6 +79,26 @@ describe("WebQaSection", () => {
     expect(start.title).toBe("Add a target in Settings › Web QA first.");
   });
 
+  it("shows no hint when a target exists", async () => {
+    passes = [pass()];
+    render(<WebQaSection windowId="main" onStarted={() => {}} />);
+    expect(await screen.findByText("Staging")).toBeTruthy();
+    expect(screen.queryByText("No targets now; earlier passes are kept.")).toBeNull();
+    expect((screen.getByRole("button", { name: "Start web QA pass…" }) as HTMLButtonElement).title).toBe("");
+  });
+
+  it("with no target and earlier passes, says so once above the passes, which stay listed", async () => {
+    settings = { webQa: { targets: [] } };
+    passes = [pass()];
+    render(<WebQaSection windowId="main" onStarted={() => {}} />);
+    const hint = await screen.findByText("No targets now; earlier passes are kept.");
+    expect(screen.getAllByText("No targets now; earlier passes are kept.")).toHaveLength(1);
+    const list = screen.getByRole("list");
+    expect(hint.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(list).getByText("Staging")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show results" })).toBeTruthy();
+  });
+
   it("shows result rows with comparison badges, the screenshot, and its absence", async () => {
     passes = [pass()];
     render(<WebQaSection windowId="main" onStarted={() => {}} />);

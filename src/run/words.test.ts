@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import pushRs from "../../src-tauri/src/observe/push.rs?raw";
 import attentionRs from "../../src-tauri/src/observe/attention.rs?raw";
 import {
+  prCount,
+  prFraction,
   ATTENTION_KINDS,
   checkTone,
   evalBaseText,
@@ -535,5 +537,29 @@ describe("re-run words", () => {
     expect(REPLAY_LABEL).toEqual({ recorded: "recorded", rerun: "re-run", fresh: "new execution" });
     expect(rerunTitle("PR2", "3f2a9c1abcdef")).toBe("Re-run PR2's check at 3f2a9c1");
     expect(lastLines("a\nb\nc\n", 2)).toBe("b\nc");
+  });
+});
+
+describe("the PR plural rule", () => {
+  it("prCount says 1 PR, 2 PRs and 0 PRs", () => {
+    expect([0, 1, 2].map(prCount)).toEqual(["0 PRs", "1 PR", "2 PRs"]);
+  });
+
+  it("prFraction takes the plural from the total", () => {
+    expect([prFraction(0, 1), prFraction(1, 2), prFraction(2, 2)]).toEqual(["0/1 PR", "1/2 PRs", "2/2 PRs"]);
+  });
+
+  it("no component builds a PRs suffix next to a count by hand", () => {
+    const files = import.meta.glob("/src/components/*.tsx", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+    const offenders = Object.entries(files)
+      .filter(([path]) => !/\.test\.tsx$/.test(path))
+      .flatMap(([path, text]) =>
+        text
+          .split("\n")
+          .map((line, at) => ({ line, at: at + 1 }))
+          .filter(({ line }) => /\}\s*PRs\b/.test(line) || /["'`]PRs["'`]/.test(line))
+          .map(({ line, at }) => `${path}:${at}: ${line.trim()}`),
+      );
+    expect(offenders, "route PR counts through prCount / prFraction in src/run/words.ts").toEqual([]);
   });
 });

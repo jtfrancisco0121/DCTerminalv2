@@ -395,6 +395,16 @@ export const USER_STEPS: ReadonlyArray<string> = ["plan-approval", "ship-approva
 /** PR states that count as done in `n/m PRs` (the same set as src-tauri/src/observe/attention.rs). */
 export const PR_DONE_STATES: ReadonlyArray<string> = ["reviewed", "drafted", "opened", "pushed", "local-only"];
 
+/** "1 PR", "2 PRs", "0 PRs": the one PR plural rule of the UI. */
+export function prCount(n: number): string {
+  return `${n} ${n === 1 ? "PR" : "PRs"}`;
+}
+
+/** "0/1 PR", "1/2 PRs": PRs done of total, with the same plural rule. */
+export function prFraction(done: number, total: number): string {
+  return `${done}/${total} ${total === 1 ? "PR" : "PRs"}`;
+}
+
 export function prsDone(prs: ReadonlyArray<{ state: string | null }>): number {
   return prs.filter((pr) => pr.state != null && PR_DONE_STATES.includes(pr.state)).length;
 }
@@ -445,7 +455,7 @@ export function runSteps(
     else status = i < at ? "done" : i === at ? "current" : "todo";
     const you = opts.mode !== "eval" && USER_STEPS.includes(step.key);
     const out: RunStep = { key: step.key, label: step.label, status, you };
-    if (step.key === "building" && prs.total > 0) out.extra = `${prs.done}/${prs.total} PRs`;
+    if (step.key === "building" && prs.total > 0) out.extra = prFraction(prs.done, prs.total);
     return out;
   });
   return { steps, failed };
@@ -509,7 +519,7 @@ export type TabProgress = {
 export function tabProgress(reading: TabReading | null | undefined): TabProgress | null {
   if (!reading || !reading.runId || !reading.stage) return null;
   const { stage, prsDone: done, prsTotal: total } = reading;
-  const prs = total > 0 ? `${done}/${total} PRs` : null;
+  const prs = total > 0 ? prFraction(done, total) : null;
   const join = (head: string) => (prs ? `${head} · ${prs}` : head);
   if (stage === "failed") return { fraction: 1, tone: "danger", waiting: false, title: join("Failed") };
   if (stage === "done") return { fraction: 1, tone: "success", waiting: false, title: join("Done") };

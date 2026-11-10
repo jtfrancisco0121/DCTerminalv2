@@ -39,6 +39,20 @@ describe("the faked backend", () => {
     expect(() => fakeAnswer("start_run")).toThrow("fake: start_run not faked");
   });
 
+  it("keeps saved Web QA targets for get_settings in the session", async () => {
+    const internals = installed();
+    const before = (await internals.invoke("get_settings")) as { webQa: { targets: unknown[] } };
+    expect(before.webQa.targets).toEqual([]);
+    const target = { id: "t-1", name: "Local", allowlist: ["http://localhost:5173/"], username: "", clickupListId: null, charters: [] };
+    const saved = (await internals.invoke("webqa_targets_save", { targets: [target] })) as { targets: unknown[] };
+    expect(saved.targets).toEqual([target]);
+    const after = (await internals.invoke("get_settings")) as { webQa: { targets: unknown[] } };
+    expect(after.webQa.targets).toEqual([target]);
+    // A second fake (a reload) starts again with the fixture's none.
+    const fresh = (await installed().invoke("get_settings")) as { webQa: { targets: unknown[] } };
+    expect(fresh.webQa.targets).toEqual([]);
+  });
+
   it("hands out a copy so a component cannot change the fixture", async () => {
     const internals = installed();
     const first = (await internals.invoke("get_app_state")) as {
