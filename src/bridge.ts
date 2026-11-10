@@ -169,6 +169,19 @@ export type PushSettings = {
 
 export type PushStatus = { saved: string[] };
 
+/** One thing a person should be able to do on a tested site. The flag is off unless the operator turns it on. */
+export type WebQaCharter = { id: string; title: string; text: string; mayChangeData: boolean };
+/** A deployed web app tested from outside: the URLs the test may open, a test account (its password is in the keychain), the charters. */
+export type WebQaTarget = {
+  id: string;
+  name: string;
+  allowlist: string[];
+  username: string;
+  clickupListId: string | null;
+  charters: WebQaCharter[];
+};
+export type WebQaSettings = { targets: WebQaTarget[] };
+
 export type SettingsView = {
   terminal: TerminalSettings;
   ui: UiSettings;
@@ -180,6 +193,8 @@ export type SettingsView = {
   push?: PushSettings;
   /** Per account: auto-post ClickUp comments after ship approval and the user's click (missing: off). */
   clickup?: { autoPost: Record<string, boolean> };
+  /** Web QA targets (Settings › Web QA); never a password. Absent from older test fixtures. */
+  webQa?: WebQaSettings;
   accounts: ResolvedClaudeAccount[];
   configDirEnv: string | null;
 };

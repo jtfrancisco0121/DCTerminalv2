@@ -67,6 +67,27 @@
     "clickup": {
       "autoPost": {},
       "doneStatus": {}
+    },
+    "webQa": {
+      "targets": []
     }
+  },
+  "webqa_targets_save": {
+    "targets": []
+  },
+  "webqa_password_status": {
+    "targetId": "t-1",
+    "saved": false,
+    "problem": null
+  },
+  "webqa_password_set": {
+    "targetId": "t-1",
+    "saved": false,
+    "problem": null
+  },
+  "webqa_password_clear": {
+    "targetId": "t-1",
+    "saved": false,
+    "problem": null
   }
 }

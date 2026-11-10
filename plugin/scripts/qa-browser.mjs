@@ -82,7 +82,7 @@ export function isLoopbackUrl(value) {
 
 /** One allowlist entry parsed: an http(s) origin plus an optional path prefix. Null for anything else. */
 export function parseAllowEntry(entry) {
-  if (typeof entry !== "string" || /[\\\s\u0000-\u001f]/.test(entry)) return null;
+  if (typeof entry !== "string" || /[\\\s\u0000-\u001f?#]/.test(entry)) return null;
   let url;
   try {
     url = new URL(entry);

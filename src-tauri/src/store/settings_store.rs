@@ -447,6 +447,47 @@ pub struct SettingsFile {
     /// `setup` / `copyFiles`). Missing: auto-detect, copy nothing.
     #[serde(default)]
     pub worktree_setup: std::collections::BTreeMap<String, RepoSetup>,
+    /// Web QA targets (docs/run-folder.md, "Web QA mode"). Never holds a password: that is in the keychain.
+    #[serde(default)]
+    pub web_qa: WebQaSettings,
+}
+
+/// One charter of a web QA target: something a person should be able to do on the site.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WebQaCharter {
+    pub id: String,
+    pub title: String,
+    pub text: String,
+    /// Off by default: a charter may submit forms and change data only when the operator says so.
+    #[serde(default)]
+    pub may_change_data: bool,
+}
+
+/// A deployed web app that can be tested from outside, and the test account to sign in with.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WebQaTarget {
+    pub id: String,
+    pub name: String,
+    /// The only URLs the driver opens (an http(s) origin and an optional path prefix each).
+    #[serde(default)]
+    pub allowlist: Vec<String>,
+    /// The test account's user name. The password is in the keychain (service `dcterminalv2.webqa`, account = `id`).
+    #[serde(default)]
+    pub username: String,
+    /// The ClickUp list that gets a task for each ticked finding.
+    #[serde(default)]
+    pub clickup_list_id: Option<String>,
+    #[serde(default)]
+    pub charters: Vec<WebQaCharter>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WebQaSettings {
+    #[serde(default)]
+    pub targets: Vec<WebQaTarget>,
 }
 
 /// Per-account ClickUp settings.
@@ -537,6 +578,247 @@ pub fn loopback_http_url(url: &str) -> bool {
             host.to_ascii_lowercase().as_str(),
             "127.0.0.1" | "localhost" | "[::1]"
         )
+}
+
+// ---- web QA: the allowlist rule, the same one the driver applies (plugin/scripts/qa-browser.mjs `isAllowedUrl`) ------
+
+struct HttpUrl {
+    https: bool,
+    host: String,
+    port: u16,
+    /// Dot segments resolved (`%2e` counts as a dot), no query or fragment.
+    path: String,
+    has_query_or_fragment: bool,
+}
+
+/// An http(s) URL with no userinfo, white space, control character or backslash; None for anything else.
+fn parse_http_url(text: &str) -> Option<HttpUrl> {
+    if text
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
+    {
+        return None;
+    }
+    let (scheme, rest) = text.split_once("://")?;
+    let https = match scheme.to_ascii_lowercase().as_str() {
+        "https" => true,
+        "http" => false,
+        _ => return None,
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_end);
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
+        let (host, after) = inner.split_once(']')?;
+        let port = match after {
+            "" => "",
+            _ => after.strip_prefix(':')?,
+        };
+        if host.is_empty()
+            || !host
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.')
+        {
+            return None;
+        }
+        (format!("[{}]", host.to_ascii_lowercase()), port)
+    } else {
+        let (host, port) = authority.split_once(':').unwrap_or((authority, ""));
+        if host.is_empty()
+            || !host
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+        {
+            return None;
+        }
+        (host.to_ascii_lowercase(), port)
+    };
+    let default_port = if https { 443 } else { 80 };
+    let port = if port.is_empty() {
+        default_port
+    } else if port.len() <= 5 && port.chars().all(|c| c.is_ascii_digit()) {
+        port.parse::<u16>().ok().filter(|p| *p > 0)?
+    } else {
+        return None;
+    };
+    let has_query_or_fragment = tail.contains('?') || tail.contains('#');
+    let raw_path = tail.split(['?', '#']).next().unwrap_or("");
+    let mut segments: Vec<&str> = Vec::new();
+    let pieces: Vec<&str> = raw_path.trim_start_matches('/').split('/').collect();
+    for (i, piece) in pieces.iter().enumerate() {
+        let last = i + 1 == pieces.len();
+        let lower = piece.to_ascii_lowercase();
+        let dot = matches!(lower.as_str(), "." | "%2e");
+        let dotdot = matches!(lower.as_str(), ".." | ".%2e" | "%2e." | "%2e%2e");
+        if dotdot {
+            segments.pop();
+            if last {
+                segments.push("");
+            }
+        } else if dot {
+            if last {
+                segments.push("");
+            }
+        } else {
+            segments.push(piece);
+        }
+    }
+    let path = format!("/{}", segments.join("/"));
+    Some(HttpUrl {
+        https,
+        host,
+        port,
+        path,
+        has_query_or_fragment,
+    })
+}
+
+/// An allowlist entry: an http(s) origin with an optional path prefix, and no userinfo, query or fragment.
+pub fn allowlist_entry_ok(entry: &str) -> bool {
+    parse_http_url(entry).is_some_and(|u| !u.has_query_or_fragment)
+}
+
+/// Whether `url` may be opened for `allowlist`: the same scheme, host and effective port as an entry, and a path that is
+/// the entry's prefix or below it at a `/` boundary. Lookalike hosts, userinfo and other schemes never match.
+/// `fixtures/webqa/urls.json` holds the cases both this and the driver must agree on. The driver is what enforces the
+/// rule at run time; this is its checked twin (the app keeps the same answer for any URL it shows or validates).
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn url_allowed(url: &str, allowlist: &[String]) -> bool {
+    let Some(target) = parse_http_url(url) else {
+        return false;
+    };
+    allowlist.iter().any(|entry| {
+        let Some(e) = parse_http_url(entry).filter(|e| !e.has_query_or_fragment) else {
+            return false;
+        };
+        let prefix = e.path.trim_end_matches('/');
+        e.https == target.https
+            && e.host == target.host
+            && e.port == target.port
+            && (prefix.is_empty()
+                || target.path == prefix
+                || target.path.starts_with(&format!("{prefix}/")))
+    })
+}
+
+pub const MAX_WEBQA_TARGETS: usize = 20;
+pub const MAX_WEBQA_ALLOWLIST: usize = 20;
+pub const MAX_WEBQA_CHARTERS: usize = 30;
+
+fn webqa_id_ok(id: &str, max: usize) -> bool {
+    !id.is_empty()
+        && id.len() <= max
+        && id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
+fn plain_line(text: &str, max: usize) -> bool {
+    text.chars().count() <= max && !text.chars().any(char::is_control)
+}
+
+/// Trimmed, checked and tidied web QA targets: unique names, valid allowlist entries, charters ordered by title (a new
+/// target or charter without an id gets one). A bad value refuses the whole save, naming the target.
+pub fn clean_web_qa_targets(next: Vec<WebQaTarget>) -> Result<Vec<WebQaTarget>, String> {
+    if next.len() > MAX_WEBQA_TARGETS {
+        return Err(format!("At most {MAX_WEBQA_TARGETS} web QA targets."));
+    }
+    let mut out: Vec<WebQaTarget> = Vec::new();
+    for mut target in next {
+        target.name = target.name.trim().to_string();
+        if target.name.is_empty() || !plain_line(&target.name, 60) {
+            return Err("Every web QA target needs a name of at most 60 characters.".into());
+        }
+        let name = target.name.clone();
+        if out.iter().any(|t| t.name.eq_ignore_ascii_case(&name)) {
+            return Err(format!(
+                "Two web QA targets are called {name}. Names must differ."
+            ));
+        }
+        target.id = target.id.trim().to_string();
+        if target.id.is_empty() {
+            target.id = format!("t-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+        }
+        if !webqa_id_ok(&target.id, 40) || out.iter().any(|t| t.id == target.id) {
+            return Err(format!(
+                "{name}: the target id is not valid or is used twice."
+            ));
+        }
+        target.allowlist = target
+            .allowlist
+            .iter()
+            .map(|e| e.trim().to_string())
+            .filter(|e| !e.is_empty())
+            .collect();
+        if target.allowlist.is_empty() || target.allowlist.len() > MAX_WEBQA_ALLOWLIST {
+            return Err(format!(
+                "{name}: add between 1 and {MAX_WEBQA_ALLOWLIST} URLs the test may open."
+            ));
+        }
+        for entry in &target.allowlist {
+            if !allowlist_entry_ok(entry) || entry.len() > 300 {
+                return Err(format!(
+                    "{name}: {entry} is not a URL the test can use. Use http:// or https://, no user name, no ? or #."
+                ));
+            }
+        }
+        if (1..target.allowlist.len()).any(|i| target.allowlist[..i].contains(&target.allowlist[i]))
+        {
+            return Err(format!("{name}: a URL is listed twice."));
+        }
+        target.username = target.username.trim().to_string();
+        if !plain_line(&target.username, 120) {
+            return Err(format!("{name}: the user name is not valid."));
+        }
+        target.clickup_list_id = target
+            .clickup_list_id
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty());
+        if let Some(list) = &target.clickup_list_id {
+            if !webqa_id_ok(list, 40) {
+                return Err(format!("{name}: the ClickUp list id is not valid."));
+            }
+        }
+        if target.charters.len() > MAX_WEBQA_CHARTERS {
+            return Err(format!("{name}: at most {MAX_WEBQA_CHARTERS} charters."));
+        }
+        let mut seen: Vec<String> = Vec::new();
+        for (n, charter) in target.charters.iter_mut().enumerate() {
+            charter.title = charter.title.trim().to_string();
+            charter.text = charter.text.trim().to_string();
+            if charter.title.is_empty() || !plain_line(&charter.title, 120) {
+                return Err(format!(
+                    "{name}: every charter needs a title of at most 120 characters."
+                ));
+            }
+            if charter.text.chars().count() > 2000 {
+                return Err(format!(
+                    "{name}: the charter {} is longer than 2000 characters.",
+                    charter.title
+                ));
+            }
+            charter.id = charter.id.trim().to_string();
+            if charter.id.is_empty() {
+                charter.id = format!("c{}", n + 1);
+                while seen.contains(&charter.id) {
+                    charter.id.push('x');
+                }
+            }
+            if !webqa_id_ok(&charter.id, 40) || seen.contains(&charter.id) {
+                return Err(format!(
+                    "{name}: the charter id {} is not valid or is used twice.",
+                    charter.id
+                ));
+            }
+            seen.push(charter.id.clone());
+        }
+        target.charters.sort_by_key(|c| c.title.to_lowercase());
+        out.push(target);
+    }
+    Ok(out)
 }
 
 pub const MAX_COPY_FILES: usize = 20;
@@ -834,6 +1116,7 @@ impl Default for SettingsFile {
             push: PushSettings::default(),
             clickup: ClickUpSettings::default(),
             worktree_setup: Default::default(),
+            web_qa: WebQaSettings::default(),
         }
     }
 }
@@ -1008,6 +1291,18 @@ impl SettingsStore {
 
     pub fn clickup(&self) -> &ClickUpSettings {
         &self.data.clickup
+    }
+
+    pub fn web_qa(&self) -> &WebQaSettings {
+        &self.data.web_qa
+    }
+
+    /// Saves the whole target list (checked and tidied). A refused save keeps the old list.
+    pub fn set_web_qa_targets(&mut self, next: Vec<WebQaTarget>) -> Result<WebQaSettings, String> {
+        let clean = clean_web_qa_targets(next)?;
+        self.data.web_qa = WebQaSettings { targets: clean };
+        self.save()?;
+        Ok(self.data.web_qa.clone())
     }
 
     pub fn set_auto_post(&mut self, account_id: &str, on: bool) -> Result<(), String> {

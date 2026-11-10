@@ -1378,6 +1378,57 @@
           }
         },
         "type": "object"
+      },
+      "webQa": {
+        "fields": {
+          "targets": {
+            "items": {
+              "fields": {
+                "allowlist": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "charters": {
+                  "items": {
+                    "fields": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "mayChangeData": {
+                        "type": "boolean"
+                      },
+                      "text": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "clickupListId": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "username": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
       }
     },
     "type": "object"
@@ -2563,6 +2614,99 @@
       "type": "object"
     },
     "type": "array"
+  },
+  "webqa_password_clear": {
+    "fields": {
+      "problem": {
+        "type": "string"
+      },
+      "saved": {
+        "type": "boolean"
+      },
+      "targetId": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "webqa_password_set": {
+    "fields": {
+      "problem": {
+        "type": "string"
+      },
+      "saved": {
+        "type": "boolean"
+      },
+      "targetId": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "webqa_password_status": {
+    "fields": {
+      "problem": {
+        "type": "string"
+      },
+      "saved": {
+        "type": "boolean"
+      },
+      "targetId": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "webqa_targets_save": {
+    "fields": {
+      "targets": {
+        "items": {
+          "fields": {
+            "allowlist": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "charters": {
+              "items": {
+                "fields": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "mayChangeData": {
+                    "type": "boolean"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "clickupListId": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "username": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
   },
   "window_context": {
     "fields": {

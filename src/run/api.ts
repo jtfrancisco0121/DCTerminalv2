@@ -5,7 +5,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { TabSummary } from "../bridge";
+import type { TabSummary, WebQaSettings, WebQaTarget } from "../bridge";
 import type { ClickUpStart } from "../clickup/api";
 
 export type Repo = {
@@ -383,3 +383,15 @@ export const runQaImage = (runDir: string, name: string) => invoke<string>("run_
 export const readRunFile = (runDir: string, path: string) => invoke<string>("read_run_file", { runDir, path });
 export const memoryStatus = (folder: string) => invoke<MemoryStatus>("memory_status", { folder });
 export const readMemoryFile = (path: string) => invoke<string>("read_memory_file", { path });
+
+// ---- Web QA (src-tauri/src/run/webqa.rs) ----------------------------------------------------------------------------
+
+/** Whether a target's test password is saved in the keychain, or why that cannot be told. */
+export type PasswordStatus = { targetId: string; saved: boolean; problem: string | null };
+
+/** Saves the whole target list (checked and tidied by the app: ids, charter order); a bad value refuses it with the reason. */
+export const webqaTargetsSave = (targets: WebQaTarget[]) => invoke<WebQaSettings>("webqa_targets_save", { targets });
+export const webqaPasswordStatus = (targetId: string) => invoke<PasswordStatus>("webqa_password_status", { targetId });
+export const webqaPasswordSet = (targetId: string, password: string) =>
+  invoke<PasswordStatus>("webqa_password_set", { targetId, password });
+export const webqaPasswordClear = (targetId: string) => invoke<PasswordStatus>("webqa_password_clear", { targetId });

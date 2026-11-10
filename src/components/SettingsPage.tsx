@@ -35,6 +35,7 @@ import { Dialog } from "./Dialog";
 import { useDialogFocus } from "./useDialogFocus";
 import { errorText, InlineNotice } from "./InlineNotice";
 import { ClickUpTokens } from "../clickup/ClickUpTokens";
+import { WebQaTargets } from "./WebQaTargets";
 
 type Props = {
   view: SettingsView;
@@ -909,6 +910,8 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
           />
         </label>
       </section>
+
+      <WebQaTargets targets={view.webQa?.targets ?? []} onSaved={(webQa) => onSaved({ ...view, webQa })} />
 
       <section className="settings-section" aria-label="Activity">
         <h2>Activity</h2>

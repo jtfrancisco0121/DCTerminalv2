@@ -27,6 +27,8 @@ pub struct SettingsView {
     pub push: PushSettings,
     /// ClickUp per-account switches (auto-post after ship approval).
     pub clickup: crate::store::settings_store::ClickUpSettings,
+    /// Web QA targets (never a password: that is in the keychain).
+    pub web_qa: crate::store::settings_store::WebQaSettings,
     /// Each saved account with its resolved folder. Login is a separate call.
     pub accounts: Vec<ResolvedClaudeAccount>,
     /// Value of `DCTV2_CLAUDE_CONFIG_DIR` when set (the first account only).
@@ -68,6 +70,7 @@ fn view(settings: &SettingsStore) -> SettingsView {
         notify: settings.notify().clone(),
         push: settings.push().clone(),
         clickup: settings.clickup().clone(),
+        web_qa: settings.web_qa().clone(),
         accounts,
         config_dir_env: env,
     }

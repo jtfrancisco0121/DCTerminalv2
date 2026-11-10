@@ -31,6 +31,7 @@ pub mod slop;
 pub mod status;
 pub mod timeline;
 pub mod triage;
+pub mod webqa;
 
 use crate::commands::{tab_summary, TabSummary};
 use crate::paths::validate_working_folder;

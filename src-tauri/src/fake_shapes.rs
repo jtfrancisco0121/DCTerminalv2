@@ -321,6 +321,25 @@ fn session_view() -> Sample {
     of(view).maps(&["phases"]).free(&["page.events[].attrs"])
 }
 
+fn web_qa_settings() -> crate::store::settings_store::WebQaSettings {
+    use crate::store::settings_store::*;
+    WebQaSettings {
+        targets: vec![WebQaTarget {
+            id: "t-1".into(),
+            name: "Staging".into(),
+            allowlist: vec!["https://app.example.com/".into()],
+            username: "tester".into(),
+            clickup_list_id: Some("901".into()),
+            charters: vec![WebQaCharter {
+                id: "c1".into(),
+                title: "Sign in".into(),
+                text: "Sign in and see the home page".into(),
+                may_change_data: false,
+            }],
+        }],
+    }
+}
+
 fn settings_view() -> Sample {
     use crate::store::settings_store::*;
     let terminal: TerminalSettings =
@@ -353,6 +372,7 @@ fn settings_view() -> Sample {
             auto_post: BTreeMap::from([("default".to_string(), true)]),
             done_status: BTreeMap::from([("default".to_string(), "done".to_string())]),
         },
+        web_qa: web_qa_settings(),
         accounts: vec![ResolvedClaudeAccount {
             id: "default".into(),
             name: "Personal".into(),
@@ -824,6 +844,21 @@ fn table() -> BTreeMap<&'static str, Sample> {
 
     // ---- settings.json ----
     t.insert("get_settings", settings_view());
+    t.insert("webqa_targets_save", of(web_qa_settings()));
+    for command in [
+        "webqa_password_status",
+        "webqa_password_set",
+        "webqa_password_clear",
+    ] {
+        t.insert(
+            command,
+            of(crate::run::webqa::PasswordStatus {
+                target_id: "t-1".into(),
+                saved: true,
+                problem: Some("p".into()),
+            }),
+        );
+    }
     t
 }
 
