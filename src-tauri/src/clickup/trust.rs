@@ -207,12 +207,45 @@ fn read_signed<T: DeserializeOwned>(
 pub const TRIAGE_APPROVAL_FILE: &str = "triage-approval.json";
 pub const TRIAGE_POSTED_FILE: &str = "triage-posted.json";
 
+/// The signed web QA records: the operator's ticked findings and the log of the tasks sent (same shape as triage's).
+pub const WEBQA_APPROVAL_FILE: &str = "webqa-approval.json";
+pub const WEBQA_POSTED_FILE: &str = "webqa-posted.json";
+
 fn triage_name(name: &str) -> Result<(), String> {
-    if name == TRIAGE_APPROVAL_FILE || name == TRIAGE_POSTED_FILE {
+    if [
+        TRIAGE_APPROVAL_FILE,
+        TRIAGE_POSTED_FILE,
+        WEBQA_APPROVAL_FILE,
+        WEBQA_POSTED_FILE,
+    ]
+    .contains(&name)
+    {
         Ok(())
     } else {
-        Err(format!("{name} is not a triage record"))
+        Err(format!("{name} is not a triage or web QA record"))
     }
+}
+
+/// A pass id: a run id (`r-<date>-<time>-<hex>`) or `release-<version>`. The trust folder of a pass is named by it.
+pub fn valid_pass_id(id: &str) -> bool {
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 60
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.'))
+    };
+    let digits = |s: &str, n: usize| s.len() == n && s.chars().all(|c| c.is_ascii_digit());
+    if let Some(version) = id.strip_prefix("release-") {
+        return plain(version) && version.chars().next().is_some_and(|c| c.is_ascii_digit());
+    }
+    let parts: Vec<&str> = id.split('-').collect();
+    parts.len() == 4
+        && parts[0] == "r"
+        && digits(parts[1], 8)
+        && parts[2].len() >= 4
+        && parts[2].chars().all(|c| c.is_ascii_digit())
+        && !parts[3].is_empty()
+        && parts[3].chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Reads one signed triage record; `Ok(None)` when it is not there, `Err(TAMPERED)` on a bad MAC.

@@ -23,6 +23,7 @@ import { BatchOverview } from "./BatchOverview";
 import { EpicsSection } from "./EpicsSection";
 import { TriageSection } from "./TriageSection";
 import { TriageStartDialog } from "./TriageStartDialog";
+import { WebQaSection } from "./WebQaSection";
 
 type Props = {
   windowId: string;
@@ -108,6 +109,7 @@ export function RunsView({ windowId, onClose, onStarted, onAnalytics, onEvalResu
       </div>
       <TriageSection />
       {triageOpen && <TriageStartDialog windowId={windowId} onClose={() => setTriageOpen(false)} onStarted={() => {}} />}
+      <WebQaSection windowId={windowId} onStarted={(run) => onStarted(run)} />
       <div className="runs-filters">
         <input
           className="text-input"

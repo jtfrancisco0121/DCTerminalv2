@@ -43,11 +43,16 @@ fn open_regular(path: &Path) -> Result<std::fs::File, String> {
 /// The `data:image/png;base64,…` URL of `<run_dir>/reviews/qa/<name>.png`.
 pub fn qa_image_data_url(run_dir: &Path, name: &str) -> Result<String, String> {
     use base64::Engine;
+    // A web QA screenshot is named `webqa/shots/<stem>`; a PR's QA screenshot is a plain stem.
+    let (parts, name): ([&str; 2], &str) = match name.strip_prefix("webqa/shots/") {
+        Some(stem) => (["webqa", "shots"], stem),
+        None => (["reviews", "qa"], name),
+    };
     if !valid_name(name) {
         return Err("not a QA image name".into());
     }
     let mut dir = run_dir.to_path_buf();
-    for part in ["reviews", "qa"] {
+    for part in parts {
         dir.push(part);
         let meta = std::fs::symlink_metadata(&dir).map_err(|_| "image unavailable".to_string())?;
         if meta.file_type().is_symlink() || !meta.is_dir() {

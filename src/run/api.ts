@@ -395,3 +395,56 @@ export const webqaPasswordStatus = (targetId: string) => invoke<PasswordStatus>(
 export const webqaPasswordSet = (targetId: string, password: string) =>
   invoke<PasswordStatus>("webqa_password_set", { targetId, password });
 export const webqaPasswordClear = (targetId: string) => invoke<PasswordStatus>("webqa_password_clear", { targetId });
+
+/** One charter row of a checked pass (`webqa.json`). `comparison` is null on a first pass and for a charter that passes again. */
+export type WebQaRow = {
+  charter: string;
+  title: string;
+  /** `PASS`, `FAIL` or `ERROR`. */
+  result: string;
+  reason: string;
+  /** `webqa/shots/<name>.png` */
+  shot: string;
+  comparison: "new" | "fixed" | "still-failing" | null;
+};
+export type WebQaFinding = {
+  key: string;
+  title: string;
+  severity: string;
+  steps: string;
+  expected: string;
+  seen: string;
+  shot: string | null;
+  comparison: "new" | "still-failing" | null;
+};
+export type SentTask = { result: string; at: string; message: string | null };
+/** One pass in the Runs view: read only from its digest-valid `webqa.json`. */
+export type PassView = {
+  passId: string;
+  runDir: string | null;
+  release: boolean;
+  createdAt: string | null;
+  stage: string | null;
+  targetId: string | null;
+  targetName: string | null;
+  running: boolean;
+  /** `pass`, `fail` or `error`. */
+  result: string | null;
+  /** Why a finished pass has no checked results. */
+  problem: string | null;
+  rows: WebQaRow[];
+  findings: WebQaFinding[];
+  comparison: { first?: boolean; fixedFindings?: string[] } | null;
+  clickupListId: string | null;
+  /** By `create:<finding index>`. */
+  posted: Record<string, SentTask>;
+};
+export type TaskOutcome = { item: string; result: string; message: string };
+
+export const webqaStart = (windowId: string | null, targetId: string, charterIds: string[]) =>
+  invoke<StartedRun>("webqa_start", { windowId, targetId, charterIds });
+export const webqaOverview = () => invoke<PassView[]>("webqa_overview");
+export const webqaReleaseOpen = (version: string) => invoke<PassView>("webqa_release_open", { version });
+/** Signs the ticked findings (by key); nothing is sent until `webqaApply`. */
+export const webqaApprove = (pass: string, ticked: string[]) => invoke<unknown>("webqa_approve", { pass, ticked });
+export const webqaApply = (windowId: string | null, pass: string) => invoke<TaskOutcome[]>("webqa_apply", { windowId, pass });

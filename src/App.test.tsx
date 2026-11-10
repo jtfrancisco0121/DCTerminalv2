@@ -132,6 +132,11 @@ const startRun = vi.fn(async () => {
   return { tab: runTab, runDir: runTab.runDir };
 });
 vi.mock("./run/api", () => ({
+  webqaOverview: vi.fn(async () => []),
+  webqaReleaseOpen: vi.fn(),
+  webqaApprove: vi.fn(),
+  webqaApply: vi.fn(),
+  webqaStart: vi.fn(),
   runOverview: vi.fn(async () => ({
     pluginDir: "/app/plugin",
     pluginVersion: "abc123",

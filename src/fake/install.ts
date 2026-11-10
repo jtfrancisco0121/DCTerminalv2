@@ -75,6 +75,7 @@ export function installFakeBackend(
         }
         return fakeAnswer(command, fixtures);
       }
+      case "webqa_start":
       case "resume_run": {
         const started = fakeAnswer(command, fixtures) as { tab: { id: string } };
         openedTab = started.tab;

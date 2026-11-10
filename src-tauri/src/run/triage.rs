@@ -32,7 +32,7 @@ pub const NAME_CAP: usize = 200;
 pub const DESCRIPTION_CAP: usize = 10_000;
 
 /// The signing key: the keychain's in the app, a fixed in-memory one under test (the keychain is never touched).
-fn signing_key() -> Result<Key, String> {
+pub(crate) fn signing_key() -> Result<Key, String> {
     #[cfg(test)]
     {
         Ok(trust::tests::key())
@@ -837,6 +837,91 @@ fn may_have_done_it(err: &ClickUpError) -> bool {
     )
 }
 
+/// Sends each create once, from the signed record's text only: name and description capped and secret-scanned, `sending`
+/// saved before the call and the outcome after it, so a crash or a second confirm never creates a task twice. An item
+/// already `posted`, `sending`, `maybe` or `blocked` is skipped; a `failed` one is retried. Triage's [`apply`] and web
+/// QA's findings tickets both go through this one function, so `create_task` has one caller file.
+pub fn create_tasks_from_record(
+    client: &ClickUp,
+    list_id: &str,
+    creates: &[CreateRec],
+    posted: &mut PostedRecord,
+    store: &mut dyn PostStore,
+    now: &dyn Fn() -> String,
+    out: &mut Vec<ApplyOutcome>,
+) -> Result<(), String> {
+    let already = |posted: &PostedRecord, key: &str| {
+        posted.items.get(key).is_some_and(|p| {
+            matches!(
+                p.result.as_str(),
+                "posted" | "sending" | "maybe" | "blocked"
+            )
+        })
+    };
+    for create in creates {
+        let key = format!("create:{}", create.index);
+        if already(posted, &key) {
+            continue;
+        }
+        let name = cap(&create.name, NAME_CAP);
+        let description = cap(&create.description, DESCRIPTION_CAP);
+        if let Some(kind) =
+            crate::clickup::secret_scan::first_hit(&format!("{name}\n{description}"))
+        {
+            let message = format!("Not sent: the text looks like it contains {kind}.");
+            posted.items.insert(
+                key.clone(),
+                PostItem {
+                    result: "blocked".into(),
+                    at: now(),
+                    message: Some(message.clone()),
+                },
+            );
+            store.save(posted)?;
+            out.push(ApplyOutcome {
+                item: key,
+                result: "blocked".into(),
+                message,
+            });
+            continue;
+        }
+        posted.items.insert(
+            key.clone(),
+            PostItem {
+                result: "sending".into(),
+                at: now(),
+                message: None,
+            },
+        );
+        store.save(posted)?;
+        let (result, message) = match client.create_task(list_id, &name, &description) {
+            Ok(()) => ("posted", "created".to_string()),
+            Err(err) if may_have_done_it(&err) => (
+                "maybe",
+                format!(
+                    "{err} ClickUp may have created it: check the list before creating it again."
+                ),
+            ),
+            Err(err) => ("failed", err.to_string()),
+        };
+        posted.items.insert(
+            key.clone(),
+            PostItem {
+                result: result.into(),
+                at: now(),
+                message: Some(message.clone()),
+            },
+        );
+        store.save(posted)?;
+        out.push(ApplyOutcome {
+            item: key,
+            result: result.into(),
+            message,
+        });
+    }
+    Ok(())
+}
+
 /// Sends what the approved `record` names, once each, from the record only (never from triage.md or triage.json).
 /// A `create` goes to `list_id` (name and description capped and secret-scanned); a `close` moves a ticket of the
 /// snapshot to the list's first closed-type status. An item already `posted`, `sending`, `maybe` or `blocked` is
@@ -871,66 +956,16 @@ pub fn apply(
             )
         })
     };
-    for create in &record.creates {
-        let key = format!("create:{}", create.index);
-        if already(posted, &key) {
-            continue;
-        }
-        let name = cap(&create.name, NAME_CAP);
-        let description = cap(&create.description, DESCRIPTION_CAP);
-        if let Some(kind) =
-            crate::clickup::secret_scan::first_hit(&format!("{name}\n{description}"))
-        {
-            let message = format!("Not sent: the text looks like it contains {kind}.");
-            posted.items.insert(
-                key.clone(),
-                PostItem {
-                    result: "blocked".into(),
-                    at: now(),
-                    message: Some(message.clone()),
-                },
-            );
-            save!();
-            out.push(ApplyOutcome {
-                item: key,
-                result: "blocked".into(),
-                message,
-            });
-            continue;
-        }
-        posted.items.insert(
-            key.clone(),
-            PostItem {
-                result: "sending".into(),
-                at: now(),
-                message: None,
-            },
-        );
-        save!();
-        let (result, message) = match client.create_task(list_id, &name, &description) {
-            Ok(()) => ("posted", "created".to_string()),
-            Err(err) if may_have_done_it(&err) => (
-                "maybe",
-                format!(
-                    "{err} ClickUp may have created it: check the list before creating it again."
-                ),
-            ),
-            Err(err) => ("failed", err.to_string()),
-        };
-        posted.items.insert(
-            key.clone(),
-            PostItem {
-                result: result.into(),
-                at: now(),
-                message: Some(message.clone()),
-            },
-        );
-        save!();
-        out.push(ApplyOutcome {
-            item: key,
-            result: result.into(),
-            message,
-        });
+    if let Err(err) = create_tasks_from_record(
+        client,
+        list_id,
+        &record.creates,
+        posted,
+        store,
+        now,
+        &mut out,
+    ) {
+        return Err((std::mem::take(&mut out), err));
     }
     for id in &record.closes {
         let key = format!("close:{id}");

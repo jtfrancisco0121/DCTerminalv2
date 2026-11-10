@@ -37,6 +37,12 @@ vi.mock("../run/api", () => ({
   runOverview: vi.fn(async () => ({ pluginDir: null, pluginVersion: null, roles: [], runs })),
   readRunFile: (...args: unknown[]) => readRunFile(...(args as [])),
   resumeRun: (...args: unknown[]) => resumeRun(...(args as [])),
+  webqaOverview: vi.fn(async () => []),
+  webqaReleaseOpen: vi.fn(),
+  webqaApprove: vi.fn(),
+  webqaApply: vi.fn(),
+  webqaStart: vi.fn(),
+  runQaImage: vi.fn(),
 }));
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: (url: string) => openUrl(url),

@@ -659,6 +659,7 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
             orchestrator_model: ctx.orchestrator.0.clone(),
             orchestrator_mode: ctx.orchestrator.1.clone(),
             triage_list_id: triage_list_id.filter(|_| is_triage),
+            webqa: None,
         };
         if meta.mode.is_some() && clickup.as_ref().is_none_or(|c| c.ticket_ids.is_empty()) {
             return Err(
@@ -728,6 +729,60 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
     })
 }
 
+/// What every run records about its launch (account, versions, orchestrator), for a web QA pass: the caller adds the mode.
+pub(crate) fn webqa_run_meta(
+    app: &AppHandle,
+    window_id: Option<&str>,
+) -> Result<folder::RunMeta, String> {
+    let ctx = launch_context(app, window_id)?;
+    let plugin = plugin_dir(app).ok_or(NO_PLUGIN)?;
+    Ok(folder::RunMeta {
+        plugin_version: launch::plugin_version(&plugin),
+        claude_version: ctx.provider.detect().version,
+        account_id: ctx.account_id.clone(),
+        account_name: ctx.account_name.clone(),
+        config_dir: ctx.provider.config.path.clone(),
+        bmad_version: launch::plugin_version(&plugin.join("bmad")),
+        orchestrator_model: ctx.orchestrator.0.clone(),
+        orchestrator_mode: ctx.orchestrator.1.clone(),
+        ..Default::default()
+    })
+}
+
+/// The Eagle-Eye tab of a web QA pass (`/dcv2:eagle-eye run=<dir>`), started in the pass's scratch folder.
+pub(crate) fn launch_webqa_tab(
+    app: &AppHandle,
+    window_id: Option<&str>,
+    run_dir: &Path,
+) -> Result<TabSummary, String> {
+    let ctx = launch_context(app, window_id)?;
+    let plugin = plugin_dir(app).ok_or(NO_PLUGIN)?;
+    let data = data_dir(app);
+    let memory_dir = memory::memory_dir(&data);
+    let folder = start_folder(&folder::run_folder_of(run_dir).ok_or("This run has no folder.")?)?;
+    let prompt_file = memory::compose(
+        &plugin,
+        &memory_dir,
+        &folder,
+        &run_dir.join("memory-prompt.md"),
+    );
+    let spec = launch::launch_spec(&launch::LaunchInput {
+        role: "eagle-eye".into(),
+        prompt: format!("/dcv2:eagle-eye run={}", run_dir.display()),
+        plugin_dir: plugin.clone(),
+        memory_dir,
+        run_dir: Some(run_dir.to_path_buf()),
+        max_implementers: ctx.run.max_implementers,
+        stop_hooks: ctx.run.stop_hooks,
+        slop_check: ctx.run.slop_check,
+        settings_file: launch::launch_settings_file(&plugin),
+        memory_prompt: prompt_file,
+        orchestrator_model: ctx.orchestrator.0.clone(),
+        orchestrator_mode: ctx.orchestrator.1.clone(),
+    });
+    add_launch_tab(app, window_id, &folder, "Web QA", spec, true)
+}
+
 /// The orchestrator flags of a resumed tab: the run's recorded pair (meta.json, even when its values are
 /// null), else the current settings for a run that recorded none. meta.json is never rewritten.
 fn resume_orchestrator(
@@ -767,6 +822,12 @@ pub async fn resume_run(
                 run_dir: Some(run_dir.display().to_string()),
                 focused: true,
             });
+        }
+        if folder::run_mode_of(&run_dir).as_deref() == Some("web-qa") {
+            // The cleanup tick may have removed the test account's file: it comes back from the keychain.
+            let settings = app.state::<Mutex<SettingsStore>>();
+            let settings = settings.lock().map_err(|e| e.to_string())?;
+            webqa::rewrite_secret(&run_dir, &settings, &webqa::KeychainPasswords)?;
         }
         let folder =
             folder::run_folder_of(&run_dir).ok_or("This run has no folder: line in request.md.")?;

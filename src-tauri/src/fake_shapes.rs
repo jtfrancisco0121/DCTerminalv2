@@ -321,6 +321,37 @@ fn session_view() -> Sample {
     of(view).maps(&["phases"]).free(&["page.events[].attrs"])
 }
 
+fn pass_view() -> crate::run::webqa::PassView {
+    crate::run::webqa::PassView {
+        pass_id: "r-20261110-054207-f172".into(),
+        run_dir: Some("/r".into()),
+        release: false,
+        created_at: Some("2026-11-10T05:42:07Z".into()),
+        stage: Some("done".into()),
+        target_id: Some("t-1".into()),
+        target_name: Some("Staging".into()),
+        running: false,
+        result: Some("fail".into()),
+        problem: Some("p".into()),
+        rows: vec![
+            json!({"charter": "c1", "title": "Sign in", "result": "FAIL", "reason": "r", "shot": "webqa/shots/c1.png", "comparison": "new"}),
+        ],
+        findings: vec![
+            json!({"key": "login button hidden", "title": "Login button hidden", "severity": "high", "steps": "s", "expected": "e", "seen": "x", "shot": "webqa/shots/c1.png", "comparison": "still-failing"}),
+        ],
+        comparison: json!({"first": false, "fixedFindings": ["gone"]}),
+        clickup_list_id: Some("901".into()),
+        posted: std::collections::BTreeMap::from([(
+            "create:0".to_string(),
+            crate::run::triage::PostItem {
+                result: "posted".into(),
+                at: "2026-11-10T06:00:00Z".into(),
+                message: Some("created".into()),
+            },
+        )]),
+    }
+}
+
 fn web_qa_settings() -> crate::store::settings_store::WebQaSettings {
     use crate::store::settings_store::*;
     WebQaSettings {
@@ -845,6 +876,46 @@ fn table() -> BTreeMap<&'static str, Sample> {
     // ---- settings.json ----
     t.insert("get_settings", settings_view());
     t.insert("webqa_targets_save", of(web_qa_settings()));
+    t.insert(
+        "webqa_start",
+        of(crate::run::StartedRun {
+            tab: tab_summary(),
+            run_dir: Some("/r".into()),
+            focused: false,
+        })
+        .nullable(&["runDir", "tab.runDir", "tab.role", "tab.split"]),
+    );
+    t.insert(
+        "webqa_overview",
+        of(vec![pass_view()])
+            .maps(&["[].posted"])
+            .free(&["[].comparison"]),
+    );
+    t.insert(
+        "webqa_release_open",
+        of(pass_view()).maps(&["posted"]).free(&["comparison"]),
+    );
+    t.insert(
+        "webqa_approve",
+        of(crate::run::webqa::WebQaApproval {
+            schema: 1,
+            digest: "d".into(),
+            creates: vec![crate::run::triage::CreateRec {
+                index: 0,
+                name: "n".into(),
+                description: "d".into(),
+            }],
+            at: "2026-11-10T06:00:00Z".into(),
+        }),
+    );
+    t.insert(
+        "webqa_apply",
+        of(vec![crate::run::triage::ApplyOutcome {
+            item: "create:0".into(),
+            result: "posted".into(),
+            message: "created".into(),
+        }]),
+    );
     for command in [
         "webqa_password_status",
         "webqa_password_set",

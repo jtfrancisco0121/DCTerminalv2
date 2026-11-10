@@ -693,6 +693,36 @@ pub fn sweep_qa_servers(
     out
 }
 
+/// Removes `webqa-secret.json` (the web QA test account's password file) from every run that no longer needs it: a `done`
+/// or `failed` run, or a run with no live tab whose secret is older than [`super::webqa::SECRET_GRACE`] (the launch gets
+/// that long). `state.sh` removes it at `done` and `failed` too; this covers a run that died first. Called from the 30 s
+/// cleanup tick, whose first pass is at app start. Returns the run ids cleaned.
+pub fn sweep_webqa_secrets(
+    data: &Path,
+    is_live_run: &dyn Fn(&Path) -> bool,
+    now: std::time::SystemTime,
+) -> Vec<String> {
+    let mut cleaned = Vec::new();
+    for run in super::folder::list_runs(data) {
+        if run.adopted {
+            continue;
+        }
+        let dir = PathBuf::from(&run.run_dir);
+        let secret = dir.join(super::webqa::SECRET_FILE);
+        if std::fs::symlink_metadata(&secret).is_err() {
+            continue;
+        }
+        let finished = matches!(run.stage.as_deref(), Some("done" | "failed"));
+        let old = age_of(&secret, now).is_some_and(|age| age > super::webqa::SECRET_GRACE);
+        if finished || (old && !is_live_run(&dir)) {
+            let _ = std::fs::remove_file(&secret);
+            let _ = append_app_log(&dir, "webqa secret removed (app)");
+            cleaned.push(run.run_id.clone());
+        }
+    }
+    cleaned
+}
+
 /// One pass over the app's own runs (adopted ones are the dev app's): each
 /// run that [`wants_cleanup`] and was not asked about within `ask_every`.
 /// Nothing at all when the setting is off.
@@ -744,6 +774,63 @@ mod tests {
     use std::collections::HashMap;
 
     const RUN: &str = "r-20261027-0900-abcd";
+
+    // ---- the web QA test account's file ---------------------------------------------------------
+
+    /// A run folder under `data/runs` at `stage` holding `webqa-secret.json`, written `age` ago.
+    fn webqa_run(data: &Path, id: &str, stage: &str, age: Duration) -> PathBuf {
+        let dir = data.join("runs").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("status.json"),
+            json!({"schema": 1, "stage": stage}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("meta.json"), r#"{"schema":1,"mode":"web-qa"}"#).unwrap();
+        let secret = dir.join(crate::run::webqa::SECRET_FILE);
+        std::fs::write(&secret, r#"{"username":"u","password":"p"}"#).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&secret)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - age)
+            .unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_cleanup_tick_removes_the_secret_of_a_done_or_failed_run() {
+        let dir = TempDir::new("sweep-webqa-done");
+        let done = webqa_run(dir.path(), "r-done", "done", Duration::from_secs(1));
+        let failed = webqa_run(dir.path(), "r-failed", "failed", Duration::from_secs(1));
+        let out = sweep_webqa_secrets(dir.path(), &|_| true, std::time::SystemTime::now());
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert!(!done.join(crate::run::webqa::SECRET_FILE).exists());
+        assert!(!failed.join(crate::run::webqa::SECRET_FILE).exists());
+        assert!(std::fs::read_to_string(done.join("log.md"))
+            .unwrap()
+            .contains("webqa secret removed (app)"));
+    }
+
+    #[test]
+    fn the_secret_of_a_run_with_no_live_tab_goes_after_two_minutes_not_before() {
+        let dir = TempDir::new("sweep-webqa-old");
+        let old = webqa_run(dir.path(), "r-old", "planning", Duration::from_secs(300));
+        let fresh = webqa_run(dir.path(), "r-fresh", "planning", Duration::from_secs(5));
+        let live = webqa_run(dir.path(), "r-live", "planning", Duration::from_secs(300));
+        let is_live = |d: &Path| d.ends_with("r-live");
+        let out = sweep_webqa_secrets(dir.path(), &is_live, std::time::SystemTime::now());
+        assert_eq!(out, vec!["r-old".to_string()]);
+        assert!(!old.join(crate::run::webqa::SECRET_FILE).exists());
+        assert!(
+            fresh.join(crate::run::webqa::SECRET_FILE).exists(),
+            "a fresh secret with no tab yet is the launch's grace"
+        );
+        assert!(
+            live.join(crate::run::webqa::SECRET_FILE).exists(),
+            "a live run keeps it"
+        );
+    }
 
     // ---- the app's QA server pass --------------------------------------------------------------
 

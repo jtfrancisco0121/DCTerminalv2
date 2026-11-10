@@ -2615,6 +2615,174 @@
     },
     "type": "array"
   },
+  "webqa_apply": {
+    "items": {
+      "fields": {
+        "item": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "type": "array"
+  },
+  "webqa_approve": {
+    "fields": {
+      "at": {
+        "type": "string"
+      },
+      "creates": {
+        "items": {
+          "fields": {
+            "description": {
+              "type": "string"
+            },
+            "index": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "digest": {
+        "type": "string"
+      },
+      "schema": {
+        "type": "number"
+      }
+    },
+    "type": "object"
+  },
+  "webqa_overview": {
+    "items": {
+      "fields": {
+        "clickupListId": {
+          "type": "string"
+        },
+        "comparison": {
+          "free": true,
+          "type": "object"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "findings": {
+          "items": {
+            "fields": {
+              "comparison": {
+                "type": "string"
+              },
+              "expected": {
+                "type": "string"
+              },
+              "key": {
+                "type": "string"
+              },
+              "seen": {
+                "type": "string"
+              },
+              "severity": {
+                "type": "string"
+              },
+              "shot": {
+                "type": "string"
+              },
+              "steps": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "passId": {
+          "type": "string"
+        },
+        "posted": {
+          "map": {
+            "fields": {
+              "at": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "result": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "object"
+        },
+        "problem": {
+          "type": "string"
+        },
+        "release": {
+          "type": "boolean"
+        },
+        "result": {
+          "type": "string"
+        },
+        "rows": {
+          "items": {
+            "fields": {
+              "charter": {
+                "type": "string"
+              },
+              "comparison": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "result": {
+                "type": "string"
+              },
+              "shot": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "runDir": {
+          "type": "string"
+        },
+        "running": {
+          "type": "boolean"
+        },
+        "stage": {
+          "type": "string"
+        },
+        "targetId": {
+          "type": "string"
+        },
+        "targetName": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "type": "array"
+  },
   "webqa_password_clear": {
     "fields": {
       "problem": {
@@ -2653,6 +2821,193 @@
       },
       "targetId": {
         "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "webqa_release_open": {
+    "fields": {
+      "clickupListId": {
+        "type": "string"
+      },
+      "comparison": {
+        "free": true,
+        "type": "object"
+      },
+      "createdAt": {
+        "type": "string"
+      },
+      "findings": {
+        "items": {
+          "fields": {
+            "comparison": {
+              "type": "string"
+            },
+            "expected": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "seen": {
+              "type": "string"
+            },
+            "severity": {
+              "type": "string"
+            },
+            "shot": {
+              "type": "string"
+            },
+            "steps": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "passId": {
+        "type": "string"
+      },
+      "posted": {
+        "map": {
+          "fields": {
+            "at": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "result": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "object"
+      },
+      "problem": {
+        "type": "string"
+      },
+      "release": {
+        "type": "boolean"
+      },
+      "result": {
+        "type": "string"
+      },
+      "rows": {
+        "items": {
+          "fields": {
+            "charter": {
+              "type": "string"
+            },
+            "comparison": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "result": {
+              "type": "string"
+            },
+            "shot": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "runDir": {
+        "type": "string"
+      },
+      "running": {
+        "type": "boolean"
+      },
+      "stage": {
+        "type": "string"
+      },
+      "targetId": {
+        "type": "string"
+      },
+      "targetName": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "webqa_start": {
+    "fields": {
+      "focused": {
+        "type": "boolean"
+      },
+      "runDir": {
+        "nullable": true,
+        "type": "string"
+      },
+      "tab": {
+        "fields": {
+          "customLabel": {
+            "type": "boolean"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "folderStatus": {
+            "type": "string"
+          },
+          "hasSession": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "pendingStart": {
+            "type": "boolean"
+          },
+          "role": {
+            "nullable": true,
+            "type": "string"
+          },
+          "runDir": {
+            "nullable": true,
+            "type": "string"
+          },
+          "split": {
+            "fields": {
+              "cwd": {
+                "type": "string"
+              },
+              "direction": {
+                "type": "string"
+              },
+              "folderStatus": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "ratio": {
+                "type": "number"
+              }
+            },
+            "nullable": true,
+            "type": "object"
+          }
+        },
+        "type": "object"
       }
     },
     "type": "object"

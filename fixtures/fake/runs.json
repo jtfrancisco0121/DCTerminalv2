@@ -125,5 +125,157 @@
   },
   "run_qa_image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
   "triage_overview": [],
-  "triage_blocking": null
+  "triage_blocking": null,
+  "webqa_overview": [
+    {
+      "passId": "r-20261109-101500-a1b2",
+      "runDir": "/fake/runs/r-20261109-101500-a1b2",
+      "release": false,
+      "createdAt": "2026-11-09T10:15:00Z",
+      "stage": "done",
+      "targetId": "t-1",
+      "targetName": "Staging",
+      "running": false,
+      "result": "fail",
+      "problem": null,
+      "rows": [
+        {
+          "charter": "A",
+          "title": "Sign in",
+          "result": "PASS",
+          "reason": "signed in and saw the home page",
+          "shot": "webqa/shots/A.png",
+          "comparison": "fixed"
+        },
+        {
+          "charter": "B",
+          "title": "Search",
+          "result": "FAIL",
+          "reason": "the search box returned nothing",
+          "shot": "webqa/shots/B.png",
+          "comparison": "new"
+        }
+      ],
+      "findings": [
+        {
+          "key": "search returns nothing",
+          "title": "Search returns nothing",
+          "severity": "high",
+          "steps": "Open /search and type a word",
+          "expected": "A list of results",
+          "seen": "An empty list",
+          "shot": "webqa/shots/B.png",
+          "comparison": "new"
+        }
+      ],
+      "comparison": {
+        "first": false,
+        "fixedFindings": []
+      },
+      "clickupListId": "901",
+      "posted": {}
+    },
+    {
+      "passId": "r-20261101-090000-c3d4",
+      "runDir": "/fake/runs/r-20261101-090000-c3d4",
+      "release": false,
+      "createdAt": "2026-11-01T09:00:00Z",
+      "stage": "done",
+      "targetId": "t-1",
+      "targetName": "Staging",
+      "running": false,
+      "result": "fail",
+      "problem": null,
+      "rows": [
+        {
+          "charter": "A",
+          "title": "Sign in",
+          "result": "FAIL",
+          "reason": "the sign in button was missing",
+          "shot": "webqa/shots/A.png",
+          "comparison": "new"
+        },
+        {
+          "charter": "B",
+          "title": "Search",
+          "result": "PASS",
+          "reason": "found three results",
+          "shot": "webqa/shots/B.png",
+          "comparison": "new"
+        }
+      ],
+      "findings": [],
+      "comparison": {
+        "first": true,
+        "fixedFindings": []
+      },
+      "clickupListId": "901",
+      "posted": {}
+    }
+  ],
+  "webqa_release_open": {
+    "passId": "release-0.10.0",
+    "runDir": null,
+    "release": true,
+    "createdAt": "2026-11-08T12:00:00Z",
+    "stage": "done",
+    "targetId": null,
+    "targetName": "Release 0.10.0",
+    "running": false,
+    "result": "pass",
+    "problem": null,
+    "rows": [
+      {
+        "charter": "first-launch",
+        "title": "First launch",
+        "result": "PASS",
+        "reason": "the start screen showed",
+        "shot": "webqa/shots/first-launch.png",
+        "comparison": "new"
+      }
+    ],
+    "findings": [],
+    "comparison": {
+      "first": true,
+      "fixedFindings": []
+    },
+    "clickupListId": null,
+    "posted": {}
+  },
+  "webqa_approve": {
+    "schema": 1,
+    "digest": "fake",
+    "creates": [
+      {
+        "index": 0,
+        "name": "[Web QA] Search returns nothing",
+        "description": "Found by a web QA pass."
+      }
+    ],
+    "at": "2026-11-10T06:00:00Z"
+  },
+  "webqa_apply": [
+    {
+      "item": "create:0",
+      "result": "posted",
+      "message": "created"
+    }
+  ],
+  "webqa_start": {
+    "tab": {
+      "id": "tab_run",
+      "label": "Eagle-Eye · ws",
+      "customLabel": false,
+      "cwd": "/abs/ws",
+      "kind": "claude",
+      "folderStatus": "ok",
+      "hasSession": true,
+      "runDir": "/fake/runs/r-20261022-1304",
+      "role": "eagle-eye-resume",
+      "split": null,
+      "pendingStart": false
+    },
+    "runDir": "/fake/runs/r-20261022-1304",
+    "focused": false
+  }
 }
