@@ -15,6 +15,8 @@
 //                                                       (an element into view, or pixels down: "by" is a number or {"x":0,"y":600})
 //   {"op":"select","selector":"select#theme","label":"Light"}  or  ...,"value":"light"   (sets it, fires input and change;
 //                                                       a missing option fails the step naming it)
+//   {"op":"viewport","width":800,"height":800}        (sets the page size for the rest of the run: width 320..3840, height
+//                                                       240..2160, whole numbers; opens nothing)
 //   {"op":"wait-text","text":"Planning","timeoutMs":5000}
 //   {"op":"text","selector":"main"}                    (selector optional: the whole page)
 //   {"op":"screenshot","name":"S1.1"}                  (writes <out>/S1.1.png)
@@ -207,7 +209,7 @@ async function readSteps(file) {
   return steps;
 }
 
-const OPS = new Set(["open", "click", "type", "press", "scroll", "select", "wait-text", "text", "screenshot"]);
+const OPS = new Set(["open", "click", "type", "press", "scroll", "select", "viewport", "wait-text", "text", "screenshot"]);
 
 // CDP modifier bits.
 const MODIFIER_BITS = { alt: 1, ctrl: 2, meta: 4, shift: 8 };
@@ -285,6 +287,12 @@ function validate(steps, web) {
       if (given.length !== 1) refuse(`step ${i + 1}: scroll needs exactly one of selector, text or by`);
       if (s.by !== undefined && !validBy(s.by)) refuse(`step ${i + 1}: scroll "by" must be a number of pixels or {"x":n,"y":n}`);
       if ((s.selector !== undefined || s.text !== undefined) && !String(s.selector ?? s.text)) refuse(`step ${i + 1}: scroll target is empty`);
+    }
+    if (s.op === "viewport") {
+      const whole = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
+      if (!whole(s.width, 320, 3840) || !whole(s.height, 240, 2160)) {
+        refuse(`step ${i + 1}: viewport needs a whole number width (320..3840) and height (240..2160)`);
+      }
     }
     if (s.op === "select") {
       if (!s.selector || typeof s.selector !== "string") refuse(`step ${i + 1}: select needs a selector`);
@@ -608,6 +616,9 @@ async function main() {
         }
         if (!ok) throw new Error("nothing to scroll to");
         await sleep(100);
+      } else if (s.op === "viewport") {
+        await page("Emulation.setDeviceMetricsOverride", { width: s.width, height: s.height, deviceScaleFactor: 1, mobile: false });
+        extra = { width: s.width, height: s.height };
       } else if (s.op === "select") {
         const wanted = s.label !== undefined ? { by: "label", text: String(s.label) } : { by: "value", text: String(s.value) };
         const r = await evaluate(`(() => {

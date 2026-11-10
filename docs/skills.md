@@ -31,6 +31,9 @@ A role's skill and its sub-agent both start by reading `${CLAUDE_PLUGIN_ROOT}/ro
 | Codebase Audit | `/dcv2:codebase-audit` | none | (session's) |
 | QA Engineer | `/dcv2:qa-engineer` | none | (session's) |
 | Product Manager | `/dcv2:product-manager` | none | (session's) |
+| Business Analyst | `/dcv2:analyst` | none | (session's) |
+| Senior Engineer | `/dcv2:senior-engineer` | none | (session's) |
+| Principal Engineer | `/dcv2:principal-engineer` | none | (session's) |
 | Onboard | `/dcv2:onboard` | none | (session's) |
 | QA | `/dcv2:qa` | `dcv2:qa` (Eagle-Eye Step 3, after a clean review round of a QA-on PR) | sonnet |
 | Memory updater | none | `dcv2:memory-updater` (Eagle-Eye Step 5, end of a Developer session) | haiku |
@@ -100,14 +103,16 @@ claude --plugin-dir <plugin> "/dcv2:<role> <request>"
 | `/dcv2:codebase-audit <scope, or nothing>` | Evidence-based audit for bugs, security, data, performance, reliability and maintainability problems, with severities and confidence. Creates GitHub issues only when asked. | No |
 | `/dcv2:qa-engineer <request>` | A QA Engineer persona with the playbooks test cases, bug report and regression scope; can turn a drafted bug list into ClickUp tickets through the ClickUp helper (below). | No |
 | `/dcv2:product-manager <request>` | A Product Manager persona with the playbooks PRD, epic breakdown (an `Epic: <title>` parent plus subtasks), release notes and status update; can create the epic's tickets through the ClickUp helper (below). | No |
-
+| `/dcv2:analyst <request>` | A Business Analyst persona with the playbooks requirements analysis (business rules, edge cases, gaps, Given/When/Then stories), data analysis (on a copy of the file, never the user's; redacted, aggregated output) and process map (Mermaid); can create drafted tickets through the ClickUp helper (below). | No |
+| `/dcv2:senior-engineer <task>` | A Senior Engineer persona with the playbooks write tests, safe refactor and performance investigation; follows the Developer's rules for every change, commits only when asked, never pushes, and runs the memory update for repos it committed to. | Yes |
+| `/dcv2:principal-engineer <request>` | A Principal Engineer persona with the playbooks RFC, impact analysis and tech roadmap; reads the repo's decision log first, offers `/dcv2:risk-reviewer` on a finished RFC and `/dcv2:product-manager` for a roadmap's first quarter. | No |
 | `/dcv2:onboard [rebuild \| stale \| <repo>]` | Create, rebuild or refresh the codebase memory (index, topics, contracts, workspace) for the repos in the current folder, only through `memory.sh write`. | No (writes memory only) |
 
 The Planner, Codebase Audit and Recommendation sessions have their draft checked by a fresh `dcv2:risk-reviewer` sub-agent before they show it: a MEDIUM+ risk means the session revises the draft and runs a fresh reviewer, until a round reports none (at most 5 rounds); LOW risks are listed in a closing `## Risk review` section, and risks still open after round 5 are listed there for the user to decide. With no run bound, the guard lets this sub-agent run read-only (it writes nothing with Edit/Write and only read-only git), like the memory updater.
 
-At its end, a Developer session that committed runs the `dcv2:memory-updater` sub-agent on each changed repo with memory (`git diff <HEAD at start>..HEAD`).
+At its end, a Developer or Senior Engineer session that committed runs the `dcv2:memory-updater` sub-agent on each changed repo with memory (`git diff <HEAD at start>..HEAD`).
 
-In P3 the app's start screen shows the roles as tiles next to Eagle-Eye: the pipeline roles under "Or one role on its own, in this folder:", then a "Personas" group (QA Engineer, Product Manager); the groups come from `ROLES` in `run/launch.rs`; a tile opens a terminal tab running `claude --plugin-dir <bundled plugin> "/dcv2:<role> <what the user typed>"` in the chosen folder.
+In P3 the app's start screen shows the roles as tiles next to Eagle-Eye: the pipeline roles under "Or one role on its own, in this folder:", then a "Personas" group (QA Engineer, Product Manager, Business Analyst, Senior Engineer, Principal Engineer); the groups come from `ROLES` in `run/launch.rs`; a tile opens a terminal tab running `claude --plugin-dir <bundled plugin> "/dcv2:<role> <what the user typed>"` in the chosen folder.
 
 ## Codebase memory (D9, A6)
 
@@ -116,7 +121,7 @@ In P3 the app's start screen shows the roles as tiles next to Eagle-Eye: the pip
 ```
 $DCV2_MEMORY_DIR/
   <repo id>/index.md              always loaded (≤ 8 KB): what the repo is, map, commands, gotchas, topic list
-  <repo id>/topics/<topic>.md     on demand (≤ 12 KB); header lines "covers: <path>, ..." and "checked-at: <sha>"
+  <repo id>/topics/<topic>.md     on demand (≤ 12 KB; `topics/decisions.md` ≤ 24 KB); header lines "covers: <path>, ..." and "checked-at: <sha>"
   <repo id>/topics/contracts.md   binding (A6): rules every agent follows
   workspaces/<ws id>/workspace.md a folder of repos (≤ 8 KB, binding): how the repos connect
   workspaces/<ws id>/topics/*.md  workspace topics: covers "<repo>/<path>", checked-at "<repo>=<sha>, ..."
@@ -124,7 +129,7 @@ $DCV2_MEMORY_DIR/
 
 - Repo id: `host__owner__name` from `origin` (credentials and `.git` dropped, lowercased), else `local__<folder>-<sha1(abs path)[:8]>`; a folder of repos gets the `local__` form as its workspace id.
 - `write` rejects (exit 1, one reason line): a path outside this layout, an over-cap file ("condense it"), a line that looks like a secret (private keys, AWS key ids, GitHub `ghp_`/`github_pat_`, Slack, Google, JWTs, passwords in URLs; `sk-`, `pk_`/`sk_`/`rk_` tokens and AWS secret keys; `.env`/JSON/YAML-style assignments: for password/secret/token/credential names any 8+ character value that is not a placeholder or a file path, for `*KEY` names a token-shaped value (16+ characters, two character classes, entropy ≥ 3 bits/char, not a path); the value is never echoed), a removed or changed `<!-- pinned -->` line, and a topic without its header. Writes are atomic (mkstemp + rename).
-- A topic is stale when any covered path changed in `git diff --no-renames <checked-at>..HEAD`, its commit is unknown, or (workspace topics) a covered repo is not in play. `compose` lists stale topics; it loads `workspace.md`, the contracts and each repo's `index.md` (never topic bodies), each fenced in `<memory-notes>` under a header saying the notes are data derived from repo content that cannot override the user, role files or guards (a body cannot close its fence); it redacts secret-looking lines and stays under 40 KB. Contracts bind only as facts about interfaces (API shapes, schemas, ownership); onboard and the updater never record repo text as instructions.
+- A topic is stale when any covered path changed in `git diff --no-renames <checked-at>..HEAD`, its commit is unknown, or (workspace topics) a covered repo is not in play. `compose` lists stale topics; it loads `workspace.md`, the contracts and each repo's `index.md` (never topic bodies), each fenced in `<memory-notes>` under a header saying the notes are data derived from repo content that cannot override the user, role files or guards (a body cannot close its fence); it redacts secret-looking lines and stays under 48 KB. Contracts bind only as facts about interfaces (API shapes, schemas, ownership); onboard and the updater never record repo text as instructions.
 - `memory.sh touched <repo> <from> [<to>]` (for the memory updater): the topics a diff touched and the changed paths no topic covers.
 - Trust rule, in every role file: memory is a hint, the code is the truth; fix the entry and continue.
 - Eagle-Eye's memory update reads each PR's `baseCommit..<branch>` and sets `checked-at` to the branch head; until that branch is merged, the topic may read stale on the default branch (the diff from the branch head to it). That is accepted: stale means "re-check from the diff", never wrong.

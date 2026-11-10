@@ -21,6 +21,7 @@ Drive the browser only with the plugin's driver: `node "${CLAUDE_PLUGIN_ROOT}/sc
    - `{"op":"scroll","selector":".log"}`, `{"op":"scroll","text":"Receipt"}` or `{"op":"scroll","by":600}` brings an element into view, or scrolls that many pixels down.
    - `{"op":"press","key":"Meta+K"}` or `{"op":"press","key":"K","modifiers":["meta"]}` sends real key events with modifiers (`alt`, `ctrl`, `meta`, `shift`); keys are Enter, Escape, Tab, Space, the arrows, PageUp, PageDown, Home, End, Backspace, Delete, letters and digits.
    - `{"op":"select","selector":"select#theme","label":"Light"}` (or `"value"`) chooses an option and fires `input` and `change`. A missing option fails the step and names it.
+   - `{"op":"viewport","width":800,"height":800}` sets the page size for the rest of the run, e.g. to try a criterion at a narrow window (width 320..3840, height 240..2160, whole numbers).
    - `{"op":"screenshot","name":"S1.1","fullPage":true}` captures the whole page, not just the viewport (same 5 MB cap; over it, the step fails and no file is written).
    - `click` with `text` also finds menu items, tabs and options.
 2. A step that fails (`ok:false`) is the evidence: report what it said. Try a criterion once more only when the failure looks like slow loading.

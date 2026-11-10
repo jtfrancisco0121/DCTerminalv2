@@ -11,7 +11,8 @@
 #   memory.sh id <repo path>                     print the repo id
 #   memory.sh compose <start folder> <out file>  write the launch system-prompt file (bounded)
 #   memory.sh status <start folder|repo id>      JSON for the app panel (a repo id: that id's memory folder,
-#                                                head and path null; `indexPath` is the index.md path)
+#                                                head and path null; `indexPath` is the index.md path;
+#                                                each topic carries its absolute `path`)
 #   memory.sh write <id | workspace:<id>> <relative file>  < content
 #                                                the only write path for agents: caps, secret scan,
 #                                                pinned lines, topic header; rejects with a reason
@@ -50,8 +51,9 @@ sys.dont_write_bytecode = True  # no __pycache__ inside the plugin folder (the i
 sys.path.insert(0, os.environ["DCV2_LIB_DIR"])  # set by memory.sh itself, from its own path
 import dcv2_portable as portable
 
-CAPS = {"index": 8 * 1024, "topic": 12 * 1024, "workspace": 8 * 1024}
-COMPOSE_CAP = 40 * 1024
+CAPS = {"index": 8 * 1024, "topic": 12 * 1024, "workspace": 8 * 1024,
+        "decisions": 24 * 1024}  # topics/decisions.md only (kind stays "topic"); every other topic keeps 12 KiB
+COMPOSE_CAP = 48 * 1024
 PIN = "<!-- pinned -->"
 TOPIC_RE = re.compile(r"^topics/([a-z0-9][a-z0-9-]{0,62})\.md$")
 SCRIPT = os.path.realpath(os.environ.get("DCV2_MEMORY_SH") or "")
@@ -323,7 +325,7 @@ def topics_of(d, repo=None, repos_by_name=None):
         for f in sorted(os.listdir(td)):
             if TOPIC_RE.match("topics/" + f):
                 text = read(os.path.join(td, f)) or ""
-                out.append({"name": f[:-3], "checkedAt": topic_header(text)["checkedAt"],
+                out.append({"name": f[:-3], "path": os.path.join(td, f), "checkedAt": topic_header(text)["checkedAt"],
                             "stale": topic_stale(text, repo, repos_by_name)})
     return out
 
@@ -428,7 +430,7 @@ def cmd_compose(folder, out):
         dtext = read(os.path.join(wdir, "topics", "decisions.md"))
         if dtext is not None:
             any_mem = True
-            parts.append(section(DECISIONS_TITLE.format("Workspace"), dtext, CAPS["topic"]))
+            parts.append(section(DECISIONS_TITLE.format("Workspace"), dtext, CAPS["decisions"]))
         stale += [f"workspace:{wid} topics/{t['name']}.md" for t in topics_of(wdir, None, names) if t["stale"]]
     for r in repos:
         rid = repo_id(r)
@@ -444,7 +446,7 @@ def cmd_compose(folder, out):
             parts.append(section(f"Repo {os.path.basename(r)} contracts (binding)", ctext, CAPS["topic"]))
         dtext = read(os.path.join(d, "topics", "decisions.md"))
         if dtext is not None:
-            parts.append(section(DECISIONS_TITLE.format(f"Repo {os.path.basename(r)}"), dtext, CAPS["topic"]))
+            parts.append(section(DECISIONS_TITLE.format(f"Repo {os.path.basename(r)}"), dtext, CAPS["decisions"]))
         stale += [f"{rid} topics/{t['name']}.md (checked at {t['checkedAt'] or 'unknown'})" for t in topics_of(d, r) if t["stale"]]
     if not any_mem:
         text = "\n".join(head + [f"No codebase memory yet for `{os.path.realpath(folder)}`: `/dcv2:onboard` creates it. Until then, work from the code."]) + "\n"
@@ -602,8 +604,9 @@ def cmd_write(target, rel):
     size = len(content.encode())
     if not content.strip():
         die("REJECTED: empty content")
-    if size > CAPS[kind]:
-        die(f"REJECTED: {rel} is {size} bytes, over the {CAPS[kind]} byte cap for a {kind} file: condense it (keep only what is expensive to rediscover)")
+    cap = CAPS["decisions"] if rel == "topics/decisions.md" else CAPS[kind]
+    if size > cap:
+        die(f"REJECTED: {rel} is {size} bytes, over the {cap} byte cap for a {kind} file: condense it (keep only what is expensive to rediscover)")
     hits = secret_hits(content)
     if hits:
         die("REJECTED: looks like a secret on line " + ", ".join(f"{n} ({k})" for n, k in hits[:5]) + ": remove it (never store tokens, keys or .env values)")

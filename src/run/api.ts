@@ -289,7 +289,7 @@ export const evalCleanUp = (group: string) => invoke<EvalCleanLine[]>("eval_clea
 export const evalDeleteBranch = (runDir: string, prId: string) =>
   invoke<string>("eval_delete_branch", { runDir, prId });
 
-export type MemoryTopic = { name: string; checkedAt?: string | null; stale?: boolean };
+export type MemoryTopic = { name: string; path?: string; checkedAt?: string | null; stale?: boolean };
 export type MemoryRepo = {
   name?: string;
   path?: string;

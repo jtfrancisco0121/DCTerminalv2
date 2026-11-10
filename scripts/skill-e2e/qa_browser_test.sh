@@ -153,6 +153,23 @@ for bad_step in '{"op":"press","key":"Hyper+K"}' '{"op":"press","key":"K","modif
   expect 2 "refused: $bad_step" node "$QB" --out "$OUT" --steps "$steps"
 done
 
+echo "# viewport step"
+log="$d/stub.log"; : > "$log"
+printf '%s\n' '{"op":"open","url":"http://127.0.0.1:1530/"}' '{"op":"viewport","width":800,"height":800}' '{"op":"screenshot","name":"vp1"}' > "$steps"
+expect 0 "open, viewport 800x800 and a screenshot succeed" env STUB_LOG="$log" node "$QB" --out "$OUT" --steps "$steps"
+has "  the step line names the size" '"op":"viewport","ok":true'
+node -e '
+const rows = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map((l) => JSON.parse(l));
+const m = rows.filter((r) => r.method === "Emulation.setDeviceMetricsOverride").map((r) => r.params);
+const p = m[0];
+if (m.length !== 1 || p.width !== 800 || p.height !== 800 || p.deviceScaleFactor !== 1 || p.mobile !== false) { console.error("  " + JSON.stringify(m)); process.exit(1); }
+' "$log" && ok "  CDP: Emulation.setDeviceMetricsOverride with width 800, height 800, scale 1, not mobile" || bad "  viewport CDP call (see above)"
+for bad_step in '{"op":"viewport","width":100,"height":800}' '{"op":"viewport","width":"800","height":800}' '{"op":"viewport","width":800}' \
+  '{"op":"viewport","width":800.5,"height":800}' '{"op":"viewport","width":800,"height":5000}'; do
+  printf '%s\n' "$bad_step" > "$steps"
+  expect 2 "refused: $bad_step" node "$QB" --out "$OUT" --steps "$steps"
+done
+
 echo "# a full-page capture over 5 MB writes no file"
 printf '%s\n' '{"op":"open","url":"http://127.0.0.1:1530/"}' '{"op":"screenshot","name":"bigfull","fullPage":true}' > "$steps"
 expect 1 "an over-cap full-page screenshot fails" env STUB_BIG=1 node "$QB" --out "$OUT" --steps "$steps"

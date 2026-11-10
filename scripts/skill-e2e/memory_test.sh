@@ -255,7 +255,7 @@ out="$(cat "$d/prompt.md")"
 n_open=$(grep -c '^<memory-notes source=' "$d/prompt.md"); n_close=$(grep -c '^</memory-notes>$' "$d/prompt.md")
 [[ "$n_open" == "$n_close" ]] && ok "  fences balanced ($n_open)" || bad "  fences $n_open open, $n_close close"
 has "  the injected close is neutralised" "[fence removed]"
-size=$(wc -c < "$d/prompt.md"); (( size <= 40960 )) && ok "  bounded ($size bytes)" || bad "  $size bytes"
+size=$(wc -c < "$d/prompt.md"); (( size <= 49152 )) && ok "  bounded ($size bytes)" || bad "  $size bytes"
 expect 0 "compose of the single repo" bash "$MEM" compose "$API" "$d/p1.md"
 grep -q "Workspace" "$d/p1.md" && bad "  a single repo has no workspace section" || ok "  no workspace section for a single repo"
 expect 0 "--root overrides the env" env -u DCV2_MEMORY_DIR bash "$MEM" status "$API" --root "$DCV2_MEMORY_DIR"
@@ -366,6 +366,49 @@ PY
 SEED="$ROOT/fixtures/memory/dcterminalv2-decisions.md"
 [[ "$(grep -c '^- 20' "$SEED")" == 4 ]] && ok "  the seed holds the four known decisions" || bad "  seed bullets"
 sed "s/@SHA@/$A0/" "$SEED" | bash "$MEM" write "$WEBID" topics/decisions.md >/dev/null && ok "  the seed is accepted by memory.sh write" || bad "  the seed was rejected"
+
+echo "# status prints topic paths; the decision log has its own 24 KiB cap"
+bullets() { python3 - "$1" "$2" <<'PY'
+import sys
+n, last = int(sys.argv[1]), sys.argv[2]
+for i in range(n):
+    print(f"- 2026-10-{i % 28 + 1:02d} | decision number {i:04d} keeps the launch prompt small enough | the reason {i:04d} is written down here | rules out: option {i:04d} of the old design")
+print(f"- 2026-10-30 | {last} | the newest entry | rules out: cutting it")
+PY
+}
+expect 0 "status by folder" bash "$MEM" status "$WS"
+python3 - "$out" <<'PY' && ok "  every topic carries an existing absolute path ending in topics/<name>.md" || bad "  topic paths: ${out:0:300}"
+import json, os, sys
+d = json.loads(sys.argv[1])
+topics = [t for r in d["repos"] for t in r["topics"]] + d["workspace"]["topics"]
+assert topics
+for t in topics:
+    assert os.path.isabs(t["path"]) and os.path.isfile(t["path"]) and t["path"].endswith("topics/%s.md" % t["name"]), t
+PY
+expect 0 "status by repo id" bash "$MEM" status "$APIID"
+python3 - "$out" <<'PY' && ok "  by repo id: the decisions topic path is the repo's topics/decisions.md" || bad "  id topic paths: ${out:0:300}"
+import json, os, sys
+d = json.loads(sys.argv[1])
+t = next(t for t in d["repos"][0]["topics"] if t["name"] == "decisions")
+assert os.path.isfile(t["path"]) and t["path"].endswith("/topics/decisions.md"), t
+PY
+{ printf '%s\n' "$HDR"; bullets 85 "LASTBULLET-13K"; } > "$d/dec13.md"
+size=$(wc -c < "$d/dec13.md"); (( size > 12288 && size < 24576 )) && ok "  the 13 KiB log is $size bytes" || bad "  dec13 is $size bytes"
+expect 0 "a 13 KiB decision log is written" bash "$MEM" write "$APIID" topics/decisions.md < "$d/dec13.md"
+expect 0 "compose with the 13 KiB log" bash "$MEM" compose "$WS" "$d/dec13-prompt.md"
+grep -qF 'LASTBULLET-13K' "$d/dec13-prompt.md" && ok "  the last bullet is in the launch file" || bad "  the last bullet was cut"
+grep -qF 'cut at the size cap' "$d/dec13-prompt.md" && bad "  the decision log was cut" || ok "  no cut marker"
+{ printf '%s\n' "$HDR"; bullets 160 "TOO-BIG"; } > "$d/dec25.md"
+(( $(wc -c < "$d/dec25.md") > 24576 )) && ok "  the big log is over 24 KiB" || bad "  dec25 is $(wc -c < "$d/dec25.md") bytes"
+expect 1 "a 25 KiB decision log is rejected" bash "$MEM" write "$APIID" topics/decisions.md < "$d/dec25.md"
+has "  the reason names the 24 KiB cap" "over the 24576 byte cap"
+{ bullets 85 "NO-HEADER"; } > "$d/dec-nohdr.md"
+expect 1 "a header-less decision log is rejected" bash "$MEM" write "$APIID" topics/decisions.md < "$d/dec-nohdr.md"
+has "  the topic-header reason" "header"
+{ printf '# Big\ncovers: docs/\nchecked-at: %s\n' "$A0"; for _ in $(seq 1 130); do printf '%0100d\n' 7; done; } > "$d/topic13.md"
+(( $(wc -c < "$d/topic13.md") > 12288 )) && ok "  a 13 KiB other topic" || bad "  topic13 is $(wc -c < "$d/topic13.md") bytes"
+expect 1 "another 13 KiB topic is still rejected" bash "$MEM" write "$APIID" topics/other13.md < "$d/topic13.md"
+has "  at the 12 KiB cap" "over the 12288 byte cap"
 
 echo "# a busy lock ends with the bound and one clear line (W3)"
 python3 -c 'import fcntl, sys, time

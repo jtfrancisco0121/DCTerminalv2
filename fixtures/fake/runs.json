@@ -52,6 +52,21 @@
         "id": "product-manager",
         "label": "Product Manager",
         "group": "persona"
+      },
+      {
+        "id": "analyst",
+        "label": "Business Analyst",
+        "group": "persona"
+      },
+      {
+        "id": "senior-engineer",
+        "label": "Senior Engineer",
+        "group": "persona"
+      },
+      {
+        "id": "principal-engineer",
+        "label": "Principal Engineer",
+        "group": "persona"
       }
     ],
     "runs": [
