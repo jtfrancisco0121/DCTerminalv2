@@ -463,6 +463,43 @@
     },
     "type": "object"
   },
+  "dispatch_eval_preview": {
+    "fields": {
+      "basedRepos": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "defaultBranchRepos": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "fiveHour": {
+        "fields": {
+          "percent": {
+            "type": "number"
+          },
+          "resetsAt": {
+            "nullable": true,
+            "type": "number"
+          }
+        },
+        "nullable": true,
+        "type": "object"
+      },
+      "holdPercent": {
+        "nullable": true,
+        "type": "number"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
   "dispatch_overview": {
     "fields": {
       "atCap": {
@@ -667,6 +704,356 @@
       "type": "object"
     },
     "type": "array"
+  },
+  "flight_compare": {
+    "fields": {
+      "a": {
+        "fields": {
+          "indexed": {
+            "type": "boolean"
+          },
+          "off": {
+            "type": "boolean"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "runDir": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "b": {
+        "fields": {
+          "indexed": {
+            "type": "boolean"
+          },
+          "off": {
+            "type": "boolean"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "runDir": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "divergence": {
+        "nullable": true,
+        "type": "number"
+      },
+      "progress": {
+        "fields": {
+          "current": {
+            "type": "number"
+          },
+          "total": {
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "rows": {
+        "items": null,
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "flight_eval_results": {
+    "fields": {
+      "distributions": {
+        "fields": {
+          "activeMinutes": {
+            "fields": {
+              "max": {
+                "nullable": true,
+                "type": "null"
+              },
+              "median": {
+                "nullable": true,
+                "type": "null"
+              },
+              "min": {
+                "nullable": true,
+                "type": "null"
+              },
+              "of": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "checkPassRate": {
+            "fields": {
+              "max": {
+                "nullable": true,
+                "type": "null"
+              },
+              "median": {
+                "nullable": true,
+                "type": "null"
+              },
+              "min": {
+                "nullable": true,
+                "type": "null"
+              },
+              "of": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "completed": {
+            "fields": {
+              "max": {
+                "nullable": true,
+                "type": "null"
+              },
+              "median": {
+                "nullable": true,
+                "type": "null"
+              },
+              "min": {
+                "nullable": true,
+                "type": "null"
+              },
+              "of": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "retries": {
+            "fields": {
+              "max": {
+                "nullable": true,
+                "type": "null"
+              },
+              "median": {
+                "nullable": true,
+                "type": "null"
+              },
+              "min": {
+                "nullable": true,
+                "type": "null"
+              },
+              "of": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "tokens": {
+            "fields": {
+              "max": {
+                "nullable": true,
+                "type": "null"
+              },
+              "median": {
+                "nullable": true,
+                "type": "null"
+              },
+              "min": {
+                "nullable": true,
+                "type": "null"
+              },
+              "of": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "toolFailures": {
+            "fields": {
+              "max": {
+                "nullable": true,
+                "type": "null"
+              },
+              "median": {
+                "nullable": true,
+                "type": "null"
+              },
+              "min": {
+                "nullable": true,
+                "type": "null"
+              },
+              "of": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "failed": {
+        "type": "number"
+      },
+      "finished": {
+        "type": "number"
+      },
+      "group": {
+        "type": "string"
+      },
+      "n": {
+        "type": "number"
+      },
+      "running": {
+        "type": "number"
+      },
+      "runs": {
+        "items": {
+          "fields": {
+            "activeMinutes": {
+              "nullable": true,
+              "type": "number"
+            },
+            "checkPassRate": {
+              "nullable": true,
+              "type": "number"
+            },
+            "checkState": {
+              "type": "string"
+            },
+            "completed": {
+              "nullable": true,
+              "type": "boolean"
+            },
+            "index": {
+              "type": "number"
+            },
+            "keptBranches": {
+              "items": {
+                "fields": {
+                  "branch": {
+                    "type": "string"
+                  },
+                  "prId": {
+                    "type": "string"
+                  },
+                  "repoPath": {
+                    "type": "string"
+                  },
+                  "unmergedCommits": {
+                    "nullable": true,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "label": {
+              "type": "string"
+            },
+            "retries": {
+              "nullable": true,
+              "type": "number"
+            },
+            "runDir": {
+              "nullable": true,
+              "type": "string"
+            },
+            "runId": {
+              "nullable": true,
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "tokens": {
+              "nullable": true,
+              "type": "number"
+            },
+            "toolFailures": {
+              "nullable": true,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "source": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "flight_export_preview": {
+    "fields": {
+      "bytes": {
+        "type": "number"
+      },
+      "capturePolicy": {
+        "type": "string"
+      },
+      "digest": {
+        "type": "string"
+      },
+      "encoding": {
+        "type": "string"
+      },
+      "endpoint": {
+        "type": "string"
+      },
+      "events": {
+        "type": "number"
+      },
+      "fields": {
+        "items": {
+          "fields": {
+            "count": {
+              "type": "number"
+            },
+            "field": {
+              "type": "string"
+            },
+            "leaves": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "loopback": {
+        "type": "boolean"
+      },
+      "policy": {
+        "type": "string"
+      },
+      "spans": {
+        "type": "number"
+      },
+      "warnings": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "flight_run_share": {
+    "nullable": true,
+    "type": "number"
   },
   "flight_session": {
     "fields": {
@@ -1465,6 +1852,246 @@
   "notification_permission": {
     "type": "string"
   },
+  "observe_tab": {
+    "fields": {
+      "context": {
+        "fields": {
+          "model": {
+            "type": "string"
+          },
+          "percent": {
+            "type": "number"
+          },
+          "used": {
+            "type": "number"
+          },
+          "warn": {
+            "type": "boolean"
+          },
+          "warnPercent": {
+            "type": "number"
+          },
+          "window": {
+            "type": "number"
+          }
+        },
+        "nullable": true,
+        "type": "object"
+      },
+      "hook": {
+        "fields": {
+          "activity": {
+            "type": "string"
+          },
+          "activitySinceMs": {
+            "nullable": true,
+            "type": "number"
+          },
+          "compacting": {
+            "type": "boolean"
+          },
+          "lastEvent": {
+            "nullable": true,
+            "type": "string"
+          },
+          "model": {
+            "nullable": true,
+            "type": "string"
+          },
+          "sessionId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "subagentsRunning": {
+            "type": "number"
+          },
+          "toolRunning": {
+            "type": "boolean"
+          },
+          "updatedMs": {
+            "nullable": true,
+            "type": "number"
+          }
+        },
+        "nullable": true,
+        "type": "object"
+      },
+      "hooksActive": {
+        "type": "boolean"
+      },
+      "hooksInstalled": {
+        "type": "boolean"
+      },
+      "stall": {
+        "fields": {
+          "minutes": {
+            "type": "number"
+          },
+          "threshold": {
+            "type": "number"
+          }
+        },
+        "nullable": true,
+        "type": "object"
+      },
+      "subagents": {
+        "items": {
+          "fields": {
+            "agentId": {
+              "nullable": true,
+              "type": "string"
+            },
+            "agentType": {
+              "type": "string"
+            },
+            "background": {
+              "type": "boolean"
+            },
+            "description": {
+              "nullable": true,
+              "type": "string"
+            },
+            "finishedMs": {
+              "nullable": true,
+              "type": "number"
+            },
+            "startedMs": {
+              "nullable": true,
+              "type": "number"
+            },
+            "status": {
+              "type": "string"
+            },
+            "toolUseId": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "transcriptFound": {
+        "type": "boolean"
+      },
+      "usage": {
+        "fields": {
+          "agents": {
+            "items": {
+              "fields": {
+                "costUsd": {
+                  "nullable": true,
+                  "type": "number"
+                },
+                "minutes": {
+                  "type": "number"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "tokens": {
+                  "fields": {
+                    "cacheRead": {
+                      "type": "number"
+                    },
+                    "cacheWrite1h": {
+                      "type": "number"
+                    },
+                    "cacheWrite5m": {
+                      "type": "number"
+                    },
+                    "input": {
+                      "type": "number"
+                    },
+                    "output": {
+                      "type": "number"
+                    }
+                  },
+                  "type": "object"
+                },
+                "totalTokens": {
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "messages": {
+            "type": "number"
+          },
+          "minutes": {
+            "type": "number"
+          },
+          "stages": {
+            "items": {
+              "fields": {
+                "costUsd": {
+                  "nullable": true,
+                  "type": "number"
+                },
+                "minutes": {
+                  "type": "number"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "tokens": {
+                  "fields": {
+                    "cacheRead": {
+                      "type": "number"
+                    },
+                    "cacheWrite1h": {
+                      "type": "number"
+                    },
+                    "cacheWrite5m": {
+                      "type": "number"
+                    },
+                    "input": {
+                      "type": "number"
+                    },
+                    "output": {
+                      "type": "number"
+                    }
+                  },
+                  "type": "object"
+                },
+                "totalTokens": {
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "totalCostUsd": {
+            "nullable": true,
+            "type": "number"
+          },
+          "totalTokens": {
+            "type": "number"
+          }
+        },
+        "nullable": true,
+        "type": "object"
+      },
+      "waiting": {
+        "fields": {
+          "minutes": {
+            "type": "number"
+          },
+          "sinceMs": {
+            "type": "number"
+          },
+          "threshold": {
+            "type": "number"
+          }
+        },
+        "nullable": true,
+        "type": "object"
+      }
+    },
+    "type": "object"
+  },
   "observe_tabs": {
     "map": {
       "fields": {
@@ -1892,6 +2519,20 @@
                 }
               },
               "optional": true,
+              "type": "object"
+            },
+            "receipt": {
+              "fields": {
+                "rows": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "state": {
+                  "type": "string"
+                }
+              },
               "type": "object"
             },
             "repo": {

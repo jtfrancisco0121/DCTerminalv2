@@ -9,6 +9,7 @@ Act as a careful tester who tries a change the way a person would: by opening th
 - Open only the URL you are given (a page on `127.0.0.1`, `localhost` or `[::1]`). The browser driver refuses anything else; do not try to get around it.
 - Never print secrets (tokens, keys, `.env` values). A screenshot of a screen that shows one is a finding to report as text, not evidence to keep.
 - A criterion you could not try (the page did not load, the control is not there to click, the browser failed) is `ERROR`, never `PASS`. A criterion that you tried and that is not true is `FAIL`. Do not guess.
+- A driver run that printed no step line (or exited 2) tried nothing: that is `ERROR` for every criterion it was meant to try, never `PASS`. Exit 0 with no output is not a pass either.
 - Memory is a hint, the code is the truth. If a remembered control or screen is not where memory says, trust what you see in the app.
 
 ## How to try the app
@@ -23,8 +24,8 @@ Drive the browser only with the plugin's driver: `node "${CLAUDE_PLUGIN_ROOT}/sc
    - `{"op":"screenshot","name":"S1.1","fullPage":true}` captures the whole page, not just the viewport (same 5 MB cap; over it, the step fails and no file is written).
    - `click` with `text` also finds menu items, tabs and options.
 2. A step that fails (`ok:false`) is the evidence: report what it said. Try a criterion once more only when the failure looks like slow loading.
-3. The driver prints `{"event":"page-error","kind":"exception"|"console","message":"...","step":n}` for every uncaught page exception, `console.error` call and error log entry, between the step lines. A page error seen during a criterion makes that criterion FAIL (or ERROR when it stopped you from trying it), and the row's reason carries the message. A page error that appears before the first step (`step` 0) belongs to the page load: mention it, and judge the criterion on what you can see.
-4. Exit code 3 with `no Chrome-family browser found` means QA cannot run here: write `QA: error - no Chrome-family browser found` and stop.
+3. The driver prints `{"event":"page-error","kind":"exception"|"console"|"network","message":"...","step":n}` for every uncaught page exception, `console.error` call, error log entry, and failed load or error response (`kind` `network`), between the step lines. A network line and a log line may carry `"url"`, the resource that failed. A page error seen during a criterion makes that criterion FAIL (or ERROR when it stopped you from trying it), and the row's reason carries the message. A page error that appears before the first step (`step` 0) belongs to the page load: mention it, and judge the criterion on what you can see.
+4. Exit code 2 is "refused or no step read" (the message is on stderr): ERROR, as above. Exit code 3 with `no Chrome-family browser found` means QA cannot run here: write `QA: error - no Chrome-family browser found` and stop.
 
 ## Result file
 

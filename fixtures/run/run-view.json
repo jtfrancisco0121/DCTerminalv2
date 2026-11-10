@@ -59,6 +59,10 @@
       "note": null,
       "prState": null,
       "prUrl": null,
+      "receipt": {
+        "rows": [],
+        "state": "off"
+      },
       "repo": "mathlib",
       "repoPath": "/abs/ws/mathlib",
       "review": {
@@ -116,6 +120,10 @@
       "note": null,
       "prState": null,
       "prUrl": null,
+      "receipt": {
+        "rows": [],
+        "state": "off"
+      },
       "repo": "mathcli",
       "repoPath": "/abs/ws/mathcli",
       "review": {
@@ -162,6 +170,10 @@
       "note": "2 MEDIUM findings still open after 3 rounds",
       "prState": null,
       "prUrl": null,
+      "receipt": {
+        "rows": [],
+        "state": "off"
+      },
       "repo": "docs",
       "repoPath": null,
       "review": {
@@ -212,6 +224,10 @@
       "note": null,
       "prState": null,
       "prUrl": "https://github.com/o/mathlib/pull/7",
+      "receipt": {
+        "rows": [],
+        "state": "off"
+      },
       "repo": "mathlib",
       "repoPath": null,
       "review": {
@@ -258,6 +274,10 @@
       "note": null,
       "prState": null,
       "prUrl": null,
+      "receipt": {
+        "rows": [],
+        "state": "off"
+      },
       "repo": "notes",
       "repoPath": null,
       "review": {

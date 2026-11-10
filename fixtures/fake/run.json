@@ -94,6 +94,21 @@
               "image": "S1.2"
             }
           ]
+        },
+        "receipt": {
+          "state": "rows",
+          "rows": [
+            "Agent planner (for the whole run, 5 PRs, as of 2026-10-22T13:39:30Z): 1 run(s), 10.0 min active",
+            "Agent implementer (for the whole run, 5 PRs, as of 2026-10-22T13:39:30Z): 2 run(s), 23.0 min active",
+            "Time (for the whole run, 5 PRs, as of 2026-10-22T13:39:30Z): 32.0 min active, 4.0 min waiting",
+            "Tokens (for the whole run, 5 PRs, as of 2026-10-22T13:39:30Z): input 12,400, output 31,200, cache write 88,000, cache read 402,000",
+            "App re-run of the check `npm test`: pass at abc1234",
+            "Review: 1 round(s), final verdict APPROVED",
+            "Gate: PASS",
+            "QA: pass, 2 of 2 criteria tried",
+            "Guard blocks (whole run): none",
+            "Trace on the machine that ran it: [dcterminalv2://run/r-20261022-1304](dcterminalv2://run/r-20261022-1304) (`dcterminalv2://run/r-20261022-1304`)"
+          ]
         }
       },
       {
@@ -151,7 +166,11 @@
         "storiesTotal": 1,
         "title": "Use multiply() in the CLI",
         "worktree": null,
-        "worktreeClean": null
+        "worktreeClean": null,
+        "receipt": {
+          "state": "off",
+          "rows": []
+        }
       },
       {
         "appCheck": null,
@@ -197,7 +216,11 @@
         "storiesTotal": 1,
         "title": "Docs",
         "worktree": null,
-        "worktreeClean": null
+        "worktreeClean": null,
+        "receipt": {
+          "state": "off",
+          "rows": []
+        }
       },
       {
         "appCheck": null,
@@ -247,7 +270,11 @@
         "storiesTotal": null,
         "title": "Opened one",
         "worktree": null,
-        "worktreeClean": null
+        "worktreeClean": null,
+        "receipt": {
+          "state": "none",
+          "rows": []
+        }
       },
       {
         "appCheck": null,
@@ -275,7 +302,7 @@
         },
         "gateStatus": {
           "kind": "review-only",
-          "text": "PASS — review only (no check exists)"
+          "text": "PASS \u2014 review only (no check exists)"
         },
         "id": "PR5",
         "note": null,
@@ -293,7 +320,11 @@
         "storiesTotal": 1,
         "title": "Notes",
         "worktree": null,
-        "worktreeClean": null
+        "worktreeClean": null,
+        "receipt": {
+          "state": "off",
+          "rows": []
+        }
       }
     ],
     "reviewMode": "local",
@@ -327,7 +358,7 @@
   "resume_run": {
     "tab": {
       "id": "tab_run",
-      "label": "Eagle-Eye · ws",
+      "label": "Eagle-Eye \u00b7 ws",
       "customLabel": false,
       "cwd": "/abs/ws",
       "kind": "claude",
@@ -554,5 +585,160 @@
   },
   "run_worktrees": [],
   "pr_worktree_checks": [],
-  "observe_tabs": {}
+  "observe_tabs": {},
+  "flight_compare": {
+    "a": {
+      "runId": "r-20261022-1304",
+      "runDir": "/fake/runs/r-20261022-1304",
+      "title": "Add multiply()",
+      "outcome": "done",
+      "indexed": true,
+      "off": false
+    },
+    "b": {
+      "runId": "r-20261020-0900",
+      "runDir": "/fake/runs/r-20261020-0900",
+      "title": "Add subtract()",
+      "outcome": "done",
+      "indexed": true,
+      "off": false
+    },
+    "rows": [
+      {
+        "group": "stages",
+        "key": "planning",
+        "a": 4,
+        "b": 3,
+        "differs": true,
+        "aEvent": "e1",
+        "bEvent": "e1"
+      },
+      {
+        "group": "tools",
+        "key": "Bash",
+        "a": 12,
+        "b": 12,
+        "differs": false,
+        "aEvent": "e2",
+        "bEvent": "e2"
+      },
+      {
+        "group": "record",
+        "key": "tokens",
+        "a": 24600,
+        "b": 18000,
+        "differs": true,
+        "aEvent": null,
+        "bEvent": null
+      }
+    ],
+    "divergence": 0,
+    "progress": {
+      "current": 2,
+      "total": 2
+    }
+  },
+  "flight_eval_results": {
+    "group": "g-fake",
+    "source": "/fake/runs/r-20261022-1304",
+    "n": 2,
+    "runs": [
+      {
+        "index": 1,
+        "label": "Run 1",
+        "runId": "r-20261022-1304",
+        "runDir": "/fake/runs/r-20261022-1304",
+        "status": "finished",
+        "completed": true,
+        "checkPassRate": 1.0,
+        "checkState": "checked",
+        "retries": 0,
+        "toolFailures": 1,
+        "tokens": 24600,
+        "activeMinutes": 6.5,
+        "keptBranches": []
+      },
+      {
+        "index": 2,
+        "label": "Run 2",
+        "runId": null,
+        "runDir": null,
+        "status": "queued",
+        "completed": null,
+        "checkPassRate": null,
+        "checkState": "not checked",
+        "retries": null,
+        "toolFailures": null,
+        "tokens": null,
+        "activeMinutes": null,
+        "keptBranches": []
+      }
+    ],
+    "distributions": {
+      "completed": {
+        "min": 1,
+        "median": 1,
+        "max": 1,
+        "of": 1
+      },
+      "checkPassRate": {
+        "min": 1,
+        "median": 1,
+        "max": 1,
+        "of": 1
+      },
+      "retries": {
+        "min": 0,
+        "median": 0,
+        "max": 0,
+        "of": 1
+      },
+      "toolFailures": {
+        "min": 1,
+        "median": 1,
+        "max": 1,
+        "of": 1
+      },
+      "tokens": {
+        "min": 24600,
+        "median": 24600,
+        "max": 24600,
+        "of": 1
+      },
+      "activeMinutes": {
+        "min": 6.5,
+        "median": 6.5,
+        "max": 6.5,
+        "of": 1
+      }
+    },
+    "finished": 1,
+    "running": 0,
+    "failed": 0
+  },
+  "flight_run_share": 12.5,
+  "flight_export_preview": {
+    "policy": "metadata",
+    "encoding": "json",
+    "endpoint": "http://127.0.0.1:4318/v1/traces",
+    "spans": 6,
+    "events": 42,
+    "bytes": 18234,
+    "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "fields": [
+      {
+        "field": "agent.id",
+        "count": 6,
+        "leaves": 6
+      },
+      {
+        "field": "tool.name",
+        "count": 24,
+        "leaves": 24
+      }
+    ],
+    "warnings": [],
+    "loopback": true,
+    "capturePolicy": "metadata"
+  }
 }

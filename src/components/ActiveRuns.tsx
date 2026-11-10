@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { activeRuns, focusTab, type ActiveRun } from "../bridge";
-import { evalFinished, stageText } from "../run/words";
+import { evalFinished, prFraction, stageText } from "../run/words";
 import { Stepper } from "./Stepper";
 import { BatchOverview } from "./BatchOverview";
 import { reportError } from "../uiErrors";
@@ -50,7 +50,7 @@ export function ActiveRuns({ onClose, onAllRuns, onDashboard, onEvalResults }: P
               <span className="hint">
                 {" "}
                 — {stageText(run.stage, run.eval)}
-                {run.prsTotal > 0 ? ` · ${run.prsDone}/${run.prsTotal} PRs` : ""}
+                {run.prsTotal > 0 ? ` · ${prFraction(run.prsDone, run.prsTotal)}` : ""}
               </span>
               {run.waitingFor && <span className="active-flag active-flag-wait"> waiting for you</span>}
               {!run.waitingFor && run.activity === "needs-you" && (

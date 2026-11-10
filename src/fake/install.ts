@@ -6,8 +6,9 @@
 // fixtures/fake/*.json, `transformCallback` keeps callbacks, and the event plugin commands are faked so `listen` works.
 // A command without a fixture rejects with `fake: <command> not faked`. `fixtures/fake/not-faked.json` lists the
 // commands that are faked on purpose with no answer, each with its reason (src/fake/coverage.test.ts keeps both lists
-// complete). Two commands have a small behaviour on top of their fixture: `pty_open` pushes a banner through its
-// channel, and `resume_run` opens the run's tab in the faked app state.
+// complete). Three commands have a small behaviour on top of their fixture: `pty_open` pushes a banner through its
+// channel, `resume_run` opens the run's tab in the faked app state, and `webqa_targets_save` keeps the saved Web QA targets
+// for `get_settings`.
 import app from "../../fixtures/fake/app.json";
 import clickup from "../../fixtures/fake/clickup.json";
 import run from "../../fixtures/fake/run.json";
@@ -59,6 +60,8 @@ export function installFakeBackend(
 
   // The tab list the faked app state shows: `resume_run` opens the run's tab.
   let openedTab: { id: string } | null = null;
+  // The Web QA targets saved in this session: `get_settings` shows them, so Settings and Runs agree (the fixture has none).
+  let webQaTargets: unknown[] | null = null;
 
   const invoke = async (
     command: string,
@@ -80,6 +83,17 @@ export function installFakeBackend(
         const started = fakeAnswer(command, fixtures) as { tab: { id: string } };
         openedTab = started.tab;
         return started;
+      }
+      case "webqa_targets_save": {
+        const saved = fakeAnswer(command, fixtures) as { targets: unknown[] };
+        webQaTargets = JSON.parse(JSON.stringify(args?.targets ?? []));
+        return { ...saved, targets: JSON.parse(JSON.stringify(webQaTargets)) };
+      }
+      case "get_settings": {
+        const view = fakeAnswer(command, fixtures) as { webQa?: Record<string, unknown> };
+        return webQaTargets
+          ? { ...view, webQa: { ...view.webQa, targets: JSON.parse(JSON.stringify(webQaTargets)) } }
+          : view;
       }
       case "get_app_state": {
         const state = fakeAnswer(command, fixtures) as { activeTabId: string | null; tabs: unknown[] };

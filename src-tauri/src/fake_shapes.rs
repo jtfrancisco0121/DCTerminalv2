@@ -70,6 +70,27 @@ fn cfg() -> crate::provider::claude_config::ConfigDirInfo {
     }
 }
 
+fn cost_line() -> crate::observe::transcript::CostLine {
+    crate::observe::transcript::CostLine {
+        name: "n".into(),
+        tokens: crate::observe::price::Tokens::default(),
+        total_tokens: 1,
+        cost_usd: Some(1.0),
+        minutes: 1.0,
+    }
+}
+
+fn compare_side(id: &str) -> crate::flight::host::CompareSide {
+    crate::flight::host::CompareSide {
+        run_id: id.into(),
+        run_dir: format!("/r/{id}"),
+        title: "t".into(),
+        outcome: "done".into(),
+        indexed: true,
+        off: false,
+    }
+}
+
 fn tab_summary() -> TabSummary {
     TabSummary {
         id: "tab_1".into(),
@@ -196,6 +217,10 @@ fn run_view() -> crate::run::status::RunView {
         ci_at: Some("2026-10-22T13:40:00Z".into()),
         ci_error: Some("e".into()),
         pr_state: Some("OPEN".into()),
+        receipt: ReceiptView {
+            state: "rows".into(),
+            rows: vec!["r".into()],
+        },
         qa: Some(QaView {
             round: Some(1),
             result: "pass".into(),
@@ -780,6 +805,190 @@ fn table() -> BTreeMap<&'static str, Sample> {
             verified: true,
             reason: Some("r".into()),
         }]),
+    );
+    t.insert(
+        "flight_compare",
+        of(crate::flight::host::CompareOut {
+            a: compare_side("r-1"),
+            b: compare_side("r-2"),
+            rows: vec![],
+            divergence: Some(0),
+            progress: crate::flight::index::Counts {
+                current: 1,
+                total: 2,
+            },
+        })
+        .nullable(&["divergence"]),
+    );
+    t.insert(
+        "flight_eval_results",
+        of(crate::flight::host::EvalResults {
+            group: "g".into(),
+            source: "/r".into(),
+            n: 2,
+            runs: vec![crate::flight::host::EvalRunResult {
+                index: 1,
+                label: "Run 1".into(),
+                run_id: Some("r-1".into()),
+                run_dir: Some("/r".into()),
+                status: "finished".into(),
+                completed: Some(true),
+                check_pass_rate: Some(1.0),
+                check_state: "checked".into(),
+                retries: Some(0),
+                tool_failures: Some(0),
+                tokens: Some(1),
+                active_minutes: Some(1.0),
+                kept_branches: vec![crate::run::janitor::KeptBranch {
+                    pr_id: "PR1".into(),
+                    branch: "b".into(),
+                    repo_path: "/w".into(),
+                    unmerged_commits: Some(1),
+                }],
+            }],
+            distributions: crate::flight::host::EvalDistributions::default(),
+            finished: 1,
+            running: 0,
+            failed: 0,
+        })
+        .nullable(&[
+            "runs[].runId",
+            "runs[].runDir",
+            "runs[].completed",
+            "runs[].checkPassRate",
+            "runs[].retries",
+            "runs[].toolFailures",
+            "runs[].tokens",
+            "runs[].activeMinutes",
+            "runs[].keptBranches[].unmergedCommits",
+            "distributions.completed.min",
+            "distributions.completed.median",
+            "distributions.completed.max",
+            "distributions.checkPassRate.min",
+            "distributions.checkPassRate.median",
+            "distributions.checkPassRate.max",
+            "distributions.retries.min",
+            "distributions.retries.median",
+            "distributions.retries.max",
+            "distributions.toolFailures.min",
+            "distributions.toolFailures.median",
+            "distributions.toolFailures.max",
+            "distributions.tokens.min",
+            "distributions.tokens.median",
+            "distributions.tokens.max",
+            "distributions.activeMinutes.min",
+            "distributions.activeMinutes.median",
+            "distributions.activeMinutes.max",
+        ]),
+    );
+    t.insert("flight_run_share", of(Some(1.0_f64)).nullable(&[""]));
+    t.insert(
+        "flight_export_preview",
+        of(crate::flight::host::ExportPreview {
+            policy: crate::flight::export::ExportPolicy::Metadata,
+            encoding: crate::flight::export::Encoding::Json,
+            endpoint: "http://127.0.0.1:4318/v1/traces".into(),
+            spans: 1,
+            events: 1,
+            bytes: 1,
+            digest: "d".into(),
+            fields: vec![crate::flight::export::FieldCount {
+                field: "f".into(),
+                count: 1,
+                leaves: 1,
+            }],
+            warnings: vec!["w".into()],
+            loopback: true,
+            capture_policy: crate::flight::schema::CapturePolicy::Metadata,
+        }),
+    );
+    t.insert(
+        "dispatch_eval_preview",
+        of(crate::run::dispatch::EvalPreview {
+            title: "t".into(),
+            hold_percent: Some(80),
+            five_hour: Some(crate::run::dispatch::FiveHourReading {
+                percent: 1.0,
+                resets_at: Some(1),
+            }),
+            based_repos: vec!["/w".into()],
+            default_branch_repos: vec!["/x".into()],
+        })
+        .nullable(&["holdPercent", "fiveHour", "fiveHour.resetsAt"]),
+    );
+    t.insert(
+        "observe_tab",
+        of(crate::observe::TabObservation {
+            hook: Some(crate::observe::hooks::TabHookState {
+                activity: crate::observe::hooks::TabActivity::Working,
+                last_event: Some("PreToolUse".into()),
+                updated_ms: Some(1),
+                subagents_running: 1,
+                tool_running: true,
+                session_id: Some("s".into()),
+                activity_since_ms: Some(1),
+                compacting: false,
+                model: Some("opus".into()),
+                ..Default::default()
+            }),
+            hooks_active: true,
+            hooks_installed: true,
+            transcript_found: true,
+            context: Some(crate::observe::transcript::ContextMeter {
+                model: "opus".into(),
+                used: 1,
+                window: 2,
+                percent: 50.0,
+                warn: false,
+                warn_percent: 80.0,
+            }),
+            subagents: vec![crate::observe::transcript::SubagentInfo {
+                tool_use_id: "t".into(),
+                agent_id: Some("a".into()),
+                agent_type: "dcv2:implementer".into(),
+                description: Some("d".into()),
+                status: "running".into(),
+                background: false,
+                started_ms: Some(1),
+                finished_ms: Some(2),
+            }],
+            usage: Some(crate::observe::transcript::UsageSummary {
+                stages: vec![cost_line()],
+                agents: vec![cost_line()],
+                total_tokens: 1,
+                total_cost_usd: Some(1.0),
+                minutes: 1.0,
+                messages: 1,
+            }),
+            stall: Some(crate::observe::watchdog::Stall {
+                minutes: 1,
+                threshold: 10,
+            }),
+            waiting: Some(crate::observe::watchdog::Waiting {
+                minutes: 1,
+                threshold: 10,
+                since_ms: 1,
+            }),
+        })
+        .nullable(&[
+            "hook",
+            "hook.lastEvent",
+            "hook.updatedMs",
+            "hook.sessionId",
+            "hook.activitySinceMs",
+            "hook.model",
+            "context",
+            "subagents[].agentId",
+            "subagents[].description",
+            "subagents[].startedMs",
+            "subagents[].finishedMs",
+            "usage",
+            "usage.totalCostUsd",
+            "usage.stages[].costUsd",
+            "usage.agents[].costUsd",
+            "stall",
+            "waiting",
+        ]),
     );
     t.insert(
         "observe_tabs",

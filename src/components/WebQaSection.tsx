@@ -278,7 +278,7 @@ export function WebQaSection({ windowId, onStarted }: { windowId: string; onStar
           Open release QA results…
         </button>
       </div>
-      {!hasTargets && <p className="hint">Add a target in Settings › Web QA first.</p>}
+      {!hasTargets && <p className="hint">No targets now; earlier passes are kept.</p>}
       {releaseAsk && (
         <div className="field-row">
           <input className="text-input text-input-narrow" aria-label="Release version" placeholder="0.10.0" value={version} onChange={(e) => setVersion(e.target.value)} />

@@ -655,8 +655,8 @@ printf '{"schema": 1, "checks": {"PR2": {"result": "pass", "command": "npm test"
 B2="$RUN/pr-bodies/PR2.md"
 rship() {   # rship <label>: PR2 back to pushed with no PR yet, then ship-pr; the body is $B2
   python3 - "$RUN/status.json" <<'PY'
-import json, sys
-st = json.load(open(sys.argv[1])); pr = st["prs"][1]; pr["state"] = "pushed"; pr["prUrl"] = None; pr["note"] = None
+import json, os, sys
+st = json.load(open(sys.argv[1])); pr = st["prs"][int(os.environ.get("RSHIP_IDX", "1"))]; pr["state"] = "pushed"; pr["prUrl"] = None; pr["note"] = None
 pr["review"] = {"round": 2, "verdict": "APPROVED", "openFindings": 0, "path": None}
 json.dump(st, open(sys.argv[1], "w"))
 PY
@@ -683,6 +683,17 @@ rhas "  findings: CRITICAL, HIGH and MEDIUM counted, LOW not, counts only" "- ME
 rhasnt "  no finding text in the Receipt" "SECRET-FINDING-TEXT"
 rhas "  guard blocks per rule id" "- Guard blocks (whole run): 3 (path-outside-run x2, shell-write x1)"
 rhas "  decisions, one stating a contradiction" "- Decisions recorded in the approved plan: 2; 1 state a contradiction of the decision log"
+# A one-PR run says "1 PR" in the Receipt's label (the same plural rule as the app's PR counts).
+cp "$RUN/status.json" "$d/status.onepr.bak"
+python3 - "$RUN/status.json" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1])); st["prs"] = [st["prs"][1]]; st["prs"][0]["dependsOn"] = []
+json.dump(st, open(sys.argv[1], "w"))
+PY
+RSHIP_IDX=0 rship "ship-pr of a one-PR run with a receipt-enabled repo"
+rhas "  the label reads 1 PR, not 1 PRs" "- Agent implementer (for the whole run, 1 PR, as of 2026-11-06T10:00:00Z)"
+rhasnt "  no '1 PRs'" "1 PRs"
+cp "$d/status.onepr.bak" "$RUN/status.json"
 rqa() {   # rqa <json qa value or null>: the recorded prs[].qa of PR2 (only state.sh qa writes it; the test sets it directly)
   python3 - "$RUN/status.json" "$1" <<'PY'
 import json, sys

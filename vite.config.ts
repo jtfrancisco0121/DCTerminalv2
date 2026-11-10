@@ -1,8 +1,29 @@
-import { defineConfig } from "vite";
+import { defineConfig, searchForWorkspaceRoot } from "vite";
 import react from "@vitejs/plugin-react";
+// @ts-expect-error type error without @types/node package
+import fs from "node:fs";
+// @ts-expect-error type error without @types/node package
+import path from "node:path";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
+
+/**
+ * The folders `npm run dev:fake` may serve. A QA worktree can reach its packages through a symlinked node_modules, and Vite then
+ * answered 403 for /@fs/<real node_modules>/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2 on every load. Setting
+ * `allow` turns off Vite's automatic workspace root, so it is listed again; the real node_modules folder is added by its exact
+ * realpath (never a wildcard root or the home folder).
+ */
+export function fakeFsAllow(cwd: string): string[] {
+  const allow = [searchForWorkspaceRoot(cwd)];
+  try {
+    const modules = fs.realpathSync(path.join(cwd, "node_modules"));
+    if (!allow.includes(modules)) allow.push(modules);
+  } catch {
+    // no node_modules next to the project: nothing to add
+  }
+  return allow;
+}
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
@@ -24,6 +45,7 @@ export default defineConfig(({ mode }) => {
     server: {
       port,
       strictPort: true,
+      ...(fake ? { fs: { allow: fakeFsAllow(process.cwd()) } } : {}),
       // Listen on localhost so the Tauri webview and HMR websocket are reliable on Windows.
       host: host || "127.0.0.1",
       hmr: fake

@@ -9,6 +9,7 @@ import {
   minutesText,
   outcomeText,
   outcomeTone,
+  prCount,
   relativeDate,
   runMatches,
   safeUrl,
@@ -214,7 +215,7 @@ export function RunsView({ windowId, onClose, onStarted, onAnalytics, onEvalResu
                           </button>
                         ) : null,
                       )}
-                      {!record?.prUrls?.length && run.prCount ? <span>{run.prCount} PRs</span> : null}
+                      {!record?.prUrls?.length && run.prCount ? <span>{prCount(run.prCount)}</span> : null}
                       </div>
                     </td>
                     <td>
