@@ -1,4 +1,5 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
+import { useDialogFocus } from "./useDialogFocus";
 
 type Props = {
   title: string;
@@ -19,12 +20,7 @@ type Props = {
 export function Dialog({ title, onClose, children, footer, className = "", bare = false, backdropClass = "" }: Props) {
   const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const before = document.activeElement as HTMLElement | null;
-    const first = ref.current?.querySelector<HTMLElement>("input, select, button:not(.dialog-close)");
-    (first ?? ref.current)?.focus();
-    return () => before?.focus?.();
-  }, []);
+  useDialogFocus(ref);
 
   return (
     <div className={`dialog-backdrop ${backdropClass}`.trim()} onMouseDown={(event) => event.target === event.currentTarget && onClose()}>

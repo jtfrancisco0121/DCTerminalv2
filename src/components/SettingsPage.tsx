@@ -32,6 +32,7 @@ import { ATTENTION_KINDS, DEFAULT_EXPORT_ENDPOINT, PUSH_KINDS } from "../run/wor
 import { THEME_CHOICES } from "../theme";
 import { detectPlatform, revealLabel, type Platform } from "../terminal/keys";
 import { Dialog } from "./Dialog";
+import { useDialogFocus } from "./useDialogFocus";
 import { errorText, InlineNotice } from "./InlineNotice";
 import { ClickUpTokens } from "../clickup/ClickUpTokens";
 
@@ -219,6 +220,8 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
   }, []);
 
   const pageRef = useRef<HTMLDivElement>(null);
+  // Focus lands on the page itself so Escape works at once; it returns to the opener on close.
+  useDialogFocus(pageRef, null);
   useEffect(() => {
     if (!section) return;
     const target = [...(pageRef.current?.querySelectorAll("section.settings-section") ?? [])].find(
@@ -475,6 +478,7 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
       className="settings-page"
       role="dialog"
       aria-label="Settings"
+      tabIndex={-1}
       onKeyDown={(event) => {
         if (event.key !== "Escape") return;
         event.preventDefault();
