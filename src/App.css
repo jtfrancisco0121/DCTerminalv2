@@ -1296,6 +1296,11 @@ body,
   margin-bottom: var(--space-2);
 }
 
+.role-group-heading {
+  margin-top: var(--space-4);
+  margin-bottom: var(--space-2);
+}
+
 .role-tiles {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));

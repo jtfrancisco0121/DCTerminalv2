@@ -1019,6 +1019,7 @@ fn table() -> BTreeMap<&'static str, Sample> {
             roles: vec![crate::run::RoleTile {
                 id: "planner".into(),
                 label: "Planner".into(),
+                group: "pipeline".into(),
             }],
             runs: vec![crate::run::folder::RunListItem {
                 run_id: "r-1".into(),

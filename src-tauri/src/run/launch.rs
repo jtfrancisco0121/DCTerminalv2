@@ -15,20 +15,26 @@ pub const TEST_MODE_ENV: &str = "DCV2_TEST_MODE";
 /// The tab's Claude account id (the window's account), read by the plugin's ClickUp helper to pick the keychain item.
 pub const ACCOUNT_ID_ENV: &str = "DCV2_ACCOUNT_ID";
 
-/// The eight role tiles: (skill, label).
-pub const ROLES: &[(&str, &str)] = &[
-    ("planner", "Planner"),
-    ("plan-reviewer", "Plan Reviewer"),
-    ("risk-reviewer", "Risk Reviewer"),
-    ("developer", "Developer"),
-    ("pr-reviewer", "PR Reviewer"),
-    ("recommendation", "Recommendation"),
-    ("codebase-audit", "Codebase Audit"),
-    ("onboard", "Onboard"),
+/// The role tiles: (skill, label, group). The start screen shows the groups in first-seen order:
+/// `pipeline` (the roles of the Eagle-Eye pipeline) and `persona` (QA Engineer, Product Manager).
+pub const ROLES: &[(&str, &str, &str)] = &[
+    ("planner", "Planner", "pipeline"),
+    ("plan-reviewer", "Plan Reviewer", "pipeline"),
+    ("risk-reviewer", "Risk Reviewer", "pipeline"),
+    ("developer", "Developer", "pipeline"),
+    ("pr-reviewer", "PR Reviewer", "pipeline"),
+    ("recommendation", "Recommendation", "pipeline"),
+    ("codebase-audit", "Codebase Audit", "pipeline"),
+    ("onboard", "Onboard", "pipeline"),
+    ("qa-engineer", "QA Engineer", "persona"),
+    ("product-manager", "Product Manager", "persona"),
 ];
 
 pub fn role_label(role: &str) -> Option<&'static str> {
-    ROLES.iter().find(|(id, _)| *id == role).map(|(_, l)| *l)
+    ROLES
+        .iter()
+        .find(|(id, _, _)| *id == role)
+        .map(|(_, label, _)| *label)
 }
 
 /// A folder with `.claude-plugin/plugin.json`.
@@ -356,6 +362,37 @@ mod tests {
             .filter(|(k, _)| k == ACCOUNT_ID_ENV)
             .map(|(_, v)| v.as_str())
             .collect()
+    }
+
+    #[test]
+    fn the_faked_backends_roles_are_the_roles_in_order() {
+        // AD-12: the start screen's render test counts tiles from this fixture, so it must not drift from ROLES.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/fake/runs.json");
+        let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let faked: Vec<(String, String, String)> = fixture["run_overview"]["roles"]
+            .as_array()
+            .expect("run_overview.roles")
+            .iter()
+            .map(|r| {
+                let field = |k: &str| r[k].as_str().unwrap_or_default().to_string();
+                (field("id"), field("label"), field("group"))
+            })
+            .collect();
+        let wanted: Vec<(String, String, String)> = ROLES
+            .iter()
+            .map(|(id, label, group)| (id.to_string(), label.to_string(), group.to_string()))
+            .collect();
+        assert_eq!(faked, wanted);
+    }
+
+    #[test]
+    fn eight_pipeline_roles_come_before_the_two_personas() {
+        let groups: Vec<&str> = ROLES.iter().map(|(_, _, g)| *g).collect();
+        assert_eq!(groups.len(), 10);
+        assert!(groups[..8].iter().all(|g| *g == "pipeline"));
+        assert!(groups[8..].iter().all(|g| *g == "persona"));
+        assert_eq!(role_label("qa-engineer"), Some("QA Engineer"));
+        assert_eq!(role_label("nope"), None);
     }
 
     #[test]

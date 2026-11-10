@@ -5,35 +5,53 @@
     "roles": [
       {
         "id": "planner",
-        "label": "Planner"
+        "label": "Planner",
+        "group": "pipeline"
       },
       {
         "id": "plan-reviewer",
-        "label": "Plan Reviewer"
+        "label": "Plan Reviewer",
+        "group": "pipeline"
       },
       {
         "id": "risk-reviewer",
-        "label": "Risk Reviewer"
+        "label": "Risk Reviewer",
+        "group": "pipeline"
       },
       {
         "id": "developer",
-        "label": "Developer"
+        "label": "Developer",
+        "group": "pipeline"
       },
       {
         "id": "pr-reviewer",
-        "label": "PR Reviewer"
+        "label": "PR Reviewer",
+        "group": "pipeline"
       },
       {
         "id": "recommendation",
-        "label": "Recommendation"
+        "label": "Recommendation",
+        "group": "pipeline"
       },
       {
         "id": "codebase-audit",
-        "label": "Codebase Audit"
+        "label": "Codebase Audit",
+        "group": "pipeline"
       },
       {
         "id": "onboard",
-        "label": "Onboard"
+        "label": "Onboard",
+        "group": "pipeline"
+      },
+      {
+        "id": "qa-engineer",
+        "label": "QA Engineer",
+        "group": "persona"
+      },
+      {
+        "id": "product-manager",
+        "label": "Product Manager",
+        "group": "persona"
       }
     ],
     "runs": [

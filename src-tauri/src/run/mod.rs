@@ -153,6 +153,8 @@ impl From<&str> for StartError {
 pub struct RoleTile {
     pub id: String,
     pub label: String,
+    /// `pipeline` or `persona` (launch.rs `ROLES`): the start screen groups the tiles by it.
+    pub group: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -212,9 +214,10 @@ pub async fn run_overview(app: AppHandle) -> Result<RunOverview, String> {
             plugin_dir: plugin.map(|p| p.display().to_string()),
             roles: launch::ROLES
                 .iter()
-                .map(|(id, label)| RoleTile {
+                .map(|(id, label, group)| RoleTile {
                     id: id.to_string(),
                     label: label.to_string(),
+                    group: group.to_string(),
                 })
                 .collect(),
             runs,
