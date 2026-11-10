@@ -596,6 +596,7 @@ pub fn start_run_inner(app: &AppHandle, params: StartParams) -> Result<StartedRu
         prompt: String::new(),
         plugin_dir: plugin.clone(),
         memory_dir: memory_dir.clone(),
+        account_id: ctx.account_id.clone(),
         run_dir: None,
         max_implementers: ctx.run.max_implementers,
         stop_hooks: ctx.run.stop_hooks,
@@ -771,6 +772,7 @@ pub(crate) fn launch_webqa_tab(
         prompt: format!("/dcv2:eagle-eye run={}", run_dir.display()),
         plugin_dir: plugin.clone(),
         memory_dir,
+        account_id: ctx.account_id.clone(),
         run_dir: Some(run_dir.to_path_buf()),
         max_implementers: ctx.run.max_implementers,
         stop_hooks: ctx.run.stop_hooks,
@@ -850,6 +852,7 @@ pub async fn resume_run(
             prompt: format!("/dcv2:eagle-eye resume run={}", run_dir.display()),
             plugin_dir: plugin.clone(),
             memory_dir,
+            account_id: ctx.account_id.clone(),
             run_dir: Some(run_dir.clone()),
             // The run's own override (meta.json) before the setting.
             max_implementers: folder::max_implementers_of(&run_dir)
