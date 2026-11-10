@@ -125,5 +125,91 @@
   "pty_open": 1,
   "pty_write": null,
   "pty_resize": null,
-  "pty_kill": null
+  "pty_kill": null,
+  "observe_tab": {
+    "hook": {
+      "activity": "working",
+      "lastEvent": "PreToolUse",
+      "updatedMs": 1783000000000,
+      "subagentsRunning": 1,
+      "toolRunning": true,
+      "sessionId": "fake-session",
+      "activitySinceMs": 1783000000000,
+      "compacting": false,
+      "model": "opus"
+    },
+    "hooksActive": true,
+    "hooksInstalled": true,
+    "transcriptFound": true,
+    "context": {
+      "model": "opus",
+      "used": 84000,
+      "window": 200000,
+      "percent": 42.0,
+      "warn": false,
+      "warnPercent": 80.0
+    },
+    "subagents": [
+      {
+        "toolUseId": "toolu_fake1",
+        "agentId": "agent-fake1",
+        "agentType": "dcv2:implementer",
+        "description": "PR1 build",
+        "status": "running",
+        "background": false,
+        "startedMs": 1783000000000,
+        "finishedMs": null
+      }
+    ],
+    "usage": {
+      "stages": [
+        {
+          "name": "build",
+          "tokens": {
+            "input": 1200,
+            "output": 3400,
+            "cacheWrite5m": 0,
+            "cacheWrite1h": 0,
+            "cacheRead": 20000
+          },
+          "totalTokens": 24600,
+          "costUsd": 0.42,
+          "minutes": 6.5
+        }
+      ],
+      "agents": [
+        {
+          "name": "dcv2:implementer",
+          "tokens": {
+            "input": 1200,
+            "output": 3400,
+            "cacheWrite5m": 0,
+            "cacheWrite1h": 0,
+            "cacheRead": 20000
+          },
+          "totalTokens": 24600,
+          "costUsd": 0.42,
+          "minutes": 6.5
+        }
+      ],
+      "totalTokens": 24600,
+      "totalCostUsd": 0.42,
+      "minutes": 6.5,
+      "messages": 12
+    },
+    "stall": null,
+    "waiting": null
+  },
+  "dispatch_eval_preview": {
+    "title": "Add multiply()",
+    "holdPercent": 80,
+    "fiveHour": {
+      "percent": 23.0,
+      "resetsAt": 1783020000
+    },
+    "basedRepos": [
+      "/abs/ws"
+    ],
+    "defaultBranchRepos": []
+  }
 }

@@ -78,7 +78,14 @@ export function invokedCommands(text: string): string[] {
  * observe_tab only shows "unavailable"), so a not-faked read goes unseen. src/fake/render.test.tsx finds them by opening
  * every page; this list is what that test found.
  */
-export const RENDER_TIME_READS = ["observe_tab"];
+export const RENDER_TIME_READS = [
+  "observe_tab",
+  "flight_export_preview",
+  "flight_compare",
+  "flight_eval_results",
+  "flight_run_share",
+  "dispatch_eval_preview",
+];
 
 const isTest = (path: string) => /\.test\.tsx?$/.test(path) || path.startsWith("/src/fake/");
 const fixtureKeys = new Set(
