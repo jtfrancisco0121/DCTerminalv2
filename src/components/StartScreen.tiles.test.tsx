@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-// The start screen's role tiles on the faked backend's overview: counts and groups come from the fixture, which a Rust
-// test holds equal to `ROLES` (run/launch.rs), so no tile count or role id is written here.
+// The start screen's role tiles on the faked backend's overview: labels, groups and order come from the fixture, which a
+// Rust test holds equal to `ROLES` (run/launch.rs), so no role id is written here. Recorded exception (decision log,
+// 2026-11-10): the tile count (13, in groups of 8 and 5) is written literally, to catch a persona dropped from `ROLES`
+// and the fixture together, which the equality test cannot see.
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RunOverview } from "../run/api";
@@ -53,6 +55,8 @@ describe("StartScreen role tiles", () => {
   it("has the faked overview's roles in the fixture's groups", () => {
     expect(roles.length).toBeGreaterThan(0);
     expect(expectedGroups.length).toBe(2);
+    expect(roles).toHaveLength(13);
+    expect(expectedGroups.map((g) => g.labels.length)).toEqual([8, 5]);
   });
 
   it("shows no tile and no heading before the overview loads", () => {
@@ -64,8 +68,9 @@ describe("StartScreen role tiles", () => {
   it("shows one tile per role in labelled groups, in the fixture's order", async () => {
     renderStart("/w/app");
     await vi.waitFor(() => expect(tileGroups()).toHaveLength(expectedGroups.length));
-    expect(document.querySelectorAll(".role-tile")).toHaveLength(roles.length);
+    expect(document.querySelectorAll(".role-tile")).toHaveLength(13);
     const groups = tileGroups();
+    expect(groups.map((g) => g.querySelectorAll(".role-tile").length)).toEqual([8, 5]);
     groups.forEach((groupEl, at) => {
       const heading = document.getElementById(groupEl.getAttribute("aria-labelledby") ?? "");
       expect(heading?.textContent?.trim()).toBeTruthy();

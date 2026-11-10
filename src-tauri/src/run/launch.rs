@@ -16,7 +16,7 @@ pub const TEST_MODE_ENV: &str = "DCV2_TEST_MODE";
 pub const ACCOUNT_ID_ENV: &str = "DCV2_ACCOUNT_ID";
 
 /// The role tiles: (skill, label, group). The start screen shows the groups in first-seen order:
-/// `pipeline` (the roles of the Eagle-Eye pipeline) and `persona` (QA Engineer, Product Manager).
+/// `pipeline` (the roles of the Eagle-Eye pipeline) and `persona` (QA Engineer, Product Manager, Business Analyst, Senior Engineer, Principal Engineer).
 pub const ROLES: &[(&str, &str, &str)] = &[
     ("planner", "Planner", "pipeline"),
     ("plan-reviewer", "Plan Reviewer", "pipeline"),
@@ -28,6 +28,9 @@ pub const ROLES: &[(&str, &str, &str)] = &[
     ("onboard", "Onboard", "pipeline"),
     ("qa-engineer", "QA Engineer", "persona"),
     ("product-manager", "Product Manager", "persona"),
+    ("analyst", "Business Analyst", "persona"),
+    ("senior-engineer", "Senior Engineer", "persona"),
+    ("principal-engineer", "Principal Engineer", "persona"),
 ];
 
 pub fn role_label(role: &str) -> Option<&'static str> {
@@ -386,12 +389,15 @@ mod tests {
     }
 
     #[test]
-    fn eight_pipeline_roles_come_before_the_two_personas() {
+    fn eight_pipeline_roles_come_before_the_five_personas() {
         let groups: Vec<&str> = ROLES.iter().map(|(_, _, g)| *g).collect();
-        assert_eq!(groups.len(), 10);
+        assert_eq!(groups.len(), 13);
         assert!(groups[..8].iter().all(|g| *g == "pipeline"));
         assert!(groups[8..].iter().all(|g| *g == "persona"));
         assert_eq!(role_label("qa-engineer"), Some("QA Engineer"));
+        assert_eq!(role_label("analyst"), Some("Business Analyst"));
+        assert_eq!(role_label("senior-engineer"), Some("Senior Engineer"));
+        assert_eq!(role_label("principal-engineer"), Some("Principal Engineer"));
         assert_eq!(role_label("nope"), None);
     }
 
