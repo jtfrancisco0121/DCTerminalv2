@@ -1163,7 +1163,10 @@ mod tests {
         let mut no_charters = target("No charters");
         no_charters.charters.clear();
         let err = save_targets(&mut settings, &store, vec![no_charters]).unwrap_err();
-        assert!(err.contains("No charters") && err.contains("at least one charter"), "{err}");
+        assert!(
+            err.contains("No charters") && err.contains("at least one charter"),
+            "{err}"
+        );
         assert_eq!(settings.web_qa().targets.len(), 1, "the old list is kept");
         assert_eq!(settings.web_qa().targets[0].name, "Staging");
     }
@@ -1180,12 +1183,16 @@ mod tests {
         assert!(settings.web_qa().targets[0].charters.is_empty());
         let mut list = settings.web_qa().targets.clone();
         list.push(target("Other"));
-        let saved = save_targets(&mut settings, &store, list).expect("an unchanged charterless target does not block");
+        let saved = save_targets(&mut settings, &store, list)
+            .expect("an unchanged charterless target does not block");
         assert_eq!(saved.targets.len(), 2);
         let mut edited = saved.targets.clone();
         edited[0].name = "Renamed".into();
         let err = save_targets(&mut settings, &store, edited).unwrap_err();
-        assert!(err.contains("Renamed"), "an edited charterless target is refused: {err}");
+        assert!(
+            err.contains("Renamed"),
+            "an edited charterless target is refused: {err}"
+        );
         let data = dir.path().join("data");
         let err = make_pass(&data, &meta(), &settings, &store, &id, &[]).unwrap_err();
         assert!(err.contains("charter"), "{err}");

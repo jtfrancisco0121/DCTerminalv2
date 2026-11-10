@@ -111,6 +111,21 @@ expect 1 "a missing option and a missing scroll target fail their steps" env STU
 has "  the missing option is named" 'no option label \"Missing Option\"'
 has "  the scroll failure says why" 'nothing to scroll to'
 
+echo "# click: covered targets fail, within scopes, a bad within is refused"
+printf '%s\n' '{"op":"open","url":"http://127.0.0.1:1530/"}' '{"op":"click","text":"Resume"}' '{"op":"text"}' > "$steps"
+expect 1 "a click whose point is covered fails the step" env STUB_COVERED=1 node "$QB" --out "$OUT" --steps "$steps"
+has "  the step names what covers it" 'covered by div.overlay'
+has "  later steps still answer" '"op":"text","ok":true'
+printf '%s\n' '{"op":"open","url":"http://127.0.0.1:1530/"}' '{"op":"click","text":"Resume","within":"[role=dialog]"}' \
+  '{"op":"click","selector":"button.go","within":"main"}' '{"op":"type","text":"x","selector":"input","within":"form"}' '{"op":"text","within":"main"}' > "$steps"
+expect 0 "click, type and text with within still succeed" node "$QB" --out "$OUT" --steps "$steps"
+printf '%s\n' '{"op":"click","text":"Resume","within":""}' > "$steps"
+expect 2 "an empty within is refused" node "$QB" --out "$OUT" --steps "$steps"
+printf '%s\n' '{"op":"click","text":"Resume","within":5}' > "$steps"
+expect 2 "a non-string within is refused" node "$QB" --out "$OUT" --steps "$steps"
+printf '%s\n' '{"op":"open","url":"http://127.0.0.1:1530/","within":"main"}' > "$steps"
+expect 2 "within on open is refused" node "$QB" --out "$OUT" --steps "$steps"
+
 printf '%s\n' '{"op":"open","url":"http://127.0.0.1:1530/"}' '{"op":"text"}' > "$steps"
 expect 0 "page errors do not fail the run" env STUB_PAGE_ERRORS=1 node "$QB" --out "$OUT" --steps "$steps"
 [[ "$(grep -c '"event":"page-error"' <<<"$out")" == 3 ]] && ok "  three page-error lines (exception, console, log)" || bad "  page-error lines: $out"
