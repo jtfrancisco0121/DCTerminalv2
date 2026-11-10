@@ -1,0 +1,2604 @@
+{
+  "active_runs": {
+    "items": {
+      "fields": {
+        "activity": {
+          "type": "string"
+        },
+        "eval": {
+          "fields": {
+            "bases": {
+              "map": {
+                "fields": {
+                  "base": {
+                    "type": "string"
+                  },
+                  "baseCommit": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "optional": true,
+              "type": "object"
+            },
+            "group": {
+              "type": "string"
+            },
+            "index": {
+              "type": "number"
+            },
+            "of": {
+              "type": "number"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "label": {
+          "type": "string"
+        },
+        "prs": {
+          "items": {
+            "fields": {
+              "appCheck": {
+                "type": "string"
+              },
+              "ci": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "prState": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "prsDone": {
+          "type": "number"
+        },
+        "prsTotal": {
+          "type": "number"
+        },
+        "runDir": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "runMode": {
+          "type": "string"
+        },
+        "stage": {
+          "type": "string"
+        },
+        "stalled": {
+          "type": "boolean"
+        },
+        "tabId": {
+          "type": "string"
+        },
+        "waitingFor": {
+          "type": "string"
+        },
+        "waitingSince": {
+          "type": "string"
+        },
+        "windowLabel": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "type": "array"
+  },
+  "attention_summary": {
+    "fields": {
+      "activeRuns": {
+        "type": "number"
+      },
+      "needsYou": {
+        "type": "number"
+      }
+    },
+    "type": "object"
+  },
+  "batch_overview": {
+    "items": {
+      "fields": {
+        "createdAt": {
+          "type": "string"
+        },
+        "eval": {
+          "fields": {
+            "finished": {
+              "type": "number"
+            },
+            "n": {
+              "type": "number"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "id": {
+          "type": "string"
+        },
+        "rows": {
+          "items": {
+            "fields": {
+              "ci": {
+                "type": "string"
+              },
+              "entryId": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "prUrl": {
+                "type": "string"
+              },
+              "removed": {
+                "type": "boolean"
+              },
+              "runDir": {
+                "type": "string"
+              },
+              "stage": {
+                "type": "string"
+              },
+              "ticketIds": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "waitingFor": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "waitingForYou": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "type": "array"
+  },
+  "claude_account_logins": {
+    "items": {
+      "fields": {
+        "config": {
+          "fields": {
+            "display": {
+              "type": "string"
+            },
+            "exists": {
+              "type": "boolean"
+            },
+            "path": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "id": {
+          "type": "string"
+        },
+        "login": {
+          "fields": {
+            "account": {
+              "type": "string"
+            },
+            "apiKeyEnv": {
+              "type": "boolean"
+            },
+            "detail": {
+              "type": "string"
+            },
+            "method": {
+              "optional": true,
+              "type": "string"
+            },
+            "organization": {
+              "optional": true,
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "type": "array"
+  },
+  "claude_status": {
+    "fields": {
+      "error": {
+        "type": "string"
+      },
+      "found": {
+        "type": "boolean"
+      },
+      "path": {
+        "type": "string"
+      },
+      "version": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "claude_version_status": {
+    "fields": {
+      "maxTested": {
+        "type": "string"
+      },
+      "min": {
+        "type": "string"
+      },
+      "range": {
+        "type": "string"
+      },
+      "selftest": {
+        "fields": {
+          "agentCompleted": {
+            "type": "boolean"
+          },
+          "agentSpawned": {
+            "type": "boolean"
+          },
+          "at": {
+            "type": "string"
+          },
+          "detail": {
+            "nullable": true,
+            "type": "null"
+          },
+          "finished": {
+            "type": "boolean"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "pluginLoaded": {
+            "type": "boolean"
+          },
+          "seconds": {
+            "type": "number"
+          },
+          "version": {
+            "nullable": true,
+            "type": "null"
+          }
+        },
+        "type": "object"
+      },
+      "selftestWanted": {
+        "type": "boolean"
+      },
+      "version": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "clickup_run_state": {
+    "fields": {
+      "autoPost": {
+        "fields": {
+          "adopted": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "offer": {
+            "nullable": true,
+            "type": "null"
+          },
+          "problem": {
+            "nullable": true,
+            "type": "null"
+          },
+          "record": {
+            "nullable": true,
+            "type": "null"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "waiting": {
+            "nullable": true,
+            "type": "null"
+          }
+        },
+        "type": "object"
+      },
+      "drafts": {
+        "nullable": true,
+        "type": "null"
+      },
+      "draftsVersion": {
+        "type": "string"
+      },
+      "fetchedAt": {
+        "type": "string"
+      },
+      "hasTickets": {
+        "type": "boolean"
+      },
+      "merged": {
+        "items": null,
+        "type": "array"
+      },
+      "pulled": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "ticketCount": {
+        "type": "number"
+      },
+      "ticketsProblem": {
+        "type": "string"
+      },
+      "updateFile": {
+        "type": "string"
+      },
+      "writebackProblem": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "clickup_token_status": {
+    "fields": {
+      "accountId": {
+        "type": "string"
+      },
+      "problem": {
+        "type": "string"
+      },
+      "saved": {
+        "type": "boolean"
+      }
+    },
+    "type": "object"
+  },
+  "detect_folder_repos": {
+    "fields": {
+      "kind": {
+        "type": "string"
+      },
+      "repos": {
+        "items": {
+          "fields": {
+            "check": {
+              "type": "string"
+            },
+            "copyFiles": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "liveTests": {
+              "optional": true,
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "qa": {
+              "fields": {
+                "command": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "optional": true,
+              "type": "object"
+            },
+            "receipt": {
+              "optional": true,
+              "type": "boolean"
+            },
+            "setup": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "dev_import_status": {
+    "fields": {
+      "available": {
+        "type": "boolean"
+      },
+      "devDir": {
+        "type": "string"
+      },
+      "importedAt": {
+        "type": "string"
+      },
+      "offered": {
+        "type": "boolean"
+      }
+    },
+    "type": "object"
+  },
+  "dispatch_overview": {
+    "fields": {
+      "atCap": {
+        "type": "boolean"
+      },
+      "cap": {
+        "type": "number"
+      },
+      "holders": {
+        "items": {
+          "fields": {
+            "runDir": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "stage": {
+              "type": "string"
+            },
+            "why": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "queue": {
+        "items": {
+          "fields": {
+            "accountId": {
+              "type": "string"
+            },
+            "batchId": {
+              "type": "string"
+            },
+            "bypassCap": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "params": {
+              "fields": {
+                "bmadMode": {
+                  "type": "string"
+                },
+                "clickup": {
+                  "fields": {
+                    "refs": {
+                      "items": null,
+                      "type": "array"
+                    },
+                    "ticketIds": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                },
+                "dispatchEntryId": {
+                  "type": "string"
+                },
+                "eval": {
+                  "fields": {
+                    "group": {
+                      "type": "string"
+                    },
+                    "index": {
+                      "type": "number"
+                    },
+                    "of": {
+                      "type": "number"
+                    },
+                    "source": {
+                      "type": "string"
+                    }
+                  },
+                  "optional": true,
+                  "type": "object"
+                },
+                "folder": {
+                  "type": "string"
+                },
+                "force": {
+                  "type": "boolean"
+                },
+                "maxImplementers": {
+                  "type": "number"
+                },
+                "repos": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "request": {
+                  "type": "string"
+                },
+                "reviewMode": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "runMode": {
+                  "type": "string"
+                },
+                "triageListId": {
+                  "optional": true,
+                  "type": "string"
+                },
+                "windowId": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "queuedAt": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "startedAt": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "wave": {
+              "fields": {
+                "epicRun": {
+                  "type": "string"
+                },
+                "n": {
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "usageHoldPercent": {
+        "nullable": true,
+        "type": "number"
+      }
+    },
+    "type": "object"
+  },
+  "dispatch_runs": {
+    "type": "string"
+  },
+  "epics_overview": {
+    "items": {
+      "fields": {
+        "cards": {
+          "items": {
+            "fields": {
+              "n": {
+                "type": "number"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "ticketIds": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "problem": {
+          "type": "string"
+        },
+        "runDir": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "type": "array"
+  },
+  "flight_session": {
+    "fields": {
+      "agents": {
+        "items": {
+          "fields": {
+            "children": {
+              "items": null,
+              "type": "array"
+            },
+            "derived": {
+              "fields": {
+                "evidence": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "description": {
+              "type": "string"
+            },
+            "files": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "pr": {
+              "type": "string"
+            },
+            "prDerived": {
+              "fields": {
+                "evidence": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "role": {
+              "type": "string"
+            },
+            "session": {
+              "type": "string"
+            },
+            "spawnSpan": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "failures": {
+        "items": {
+          "fields": {
+            "agent": {
+              "type": "string"
+            },
+            "at": {
+              "type": "string"
+            },
+            "before": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "derived": {
+              "fields": {
+                "evidence": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "repeatOf": {
+              "fields": {
+                "evidence": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "repeats": {
+              "items": null,
+              "type": "array"
+            },
+            "rule": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "notices": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "page": {
+        "fields": {
+          "events": {
+            "items": {
+              "fields": {
+                "agent": {
+                  "fields": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "parent": {
+                      "type": "string"
+                    },
+                    "pr": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                },
+                "at": {
+                  "type": "string"
+                },
+                "attrs": {
+                  "free": true,
+                  "type": "object"
+                },
+                "content": {
+                  "fields": {
+                    "policy": {
+                      "type": "string"
+                    },
+                    "redactions": {
+                      "type": "number"
+                    },
+                    "ref": {
+                      "fields": {
+                        "file": {
+                          "type": "string"
+                        },
+                        "len": {
+                          "type": "number"
+                        },
+                        "offset": {
+                          "type": "number"
+                        },
+                        "sha256": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                },
+                "derived": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "provider": {
+                  "fields": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "native": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                },
+                "schema": {
+                  "type": "number"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "span": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "trace": {
+                  "type": "string"
+                },
+                "usage": {
+                  "fields": {
+                    "cacheRead": {
+                      "type": "number"
+                    },
+                    "cacheWrite1h": {
+                      "type": "number"
+                    },
+                    "cacheWrite5m": {
+                      "type": "number"
+                    },
+                    "input": {
+                      "type": "number"
+                    },
+                    "model": {
+                      "type": "string"
+                    },
+                    "output": {
+                      "type": "number"
+                    },
+                    "usd": {
+                      "type": "number"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "nextCursor": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "phases": {
+        "map": {
+          "fields": {
+            "label": {
+              "type": "string"
+            },
+            "prState": {
+              "type": "string"
+            },
+            "stage": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "object"
+      },
+      "policy": {
+        "type": "string"
+      },
+      "snapshot": {
+        "fields": {
+          "contentKept": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "policy": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "status": {
+        "type": "string"
+      },
+      "trace": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "get_app_state": {
+    "fields": {
+      "activeTabId": {
+        "nullable": true,
+        "type": "string"
+      },
+      "closedTabs": {
+        "items": {
+          "fields": {
+            "cwd": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "tabs": {
+        "items": {
+          "fields": {
+            "customLabel": {
+              "type": "boolean"
+            },
+            "cwd": {
+              "type": "string"
+            },
+            "folderStatus": {
+              "type": "string"
+            },
+            "hasSession": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "pendingStart": {
+              "type": "boolean"
+            },
+            "role": {
+              "nullable": true,
+              "type": "string"
+            },
+            "runDir": {
+              "nullable": true,
+              "type": "string"
+            },
+            "split": {
+              "fields": {
+                "cwd": {
+                  "type": "string"
+                },
+                "direction": {
+                  "type": "string"
+                },
+                "folderStatus": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "ratio": {
+                  "type": "number"
+                }
+              },
+              "nullable": true,
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "windowId": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "get_claude_usage": {
+    "fields": {
+      "configDir": {
+        "type": "string"
+      },
+      "history": {
+        "items": {
+          "fields": {
+            "rateLimitType": {
+              "type": "string"
+            },
+            "readings": {
+              "items": {
+                "fields": {
+                  "atMs": {
+                    "type": "number"
+                  },
+                  "resetsAt": {
+                    "type": "number"
+                  },
+                  "utilization": {
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "windows": {
+        "items": {
+          "fields": {
+            "label": {
+              "type": "string"
+            },
+            "rateLimitType": {
+              "type": "string"
+            },
+            "resetsAt": {
+              "type": "number"
+            },
+            "seenAtMs": {
+              "type": "number"
+            },
+            "status": {
+              "type": "string"
+            },
+            "utilization": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "get_settings": {
+    "fields": {
+      "accounts": {
+        "items": {
+          "fields": {
+            "config": {
+              "fields": {
+                "display": {
+                  "type": "string"
+                },
+                "exists": {
+                  "type": "boolean"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "envOverride": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "claude": {
+        "fields": {
+          "accounts": {
+            "items": {
+              "fields": {
+                "capturePolicy": {
+                  "type": "string"
+                },
+                "configDir": {
+                  "optional": true,
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "keepRunTraces": {
+                  "type": "boolean"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "claudePath": {
+            "optional": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "clickup": {
+        "fields": {
+          "autoPost": {
+            "map": {
+              "type": "boolean"
+            },
+            "type": "object"
+          },
+          "doneStatus": {
+            "map": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "configDirEnv": {
+        "nullable": true,
+        "type": "string"
+      },
+      "notify": {
+        "fields": {
+          "events": {
+            "map": {
+              "type": "boolean"
+            },
+            "type": "object"
+          },
+          "master": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "observe": {
+        "fields": {
+          "evalEnabled": {
+            "type": "boolean"
+          },
+          "exportEndpoint": {
+            "type": "string"
+          },
+          "hooksAllTabs": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "push": {
+        "fields": {
+          "events": {
+            "map": {
+              "type": "boolean"
+            },
+            "type": "object"
+          },
+          "ntfyServer": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "run": {
+        "fields": {
+          "autoCleanup": {
+            "type": "boolean"
+          },
+          "autoStartWaves": {
+            "type": "boolean"
+          },
+          "batchPushes": {
+            "type": "boolean"
+          },
+          "maxActiveRuns": {
+            "type": "number"
+          },
+          "maxImplementers": {
+            "type": "number"
+          },
+          "orchestratorModel": {
+            "type": "string"
+          },
+          "orchestratorPermissionMode": {
+            "type": "string"
+          },
+          "slopCheck": {
+            "type": "boolean"
+          },
+          "stopHooks": {
+            "type": "boolean"
+          },
+          "triageSchedule": {
+            "items": {
+              "fields": {
+                "accountId": {
+                  "type": "string"
+                },
+                "folder": {
+                  "type": "string"
+                },
+                "listId": {
+                  "type": "string"
+                },
+                "on": {
+                  "type": "boolean"
+                },
+                "time": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "usageHoldPercent": {
+            "type": "number"
+          },
+          "watchdogMinutes": {
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "terminal": {
+        "fields": {
+          "compactPaste": {
+            "type": "boolean"
+          },
+          "copyOnSelect": {
+            "type": "boolean"
+          },
+          "fileLinkEditor": {
+            "type": "string"
+          },
+          "fontSize": {
+            "type": "number"
+          },
+          "optionAsMeta": {
+            "type": "boolean"
+          },
+          "shell": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ui": {
+        "fields": {
+          "editorCommand": {
+            "type": "string"
+          },
+          "theme": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "object"
+  },
+  "memory_status": {
+    "fields": {
+      "available": {
+        "type": "boolean"
+      },
+      "problem": {
+        "optional": true,
+        "type": "string"
+      },
+      "repos": {
+        "items": null,
+        "optional": true,
+        "type": "array"
+      },
+      "workspace": {
+        "fields": {
+          "path": {
+            "type": "string"
+          },
+          "present": {
+            "type": "boolean"
+          }
+        },
+        "optional": true,
+        "type": "object"
+      }
+    },
+    "type": "object"
+  },
+  "notification_permission": {
+    "type": "string"
+  },
+  "observe_tabs": {
+    "map": {
+      "fields": {
+        "activity": {
+          "type": "string"
+        },
+        "activitySinceMs": {
+          "type": "number"
+        },
+        "compacting": {
+          "type": "boolean"
+        },
+        "lastEvent": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "subagentsRunning": {
+          "type": "number"
+        },
+        "toolRunning": {
+          "type": "boolean"
+        },
+        "updatedMs": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "type": "object"
+  },
+  "paths_exist": {
+    "items": {
+      "fields": {
+        "candidate": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "previewable": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "type": "array"
+  },
+  "pr_worktree_checks": {
+    "items": {
+      "fields": {
+        "prId": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "verified": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "type": "array"
+  },
+  "pty_kill": {
+    "type": "null"
+  },
+  "pty_open": {
+    "type": "number"
+  },
+  "pty_resize": {
+    "type": "null"
+  },
+  "pty_set_scheme": {
+    "type": "null"
+  },
+  "pty_write": {
+    "type": "null"
+  },
+  "push_status": {
+    "fields": {
+      "saved": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "read_run": {
+    "fields": {
+      "bmad": {
+        "fields": {
+          "applied": {
+            "type": "boolean"
+          },
+          "checkResult": {
+            "type": "string"
+          },
+          "documents": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "size": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "cleanup": {
+        "items": {
+          "fields": {
+            "at": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "note": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "prId": {
+              "type": "string"
+            },
+            "prUrl": {
+              "type": "string"
+            },
+            "remote": {
+              "type": "string"
+            },
+            "retry": {
+              "type": "boolean"
+            },
+            "worktree": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "error": {
+        "type": "string"
+      },
+      "eval": {
+        "fields": {
+          "bases": {
+            "map": {
+              "fields": {
+                "base": {
+                  "type": "string"
+                },
+                "baseCommit": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "optional": true,
+            "type": "object"
+          },
+          "group": {
+            "type": "string"
+          },
+          "index": {
+            "type": "number"
+          },
+          "of": {
+            "type": "number"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "nullable": true,
+        "type": "object"
+      },
+      "folder": {
+        "type": "string"
+      },
+      "hasReport": {
+        "type": "boolean"
+      },
+      "hasStatus": {
+        "type": "boolean"
+      },
+      "orchestrator": {
+        "fields": {
+          "model": {
+            "type": "string"
+          },
+          "permissionMode": {
+            "type": "string"
+          }
+        },
+        "nullable": true,
+        "optional": true,
+        "type": "object"
+      },
+      "pausedReason": {
+        "type": "string"
+      },
+      "plan": {
+        "fields": {
+          "approved": {
+            "type": "boolean"
+          },
+          "openFindings": {
+            "type": "number"
+          },
+          "reviewRound": {
+            "type": "number"
+          },
+          "riskOpenFindings": {
+            "type": "number"
+          },
+          "riskVerdict": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string"
+          }
+        },
+        "nullable": true,
+        "type": "object"
+      },
+      "prs": {
+        "items": {
+          "fields": {
+            "appCheck": {
+              "fields": {
+                "clean": {
+                  "type": "boolean"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "cwd": {
+                  "type": "string"
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "exitCode": {
+                  "type": "number"
+                },
+                "finishedAt": {
+                  "type": "string"
+                },
+                "head": {
+                  "type": "string"
+                },
+                "log": {
+                  "type": "string"
+                },
+                "result": {
+                  "type": "string"
+                },
+                "skillCommand": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "appCheckStale": {
+              "type": "boolean"
+            },
+            "appCommand": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "check": {
+              "fields": {
+                "command": {
+                  "type": "string"
+                },
+                "cwd": {
+                  "type": "string"
+                },
+                "result": {
+                  "type": "string"
+                },
+                "summary": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "checkKnown": {
+              "type": "boolean"
+            },
+            "ci": {
+              "type": "string"
+            },
+            "ciAt": {
+              "type": "string"
+            },
+            "ciError": {
+              "type": "string"
+            },
+            "comments": {
+              "items": {
+                "fields": {
+                  "round": {
+                    "type": "number"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "currentHead": {
+              "type": "string"
+            },
+            "draft": {
+              "type": "boolean"
+            },
+            "gate": {
+              "fields": {
+                "gate": {
+                  "type": "string"
+                },
+                "problem": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "updated": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "gateStatus": {
+              "fields": {
+                "kind": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "id": {
+              "type": "string"
+            },
+            "note": {
+              "type": "string"
+            },
+            "prState": {
+              "type": "string"
+            },
+            "prUrl": {
+              "type": "string"
+            },
+            "qa": {
+              "fields": {
+                "criteria": {
+                  "items": {
+                    "fields": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "image": {
+                        "type": "string"
+                      },
+                      "result": {
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "failed": {
+                  "type": "number"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "result": {
+                  "type": "string"
+                },
+                "round": {
+                  "type": "number"
+                },
+                "total": {
+                  "type": "number"
+                },
+                "tried": {
+                  "type": "number"
+                }
+              },
+              "optional": true,
+              "type": "object"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "repoPath": {
+              "type": "string"
+            },
+            "review": {
+              "fields": {
+                "openFindings": {
+                  "type": "number"
+                },
+                "round": {
+                  "type": "number"
+                },
+                "verdict": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "state": {
+              "type": "string"
+            },
+            "storiesDone": {
+              "type": "number"
+            },
+            "storiesTotal": {
+              "type": "number"
+            },
+            "title": {
+              "type": "string"
+            },
+            "worktree": {
+              "type": "string"
+            },
+            "worktreeClean": {
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "reviewMode": {
+        "type": "string"
+      },
+      "runDir": {
+        "type": "string"
+      },
+      "runId": {
+        "type": "string"
+      },
+      "runMode": {
+        "type": "string"
+      },
+      "shipApproved": {
+        "type": "boolean"
+      },
+      "shipNote": {
+        "type": "string"
+      },
+      "stage": {
+        "type": "string"
+      },
+      "statusProblem": {
+        "type": "string"
+      },
+      "timeline": {
+        "items": {
+          "fields": {
+            "stage": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "time": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "updatedAt": {
+        "type": "string"
+      },
+      "waitingFor": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "recent_folders": {
+    "items": {
+      "type": "string"
+    },
+    "type": "array"
+  },
+  "resume_run": {
+    "fields": {
+      "focused": {
+        "type": "boolean"
+      },
+      "runDir": {
+        "nullable": true,
+        "type": "string"
+      },
+      "tab": {
+        "fields": {
+          "customLabel": {
+            "type": "boolean"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "folderStatus": {
+            "type": "string"
+          },
+          "hasSession": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "pendingStart": {
+            "type": "boolean"
+          },
+          "role": {
+            "nullable": true,
+            "type": "string"
+          },
+          "runDir": {
+            "nullable": true,
+            "type": "string"
+          },
+          "split": {
+            "fields": {
+              "cwd": {
+                "type": "string"
+              },
+              "direction": {
+                "type": "string"
+              },
+              "folderStatus": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "ratio": {
+                "type": "number"
+              }
+            },
+            "nullable": true,
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "object"
+  },
+  "run_overview": {
+    "fields": {
+      "pluginDir": {
+        "type": "string"
+      },
+      "pluginVersion": {
+        "type": "string"
+      },
+      "roles": {
+        "items": {
+          "fields": {
+            "id": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "runs": {
+        "items": {
+          "fields": {
+            "adopted": {
+              "type": "boolean"
+            },
+            "bmadApplied": {
+              "type": "boolean"
+            },
+            "createdAt": {
+              "type": "string"
+            },
+            "eval": {
+              "fields": {
+                "bases": {
+                  "map": {
+                    "fields": {
+                      "base": {
+                        "type": "string"
+                      },
+                      "baseCommit": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "optional": true,
+                  "type": "object"
+                },
+                "group": {
+                  "type": "string"
+                },
+                "index": {
+                  "type": "number"
+                },
+                "of": {
+                  "type": "number"
+                },
+                "source": {
+                  "type": "string"
+                }
+              },
+              "nullable": true,
+              "type": "object"
+            },
+            "folder": {
+              "type": "string"
+            },
+            "hasReport": {
+              "type": "boolean"
+            },
+            "prCount": {
+              "type": "number"
+            },
+            "record": {
+              "fields": {
+                "estimateUsd": {
+                  "type": "number"
+                },
+                "firstActivity": {
+                  "type": "string"
+                },
+                "lastActivity": {
+                  "type": "string"
+                },
+                "minutes": {
+                  "type": "number"
+                },
+                "outcome": {
+                  "type": "string"
+                },
+                "prUrls": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "spanMinutes": {
+                  "type": "number"
+                },
+                "totalTokens": {
+                  "type": "number"
+                },
+                "waitMinutes": {
+                  "type": "number"
+                }
+              },
+              "nullable": true,
+              "type": "object"
+            },
+            "repoCount": {
+              "type": "number"
+            },
+            "repos": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "runDir": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "stage": {
+              "type": "string"
+            },
+            "ticketIds": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            },
+            "updatedAt": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "run_qa_image": {
+    "type": "string"
+  },
+  "run_tabs": {
+    "items": {
+      "fields": {
+        "activity": {
+          "type": "string"
+        },
+        "eval": {
+          "fields": {
+            "bases": {
+              "map": {
+                "fields": {
+                  "base": {
+                    "type": "string"
+                  },
+                  "baseCommit": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "optional": true,
+              "type": "object"
+            },
+            "group": {
+              "type": "string"
+            },
+            "index": {
+              "type": "number"
+            },
+            "of": {
+              "type": "number"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "label": {
+          "type": "string"
+        },
+        "prs": {
+          "items": {
+            "fields": {
+              "appCheck": {
+                "type": "string"
+              },
+              "ci": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "prState": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "prsDone": {
+          "type": "number"
+        },
+        "prsTotal": {
+          "type": "number"
+        },
+        "runDir": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "runMode": {
+          "type": "string"
+        },
+        "stage": {
+          "type": "string"
+        },
+        "stalled": {
+          "type": "boolean"
+        },
+        "tabId": {
+          "type": "string"
+        },
+        "waitingFor": {
+          "type": "string"
+        },
+        "waitingSince": {
+          "type": "string"
+        },
+        "windowLabel": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "type": "array"
+  },
+  "run_timeline": {
+    "fields": {
+      "bands": {
+        "items": {
+          "fields": {
+            "endMs": {
+              "type": "number"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "startMs": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "costUsd": {
+        "type": "number"
+      },
+      "endedMs": {
+        "type": "number"
+      },
+      "lanes": {
+        "items": {
+          "fields": {
+            "agentId": {
+              "type": "string"
+            },
+            "costUsd": {
+              "type": "number"
+            },
+            "description": {
+              "type": "string"
+            },
+            "finishMs": {
+              "type": "number"
+            },
+            "id": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "session": {
+              "type": "number"
+            },
+            "startMs": {
+              "type": "number"
+            },
+            "state": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "startedMs": {
+        "type": "number"
+      },
+      "waitMinutes": {
+        "type": "number"
+      },
+      "workMinutes": {
+        "type": "number"
+      }
+    },
+    "type": "object"
+  },
+  "run_worktrees": {
+    "items": {
+      "fields": {
+        "branch": {
+          "type": "string"
+        },
+        "changedFiles": {
+          "type": "number"
+        },
+        "clean": {
+          "type": "boolean"
+        },
+        "disposableOnly": {
+          "type": "boolean"
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "prId": {
+          "type": "string"
+        },
+        "problem": {
+          "type": "string"
+        },
+        "removable": {
+          "type": "boolean"
+        },
+        "repoPath": {
+          "type": "string"
+        },
+        "worktree": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "type": "array"
+  },
+  "set_repo_setup": {
+    "fields": {
+      "copyFiles": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "liveTests": {
+        "type": "boolean"
+      },
+      "qa": {
+        "fields": {
+          "command": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "optional": true,
+        "type": "object"
+      },
+      "receipt": {
+        "type": "boolean"
+      },
+      "setup": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "take_run_link": {
+    "fields": {
+      "error": {
+        "optional": true,
+        "type": "string"
+      },
+      "runDir": {
+        "optional": true,
+        "type": "string"
+      }
+    },
+    "nullable": true,
+    "type": "object"
+  },
+  "terminal_resume_id": {
+    "nullable": true,
+    "type": "string"
+  },
+  "triage_blocking": {
+    "nullable": true,
+    "type": "string"
+  },
+  "triage_overview": {
+    "items": {
+      "fields": {
+        "approval": {
+          "fields": {
+            "at": {
+              "type": "string"
+            },
+            "closes": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "creates": {
+              "items": {
+                "fields": {
+                  "description": {
+                    "type": "string"
+                  },
+                  "index": {
+                    "type": "number"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "decision": {
+              "type": "string"
+            },
+            "groups": {
+              "items": {
+                "fields": {
+                  "dependsOn": {
+                    "items": null,
+                    "type": "array"
+                  },
+                  "n": {
+                    "type": "number"
+                  },
+                  "tickets": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "why": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "schema": {
+              "type": "number"
+            },
+            "triageDigest": {
+              "type": "string"
+            }
+          },
+          "nullable": true,
+          "type": "object"
+        },
+        "digest": {
+          "type": "string"
+        },
+        "listId": {
+          "nullable": true,
+          "type": "string"
+        },
+        "posted": {
+          "fields": {
+            "items": {
+              "fields": {
+                "1": {
+                  "fields": {
+                    "at": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "result": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "schema": {
+              "type": "number"
+            }
+          },
+          "nullable": true,
+          "type": "object"
+        },
+        "problem": {
+          "nullable": true,
+          "type": "string"
+        },
+        "proposal": {
+          "fields": {
+            "groups": {
+              "items": null,
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "runDir": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "type": "array"
+  },
+  "window_context": {
+    "fields": {
+      "accountId": {
+        "type": "string"
+      },
+      "accountMissing": {
+        "type": "boolean"
+      },
+      "accountName": {
+        "type": "string"
+      },
+      "config": {
+        "fields": {
+          "display": {
+            "type": "string"
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  }
+}

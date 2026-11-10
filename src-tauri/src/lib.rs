@@ -5,6 +5,8 @@ mod commands;
 mod crash_log;
 mod data_dir;
 mod drafts;
+#[cfg(test)]
+mod fake_shapes;
 mod flight;
 mod import_dev;
 #[cfg(target_os = "macos")]

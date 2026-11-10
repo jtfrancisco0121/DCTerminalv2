@@ -1,11 +1,72 @@
 {
   "get_settings": {
-    "terminal": {"shell": "", "fontSize": 14, "optionAsMeta": true, "copyOnSelect": false},
-    "ui": {"theme": "github-dark"},
-    "claude": {"accounts": [{"id": "default", "name": "Personal"}]},
+    "terminal": {
+      "shell": "",
+      "fontSize": 14,
+      "optionAsMeta": true,
+      "copyOnSelect": false,
+      "compactPaste": true,
+      "fileLinkEditor": "finder"
+    },
+    "ui": {
+      "theme": "github-dark",
+      "editorCommand": ""
+    },
+    "claude": {
+      "accounts": [
+        {
+          "id": "default",
+          "name": "Personal",
+          "capturePolicy": "metadata",
+          "keepRunTraces": false
+        }
+      ]
+    },
     "accounts": [
-      {"id": "default", "name": "Personal", "config": {"path": "/fake/.claude", "display": "~/.claude", "source": "default", "exists": true}}
+      {
+        "id": "default",
+        "name": "Personal",
+        "config": {
+          "path": "/fake/.claude",
+          "display": "~/.claude",
+          "source": "default",
+          "exists": true
+        },
+        "envOverride": false
+      }
     ],
-    "configDirEnv": null
+    "configDirEnv": null,
+    "run": {
+      "maxImplementers": 3,
+      "stopHooks": true,
+      "slopCheck": true,
+      "watchdogMinutes": 30,
+      "maxActiveRuns": 3,
+      "usageHoldPercent": null,
+      "batchPushes": true,
+      "autoStartWaves": false,
+      "autoCleanup": true,
+      "orchestratorModel": "opus",
+      "orchestratorPermissionMode": "auto",
+      "triageSchedule": []
+    },
+    "observe": {
+      "hooksAllTabs": true,
+      "evalEnabled": false,
+      "exportEndpoint": "https://example.com/traces"
+    },
+    "notify": {
+      "master": true,
+      "events": {}
+    },
+    "push": {
+      "target": "none",
+      "ntfyServer": "https://ntfy.sh",
+      "events": {}
+    },
+    "clickup": {
+      "autoPost": {},
+      "doneStatus": {}
+    }
   }
 }

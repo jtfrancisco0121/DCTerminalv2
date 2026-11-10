@@ -32,7 +32,8 @@
   "pty_set_scheme": null,
   "get_claude_usage": {
     "configDir": "/fake/.claude",
-    "windows": []
+    "windows": [],
+    "history": []
   },
   "claude_status": {
     "found": true,
@@ -41,18 +42,25 @@
     "error": null
   },
   "claude_version_status": {
-    "installed": "0.0.0-fake",
-    "latest": null,
-    "state": "unknown"
+    "version": "0.0.0-fake",
+    "range": "ok",
+    "min": "2.0.0",
+    "maxTested": "2.1.300",
+    "selftest": null,
+    "selftestWanted": false
   },
   "claude_account_logins": [],
   "memory_status": {
-    "present": false
+    "available": false,
+    "problem": "No memory in the faked backend"
   },
   "paths_exist": [],
   "take_run_link": null,
   "dev_import_status": {
-    "available": false
+    "available": false,
+    "offered": false,
+    "importedAt": null,
+    "devDir": "/fake/dev"
   },
   "notification_permission": "denied",
   "push_status": {
@@ -84,11 +92,22 @@
         "queuedAt": "2026-10-22T14:00:00Z",
         "batchId": null,
         "params": {
+          "windowId": "main",
           "folder": "/fake/work/app",
           "request": "Add divide() to mathlib",
+          "role": "eagle-eye",
           "clickup": null,
-          "eval": null
-        }
+          "reviewMode": "github",
+          "bmadMode": "auto",
+          "force": null,
+          "repos": null,
+          "maxImplementers": null,
+          "runMode": null,
+          "dispatchEntryId": "q-1"
+        },
+        "startedAt": null,
+        "bypassCap": false,
+        "wave": null
       }
     ],
     "holders": [
