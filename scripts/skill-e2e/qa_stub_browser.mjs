@@ -40,6 +40,9 @@ function answer(method, params) {
       return {};
     case "Page.getLayoutMetrics":
       return { cssContentSize: { width: 1280, height: 2400 }, contentSize: { width: 1280, height: 2400 } };
+    case "Emulation.setDeviceMetricsOverride":
+      logCall(method, params);
+      return {};
     case "Input.dispatchKeyEvent":
       logCall(method, params);
       return {};
