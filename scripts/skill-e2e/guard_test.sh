@@ -1170,4 +1170,55 @@ bs 0 "" "grep -r x $CRUN" "$CRUN" "$CRUN"
 bs 0 "" "find $CRUN -type f" "$CRUN" "$CRUN"
 bs 0 "dcv2:implementer" "grep -r x $CRUN" "$CRUN" "$CRUN"
 
+echo "# ClickUp create: a PreToolUse ask where prompts show, a block elsewhere (rule clickup-create)"
+cpay() { # <agent> <command> [permission_mode; "-" leaves it out]
+  python3 -c 'import json,sys; a,c,m=sys.argv[1:4]; d={"agent_type":a or None,"tool_name":"Bash","tool_input":{"command":c},"cwd":sys.argv[4]}
+if m != "-": d["permission_mode"] = m
+print(json.dumps(d))' "$1" "$2" "${3-default}" "$d/ws"
+}
+cexp() { # <exit> <label> <payload> [env...]: exit code, stdout in $d/cout, stderr in $d/cerr
+  local want="$1" label="$2" in="$3" got=0; shift 3
+  env "$@" bash "$GUARD" <<<"$in" >"$d/cout" 2>"$d/cerr" || got=$?
+  if [[ $got == "$want" ]]; then echo "ok   $label -> $got"; else echo "FAIL $label -> $got (want $want): $(head -c 200 "$d/cerr")"; fails=1; fi
+}
+asked() { grep -qF '"permissionDecision": "ask"' "$d/cout" && grep -qF '"hookEventName": "PreToolUse"' "$d/cout"; }
+expect_ask() { if asked; then echo "ok   the ask JSON is on stdout"; else echo "FAIL no ask JSON: $(cat "$d/cout")"; fails=1; fi; }
+expect_quiet() { if [[ ! -s "$d/cout" ]]; then echo "ok   nothing on stdout"; else echo "FAIL stdout: $(cat "$d/cout")"; fails=1; fi; }
+CLK='bash "$CLAUDE_PLUGIN_ROOT/scripts/clickup.sh" create 123 /tmp/t.json --yes abc123abc123'
+OLDSKILL="python3 $HOME/.claude-account1/skills/clickup-create/scripts/clickup.py create 123 /tmp/t.json --yes"
+MEMC="$d/app/memory"; mkdir -p "$MEMC"
+for mem in without with; do
+  menv=(-u DCV2_RUN_DIR); [[ $mem == with ]] && menv+=(DCV2_MEMORY_DIR="$MEMC")
+  for mode in default acceptEdits plan; do
+    cexp 0 "standalone ($mem memory, $mode): clickup.sh create asks" "$(cpay "" "$CLK" "$mode")" "${menv[@]}"; expect_ask
+  done
+  cexp 0 "standalone ($mem memory): the old account skill asks" "$(cpay "" "$OLDSKILL")" "${menv[@]}"; expect_ask
+  cexp 0 "standalone ($mem memory): bash -c asks" "$(cpay "" "bash -c 'bash /x/clickup.sh create 123 /tmp/t.json --yes abc'")" "${menv[@]}"; expect_ask
+  cexp 0 "standalone ($mem memory): python3 -c asks" "$(cpay "" "python3 -c \"import subprocess; subprocess.run(['bash', '/x/clickup.sh', 'create', '123', '/tmp/t.json', '--yes', 'abc'])\"")" "${menv[@]}"; expect_ask
+  cexp 0 "standalone ($mem memory): a heredoc asks" "$(cpay "" "python3 - <<'EOF'
+import subprocess
+subprocess.run(['/x/clickup.py', 'create', '123', '/tmp/t.json', '--yes', 'abc'])
+EOF")" "${menv[@]}"; expect_ask
+  if grep -qF 'from /tmp/t.json in list 123?' "$d/cout"; then echo "ok   the ask names the file and the list"; else echo "FAIL ask reason: $(cat "$d/cout")"; fails=1; fi
+  for mode in auto bypassPermissions dontAsk bogus -; do
+    cexp 2 "standalone ($mem memory, mode $mode): create is blocked" "$(cpay "" "$CLK" "$mode")" "${menv[@]}"
+    if [[ ! -s "$d/cout" ]] && grep -qF 'type the command yourself with the ! prefix' "$d/cerr"; then echo "ok   no ask; the message gives the ! command"; else echo "FAIL block output: $(cat "$d/cout") / $(cat "$d/cerr")"; fails=1; fi
+  done
+  for mode in default auto; do
+    cexp 0 "standalone ($mem memory, $mode): lists is neither asked nor blocked" "$(cpay "" 'bash /x/clickup.sh lists' "$mode")" "${menv[@]}"; expect_quiet
+    cexp 0 "standalone ($mem memory, $mode): preview is neither asked nor blocked" "$(cpay "" 'bash /x/clickup.sh preview /tmp/t.json' "$mode")" "${menv[@]}"; expect_quiet
+  done
+done
+# A write the guard blocks in a dcv2 tab wins over the ask.
+cexp 2 "standalone: a create that also writes into memory is blocked, not asked" "$(cpay "" "$CLK > $MEMC/x.md")" -u DCV2_RUN_DIR DCV2_MEMORY_DIR="$MEMC"; expect_quiet
+
+CKRUN="$d/app/runs/r-ck"; newrun "$CKRUN"
+for who in "" dcv2:implementer; do
+  cexp 2 "bound run (${who:-orchestrator}, mode default): create is blocked" "$(cpay "$who" "$CLK" default)" DCV2_RUN_DIR="$CKRUN"
+  if grep -qF 'git commit -F' "$d/cerr" && [[ ! -s "$d/cout" ]]; then echo "ok   the message names git commit -F; no ask"; else echo "FAIL bound message: $(cat "$d/cerr")"; fails=1; fi
+done
+cexp 2 "bound run: the old account skill is blocked too" "$(cpay "" "$OLDSKILL" default)" DCV2_RUN_DIR="$CKRUN"
+if [[ "$(grep -c "	clickup-create	" "$CKRUN/logs/guard.log")" == 3 ]]; then echo "ok   three clickup-create lines in the run's guard log"; else echo "FAIL guard log: $(cat "$CKRUN/logs/guard.log")"; fails=1; fi
+cexp 0 "bound run: preview is not blocked" "$(cpay "" 'bash /x/clickup.sh preview /tmp/t.json' default)" DCV2_RUN_DIR="$CKRUN"; expect_quiet
+
 [[ $fails == 0 ]] && echo PASS || { echo FAILED; exit 1; }
