@@ -3,12 +3,15 @@
 // ("cannot compute" is a failure, never a pass), when a tile may clip or truncate its label, or when fewer than 3
 // columns fit. It assumes the start screen spans the window width (`.start-screen` is a direct child of the app
 // layout), so a narrower container needs this test updated.
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const css = readFileSync(
-  fileURLToPath(new URL("../App.css", import.meta.url)),
+// Read with node's fs (the repo has no @types/node, so the module names go through variables) because vitest
+// returns an empty string for a CSS file read through `?raw`.
+type Fs = { readFileSync: (path: string, encoding: "utf8") => string };
+const fsName = "node:fs";
+const fs = (await import(/* @vite-ignore */ fsName)) as Fs;
+const css = fs.readFileSync(
+  decodeURIComponent(new URL("../App.css", import.meta.url).pathname),
   "utf8",
 );
 
