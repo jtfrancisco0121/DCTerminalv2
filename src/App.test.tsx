@@ -196,6 +196,19 @@ vi.mock("./terminal/live", async (original) => ({
   openLivePty: (...args: unknown[]) => (openLive as (...a: unknown[]) => unknown)(...args),
 }));
 
+// A page that throws on demand: the error boundary around it must keep the terminals mounted.
+const pageFails = vi.hoisted(() => ({ on: false }));
+vi.mock("./components/RunAnalytics", async (original) => {
+  const actual = await original<typeof import("./components/RunAnalytics")>();
+  return {
+    ...actual,
+    RunAnalytics: (props: Parameters<typeof actual.RunAnalytics>[0]) => {
+      if (pageFails.on) throw new Error("analytics exploded");
+      return actual.RunAnalytics(props);
+    },
+  };
+});
+
 const { default: App } = await import("./App");
 
 describe("App", () => {
@@ -777,6 +790,31 @@ describe("App run pages", () => {
     await act(async () => {
       fireEvent.keyDown(window, { key: "Escape" });
     });
+    vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
+    cleanup();
+    endState();
+  });
+
+  it("a page that throws shows its error panel, keeps the terminal mounted, and Close removes it", async () => {
+    await openApp();
+    await waitFor(() => expect(screen.getByTestId("tab-progress-tab_run")).toBeTruthy());
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    pageFails.on = true;
+    await paletteOpen(/Run analytics/);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("This page failed");
+    expect(alert.textContent).toContain("analytics exploded");
+    expect(screen.getByTestId("terminal")).toBeTruthy();
+    expect(document.querySelector(".workspace-body .run-layout")).toBeTruthy();
+    expect(terminalLife.unmounts).toBe(0);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByText("This page failed")).toBeNull();
+    // Reopening renders the page fresh.
+    pageFails.on = false;
+    await paletteOpen(/Run analytics/);
+    expect(await screen.findByRole("region", { name: "Run analytics" })).toBeTruthy();
+    expect(terminalLife.unmounts).toBe(0);
+    quiet.mockRestore();
     vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
     cleanup();
     endState();

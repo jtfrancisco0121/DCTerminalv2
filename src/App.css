@@ -3393,3 +3393,30 @@ body,
   gap: 0.4rem;
   margin-bottom: 0.4rem;
 }
+
+/* A failed Page or Dialog: the message stays inside the surface, the terminals keep running. */
+.error-boundary {
+  padding: var(--space-4);
+}
+
+.error-boundary-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  background: var(--backdrop);
+}
+
+.error-boundary-dialog .inline-notice {
+  max-width: 32rem;
+  margin: 0;
+  background: var(--bg-elev);
+}
+
+.error-boundary .inline-notice-action {
+  display: flex;
+  gap: var(--space-2);
+}
