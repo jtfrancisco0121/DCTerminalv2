@@ -29,6 +29,8 @@ A role's skill and its sub-agent both start by reading `${CLAUDE_PLUGIN_ROOT}/ro
 | PR Reviewer | `/dcv2:pr-reviewer` | `dcv2:pr-reviewer` | opus |
 | Recommendation | `/dcv2:recommendation` | none | (session's) |
 | Codebase Audit | `/dcv2:codebase-audit` | none | (session's) |
+| QA Engineer | `/dcv2:qa-engineer` | none | (session's) |
+| Product Manager | `/dcv2:product-manager` | none | (session's) |
 | Onboard | `/dcv2:onboard` | none | (session's) |
 | QA | `/dcv2:qa` | `dcv2:qa` (Eagle-Eye Step 3, after a clean review round of a QA-on PR) | sonnet |
 | Memory updater | none | `dcv2:memory-updater` (Eagle-Eye Step 5, end of a Developer session) | haiku |
@@ -96,6 +98,8 @@ claude --plugin-dir <plugin> "/dcv2:<role> <request>"
 | `/dcv2:pr-reviewer <PR URL, branch, or nothing>` | Strict review of a PR or branch against its intent: correctness, regressions, security, data, performance, tests. Posts the review on GitHub only when the user says yes. | No |
 | `/dcv2:recommendation <focus, or nothing>` | Study the product and code and recommend features and improvements, each validated against the code, in tiers. Creates GitHub issues only when asked. | No |
 | `/dcv2:codebase-audit <scope, or nothing>` | Evidence-based audit for bugs, security, data, performance, reliability and maintainability problems, with severities and confidence. Creates GitHub issues only when asked. | No |
+| `/dcv2:qa-engineer <request>` | A QA Engineer persona with the playbooks test cases, bug report and regression scope; can turn a drafted bug list into ClickUp tickets through the ClickUp helper (below). | No |
+| `/dcv2:product-manager <request>` | A Product Manager persona with the playbooks PRD, epic breakdown (an `Epic: <title>` parent plus subtasks), release notes and status update; can create the epic's tickets through the ClickUp helper (below). | No |
 
 | `/dcv2:onboard [rebuild \| stale \| <repo>]` | Create, rebuild or refresh the codebase memory (index, topics, contracts, workspace) for the repos in the current folder, only through `memory.sh write`. | No (writes memory only) |
 
@@ -103,7 +107,7 @@ The Planner, Codebase Audit and Recommendation sessions have their draft checked
 
 At its end, a Developer session that committed runs the `dcv2:memory-updater` sub-agent on each changed repo with memory (`git diff <HEAD at start>..HEAD`).
 
-In P3 the app's start screen shows these eight as role tiles next to Eagle-Eye; a tile opens a terminal tab running `claude --plugin-dir <bundled plugin> "/dcv2:<role> <what the user typed>"` in the chosen folder.
+In P3 the app's start screen shows the roles as tiles next to Eagle-Eye: the pipeline roles under "Or one role on its own, in this folder:", then a "Personas" group (QA Engineer, Product Manager); the groups come from `ROLES` in `run/launch.rs`; a tile opens a terminal tab running `claude --plugin-dir <bundled plugin> "/dcv2:<role> <what the user typed>"` in the chosen folder.
 
 ## Codebase memory (D9, A6)
 
@@ -125,6 +129,30 @@ $DCV2_MEMORY_DIR/
 - Trust rule, in every role file: memory is a hint, the code is the truth; fix the entry and continue.
 - Eagle-Eye's memory update reads each PR's `baseCommit..<branch>` and sets `checked-at` to the branch head; until that branch is merged, the topic may read stale on the default branch (the diff from the branch head to it). That is accepted: stale means "re-check from the diff", never wrong.
 
+## ClickUp helper (persona roles)
+
+`plugin/scripts/clickup.sh` (bash, starts `lib/clickup.py` through `lib/python.sh`; stdlib only) is the one way a persona session turns a drafted backlog into ClickUp tickets. It only creates tasks (`POST /list/<id>/task`).
+
+| Command | What it does |
+|---|---|
+| `clickup.sh lists` | Read-only. One line per list: `<list id><TAB><team> / <space> / [<folder> /] <list>`. |
+| `clickup.sh preview <file>` | Read-only, works anywhere. Prints the epic, the numbered tickets with their tags, a count line and `digest: <12 hex>`. |
+| `clickup.sh create <list id> <file> --yes <digest>` | Creates the tickets. Needs the exact argv shape; `--yes` must be followed by the digest `preview` printed for the file as it is now. |
+
+- **Tickets file**: JSON `{"epic": {"name", "md"} | null, "tickets": [{"name", "md", "tags"?}]}`, 1 to 50 tickets, unique names, written in the system temp folder (or `/tmp`; Claude's scratchpad counts), never in the repo. A file anywhere else is refused. The digest is the first 12 hex characters of the SHA-256 of the file bytes; `create` reads the file once and checks, validates and posts those bytes, so an edit after the preview is refused ("run preview again").
+- **Epic and subtasks**: the epic (when present) is created first, every ticket after it carries `parent` = the epic.
+- **No duplicates**: a ledger `<file>.created.json` (bound to one list id, rewritten atomically after each POST) and a same-name-and-parent lookup in the list make a second `create` of the same file create nothing; it prints `skip (already created) <url> <name>` per ticket.
+- **Token**: read from the macOS keychain item `com.jtfrancisco.dcterminalv2.clickup` of the tab's Claude account (`DCV2_ACCOUNT_ID`, set by the app at every spawn; see [launch.md](launch.md)), the one Settings › ClickUp stores. It goes only into the request header, never into argv, output or a file; there is no token file or env override. macOS only for now. When the keychain asks, answer "Allow", not "Always Allow" (that would let any process read the token without asking).
+- **Bound runs**: the helper refuses every command (`lists` included) when `DCV2_RUN_DIR` is set, before any token read: tickets are never created inside an Eagle-Eye run.
+- **The guard** (`guard.sh`, rule `clickup-create`) looks at every shell command that names a file ending in `clickup.sh` or `clickup.py` (at any path, the old account skill `clickup-create` included) together with the word `create`:
+  - in a **standalone session whose permission mode shows prompts** (`default`, `acceptEdits`, `plan`) it answers with a PreToolUse `ask`, so Claude Code asks you "Create ClickUp tickets from <file> in list <id>?";
+  - in **any other mode** (role tabs run in `auto` by default; also `bypassPermissions`, `dontAsk`, an unknown or missing mode) it blocks and gives you the command to type yourself with the `!` prefix: `! bash …/clickup.sh create <list id> <file> --yes <digest>`;
+  - in a **bound run** it blocks always (message: use the Read tool to read the helper, and `git commit -F <file>` for a commit message that names it);
+  - `lists` and `preview` are never asked or blocked; a command that breaks another guard rule is blocked, not asked.
+  The ask is a speed bump against mistakes, not a sandbox: a create wrapped in a script file is not seen by the guard (the helper still needs the digest and refuses in a bound run).
+- **Retired**: the account skill `clickup-create` (`~/.claude-account1/skills/clickup-create`) is replaced by this helper; delete it. The guard covers it by basename until then.
+- **Manual check, once after the reinstall** (with a test list): in a role tab (`auto`) ask for a one-ticket draft and check the guard refuses with the `!` line; type that line and check it creates the ticket; switch the session to `default` (Shift+Tab), ask for another and check Claude Code shows the guard's prompt. Results: not recorded yet.
+
 ## Tests
 
 - `scripts/skill-e2e/run.sh`: the Eagle-Eye run end to end, headless, on two toy repos (full run; then halt after PR1 + resume). Cheap models via a test-only plugin copy (`DCV2_E2E_MODEL`, default haiku).
@@ -134,6 +162,7 @@ $DCV2_MEMORY_DIR/
 - `scripts/skill-e2e/stop_check_test.sh`: unit test of the Stop/SubagentStop hook.
 - `scripts/skill-e2e/qa_browser_test.sh`: unit test of `scripts/qa-browser.mjs` against a stub CDP endpoint (no browser, no network).
   The driver's exit codes: 0 all steps passed, 1 a step failed, 2 refused or no step read (an empty steps list prints `qa-browser: no steps read (no step lines printed)` on stderr; QA treats it as ERROR, never PASS), 3 no browser. It runs when started through a symlinked folder (real paths are compared). A page-error line may carry `"url"`; `kind` `network` marks a failed load or a 4xx/5xx response, and in web mode it is printed only for the page's own same-origin document (4xx fetch or image responses on real sites are normal and print nothing).
+- `scripts/skill-e2e/clickup_test.sh`: unit test of the ClickUp helper (no Claude call, no network, no keychain item: a stub folder under `DCV2_CLICKUP_STUB` with `DCV2_TEST_MODE`, a fake account id; independent of the caller's `DCV2_RUN_DIR` and `DCV2_ACCOUNT_ID`). Runs as the plugin suite `clickup` of `npm run check`.
 - `scripts/skill-e2e/plugin_test.sh`: static checks: `VERSION`, every skill/agent reads its role file, every role has the trust rule, hooks and launch settings parse, scripts pass `bash -n`.
 - `scripts/skill-e2e/golden.sh [multi dep fix]` (R7, before every release): three toy workspaces through the whole run, in parallel, launched as the app does (`--settings`, the composed memory prompt, `DCV2_MEMORY_DIR`): two independent repos with onboard first and `DCV2_MAX_IMPLEMENTERS=1`; a PR that depends on another; a check that already fails for a reason the request does not name. Asserts gates, `report.md`, `memory-update.md`, memory written only via `memory.sh`, ordering, and untouched main checkouts.
 - `scripts/skill-e2e/standalone.sh [roles...]`: each standalone skill loads, reads its role file and replies; read-only roles leave the repo untouched.
