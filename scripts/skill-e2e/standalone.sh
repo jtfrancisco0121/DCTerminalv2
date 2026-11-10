@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke test: each standalone role skill loads, reads its role file and replies.
 #
-#   scripts/skill-e2e/standalone.sh                 # all nine
+#   scripts/skill-e2e/standalone.sh                 # all twelve
 #   scripts/skill-e2e/standalone.sh planner developer
 #
 # Headless, cheap (DCV2_E2E_MODEL, default haiku), against one toy repo in a temp
@@ -9,7 +9,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 ROLES=("$@")
-[[ ${#ROLES[@]} -gt 0 ]] || ROLES=(planner plan-reviewer risk-reviewer developer pr-reviewer recommendation codebase-audit qa-engineer product-manager)
+[[ ${#ROLES[@]} -gt 0 ]] || ROLES=(planner plan-reviewer risk-reviewer developer pr-reviewer recommendation codebase-audit qa-engineer product-manager analyst senior-engineer principal-engineer)
 
 make_tmp
 PLUGIN="$TMP/plugin"
@@ -48,6 +48,9 @@ request_for() {
     codebase-audit) echo "Very briefly: audit index.js only, report at most two findings." ;;
     qa-engineer)    echo "Very briefly: write at most three test cases for multiply(a, b) in index.js. Do not create any ClickUp ticket." ;;
     product-manager) echo "Very briefly: write a two-line release note for the fix-multiply branch. Do not create any ClickUp ticket." ;;
+    analyst)        echo "Very briefly: list three requirements for multiply(a, b). Do not create any ClickUp ticket." ;;
+    senior-engineer) echo "Very briefly: describe, without changing any file, how you would add one test for multiply(a, b)." ;;
+    principal-engineer) echo "Very briefly: name two options and do-nothing for caching multiply results." ;;
   esac
 }
 

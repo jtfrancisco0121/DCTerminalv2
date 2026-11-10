@@ -31,6 +31,9 @@ A role's skill and its sub-agent both start by reading `${CLAUDE_PLUGIN_ROOT}/ro
 | Codebase Audit | `/dcv2:codebase-audit` | none | (session's) |
 | QA Engineer | `/dcv2:qa-engineer` | none | (session's) |
 | Product Manager | `/dcv2:product-manager` | none | (session's) |
+| Business Analyst | `/dcv2:analyst` | none | (session's) |
+| Senior Engineer | `/dcv2:senior-engineer` | none | (session's) |
+| Principal Engineer | `/dcv2:principal-engineer` | none | (session's) |
 | Onboard | `/dcv2:onboard` | none | (session's) |
 | QA | `/dcv2:qa` | `dcv2:qa` (Eagle-Eye Step 3, after a clean review round of a QA-on PR) | sonnet |
 | Memory updater | none | `dcv2:memory-updater` (Eagle-Eye Step 5, end of a Developer session) | haiku |
@@ -100,14 +103,16 @@ claude --plugin-dir <plugin> "/dcv2:<role> <request>"
 | `/dcv2:codebase-audit <scope, or nothing>` | Evidence-based audit for bugs, security, data, performance, reliability and maintainability problems, with severities and confidence. Creates GitHub issues only when asked. | No |
 | `/dcv2:qa-engineer <request>` | A QA Engineer persona with the playbooks test cases, bug report and regression scope; can turn a drafted bug list into ClickUp tickets through the ClickUp helper (below). | No |
 | `/dcv2:product-manager <request>` | A Product Manager persona with the playbooks PRD, epic breakdown (an `Epic: <title>` parent plus subtasks), release notes and status update; can create the epic's tickets through the ClickUp helper (below). | No |
-
+| `/dcv2:analyst <request>` | A Business Analyst persona with the playbooks requirements analysis (business rules, edge cases, gaps, Given/When/Then stories), data analysis (on a copy of the file, never the user's; redacted, aggregated output) and process map (Mermaid); can create drafted tickets through the ClickUp helper (below). | No |
+| `/dcv2:senior-engineer <task>` | A Senior Engineer persona with the playbooks write tests, safe refactor and performance investigation; follows the Developer's rules for every change, commits only when asked, never pushes, and runs the memory update for repos it committed to. | Yes |
+| `/dcv2:principal-engineer <request>` | A Principal Engineer persona with the playbooks RFC, impact analysis and tech roadmap; reads the repo's decision log first, offers `/dcv2:risk-reviewer` on a finished RFC and `/dcv2:product-manager` for a roadmap's first quarter. | No |
 | `/dcv2:onboard [rebuild \| stale \| <repo>]` | Create, rebuild or refresh the codebase memory (index, topics, contracts, workspace) for the repos in the current folder, only through `memory.sh write`. | No (writes memory only) |
 
 The Planner, Codebase Audit and Recommendation sessions have their draft checked by a fresh `dcv2:risk-reviewer` sub-agent before they show it: a MEDIUM+ risk means the session revises the draft and runs a fresh reviewer, until a round reports none (at most 5 rounds); LOW risks are listed in a closing `## Risk review` section, and risks still open after round 5 are listed there for the user to decide. With no run bound, the guard lets this sub-agent run read-only (it writes nothing with Edit/Write and only read-only git), like the memory updater.
 
-At its end, a Developer session that committed runs the `dcv2:memory-updater` sub-agent on each changed repo with memory (`git diff <HEAD at start>..HEAD`).
+At its end, a Developer or Senior Engineer session that committed runs the `dcv2:memory-updater` sub-agent on each changed repo with memory (`git diff <HEAD at start>..HEAD`).
 
-In P3 the app's start screen shows the roles as tiles next to Eagle-Eye: the pipeline roles under "Or one role on its own, in this folder:", then a "Personas" group (QA Engineer, Product Manager); the groups come from `ROLES` in `run/launch.rs`; a tile opens a terminal tab running `claude --plugin-dir <bundled plugin> "/dcv2:<role> <what the user typed>"` in the chosen folder.
+In P3 the app's start screen shows the roles as tiles next to Eagle-Eye: the pipeline roles under "Or one role on its own, in this folder:", then a "Personas" group (QA Engineer, Product Manager, Business Analyst, Senior Engineer, Principal Engineer); the groups come from `ROLES` in `run/launch.rs`; a tile opens a terminal tab running `claude --plugin-dir <bundled plugin> "/dcv2:<role> <what the user typed>"` in the chosen folder.
 
 ## Codebase memory (D9, A6)
 

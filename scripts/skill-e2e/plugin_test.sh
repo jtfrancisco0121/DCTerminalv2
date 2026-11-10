@@ -198,8 +198,10 @@ grep -qF 'Cleanup on every exit path' "$QS" && grep -qF 'git worktree remove --f
   && ok "  stops the server and removes its worktree on every exit path" || bad "  qa skill: no server stop / worktree removal"
 grep -qF 'not by a prefix' "$QS" && ok "  checks the URL host, not a prefix" || bad "  qa skill: no loopback host rule"
 
-echo "# persona roles: QA Engineer and Product Manager"
-for pair in "qa-engineer:Test cases|Bug report|Regression scope" "product-manager:PRD|Epic breakdown|Release notes|Status update"; do
+echo "# persona roles"
+for pair in "qa-engineer:Test cases|Bug report|Regression scope" "product-manager:PRD|Epic breakdown|Release notes|Status update" \
+  "analyst:Requirements analysis|Data analysis|Process map" "senior-engineer:Write tests|Safe refactor|Performance investigation" \
+  "principal-engineer:RFC|Impact analysis|Tech roadmap"; do
   name="${pair%%:*}"; heads="${pair#*:}"
   R="$P/roles/$name.md"; S="$P/skills/$name/SKILL.md"
   [[ -f "$R" && -f "$S" ]] && ok "$name: role file and skill exist" || { bad "$name: role file or skill missing"; continue; }
@@ -209,9 +211,23 @@ for pair in "qa-engineer:Test cases|Bug report|Regression scope" "product-manage
   grep -q '^## Empty request' "$R" && grep -qF 'What should I do?' "$R" && ok "  empty-request rule" || bad "  $name: no empty-request rule"
   IFS='|' read -ra hs <<<"$heads"
   for h in "${hs[@]}"; do grep -qx "## $h" "$R" && ok "  section: $h" || bad "  $name: no '## $h' section"; done
-  grep -qF 'scripts/clickup.sh' "$R" && grep -qF 'with the `!` prefix' "$R" && ok "  names scripts/clickup.sh and the ! prefix" || bad "  $name: no clickup.sh or ! prefix"
+  grep -qx '## Which playbook' "$R" && ok "  section: Which playbook" || bad "  $name: no '## Which playbook' section"
+  case "$name" in
+    qa-engineer|product-manager|analyst)
+      grep -qF 'scripts/clickup.sh' "$R" && grep -qF 'with the `!` prefix' "$R" && ok "  names scripts/clickup.sh and the ! prefix" || bad "  $name: no clickup.sh or ! prefix" ;;
+    *)
+      grep -qF 'clickup.sh' "$R" && bad "  $name names clickup.sh" || ok "  names no clickup.sh" ;;
+  esac
   grep -qF '.claude-account1' "$R" "$S" && bad "  $name refers to .claude-account1" || ok "  no reference to .claude-account1"
 done
+SE="$P/roles/senior-engineer.md"; PE="$P/roles/principal-engineer.md"
+grep -qF 'roles/developer.md' "$SE" && ok "senior-engineer.md names roles/developer.md" || bad "senior-engineer.md: no roles/developer.md"
+grep -qF 'why paragraph' "$SE" || grep -qF 'No version bumps' "$SE" && bad "senior-engineer.md copies the Developer's commit or version text" || ok "  does not copy the commit or version-bump text"
+grep -qF 'dcv2:memory-updater' "$P/skills/senior-engineer/SKILL.md" && ok "  skill ends with the memory-updater step" || bad "  senior-engineer skill: no memory-updater step"
+for need in 'topics/decisions.md' 'memory.sh status' 'cut at the size cap' '/dcv2:risk-reviewer' '/dcv2:product-manager'; do
+  grep -qF -- "$need" "$PE" && ok "principal-engineer.md names $need" || bad "principal-engineer.md: no $need"
+done
+grep -qF 'indexPath' "$PE" && bad "principal-engineer.md builds a memory path (indexPath)" || ok "  builds no memory path by hand"
 grep -qF '/dcv2:qa' "$P/roles/qa-engineer.md" && ok "qa-engineer.md points to /dcv2:qa" || bad "qa-engineer.md: no /dcv2:qa pointer"
 grep -qF 'Epic: <title>' "$P/roles/product-manager.md" && grep -qF 'waves of 3-6 stories' "$P/roles/product-manager.md" && ok "product-manager.md: Epic: <title> + subtasks, waves of 3-6 stories" || bad "product-manager.md: epic shape or waves"
 python3 - "$ROOT" <<'PY' && ok "every role id in launch.rs ROLES has a skill" || bad "a ROLES id has no plugin/skills/<id>/SKILL.md"
@@ -220,7 +236,7 @@ root = sys.argv[1]
 src = open(os.path.join(root, "src-tauri/src/run/launch.rs")).read()
 block = src.split("pub const ROLES", 1)[1].split("];", 1)[0]
 ids = re.findall(r'\(\s*"([a-z-]+)"\s*,\s*"[^"]+"\s*,\s*"[a-z]+"\s*,?\s*\)', block)
-assert len(ids) >= 10, ids
+assert len(ids) == 13, ids
 missing = [i for i in ids if not os.path.isfile(os.path.join(root, "plugin/skills", i, "SKILL.md"))]
 assert not missing, missing
 PY
