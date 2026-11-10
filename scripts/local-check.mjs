@@ -43,7 +43,7 @@ const baseSteps = [
 // Hermetic suites (each says "no Claude call"): stdlib bash and python only.
 // The live suites (run.sh, golden.sh, standalone.sh, bmad_spike.sh) call
 // Claude and are never part of the gate.
-export const PLUGIN_SUITES = ["guard", "state", "memory", "github", "stop_check", "plugin", "qa_browser"];
+export const PLUGIN_SUITES = ["guard", "state", "memory", "github", "stop_check", "plugin", "qa_browser", "release_qa"];
 
 // A developer's own DCV2_* variables (a run's folder, a hook token, ...) must
 // not leak into the suites: they would pass or fail by the machine they run on.
