@@ -2,7 +2,40 @@
   "run_overview": {
     "pluginDir": "/fake/plugin",
     "pluginVersion": "0.10.0",
-    "roles": [],
+    "roles": [
+      {
+        "id": "planner",
+        "label": "Planner"
+      },
+      {
+        "id": "plan-reviewer",
+        "label": "Plan Reviewer"
+      },
+      {
+        "id": "risk-reviewer",
+        "label": "Risk Reviewer"
+      },
+      {
+        "id": "developer",
+        "label": "Developer"
+      },
+      {
+        "id": "pr-reviewer",
+        "label": "PR Reviewer"
+      },
+      {
+        "id": "recommendation",
+        "label": "Recommendation"
+      },
+      {
+        "id": "codebase-audit",
+        "label": "Codebase Audit"
+      },
+      {
+        "id": "onboard",
+        "label": "Onboard"
+      }
+    ],
     "runs": [
       {
         "runId": "r-20261022-1304",
@@ -16,7 +49,77 @@
         "repos": [
           "mathlib"
         ],
-        "repoCount": 1
+        "repoCount": 1,
+        "record": null,
+        "ticketIds": [],
+        "hasReport": true,
+        "bmadApplied": null,
+        "eval": null,
+        "adopted": false
+      },
+      {
+        "runId": "r-20261020-0900",
+        "runDir": "/fake/runs/r-20261020-0900",
+        "folder": "/abs/ws",
+        "createdAt": "2026-10-20T09:00:00Z",
+        "stage": "done",
+        "updatedAt": "2026-10-20T09:40:00Z",
+        "title": "Add subtract()",
+        "adopted": false,
+        "record": {
+          "outcome": "done",
+          "totalTokens": 182000,
+          "estimateUsd": 1.84,
+          "minutes": 31.5,
+          "waitMinutes": 4.0,
+          "spanMinutes": 37.5,
+          "prUrls": [
+            "https://github.com/o/mathlib/pull/7"
+          ],
+          "firstActivity": "2026-10-20T09:00:00Z",
+          "lastActivity": "2026-10-20T09:40:00Z"
+        },
+        "prCount": 1,
+        "ticketIds": [
+          "14yq6g31xn1"
+        ],
+        "hasReport": true,
+        "repoCount": 1,
+        "repos": [
+          "mathlib"
+        ],
+        "bmadApplied": true,
+        "eval": null
+      },
+      {
+        "runId": "r-20261018-1500",
+        "runDir": "/fake/runs/r-20261018-1500",
+        "folder": "/abs/ws",
+        "createdAt": "2026-10-18T15:00:00Z",
+        "stage": "failed",
+        "updatedAt": "2026-10-18T15:20:00Z",
+        "title": "Fix rounding",
+        "adopted": false,
+        "record": {
+          "outcome": "failed",
+          "totalTokens": 64000,
+          "estimateUsd": 0.62,
+          "minutes": 12.0,
+          "waitMinutes": 4.0,
+          "spanMinutes": 18.0,
+          "prUrls": [],
+          "firstActivity": "2026-10-20T09:00:00Z",
+          "lastActivity": "2026-10-20T09:40:00Z"
+        },
+        "prCount": 1,
+        "ticketIds": [],
+        "hasReport": true,
+        "repoCount": 1,
+        "repos": [
+          "mathlib"
+        ],
+        "bmadApplied": false,
+        "eval": null
       }
     ]
   },
