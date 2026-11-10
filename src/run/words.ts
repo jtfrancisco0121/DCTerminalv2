@@ -925,3 +925,34 @@ export function lastLines(text: string, n: number): string {
   const lines = text.replace(/\n$/, "").split("\n");
   return lines.slice(-n).join("\n");
 }
+
+/** A web QA charter row's result (PASS, FAIL or ERROR). */
+export function webqaResultTone(result: string | null | undefined): Tone {
+  switch (result) {
+    case "PASS":
+    case "pass":
+      return "success";
+    case "FAIL":
+    case "fail":
+      return "danger";
+    case "ERROR":
+    case "error":
+      return "warn";
+    default:
+      return "muted";
+  }
+}
+
+/** The badge that compares a row or a finding with the pass before it; null hides it. */
+export function comparisonBadge(comparison: string | null | undefined): { text: string; tone: Tone } | null {
+  switch (comparison) {
+    case "new":
+      return { text: "New", tone: "warn" };
+    case "fixed":
+      return { text: "Fixed", tone: "success" };
+    case "still-failing":
+      return { text: "Still failing", tone: "danger" };
+    default:
+      return null;
+  }
+}

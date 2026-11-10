@@ -4,7 +4,10 @@
 //
 // It sets `window.__TAURI_INTERNALS__` itself (the @tauri-apps/api mocks are not relied on): `invoke` answers from
 // fixtures/fake/*.json, `transformCallback` keeps callbacks, and the event plugin commands are faked so `listen` works.
-// A command without a fixture rejects with `fake: <command> not faked`.
+// A command without a fixture rejects with `fake: <command> not faked`. `fixtures/fake/not-faked.json` lists the
+// commands that are faked on purpose with no answer, each with its reason (src/fake/coverage.test.ts keeps both lists
+// complete). Two commands have a small behaviour on top of their fixture: `pty_open` pushes a banner through its
+// channel, and `resume_run` opens the run's tab in the faked app state.
 import app from "../../fixtures/fake/app.json";
 import clickup from "../../fixtures/fake/clickup.json";
 import run from "../../fixtures/fake/run.json";
@@ -12,6 +15,9 @@ import runs from "../../fixtures/fake/runs.json";
 import settings from "../../fixtures/fake/settings.json";
 
 export const FAKE_MARKER = "DCV2_FAKE_BACKEND_MARKER";
+
+/** What a faked terminal prints when it opens (base64, as the real PTY packets carry it). */
+export const FAKE_BANNER = "DCTerminalv2 faked terminal\r\n(no shell runs in the faked backend)\r\n";
 
 type Answers = Record<string, unknown>;
 type Handler = (payload: unknown) => void;
@@ -51,11 +57,34 @@ export function installFakeBackend(
     }
   };
 
+  // The tab list the faked app state shows: `resume_run` opens the run's tab.
+  let openedTab: { id: string } | null = null;
+
   const invoke = async (
     command: string,
     args?: Record<string, unknown>,
   ): Promise<unknown> => {
     switch (command) {
+      case "pty_open": {
+        // The terminal's output channel: push one banner packet through its callback.
+        const channel = args?.onOutput as { id?: number } | undefined;
+        const handler = channel?.id === undefined ? undefined : callbacks.get(channel.id);
+        if (handler) {
+          const data = btoa(FAKE_BANNER);
+          setTimeout(() => handler({ message: { kind: "output", data, code: null }, index: 0, id: 0 }), 0);
+        }
+        return fakeAnswer(command, fixtures);
+      }
+      case "webqa_start":
+      case "resume_run": {
+        const started = fakeAnswer(command, fixtures) as { tab: { id: string } };
+        openedTab = started.tab;
+        return started;
+      }
+      case "get_app_state": {
+        const state = fakeAnswer(command, fixtures) as { activeTabId: string | null; tabs: unknown[] };
+        return openedTab ? { ...state, activeTabId: openedTab.id, tabs: [openedTab] } : state;
+      }
       case "plugin:event|listen": {
         const id = nextEvent++;
         const event = String(args?.event);

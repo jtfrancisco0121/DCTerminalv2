@@ -44,6 +44,12 @@ pub fn spawn_afk_sweeps(app: &AppHandle) {
                 &|dir| super::run_has_live_tab(&cleanup_app, dir),
                 std::time::SystemTime::now(),
             );
+            // The web QA test account's file: gone once the pass is finished, or abandoned with no live tab.
+            cleanup::sweep_webqa_secrets(
+                &data,
+                &|dir| super::run_has_live_tab(&cleanup_app, dir),
+                std::time::SystemTime::now(),
+            );
             cleanup::sweep(&data, enabled, &GhCli, &mut asked, cleanup::ASK_EVERY);
             // CI and PR state, whatever the clean-up setting says.
             github::sweep(&data, &GhCi, &mut github_asked, github::ASK_EVERY);

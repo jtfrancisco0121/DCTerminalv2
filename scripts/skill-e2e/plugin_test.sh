@@ -60,7 +60,7 @@ h = json.load(open(os.path.join(p, "hooks", "hooks.json")))["hooks"]
 for ev in ("PreToolUse", "SubagentStop", "Stop"):
     assert ev in h, f"hooks.json has no {ev}"
 pre = h["PreToolUse"][0]["matcher"].split("|")
-for t in ("Edit", "Write", "NotebookEdit", "MultiEdit", "Bash", "Monitor", "PowerShell", "mcp__.*"):
+for t in ("Edit", "Write", "NotebookEdit", "MultiEdit", "Bash", "Monitor", "PowerShell", "Read", "Grep", "Glob", "mcp__.*"):
     assert t in pre, f"the PreToolUse matcher does not cover {t}: {pre}"
 for ev, groups in h.items():
     for g in groups:

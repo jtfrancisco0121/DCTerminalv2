@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse guard for the eagle-eye run (plugin hook: Edit, Write, NotebookEdit, MultiEdit, Bash, Monitor, PowerShell, mcp__*).
+# PreToolUse guard for the eagle-eye run (plugin hook: Edit, Write, NotebookEdit, MultiEdit, Bash, Monitor, PowerShell, Read, Grep, Glob, mcp__*).
 #
 # The run it guards is the one named by the env DCV2_RUN_DIR, set when claude is launched
 # (the app and the e2e test set it; `state.sh preflight` refuses to start a run without it).
@@ -7,7 +7,7 @@
 # text cannot reach it. The run's allowed worktrees are listed in <run>/.guard.json, which
 # only `state.sh worktree` writes.
 #
-# Pipeline sub-agents (agent_type implementer, planner, plan-reviewer, risk-reviewer, pr-reviewer, qa, memory-updater,
+# Pipeline sub-agents (agent_type implementer, planner, plan-reviewer, risk-reviewer, pr-reviewer, qa, web-qa, memory-updater,
 # with or without the "dcv2:" prefix):
 #   - Edit/Write: the real path (symlinks and .. resolved) must be inside the run folder, or,
 #     for the implementer only, inside one of the run's recorded worktrees. The qa agent may write only its own
@@ -34,6 +34,13 @@
 # runs changing git in) a repo's main checkout recorded in .guard.json.
 # Implementer: `git add|commit` naming a file state.sh worktree copied in from the main checkout
 # (.guard.json "copied", from repos.json copyFiles) is blocked (best effort).
+# Web QA (docs/run-folder.md, "Web QA"): the web-qa agent writes only webqa/results.md, webqa/shots/<name>.png and
+# webqa/steps/<name>.jsonl in the run folder; its Bash is limited to the driver (qa-browser.mjs with --out/--steps/--timeout), `state.sh webqa <run>`
+# and ls / mkdir -p under <run>/webqa (rule webqa-command); its Read, Grep and Glob stay in the run and plugin folders (webqa-read-scope).
+# webqa-secret.json (the test account's password, written by the app) is refused to EVERY agent in EVERY session (webqa-secret): a Read of it
+# by name, a Grep or Glob naming it or rooted at the runs folder / a parent / a run holding it, and a shell command naming it (also through
+# a ? * [] glob) or recursively reading a tree that holds it (grep -r, rg, ag, find, tar, zip, rsync, cp -r). Best effort: an interpreter that
+# builds the name at run time evades text checks, which is why the account is a test account only (docs/run-folder.md).
 # Everyone in a run: no `security dump-keychain|find-generic-password|find-internet-password|export`.
 # Sub-agents never run state.sh's GitHub commands; the Implementer never changes git remotes/config.
 # BMAD (bmad/ in the plugin, <run>/bmad in the run): in a bound run only the planner may run
@@ -62,13 +69,17 @@
 # (no Python, a payload that does not parse) cannot be logged.
 # Exit 2 blocks the tool call (stderr is shown to the model).
 input="$(cat)"
-PIPE_RE='"agent_type"[[:space:]]*:[[:space:]]*"(dcv2:)?(implementer|planner|plan-reviewer|risk-reviewer|pr-reviewer|qa|memory-updater)"'
+PIPE_RE='"agent_type"[[:space:]]*:[[:space:]]*"(dcv2:)?(implementer|planner|plan-reviewer|risk-reviewer|pr-reviewer|qa|web-qa|memory-updater)"'
 
 # The plugin folder this script lives in (pure bash: no dirname, the PATH may be broken).
 gdir="${BASH_SOURCE[0]%/*}"; [[ "$gdir" != "${BASH_SOURCE[0]}" ]] || gdir="."
 GUARD_PLUGIN="$(cd "$gdir/.." 2>/dev/null && pwd -P)" || GUARD_PLUGIN=""
 
 fallback() { # no working Python 3.8+, or the payload did not parse: fail closed where it matters
+  if grep -qiF -- "webqa-secret" <<<"$input"; then  # the test account's password file: refused in every session
+    echo "Blocked by the dcv2 guard: this call names webqa-secret and could not be checked (install Python 3.8+ (tried python3, python, py -3)); the test account's password file is never read by an agent." >&2
+    exit 2
+  fi
   if grep -Eq "$PIPE_RE" <<<"$input"; then
     echo "Blocked by the dcv2 guard: this call could not be checked (install Python 3.8+ (tried python3, python, py -3), or an unreadable hook payload)." >&2
     exit 2
@@ -76,6 +87,9 @@ fallback() { # no working Python 3.8+, or the payload did not parse: fail closed
   if [[ -n "${DCV2_RUN_DIR:-}" ]]; then  # a bound run: nothing is let through unchecked
     echo "Blocked by the dcv2 guard: this call could not be checked (install Python 3.8+ (tried python3, python, py -3), or an unreadable hook payload) and a run is bound." >&2
     exit 2
+  fi
+  if grep -Eq '"tool_name"[[:space:]]*:[[:space:]]*"(Read|Grep|Glob)"' <<<"$input"; then  # plain reads in an unbound tab: as when they were not hooked
+    exit 0
   fi
   local p
   for p in "${DCV2_MEMORY_DIR:-}" "${CLAUDE_PLUGIN_ROOT:-}" "$GUARD_PLUGIN"; do  # a dcv2 tab: memory and the plugin stay closed
@@ -106,7 +120,7 @@ try:
 except Exception:
     sys.exit(3)
 
-ROLES = ("implementer", "planner", "plan-reviewer", "risk-reviewer", "pr-reviewer", "qa", "memory-updater")
+ROLES = ("implementer", "planner", "plan-reviewer", "risk-reviewer", "pr-reviewer", "qa", "web-qa", "memory-updater")
 # Sub-agents that also run in a standalone session (no run); there they write nothing with Edit/Write.
 UNBOUND_OK = ("memory-updater", "risk-reviewer")
 agent = str(data.get("agent_type") or "")
@@ -162,12 +176,17 @@ if run:
 # (the ClickUp snapshot and records, meta.json, the app's own check results).
 PROTECTED = ("status.json", "writeback.json", ".guard.json",
              "tickets.json", "meta.json", "repos.json", "writeback-posted.json", "tickets-pulls.json", "tickets-update.md", "app-checks.json", "app-usage.json",
-             "app-cleanup.json", "app-github.json", "app-receipt.json", "waves.json", "triage.json", "guard.log")
+             "app-cleanup.json", "app-github.json", "app-receipt.json", "waves.json", "triage.json", "guard.log",
+             "webqa-target.json", "webqa-secret.json", "webqa.json", "webqa-approval.json", "webqa-posted.json")
 who = agent or "the orchestrator"
 where = "your worktree or the run folder" if role == "implementer" else "the run folder"
 QA_WRITE = re.compile(r"^(reviews/PR\d+-qa\d\.md|reviews/qa/[A-Za-z0-9][A-Za-z0-9._-]*\.png|logs/PR\d+-qa\d[A-Za-z0-9._-]*\.txt)$")
 if role == "qa":
     where = "the run folder, and there only reviews/PR<n>-qa<r>.md, reviews/qa/<name>.png and logs/PR<n>-qa<r>*.txt"
+WEBQA_WRITE = re.compile(r"^(webqa/results\.md|webqa/shots/[A-Za-z0-9][A-Za-z0-9._-]*\.png|webqa/steps/[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl)$")
+if role == "web-qa":
+    where = "the run folder, and there only webqa/results.md, webqa/shots/<name>.png and webqa/steps/<name>.jsonl"
+SECRET_NAME = "webqa-secret.json"
 
 
 # Every block has one rule id from this table (the kebab-case key). The id, never the message, is what logs/guard.log records.
@@ -233,6 +252,9 @@ RULES = {
     "nesting-depth": "command nesting too deep",
     "parse-error": "a command that does not parse",
     "test-remotes": "the test-suite remote override",
+    "webqa-command": "a web-qa shell command outside the driver, state.sh webqa and ls / mkdir under webqa/",
+    "webqa-secret": "the web QA test account's password file",
+    "webqa-read-scope": "a web-qa read outside the run and plugin folders",
 }
 
 
@@ -346,9 +368,10 @@ GUARD_PLUGIN = portable.real_path(sys.argv[1]) if len(sys.argv) > 1 and sys.argv
 def write_allowed(p):
     if role in UNBOUND_OK and not run:
         return False
-    if role == "qa":  # only its own result files, never the worktree or any other run file
+    if role in ("qa", "web-qa"):  # only its own result files, never the worktree or any other run file
         rp = real(p, "/")
-        return bool(run) and inside(rp, run) and bool(QA_WRITE.match(os.path.relpath(rp, real(run, "/")).replace(os.sep, "/")))
+        allow = QA_WRITE if role == "qa" else WEBQA_WRITE
+        return bool(run) and inside(rp, run) and bool(allow.match(os.path.relpath(rp, real(run, "/")).replace(os.sep, "/")))
     if inside(p, run):
         return True
     return role == "implementer" and any(inside(p, w) for w in worktrees)
@@ -372,7 +395,193 @@ def in_checkout(p):
         d = nd
 
 
-if pipeline and not run and role not in UNBOUND_OK:
+# ---- the web QA test account's password file: refused to everyone, in every session --------------------------------------
+import glob as _glob
+
+DEFAULT_RUNS = "~/Library/Application Support/com.jtfrancisco.dcterminalv2/runs"
+
+
+def runs_folder():
+    """The app's runs folder: the bound run's parent, else the codebase memory folder's sibling `runs`, else the default."""
+    if run:
+        return portable.real_path(os.path.dirname(run))
+    if mem:
+        return portable.real_path(os.path.join(os.path.dirname(mem), "runs"))
+    return portable.real_path(os.path.expanduser(DEFAULT_RUNS))
+
+
+_SECRET_RUNS = None
+
+
+def secret_runs():
+    """The run folders that hold webqa-secret.json (one scandir of the runs folder, done once and only when a rule needs it)."""
+    global _SECRET_RUNS
+    if _SECRET_RUNS is None:
+        _SECRET_RUNS = []
+        try:
+            with os.scandir(runs_folder()) as it:
+                for e in it:
+                    try:
+                        if e.is_dir(follow_symlinks=False) and os.path.lexists(os.path.join(e.path, SECRET_NAME)):
+                            _SECRET_RUNS.append(portable.real_path(e.path))
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    return _SECRET_RUNS
+
+
+def hits_secret_tree(path):
+    """While a secret exists: `path` is the runs folder, a parent of it, or a run folder holding the secret. A folder below a
+    run (webqa/, reviews/ ...) is not."""
+    if not path or not secret_runs():
+        return False
+    rf = runs_folder()
+    p, r = norm(path), norm(rf)
+    if p == r or r.startswith(p.rstrip(os.sep) + os.sep):
+        return True
+    return any(p == norm(s) for s in secret_runs())
+
+
+SECRET_MSG = ("webqa-secret.json is the web QA test account's password file: no agent reads, searches or lists it, in any session. "
+              "The driver reads it itself.")
+SECRET_STEM = SECRET_NAME.rsplit(".", 1)[0]
+
+
+def expand_vars(text):
+    """$DCV2_RUN_DIR / ${DCV2_RUN_DIR}, CLAUDE_PLUGIN_ROOT and DCV2_MEMORY_DIR written out (as the shell will)."""
+    for name, value in (("DCV2_RUN_DIR", run), ("CLAUDE_PLUGIN_ROOT", os.environ.get("CLAUDE_PLUGIN_ROOT") or GUARD_PLUGIN),
+                        ("DCV2_MEMORY_DIR", mem)):
+        if value:
+            text = re.sub(r"\$\{" + name + r"\}|\$" + name + r"\b", lambda _m, v=value: v, text)
+    return text
+
+
+def glob_hits_secret(token, cwd):
+    """A shell operand with * ? or [ : expand it on the file system and say whether it matches a webqa-secret.json."""
+    pattern = os.path.expanduser(token)
+    if not os.path.isabs(pattern):
+        pattern = os.path.join(cwd or cwd0, pattern)
+    seen = 0
+    try:
+        for hit in _glob.iglob(pattern):
+            if os.path.basename(hit).casefold() == SECRET_NAME:
+                return True
+            seen += 1
+            if seen > 20000:
+                break
+    except (OSError, ValueError):
+        return False
+    return False
+
+
+def words_of(text):
+    try:
+        return lex(text)
+    except ValueError:
+        return text.split()
+
+
+READERS_ALWAYS = ("rg", "ag", "find", "tar", "zip", "rsync")
+
+
+def secret_command_check(cmd, cwd, depth=0):
+    """Bash, Monitor and PowerShell, every agent: refuse a command that names the secret file (also after the run-folder
+    variables are written out, and through a * ? [] glob), or that recursively reads a tree that holds one."""
+    text = expand_vars(cmd)
+    if SECRET_STEM in text.casefold():
+        block("webqa-secret", SECRET_MSG)
+    toks = words_of(text)
+    for t in toks:
+        if not is_punct(t) and re.search(r"[*?\[]", t) and not t.startswith("-") and glob_hits_secret(t, cwd):
+            block("webqa-secret", SECRET_MSG)
+    segs, seg = [], []
+    for t in toks:
+        if is_punct(t):
+            if seg:
+                segs.append(seg)
+            seg = []
+        else:
+            seg.append(t)
+    if seg:
+        segs.append(seg)
+    for words in segs:
+        words = unwrap(list(words))
+        if not words:
+            continue
+        name, args = re.sub(r"\.exe$", "", os.path.basename(words[0]), flags=re.I), words[1:]
+        if name in SHELLS and shell_c(args) is not None and depth < 3:
+            secret_command_check(shell_c(args), cwd, depth + 1)
+            continue
+        nonopt = [a for a in args if a and not a.startswith("-")]
+        recursive = False
+        if name in ("grep", "egrep", "fgrep"):
+            recursive = any(a in ("--recursive", "--dereference-recursive") or re.match(r"^-[A-Za-z]*[rR][A-Za-z]*$", a) for a in args)
+        elif name == "cp":
+            recursive = any(a == "--recursive" or re.match(r"^-[A-Za-z]*[rRa][A-Za-z]*$", a) for a in args)
+        elif name in READERS_ALWAYS:
+            recursive = True
+        if not recursive or not secret_runs():
+            continue
+        operands = list(nonopt)
+        if name in ("grep", "egrep", "fgrep", "rg", "ag") and len(nonopt) <= 1:
+            operands.append(cwd or cwd0)  # no path: the working folder
+        for o in operands:
+            o = os.path.expanduser(expand_vars(o))
+            if "$" in o:
+                block("webqa-secret", SECRET_MSG + " (A recursive search of a path that cannot be told apart from the runs folder is refused while a test password exists.)")
+            if re.search(r"[*?\[]", o):
+                base = re.split(r"[*?\[]", o, 1)[0]
+                if hits_secret_tree(real(os.path.dirname(base) or ".", cwd or cwd0)) or glob_hits_secret(o, cwd):
+                    block("webqa-secret", SECRET_MSG)
+                continue
+            if hits_secret_tree(real(o, cwd or cwd0)):
+                block("webqa-secret", SECRET_MSG)
+
+
+def search_roots(cwd_):
+    """The folders a Grep or Glob call searches: its `path` (default: the cwd), and for Glob the fixed prefix of an absolute pattern."""
+    roots = [real(str(inp.get("path")), cwd_) if inp.get("path") else real(cwd_, "/")]
+    pat = str(inp.get("pattern") or "") if tool == "Glob" else ""
+    if os.path.isabs(os.path.expanduser(pat)):
+        fixed = re.split(r"[*?\[{]", os.path.expanduser(pat), 1)[0]
+        roots.append(real(fixed.rsplit("/", 1)[0] or "/", "/"))
+    return roots
+
+
+def read_search_check():
+    """Read, Grep and Glob (hooked since the web QA release): the secret rules for everyone, and the folder scope of web-qa."""
+    if tool == "Read":
+        target = real(str(inp.get("file_path") or ""), cwd0) if inp.get("file_path") else ""
+        if target and os.path.basename(target).casefold() == SECRET_NAME:
+            block("webqa-secret", SECRET_MSG)
+        scope_roots = [target] if target else []
+    else:
+        names = [str(inp.get(k) or "") for k in ("pattern", "glob")]
+        if any(SECRET_STEM in n.casefold() for n in names):
+            block("webqa-secret", SECRET_MSG)
+        if inp.get("path") and os.path.basename(real(str(inp["path"]), cwd0)).casefold() == SECRET_NAME:
+            block("webqa-secret", SECRET_MSG)
+        scope_roots = search_roots(cwd0)
+        for r in scope_roots:
+            if hits_secret_tree(r):
+                block("webqa-secret", SECRET_MSG + " (A search rooted at the runs folder, a parent of it, or a run holding it is refused while a test password exists; search below a run's webqa/ folder instead.)")
+    if role == "web-qa":
+        if not run:
+            block("no-run-bound", f"{who} runs only inside an Eagle-Eye run, and none is bound (DCV2_RUN_DIR is not set at launch).")
+        plugin_roots = [r for r in (os.environ.get("CLAUDE_PLUGIN_ROOT") or "", GUARD_PLUGIN) if r]
+        for r in scope_roots:
+            if not (inside(r, run) or any(inside(r, q) for q in plugin_roots)):
+                block("webqa-read-scope", f"{who} reads only inside the run folder and the plugin folder, not {r}.")
+
+
+# ---- Read / Grep / Glob ------------------------------------------------------------------
+# Never hooked before the web QA release. Every other call behaves as it did when they were not hooked (exit 0).
+if tool in ("Read", "Grep", "Glob"):
+    read_search_check()
+    sys.exit(0)
+
+if pipeline and not run and role not in UNBOUND_OK and tool not in ("Read", "Grep", "Glob"):
     block("no-run-bound", f"{who} runs only inside an Eagle-Eye run, and none is bound (DCV2_RUN_DIR is not set at launch).")
 
 # ---- Edit / Write ------------------------------------------------------------------------
@@ -426,8 +635,11 @@ if tool.startswith("mcp__"):
 if tool == "PowerShell" and bound:
     block("powershell", "PowerShell is not used in a run (its writes, such as Set-Content, Out-File, Remove-Item and Copy-Item, cannot be "
           "checked here); use Bash.")
-if tool not in ("Bash", "Monitor", "PowerShell") or not (bound or mem):
+if tool not in ("Bash", "Monitor", "PowerShell"):
     sys.exit(0)
+UNCHECKED = not (bound or mem)  # an ordinary session: only the web QA secret rule below applies
+if role == "web-qa" and tool in ("Monitor", "PowerShell"):
+    block("webqa-command", f"{who} runs only the driver, `state.sh webqa <run>` and ls / mkdir -p under webqa/ with Bash, not {tool}.")
 if bound and not str(inp.get("command") or "").strip():
     block("no-command", f"{tool} without a command text: it cannot be checked.")
 
@@ -509,6 +721,8 @@ def check_write(t, cwd):
         return
     if git_user_config(p):
         block("git-user-config", GITCONFIG_MSG)
+    if role == "web-qa" and inside(p, os.path.join(run, "webqa")) and not protected(p):
+        return  # mkdir -p under webqa/ (webqa_command_check lets nothing else write there from the shell)
     zone = no_write_zone(p)
     if zone:
         block("no-write-zone", f"{p} is {zone}: it is never written from a bound run.")
@@ -518,7 +732,7 @@ def check_write(t, cwd):
         block("bmad-config", BMAD_CFG_MSG)
     if not pipeline and main_checkout(p):
         block("main-checkout-write", f"the orchestrator never writes into a repo's main checkout ({p}).")
-    if role == "qa" and not write_allowed(p):
+    if role in ("qa", "web-qa") and not write_allowed(p):
         block("outside-allowed-write", f"{who} may write only {where}, not {p}, from Bash.")
     if pipeline and not write_allowed(p) and in_checkout(p):
         block("outside-allowed-write", f"{who} may not write {p} from Bash: it is in a git checkout outside {where}.")
@@ -1465,7 +1679,126 @@ def analyze(cmd, cwd, depth=0):
     return cwd
 
 
+# ---- the web-qa agent's shell: the driver, state.sh webqa, ls and mkdir -p under webqa/ ---------------------------------
+WEBQA_FLAG_OK = re.compile(r"^-[A-Za-z0-9]+$")
+
+
+def webqa_under(path):
+    """A literal path that resolves inside <run>/webqa."""
+    if not path or "$" in path or re.search(r"[*?\[`]", path):
+        return False
+    return inside(real(os.path.expanduser(path), run), os.path.join(run, "webqa"))
+
+
+def webqa_simple_command(words):
+    """True for exactly one of the three allowed commands (the variables already written out; no env prefix, no wrapper)."""
+    if not words:
+        return False
+    name = words[0]
+    plugin_real = [portable.real_path(r) for r in (os.environ.get("CLAUDE_PLUGIN_ROOT") or "", GUARD_PLUGIN) if r]
+
+    def plugin_script(path, script):
+        return bool(path) and "$" not in path and any(same(path, os.path.join(r, "scripts", script)) for r in plugin_real)
+
+    if name == "node":
+        args = words[2:]
+        if len(words) < 2 or not plugin_script(words[1], "qa-browser.mjs"):
+            return False
+        i = 0
+        while i < len(args):
+            flag = args[i]
+            val = args[i + 1] if i + 1 < len(args) else None
+            if val is None:
+                return False
+            if flag == "--out" and "$" not in val and same(real(val, run), os.path.join(run, "webqa", "shots")):
+                pass
+            elif flag == "--steps" and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl", os.path.basename(val)) \
+                    and "$" not in val and same(os.path.dirname(real(val, run)), os.path.join(run, "webqa", "steps")):
+                pass
+            elif flag == "--timeout" and re.fullmatch(r"\d{1,7}", val):
+                pass
+            else:
+                return False
+            i += 2
+        return True
+    if name == "bash":
+        return len(words) == 4 and plugin_script(words[1], "state.sh") and words[2] == "webqa" and "$" not in words[3] and same(real(words[3], run), run)
+    if name == "ls":
+        paths = [a for a in words[1:] if not a.startswith("-")]
+        flags = [a for a in words[1:] if a.startswith("-")]
+        return bool(paths) and all(WEBQA_FLAG_OK.match(f) for f in flags) and all(webqa_under(a) for a in paths)
+    if name == "mkdir":
+        return len(words) >= 3 and words[1] == "-p" and all(webqa_under(a) for a in words[2:])
+    return False
+
+
+WEBQA_REDIRECT_OK = ("2>&1", ">&2", "1>&2", ">/dev/null", "2>/dev/null", "1>/dev/null")
+
+
+def webqa_command_check(cmd):
+    """The web-qa agent's Bash: every simple command is the driver, `state.sh webqa <run>`, or ls / mkdir -p under <run>/webqa. No env
+    prefix, command or process substitution, backtick, heredoc, pipe, background `&` or redirect (but to /dev/null and 2>&1)."""
+    fail = lambda why: block("webqa-command", f"{who} may run only `node <plugin>/scripts/qa-browser.mjs --out <run>/webqa/shots --steps <run>/webqa/steps/<name>.jsonl "
+                             f"[--timeout <ms>]`, `bash <plugin>/scripts/state.sh webqa <run>`, and ls / mkdir -p under <run>/webqa: {why}.")
+    text = expand_vars(cmd)
+    if re.search(r"\$|`|<\(|>\(|<<", text):
+        fail("no variable, command or process substitution, backtick or heredoc")
+    try:
+        lx = shlex.shlex(text, posix=True, punctuation_chars=";&|()<>\n")
+        lx.whitespace = " \t\r"
+        lx.whitespace_split = True
+        lx.commenters = ""
+        toks = list(lx)
+    except ValueError:
+        fail("the command does not parse")
+    segs, seg, i = [], [], 0
+    while i < len(toks):
+        t = toks[i]
+        if is_punct(t):
+            nxt = toks[i + 1] if i + 1 < len(toks) else ""
+            if t == "&&" or set(t) <= {";", "\n"}:
+                segs.append(seg)
+                seg = []
+            elif t in (">", ">>", ">|") or t.endswith(">") and set(t) <= {">"}:
+                if seg and seg[-1] in ("1", "2"):
+                    seg.pop()  # the fd of `2>`
+                if nxt != "/dev/null":
+                    fail("redirects are not allowed (but to /dev/null and 2>&1)")
+                i += 1
+            elif t == ">&":
+                if seg and seg[-1] in ("1", "2"):
+                    seg.pop()
+                if nxt not in ("1", "2"):
+                    fail("redirects are not allowed (but to /dev/null and 2>&1)")
+                i += 1
+            elif "<" in t:
+                fail("redirects are not allowed")
+            elif t == "&":
+                fail("no background jobs")
+            elif "|" in t:
+                fail("no pipes")
+            else:
+                fail("no subshells, groups or redirects")
+        else:
+            seg.append(t)
+        i += 1
+    segs.append(seg)
+    segs = [x for x in segs if x]
+    if not segs:
+        fail("no command")
+    for words in segs:
+        if ASSIGN_ANY.match(words[0]):
+            fail("no environment variable prefix")
+        if not webqa_simple_command(words):
+            fail(f"{os.path.basename(words[0])} with these arguments is not on the list")
+
+
 CMD = str(inp.get("command") or "")
+secret_command_check(CMD, cwd0)
+if role == "web-qa":
+    webqa_command_check(CMD)
+if UNCHECKED:
+    sys.exit(0)
 if bound and "DCV2_TEST_LOCAL_REMOTES" in CMD:
     block("test-remotes", "DCV2_TEST_LOCAL_REMOTES is set only by the test suites, never from inside a run.")
 MEM_MENTIONED = bool(mem) and ("DCV2_MEMORY_DIR" in CMD or mem.casefold() in CMD.casefold())

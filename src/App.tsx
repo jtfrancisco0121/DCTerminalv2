@@ -43,6 +43,7 @@ import { TraceSearch, type SearchState } from "./components/TraceSearch";
 import type { TraceTarget } from "./flight/types";
 import { PreviewHost } from "./components/PreviewPane";
 import { RunAnalytics } from "./components/RunAnalytics";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { RunDashboard } from "./components/RunDashboard";
 import { RunsView } from "./components/RunsView";
 import { StartScreen } from "./components/StartScreen";
@@ -885,7 +886,11 @@ function App() {
       {usageTab && <UsagePopover key={usageTab} tabId={usageTab} onClose={() => setUsageTab(null)} />}
       <section className="workspace-body">
         <ClaudeVersionBanner windowId={windowId} />
-        {devImport.status && <ImportDevDialog status={devImport.status} onClose={devImport.close} />}
+        {devImport.status && (
+          <ErrorBoundary key="import-dev" kind="dialog" onClose={devImport.close}>
+            <ImportDevDialog status={devImport.status} onClose={devImport.close} />
+          </ErrorBoundary>
+        )}
         {accountMissing && !blocked && (
           <InlineNotice
             tone="warning"
@@ -965,42 +970,58 @@ function App() {
             />
           </div>
         )}
-        {page === "dashboard" && <RunDashboard runs={runTabReadings} onClose={() => setPage(null)} />}
-        {page === "analytics" && <RunAnalytics onClose={() => setPage(null)} />}
+        {page === "dashboard" && (
+          <ErrorBoundary key="dashboard" kind="page" onClose={() => setPage(null)}>
+            <RunDashboard runs={runTabReadings} onClose={() => setPage(null)} />
+          </ErrorBoundary>
+        )}
+        {page === "analytics" && (
+          <ErrorBoundary key="analytics" kind="page" onClose={() => setPage(null)}>
+            <RunAnalytics onClose={() => setPage(null)} />
+          </ErrorBoundary>
+        )}
         {page === "trace-search" && (
-          <TraceSearch
-            initial={traceSearch}
-            onChange={setTraceSearch}
-            onOpen={(hit) => openTrace({ runDir: hit.runDir }, undefined, hit.firstEventId, true)}
-            onCompare={(a, b) => openCompare(a, b)}
-            onClose={() => setPage(null)}
-          />
+          <ErrorBoundary key="trace-search" kind="page" onClose={() => setPage(null)}>
+            <TraceSearch
+              initial={traceSearch}
+              onChange={setTraceSearch}
+              onOpen={(hit) => openTrace({ runDir: hit.runDir }, undefined, hit.firstEventId, true)}
+              onCompare={(a, b) => openCompare(a, b)}
+              onClose={() => setPage(null)}
+            />
+          </ErrorBoundary>
         )}
         {page === "compare" && (
-          <ComparePage
-            initialA={compare.a}
-            initialB={compare.b}
-            onChange={(a, b) => setCompare({ a, b })}
-            onOpenTrace={(runDir, eventId) => openTrace({ runDir }, undefined, eventId, false, true)}
-            onClose={() => setPage(null)}
-          />
+          <ErrorBoundary key="compare" kind="page" onClose={() => setPage(null)}>
+            <ComparePage
+              initialA={compare.a}
+              initialB={compare.b}
+              onChange={(a, b) => setCompare({ a, b })}
+              onOpenTrace={(runDir, eventId) => openTrace({ runDir }, undefined, eventId, false, true)}
+              onClose={() => setPage(null)}
+            />
+          </ErrorBoundary>
         )}
         {page === "eval-results" && evalGroup && (
-          <EvalResults
-            group={evalGroup}
-            onOpenTrace={(runDir) => openTrace({ runDir }, undefined, undefined, false, false, true)}
-            onClose={() => setPage(null)}
-          />
+          <ErrorBoundary key="eval-results" kind="page" onClose={() => setPage(null)}>
+            <EvalResults
+              group={evalGroup}
+              onOpenTrace={(runDir) => openTrace({ runDir }, undefined, undefined, false, false, true)}
+              onClose={() => setPage(null)}
+            />
+          </ErrorBoundary>
         )}
         {trace && (
-          <TracePanel
-            key={`${JSON.stringify(trace.target)}:${trace.focus ?? ""}`}
-            target={trace.target}
-            agent={trace.agent}
-            focus={trace.focus}
-            onClose={closeTrace}
-            onSearch={openTraceSearch}
-          />
+          <ErrorBoundary key="trace" kind="page" onClose={closeTrace}>
+            <TracePanel
+              key={`${JSON.stringify(trace.target)}:${trace.focus ?? ""}`}
+              target={trace.target}
+              agent={trace.agent}
+              focus={trace.focus}
+              onClose={closeTrace}
+              onSearch={openTraceSearch}
+            />
+          </ErrorBoundary>
         )}
       </section>
       <AttentionNotices onEvalResults={openEvalResults} />
@@ -1025,152 +1046,174 @@ function App() {
         onSettings={() => setDialog("settings")}
       />
       {dialog === "new-tab" && (
-        <Dialog
-          title={plainTab ? "New tab" : "New run"}
-          onClose={() => setDialog(null)}
-          className={plainTab ? "" : "start-dialog"}
-        >
-          {plainTab ? (
-            <NewTabForm
-              initial={newTabDefaults(state, lastFolder)}
-              onCreate={create}
-              onCancel={() => setPlainTab(false)}
-            />
-          ) : (
-            <StartScreen
-              windowId={windowId}
-              initialFolder={newTabDefaults(state, lastFolder).cwd}
-              onStarted={(run) => void started(run)}
-              onPlainTab={() => setPlainTab(true)}
-                onShowAllRuns={() => setDialog("runs")}
-                onEvalResults={openEvalResults}
-                usageWindows={usage}
-            />
-          )}
-        </Dialog>
+        <ErrorBoundary key="new-tab" kind="dialog" onClose={() => setDialog(null)}>
+          <Dialog
+            title={plainTab ? "New tab" : "New run"}
+            onClose={() => setDialog(null)}
+            className={plainTab ? "" : "start-dialog"}
+          >
+            {plainTab ? (
+              <NewTabForm
+                initial={newTabDefaults(state, lastFolder)}
+                onCreate={create}
+                onCancel={() => setPlainTab(false)}
+              />
+            ) : (
+              <StartScreen
+                windowId={windowId}
+                initialFolder={newTabDefaults(state, lastFolder).cwd}
+                onStarted={(run) => void started(run)}
+                onPlainTab={() => setPlainTab(true)}
+                  onShowAllRuns={() => setDialog("runs")}
+                  onEvalResults={openEvalResults}
+                  usageWindows={usage}
+              />
+            )}
+          </Dialog>
+        </ErrorBoundary>
       )}
       {dialog === "new-window" && settings && (
-        <AccountPicker
-          accounts={settings.accounts}
-          current={ctx?.accountId ?? ""}
-          onOpen={(accountId) => openAccountWindow(accountId).then(() => undefined)}
-          onClose={() => setDialog(null)}
-        />
+        <ErrorBoundary key="new-window" kind="dialog" onClose={() => setDialog(null)}>
+          <AccountPicker
+            accounts={settings.accounts}
+            current={ctx?.accountId ?? ""}
+            onOpen={(accountId) => openAccountWindow(accountId).then(() => undefined)}
+            onClose={() => setDialog(null)}
+          />
+        </ErrorBoundary>
       )}
       {dialog === "pick-account" && settings && (
-        <AccountPicker
-          accounts={settings.accounts}
-          current=""
-          title="Pick an account"
-          submitLabel="Use account"
-          hint="This window's account was removed from Settings. Its Claude tabs start under the account you pick."
-          onOpen={(accountId) => setWindowAccount(accountId).then(setCtx)}
-          onClose={() => setDialog(null)}
-        />
+        <ErrorBoundary key="pick-account" kind="dialog" onClose={() => setDialog(null)}>
+          <AccountPicker
+            accounts={settings.accounts}
+            current=""
+            title="Pick an account"
+            submitLabel="Use account"
+            hint="This window's account was removed from Settings. Its Claude tabs start under the account you pick."
+            onOpen={(accountId) => setWindowAccount(accountId).then(setCtx)}
+            onClose={() => setDialog(null)}
+          />
+        </ErrorBoundary>
       )}
       {dialog === "settings" && settings && (
-        <SettingsPage
-          view={settings}
-          section={settingsSection}
-          onSaved={(view) => {
-            setSettings(view);
-            applySettings(view);
-            // An account rename or a new folder retitles this window.
-            windowContext().then(setCtx, (err: unknown) => fail("Window", err));
-          }}
-          onClose={() => {
-            setDialog(null);
-            setSettingsSection(undefined);
-          }}
-        />
+        <ErrorBoundary key="settings" kind="dialog" onClose={() => { setDialog(null); setSettingsSection(undefined); }}>
+          <SettingsPage
+            view={settings}
+            section={settingsSection}
+            onSaved={(view) => {
+              setSettings(view);
+              applySettings(view);
+              // An account rename or a new folder retitles this window.
+              windowContext().then(setCtx, (err: unknown) => fail("Window", err));
+            }}
+            onClose={() => {
+              setDialog(null);
+              setSettingsSection(undefined);
+            }}
+          />
+        </ErrorBoundary>
       )}
       {dialog === "runs" && (
-        <RunsView
-          windowId={windowId}
-          onClose={() => setDialog(null)}
-          onStarted={(run) => void started(run)}
-          onAnalytics={() => {
-            setDialog(null);
-            setPage("analytics");
-          }}
-          onEvalResults={openEvalResults}
-        />
+        <ErrorBoundary key="runs" kind="dialog" onClose={() => setDialog(null)}>
+          <RunsView
+            windowId={windowId}
+            onClose={() => setDialog(null)}
+            onStarted={(run) => void started(run)}
+            onAnalytics={() => {
+              setDialog(null);
+              setPage("analytics");
+            }}
+            onEvalResults={openEvalResults}
+          />
+        </ErrorBoundary>
       )}
       {evalSource && (
-        <EvalDialog
-          windowId={windowId}
-          runDir={evalSource}
-          onClose={() => setEvalSource(null)}
-          onQueued={(n) => {
-            setEvalSource(null);
-            setMessage(`Queued ${n} runs`);
-          }}
-        />
+        <ErrorBoundary key="eval" kind="dialog" onClose={() => setEvalSource(null)}>
+          <EvalDialog
+            windowId={windowId}
+            runDir={evalSource}
+            onClose={() => setEvalSource(null)}
+            onQueued={(n) => {
+              setEvalSource(null);
+              setMessage(`Queued ${n} runs`);
+            }}
+          />
+        </ErrorBoundary>
       )}
-      {paletteOpen && <CommandPalette items={paletteItems()} queryItems={linkItems} onClose={() => setPaletteOpen(false)} />}
+      {paletteOpen && (
+        <ErrorBoundary key="palette" kind="dialog" onClose={() => setPaletteOpen(false)}>
+          <CommandPalette items={paletteItems()} queryItems={linkItems} onClose={() => setPaletteOpen(false)} />
+        </ErrorBoundary>
+      )}
       {confirmCloseMany && (
-        <Dialog
-          title="Close tabs?"
-          onClose={() => setConfirmCloseMany(null)}
-          footer={
-            <>
-              <button type="button" className="secondary-button" onClick={() => setConfirmCloseMany(null)}>
-                Cancel
-              </button>
-              <button type="button" className="danger-button" onClick={() => void closeNow(confirmCloseMany)}>
-                Close {confirmCloseMany.length} tabs
-              </button>
-            </>
-          }
-        >
-          <p>
-            {confirmCloseMany.filter((id) => tabRuns(id)).length} of these tabs still run a terminal. They will be
-            stopped. You can reopen the tabs later.
-          </p>
-        </Dialog>
+        <ErrorBoundary key="confirm-close-many" kind="dialog" onClose={() => setConfirmCloseMany(null)}>
+          <Dialog
+            title="Close tabs?"
+            onClose={() => setConfirmCloseMany(null)}
+            footer={
+              <>
+                <button type="button" className="secondary-button" onClick={() => setConfirmCloseMany(null)}>
+                  Cancel
+                </button>
+                <button type="button" className="danger-button" onClick={() => void closeNow(confirmCloseMany)}>
+                  Close {confirmCloseMany.length} tabs
+                </button>
+              </>
+            }
+          >
+            <p>
+              {confirmCloseMany.filter((id) => tabRuns(id)).length} of these tabs still run a terminal. They will be
+              stopped. You can reopen the tabs later.
+            </p>
+          </Dialog>
+        </ErrorBoundary>
       )}
       {confirmPane && (
-        <Dialog
-          title="Close pane?"
-          onClose={() => setConfirmPane(null)}
-          footer={
-            <>
-              <button type="button" className="secondary-button" onClick={() => setConfirmPane(null)}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="danger-button"
-                onClick={() => closePaneNow(confirmPane.tabId, confirmPane.pane)}
-              >
-                Close pane
-              </button>
-            </>
-          }
-        >
-          <p>
-            Its terminal is still running and will be stopped.
-            {confirmPane.pane === 1 ? " The other pane's shell restarts as the tab." : ""}
-          </p>
-        </Dialog>
+        <ErrorBoundary key="confirm-pane" kind="dialog" onClose={() => setConfirmPane(null)}>
+          <Dialog
+            title="Close pane?"
+            onClose={() => setConfirmPane(null)}
+            footer={
+              <>
+                <button type="button" className="secondary-button" onClick={() => setConfirmPane(null)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="danger-button"
+                  onClick={() => closePaneNow(confirmPane.tabId, confirmPane.pane)}
+                >
+                  Close pane
+                </button>
+              </>
+            }
+          >
+            <p>
+              Its terminal is still running and will be stopped.
+              {confirmPane.pane === 1 ? " The other pane's shell restarts as the tab." : ""}
+            </p>
+          </Dialog>
+        </ErrorBoundary>
       )}
       {confirmClose && (
-        <Dialog
-          title="Close tab?"
-          onClose={() => setConfirmClose(null)}
-          footer={
-            <>
-              <button type="button" className="secondary-button" onClick={() => setConfirmClose(null)}>
-                Cancel
-              </button>
-              <button type="button" className="danger-button" onClick={() => doClose(confirmClose)}>
-                Close tab
-              </button>
-            </>
-          }
-        >
-          <p>Its terminal is still running and will be stopped. You can reopen the tab later.</p>
-        </Dialog>
+        <ErrorBoundary key="confirm-close" kind="dialog" onClose={() => setConfirmClose(null)}>
+          <Dialog
+            title="Close tab?"
+            onClose={() => setConfirmClose(null)}
+            footer={
+              <>
+                <button type="button" className="secondary-button" onClick={() => setConfirmClose(null)}>
+                  Cancel
+                </button>
+                <button type="button" className="danger-button" onClick={() => doClose(confirmClose)}>
+                  Close tab
+                </button>
+              </>
+            }
+          >
+            <p>Its terminal is still running and will be stopped. You can reopen the tab later.</p>
+          </Dialog>
+        </ErrorBoundary>
       )}
     </main>
   );

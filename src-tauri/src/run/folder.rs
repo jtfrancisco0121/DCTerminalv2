@@ -131,6 +131,8 @@ pub struct RunMeta {
     pub orchestrator_mode: Option<String>,
     /// A triage run (`mode: triage`): the ClickUp list whose open tickets it proposes runs for; `None` otherwise.
     pub triage_list_id: Option<String>,
+    /// A web QA run (`mode: web-qa`): the target and the charters ticked for the pass, recorded in meta.json `webqa`.
+    pub webqa: Option<(String, Vec<String>)>,
 }
 
 /// One run of an eval group, as meta.json's `eval` records it.
@@ -219,7 +221,7 @@ pub fn finished_eval(eval: Option<&EvalRef>, stage: Option<&str>) -> bool {
 }
 
 /// The run modes meta.json can record (`mode`); a normal run has none.
-pub const RUN_MODES: &[&str] = &["epic-plan", "triage"];
+pub const RUN_MODES: &[&str] = &["epic-plan", "triage", "web-qa"];
 
 /// The review modes meta.json can record.
 pub const REVIEW_MODES: &[&str] = &["github", "local"];
@@ -399,6 +401,9 @@ pub fn create_run(
     }
     if let Some(list) = meta.triage_list_id.as_deref() {
         meta_json["triage"] = json!({"listId": list});
+    }
+    if let Some((target, charters)) = meta.webqa.as_ref() {
+        meta_json["webqa"] = json!({"targetId": target, "charterIds": charters});
     }
     if let Some(n) = meta.max_implementers {
         meta_json["maxImplementers"] = json!(n.clamp(1, MAX_IMPLEMENTERS_LIMIT));
@@ -1051,6 +1056,7 @@ mod tests {
             orchestrator_model: None,
             orchestrator_mode: None,
             triage_list_id: None,
+            webqa: None,
         };
         assert!(create_run(dir.path(), Path::new("/w"), &repos, &[], "  ", &meta).is_err());
         let one = create_run(

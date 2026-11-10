@@ -130,15 +130,22 @@ case "$1 $2" in
 esac
 exit 0
 EOF
+  # id -u: the real answer unless STUB_ID_U names another user (the release QA check compares owners with it).
+  cat > "$BIN/id" <<'EOF'
+#!/bin/sh
+if [ "$1" = "-u" ] && [ -n "${STUB_ID_U:-}" ]; then echo "$STUB_ID_U"; exit 0; fi
+exec /usr/bin/id "$@"
+EOF
   chmod 755 "$BIN"/*
 }
 write_stubs
 export STUB_LOG="$LOG" STUB_DIR="$d"
+export DCV2_RELEASE_QA_ROOT="$d/qa"
 
 # A temp repo that looks like the real one for the script: versions, a bare origin, one pushed commit.
 fresh() {
   rm -rf "$W/repo" "$ORIGIN" "$W/other" "$LOG" "$d/built" "$d/mounted" "$d/released"; : > "$LOG"
-  unset STUB_ARCH STUB_VERIFY_FAIL STUB_BUILD_FAIL STUB_BUNDLE_HOOK STUB_MAIN_ARCHS STUB_HOOK_ARCHS STUB_GH_BRANCH STUB_LIPO_BROKEN STUB_RUSTUP_TARGETS
+  unset STUB_ID_U STUB_ARCH STUB_VERIFY_FAIL STUB_BUILD_FAIL STUB_BUNDLE_HOOK STUB_MAIN_ARCHS STUB_HOOK_ARCHS STUB_GH_BRANCH STUB_LIPO_BROKEN STUB_RUSTUP_TARGETS
   mkdir -p "$R/src-tauri" "$R/plugin/.claude-plugin"
   printf '{\n  "name": "x",\n  "version": "1.2.3"\n}\n' > "$R/package.json"
   printf '{\n  "productName": "DCTerminalv2",\n  "version": "1.2.3",\n  "bundle": {}\n}\n' > "$R/src-tauri/tauri.conf.json"
@@ -146,6 +153,10 @@ fresh() {
   printf '0.9.0\n' > "$R/plugin/VERSION"
   printf '{\n  "name": "dcv2",\n  "version": "0.9.0"\n}\n' > "$R/plugin/.claude-plugin/plugin.json"
   printf 'src-tauri/target/\n' > "$R/.gitignore"
+  mkdir -p "$R/scripts" "$R/plugin/scripts"
+  cp -R "$REPO/scripts/release-qa" "$R/scripts/release-qa"
+  cp "$REPO"/plugin/scripts/state.sh "$R/plugin/scripts/"; cp -R "$REPO/plugin/scripts/lib" "$R/plugin/scripts/lib"
+  rm -rf "$d/qa"
   git init -q -b main "$R"
   git -C "$R" config user.name t; git -C "$R" config user.email t@t
   git -C "$R" add -A; git -C "$R" commit -q -m init
@@ -153,6 +164,21 @@ fresh() {
   git -C "$R" remote add origin "$ORIGIN"; git -C "$R" push -q origin main
 }
 commit_all() { git -C "$R" add -A; git -C "$R" commit -q -m "$1"; }
+# qa_make <pass|fail>: a release QA folder for 1.2.3 at the current HEAD, the way prepare.sh and the test session leave it.
+qa_make() {
+  local head D="$d/qa/1.2.3"
+  head="$(git -C "$R" rev-parse HEAD)"
+  rm -rf "$d/qa"; mkdir -p "$D/webqa/shots"; chmod 755 "$d/qa" "$D" "$D/webqa" "$D/webqa/shots"
+  printf '{"schema":1,"version":"1.2.3","commit":"%s","operator":"op","testUser":"qatester"}\n' "$head" > "$D/release.json"
+  printf '{"schema":1,"id":"release-qa","name":"x","allowlist":[],"charters":[{"id":"first-launch","title":"First launch","text":"t","mayChangeData":false},{"id":"settings-roundtrip","title":"Settings round-trip","text":"t","mayChangeData":false}]}\n' > "$D/webqa-target.json"
+  printf 'png' > "$D/webqa/shots/first-launch.png"; printf 'png' > "$D/webqa/shots/settings-roundtrip.png"
+  if [ "$1" = pass ]; then
+    printf 'WEBQA: pass\nfirst-launch | PASS | the start screen showed | webqa/shots/first-launch.png\nsettings-roundtrip | PASS | saved and reloaded | webqa/shots/settings-roundtrip.png\n' > "$D/webqa/results.md"
+  else
+    printf 'WEBQA: fail\nfirst-launch | PASS | the start screen showed | webqa/shots/first-launch.png\nsettings-roundtrip | FAIL | Escape did nothing | webqa/shots/settings-roundtrip.png\n' > "$D/webqa/results.md"
+  fi
+  chmod 644 "$D/release.json" "$D/webqa-target.json" "$D/webqa/results.md" "$D/webqa/shots/"*.png
+}
 # run_main <args...>: main in a subshell, so its exits and its EXIT trap stay there; sets $out and $rc
 run_main() { out="$(main "$@" 2>&1)"; rc=$?; }
 not_built() { [ ! -e "$d/built" ]; }
@@ -264,7 +290,7 @@ check "a failing verify of the app inside the DMG stops the script" [ "$rc" != 0
 check "  the mounted volume was detached" [ ! -s "$d/mounted" ]
 calls | grep -q "hdiutil detach" && ok "  detach was called" || bad "  no detach: $(calls)"
 check "  no SHA file" [ ! -e "$DMG.sha256" ]
-fresh; export STUB_VERIFY_FAIL=mounted
+fresh; qa_make pass; export STUB_VERIFY_FAIL=mounted
 run_main --publish
 check "  and --publish creates nothing" [ "$rc" != 0 ] ; check "  no release" [ ! -e "$d/released" ]
 fresh; export STUB_VERIFY_FAIL=built
@@ -275,18 +301,50 @@ run_main
 check "a failing build stops the script" [ "$rc" != 0 ]; has "  says so" "build failed"
 
 echo "# --publish from the built commit"
-fresh
+fresh; qa_make pass
 run_main --publish
 check "--publish from a HEAD that is the remote tip succeeds" [ "$rc" = 0 ]
 head="$(git -C "$R" rev-parse HEAD)"
 calls | grep -q "^gh release create v1.2.3 --target $head " && ok "  gh release create records --target <HEAD sha>" || bad "  gh calls: $(calls | grep '^gh ')"
 calls | grep "^gh release create" | grep -q "$DMG $DMG.sha256" && ok "  the DMG and its .sha256 are uploaded" || bad "  gh calls: $(calls | grep '^gh ')"
-fresh
+fresh; qa_make pass
 git clone -q "$ORIGIN" "$W/other"; git -C "$W/other" config user.name t; git -C "$W/other" config user.email t@t
 # The remote tip moves between the first check and the upload: publish_release re-reads it and refuses.
 require_head_is_remote_tip
 echo moved > "$W/other/moved.txt"; git -C "$W/other" add -A; git -C "$W/other" commit -q -m moved; git -C "$W/other" push -q origin main
 out="$(publish_release v1.2.3 "$d/none.dmg" 2>&1)"; rc=$?
 check "the remote tip is read again before upload: a moved tip refuses" [ "$rc" != 0 ]; has "  says HEAD is not the tip" "is not the tip of origin/main"; check "  no release was created" [ ! -e "$d/released" ]
+
+
+echo "# --publish needs a passing release QA for this version and HEAD"
+fresh
+run_main --publish
+check "--publish with no release QA results is refused" [ "$rc" != 0 ]; has "  says a passing release QA is needed" "needs a passing release QA for 1.2.3"; check "  nothing was built" not_built; check "  no release was created" [ ! -e "$d/released" ]
+fresh; qa_make fail
+run_main --publish
+check "--publish with a failing result is refused" [ "$rc" != 0 ]; has "  names the failing charter" "settings-roundtrip: Escape did nothing"; check "  nothing was built" not_built; check "  no release was created" [ ! -e "$d/released" ]
+fresh; qa_make pass; sed -i '' 's/"version":"1.2.3"/"version":"1.2.2"/' "$d/qa/1.2.3/release.json"
+run_main --publish
+check "--publish with a release.json for another version is refused" [ "$rc" != 0 ]; has "  says which version" "release.json is for version 1.2.2, not 1.2.3"; check "  nothing was built" not_built
+fresh; qa_make pass; sed -i '' 's/"commit":"[0-9a-f]*"/"commit":"0000000000000000000000000000000000000000"/' "$d/qa/1.2.3/release.json"
+run_main --publish
+check "--publish with a release.json for another commit is refused" [ "$rc" != 0 ]; has "  says the commit" "release QA was run for commit 0000000000000000000000000000000000000000"; check "  nothing was built" not_built
+fresh; qa_make pass; chmod 666 "$d/qa/1.2.3/release.json"
+run_main --publish
+check "--publish with a world-writable release.json is refused" [ "$rc" != 0 ]; has "  says why" "writable by its group or by everyone"; check "  nothing was built" not_built
+fresh; qa_make pass; chmod 664 "$d/qa/1.2.3/webqa-target.json"
+run_main --publish
+check "--publish with a group-writable webqa-target.json is refused" [ "$rc" != 0 ]; has "  says why" "writable by its group or by everyone"
+fresh; qa_make pass; export STUB_ID_U=99999
+run_main --publish
+check "--publish with a release.json owned by someone else is refused" [ "$rc" != 0 ]; has "  says why" "is not owned by you"; check "  nothing was built" not_built
+unset STUB_ID_U
+fresh; qa_make fail; printf '{"schema":1,"digest":"forged","result":"pass","rows":[],"findings":[]}\n' > "$d/qa/1.2.3/webqa.json"
+run_main --publish
+check "--publish with a hand-edited webqa.json that says pass over failing results is refused" [ "$rc" != 0 ]; has "  names the failing charter" "settings-roundtrip"; check "  no release was created" [ ! -e "$d/released" ]
+fresh; qa_make pass; ln -s "$d/qa/1.2.3" "$d/qa/linked"; rm -rf "$d/qa/linked"
+run_main --publish
+check "--publish with a passing release QA proceeds to the existing publish path" [ "$rc" = 0 ]; check "  the release was created (stubbed gh)" [ -e "$d/released" ]
+check "  webqa.json was rewritten by the validator, not trusted" grep -q '"result": "pass"' "$d/qa/1.2.3/webqa.json"
 
 if [ "$fails" = 0 ]; then echo "PASS"; else echo "FAILED"; exit 1; fi

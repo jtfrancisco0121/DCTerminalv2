@@ -5,6 +5,8 @@ mod commands;
 mod crash_log;
 mod data_dir;
 mod drafts;
+#[cfg(test)]
+mod fake_shapes;
 mod flight;
 mod import_dev;
 #[cfg(target_os = "macos")]
@@ -241,6 +243,15 @@ pub fn run() {
             run::triage::triage_overview,
             run::triage::triage_approve,
             run::triage::triage_apply,
+            run::webqa::webqa_targets_save,
+            run::webqa::webqa_password_status,
+            run::webqa::webqa_password_set,
+            run::webqa::webqa_password_clear,
+            run::webqa::webqa_start,
+            run::webqa::webqa_overview,
+            run::webqa::webqa_release_open,
+            run::webqa::webqa_approve,
+            run::webqa::webqa_apply,
             run::memory_status,
             run::read_memory_file,
             clickup::commands::clickup_token_status,

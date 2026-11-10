@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { FAKE_MARKER, fakeAnswer, installFakeBackend } from "./install";
+import { FAKE_BANNER, FAKE_MARKER, fakeAnswer, installFakeBackend } from "./install";
 
 type Internals = {
   invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -80,5 +80,45 @@ describe("the faked backend", () => {
     const target = {} as Window & { __DCV2_FAKE__?: string };
     installFakeBackend(target);
     expect(target.__DCV2_FAKE__).toBe(FAKE_MARKER);
+  });
+});
+
+describe("the faked terminal and the Runs data", () => {
+  it("delivers a banner packet through the pty_open channel callback", async () => {
+    const internals = installed();
+    const seen: Array<{ message: { kind: string; data: string } }> = [];
+    const id = internals.transformCallback((p) => seen.push(p as never));
+    const pid = await internals.invoke("pty_open", { input: { id: "tab_1" }, onOutput: { id } });
+    expect(pid).toBe(1);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.message.kind).toBe("output");
+    expect(atob(seen[0]!.message.data)).toBe(FAKE_BANNER);
+    expect(await internals.invoke("pty_write", { id: "tab_1", data: "x" })).toBeNull();
+  });
+
+  it("answers dispatch_overview with the real shape: holders, a queue item and the cap", async () => {
+    const overview = (await installed().invoke("dispatch_overview")) as {
+      cap: number;
+      holders: unknown[];
+      queue: unknown[];
+      atCap: boolean;
+    };
+    expect(overview.holders).toHaveLength(1);
+    expect(overview.queue).toHaveLength(1);
+    expect(overview.cap).toBeGreaterThan(0);
+    expect(overview.atCap).toBe(false);
+  });
+
+  it("lists role tiles and earlier runs, and resume_run opens the run's tab", async () => {
+    const internals = installed();
+    const overview = (await internals.invoke("run_overview")) as { roles: unknown[]; runs: unknown[] };
+    expect(overview.roles.length).toBeGreaterThan(0);
+    expect(overview.runs.length).toBeGreaterThan(1);
+    expect(((await internals.invoke("get_app_state")) as { tabs: unknown[] }).tabs).toEqual([]);
+    const started = (await internals.invoke("resume_run", { windowId: "main", runDir: "/x" })) as { tab: { id: string } };
+    const after = (await internals.invoke("get_app_state")) as { activeTabId: string; tabs: Array<{ id: string }> };
+    expect(after.activeTabId).toBe(started.tab.id);
+    expect(after.tabs.map((t) => t.id)).toEqual([started.tab.id]);
   });
 });

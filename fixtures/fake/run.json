@@ -275,7 +275,7 @@
         },
         "gateStatus": {
           "kind": "review-only",
-          "text": "PASS \u2014 review only (no check exists)"
+          "text": "PASS — review only (no check exists)"
         },
         "id": "PR5",
         "note": null,
@@ -323,5 +323,236 @@
     ],
     "updatedAt": "2026-10-22T13:40:00Z",
     "waitingFor": "ship-approval"
-  }
+  },
+  "resume_run": {
+    "tab": {
+      "id": "tab_run",
+      "label": "Eagle-Eye · ws",
+      "customLabel": false,
+      "cwd": "/abs/ws",
+      "kind": "claude",
+      "folderStatus": "ok",
+      "hasSession": true,
+      "runDir": "/fake/runs/r-20261022-1304",
+      "role": "eagle-eye-resume",
+      "split": null,
+      "pendingStart": false
+    },
+    "runDir": "/fake/runs/r-20261022-1304",
+    "focused": false
+  },
+  "set_repo_setup": {
+    "setup": "npm install",
+    "copyFiles": [
+      ".env"
+    ],
+    "liveTests": false,
+    "receipt": true,
+    "qa": null
+  },
+  "run_timeline": {
+    "lanes": [
+      {
+        "id": "orch",
+        "label": "Orchestrator",
+        "description": null,
+        "state": "finished",
+        "startMs": 1792660800000,
+        "finishMs": 1792664400000,
+        "costUsd": 0.9,
+        "session": 0,
+        "agentId": null
+      },
+      {
+        "id": "planner",
+        "label": "Planner",
+        "description": "plan.md",
+        "state": "finished",
+        "startMs": 1792660900000,
+        "finishMs": 1792661500000,
+        "costUsd": 0.3,
+        "session": 0,
+        "agentId": "a1"
+      },
+      {
+        "id": "dev1",
+        "label": "Developer",
+        "description": "PR1",
+        "state": "finished",
+        "startMs": 1792661600000,
+        "finishMs": 1792663000000,
+        "costUsd": 0.5,
+        "session": 0,
+        "agentId": "a2"
+      }
+    ],
+    "bands": [
+      {
+        "kind": "stage",
+        "name": "planning",
+        "startMs": 1792660800000,
+        "endMs": 1792661600000
+      },
+      {
+        "kind": "wait",
+        "name": "plan-approval",
+        "startMs": 1792661600000,
+        "endMs": 1792662000000
+      }
+    ],
+    "workMinutes": 31.5,
+    "waitMinutes": 4.0,
+    "costUsd": 1.7,
+    "startedMs": 1792660800000,
+    "endedMs": 1792664400000
+  },
+  "flight_session": {
+    "status": "ok",
+    "trace": "t1",
+    "policy": "metadata",
+    "agents": [
+      {
+        "id": "main",
+        "session": "s1",
+        "kind": "main",
+        "type": null,
+        "role": "orchestrator",
+        "pr": null,
+        "prDerived": null,
+        "description": null,
+        "spawnSpan": null,
+        "files": [],
+        "children": [],
+        "derived": {
+          "label": "exact:session",
+          "evidence": [
+            "e1"
+          ]
+        }
+      }
+    ],
+    "failures": [],
+    "page": {
+      "events": [
+        {
+          "schema": 1,
+          "id": "e1",
+          "trace": "t1",
+          "session": "s1",
+          "agent": {
+            "id": "main",
+            "parent": null,
+            "kind": "main",
+            "type": null,
+            "role": "orchestrator",
+            "pr": null
+          },
+          "provider": {
+            "name": "dcv2",
+            "version": null,
+            "native": "fake"
+          },
+          "kind": "session.start",
+          "at": "2026-10-22T13:04:00Z",
+          "span": null,
+          "status": "ok",
+          "name": "orchestrator",
+          "attrs": {},
+          "usage": null,
+          "content": {
+            "ref": {
+              "file": "orchestration.jsonl",
+              "offset": 0,
+              "len": 0,
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            },
+            "policy": "metadata",
+            "redactions": 0
+          },
+          "derived": null
+        },
+        {
+          "schema": 1,
+          "id": "e2",
+          "trace": "t1",
+          "session": "s1",
+          "agent": {
+            "id": "main",
+            "parent": null,
+            "kind": "main",
+            "type": null,
+            "role": "orchestrator",
+            "pr": null
+          },
+          "provider": {
+            "name": "dcv2",
+            "version": null,
+            "native": "fake"
+          },
+          "kind": "stage.change",
+          "at": "2026-10-22T13:04:05Z",
+          "span": null,
+          "status": "ok",
+          "name": "planning",
+          "attrs": {},
+          "usage": null,
+          "content": {
+            "ref": {
+              "file": "orchestration.jsonl",
+              "offset": 0,
+              "len": 0,
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            },
+            "policy": "metadata",
+            "redactions": 0
+          },
+          "derived": null
+        },
+        {
+          "schema": 1,
+          "id": "e3",
+          "trace": "t1",
+          "session": "s1",
+          "agent": {
+            "id": "main",
+            "parent": null,
+            "kind": "main",
+            "type": null,
+            "role": "orchestrator",
+            "pr": null
+          },
+          "provider": {
+            "name": "dcv2",
+            "version": null,
+            "native": "fake"
+          },
+          "kind": "check.end",
+          "at": "2026-10-22T13:30:00Z",
+          "span": null,
+          "status": "ok",
+          "name": "npm test",
+          "attrs": {},
+          "usage": null,
+          "content": {
+            "ref": {
+              "file": "orchestration.jsonl",
+              "offset": 0,
+              "len": 0,
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            },
+            "policy": "metadata",
+            "redactions": 0
+          },
+          "derived": null
+        }
+      ],
+      "nextCursor": null
+    },
+    "notices": [],
+    "phases": {},
+    "snapshot": null
+  },
+  "run_worktrees": [],
+  "pr_worktree_checks": [],
+  "observe_tabs": {}
 }

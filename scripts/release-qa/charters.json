@@ -1,0 +1,15 @@
+{
+  "comment": "The release charters of the installed-app test (docs/release-qa.md). Each row of webqa/results.md names one of these ids.",
+  "charters": [
+    {"id": "first-launch", "title": "First launch", "text": "Open DCTerminalv2 from /Applications for the first time. The window opens with the start screen and no error.", "mayChangeData": false},
+    {"id": "start-screen", "title": "Start screen", "text": "The start screen shows New run, the role tiles and the recent folders; the scratch repo is offered.", "mayChangeData": false},
+    {"id": "settings-roundtrip", "title": "Settings round-trip", "text": "Open Settings from the status bar gear: it takes focus, Escape closes it; change the font size, save, reopen and see the new value.", "mayChangeData": true},
+    {"id": "plain-tab", "title": "Plain terminal tab", "text": "Open a plain tab in the scratch repo, type a command and see its output; close the tab.", "mayChangeData": true},
+    {"id": "role-tab", "title": "Role tab", "text": "Start the Onboard role tile in the scratch repo: its tab opens with Claude and the role prompt.", "mayChangeData": true},
+    {"id": "eagle-eye-run", "title": "Tiny Eagle-Eye run", "text": "Start Eagle-Eye on the scratch repo with a one-line request; the run tab opens and the plan stage starts.", "mayChangeData": true},
+    {"id": "run-panel", "title": "Run panel", "text": "The run panel beside the terminal shows the stepper and the stage of the run.", "mayChangeData": false},
+    {"id": "trace", "title": "Trace", "text": "Open the Trace of the run: the sessions and events list; close it with Escape.", "mayChangeData": false},
+    {"id": "receipt", "title": "Receipt", "text": "Turn Receipts on for the scratch repo in Worktree setup and see the setting saved.", "mayChangeData": true},
+    {"id": "escape-everywhere", "title": "Escape closes every Page and Dialog", "text": "Open each Page (Run dashboard, Analytics, Trace search, Compare) and each Dialog (Runs, Settings, the palette) and press Escape: each closes at once.", "mayChangeData": false}
+  ]
+}

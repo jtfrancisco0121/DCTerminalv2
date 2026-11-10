@@ -396,3 +396,29 @@ describe("SettingsPage unsaved changes", () => {
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("SettingsPage focus", () => {
+  it("takes focus on open, closes on Escape and gives focus back to the opener", () => {
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    const onClose = vi.fn();
+    const { unmount } = render(<SettingsPage view={view()} onSaved={() => {}} onClose={onClose} />);
+    const page = screen.getByRole("dialog", { name: "Settings" });
+    expect(page.contains(document.activeElement)).toBe(true);
+    fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    unmount();
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it("asks before discarding when a field was edited, then Escape", () => {
+    const onClose = vi.fn();
+    render(<SettingsPage view={view()} onSaved={() => {}} onClose={onClose} />);
+    fireEvent.change(screen.getByRole("combobox", { name: "Capture policy of Personal" }), { target: { value: "off" } });
+    fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Discard unsaved changes?" })).toBeTruthy();
+  });
+});

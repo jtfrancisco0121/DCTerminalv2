@@ -19,6 +19,11 @@
 #   state.sh triage <run>                     triage run: check triage.md (every ticket in exactly one group, Needs you, Close or Out
 #                                             of scope; dependencies on earlier groups only); on a pass write triage.json and record
 #                                             status.json triage {digest, at}
+#   state.sh webqa <dir>                      web QA (meta.json mode web-qa), or a release QA folder (release.json and
+#                                             webqa-target.json): check webqa/results.md (a row for every charter, every
+#                                             screenshot present, every finding with a title, steps, expected and seen); on a pass
+#                                             write webqa.json (digest, rows, findings, comparison with the previous pass) and
+#                                             record status.json webqa {digest, at}
 #   state.sh qa-serve <run> <PR> start|stop   QA (repos.json qa on): start the PR's build detached on a free loopback port
 #                                             (prints `url=<url>` or `serve=failed reason=...`, exit 3), or stop it
 #   state.sh qa <run> <PR> <round>            read reviews/<PR>-qa<round>.md and record prs[].qa; pass -> reviewed, fail -> a
@@ -271,6 +276,44 @@ def triage_mode(run):
     return isinstance(m, dict) and m.get("mode") == "triage"
 
 
+def webqa_mode(run):
+    """meta.json mode == "web-qa" (written by the app at Start): a black-box test pass of a deployed web app at an allowlisted
+    URL. It builds nothing: no worktree, branch, PR, plan approval or shipping. Missing or any other value = not a web QA run."""
+    m = load_json(os.path.join(run, "meta.json"))
+    return isinstance(m, dict) and m.get("mode") == "web-qa"
+
+
+WEBQA_SECRET = "webqa-secret.json"
+
+
+def webqa_results_digest(run):
+    """sha256 over webqa/results.md and the sha256 of every screenshot it names; None without a results.md."""
+    import hashlib
+    text = read(os.path.join(run, "webqa", "results.md"))
+    if not text:
+        return None
+    h = hashlib.sha256(text.encode())
+    for name in sorted(set(re.findall(r"webqa/shots/[A-Za-z0-9][A-Za-z0-9._-]*\.png", text))):
+        try:
+            with open(os.path.join(run, name), "rb") as f:
+                h.update(b"\n" + name.encode() + b":" + hashlib.sha256(f.read()).hexdigest().encode())
+        except OSError:
+            h.update(b"\n" + name.encode() + b":missing")
+    return h.hexdigest()
+
+
+def webqa_current(run, doc):
+    """None when webqa/results.md (and its screenshots), webqa.json and status.json's recorded webqa digest all agree, else the reason."""
+    cur = webqa_results_digest(run)
+    if not cur:
+        return "webqa/results.md is missing: write it and run `state.sh webqa <run>`"
+    rec = doc.get("webqa") if isinstance(doc, dict) else None
+    wj = load_json(os.path.join(run, "webqa.json"))
+    if not isinstance(rec, dict) or rec.get("digest") != cur or not isinstance(wj, dict) or wj.get("digest") != cur:
+        return "webqa/results.md changed (or `state.sh webqa <run>` has not passed on it): run it again and make it pass"
+    return None
+
+
 def epic_refuse(run, what):
     if epic_mode(run):
         die(f"{what}: this is an epic-plan run (meta.json mode epic-plan): it only plans waves; no worktree, branch or PR is made. "
@@ -278,6 +321,8 @@ def epic_refuse(run, what):
     if triage_mode(run):
         die(f"{what}: this is a triage run (meta.json mode triage): it only proposes the next runs; no worktree, branch or PR is made. "
             "The proposal is approved in the app (Runs > Triage).")
+    if webqa_mode(run):
+        die(f"{what}: this is a web QA run (meta.json mode web-qa): it only tests a deployed web app; no worktree, branch or PR is made.")
 
 
 def eval_of(run):
@@ -567,6 +612,14 @@ def validate_status(doc, run):
             p.append(f"stage {stage} is not allowed in a triage run (it only proposes: planning, done, failed; there is no stop #1 or #2)")
         if doc.get("prs"):
             p.append("prs must stay empty in a triage run (no PR is made)")
+    wq = doc.get("webqa")
+    if wq is not None and not (isinstance(wq, dict) and isinstance(wq.get("digest"), str) and wq["digest"]):
+        p.append("webqa must be an object {digest, at} (written only by state.sh webqa)")
+    if webqa_mode(run):
+        if stage in ("plan-approval", "building", "ship-approval", "shipping") or doc.get("waitingFor"):
+            p.append(f"stage {stage} is not allowed in a web QA run (it only tests: planning, done, failed; there is no stop #1 or #2)")
+        if doc.get("prs"):
+            p.append("prs must stay empty in a web QA run (no PR is made)")
     if eval_of(run):
         if doc.get("waitingFor") == "ship-approval":
             p.append("an eval run never waits for ship approval: it ends at ship-approval with waitingFor null")
@@ -575,9 +628,9 @@ def validate_status(doc, run):
     paused = doc.get("paused")
     if paused is not None and not (isinstance(paused, dict) and isinstance(paused.get("reason"), str) and paused["reason"]):
         p.append("paused must be null or {reason: <one line>, at: <UTC>}")
-    if stage in POST_APPROVAL and not (plan or {}).get("approval") and not (stage == "done" and triage_mode(run)):
+    if stage in POST_APPROVAL and not (plan or {}).get("approval") and not (stage == "done" and (triage_mode(run) or webqa_mode(run))):
         p.append(f"stage {stage} needs the plan approved first: after the user's yes run `state.sh approve <run> plan user`")
-    if stage in ("shipping", "done") and not doc.get("shipApproval") and not (stage == "done" and (epic_mode(run) or triage_mode(run))):
+    if stage in ("shipping", "done") and not doc.get("shipApproval") and not (stage == "done" and (epic_mode(run) or triage_mode(run) or webqa_mode(run))):
         p.append(f"stage {stage} needs the ship approval first: after the user's yes run `state.sh approve <run> ship user`")
     if stage == "failed" and not doc.get("error"):
         p.append("stage failed needs error set (one line)")
@@ -686,6 +739,12 @@ def prepare_status(doc, old, trusted, run_dir=None):
             doc["triage"] = old["triage"]
         else:
             doc.pop("triage", None)
+        if doc.get("webqa") is not None and doc.get("webqa") != old.get("webqa"):
+            notes.append("note: status.json webqa is set only by `state.sh webqa`; kept the recorded value")
+        if old.get("webqa") is not None:
+            doc["webqa"] = old["webqa"]
+        else:
+            doc.pop("webqa", None)
     if isinstance(doc.get("plan"), dict):
         doc["plan"]["approved"] = bool(doc["plan"].get("approval"))
     doc.setdefault("shipApproval", None)
@@ -861,6 +920,10 @@ def gates(doc, run, old=None, plan_trace=True):
         why = triage_current(run, doc)
         if why:
             return f"NOT WRITTEN: triage run: stage done needs a current proposal: {why}", out
+    elif stage == "done" and webqa_mode(run):
+        why = webqa_current(run, doc)
+        if why:
+            return f"NOT WRITTEN: web QA run: stage done needs current, checked results: {why}", out
     elif stage == "done" and epic_mode(run):
         why = waves_current(run, doc)
         if why:
@@ -911,6 +974,13 @@ def write_status(run, doc, trusted=False, plan_trace=True):
     log_pr_states(run, old, doc)
     qa_sweep(run, doc)
     if doc.get("stage") in ("done", "failed"):
+        # The test account's password file does not outlive the pass (any mode; a removal problem is a note, never a refused write).
+        try:
+            os.remove(os.path.join(run, WEBQA_SECRET))
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"note: {WEBQA_SECRET} not removed ({type(e).__name__}): delete it by hand", file=sys.stderr)
         try:
             write_report(run)
             out.append(f"wrote {os.path.join(run, 'report.md')}")
@@ -1003,6 +1073,8 @@ def cmd_preflight(run, resume=False):
         print("mode=epic-plan")
     if triage_mode(run):
         print("mode=triage")
+    if webqa_mode(run):
+        print("mode=web-qa")
     ev = eval_of(run)
     if ev:
         print(f"eval={ev['index']}/{ev['of']} group={ev['group']}")
@@ -1017,6 +1089,8 @@ def cmd_preflight(run, resume=False):
 
 
 def cmd_approve(run, what, by):
+    if webqa_mode(run):
+        die("NOT APPROVED: a web QA run has no stop #1 or #2: it plans nothing and ships nothing; its findings are ticked in the app")
     if triage_mode(run):
         die("NOT APPROVED: a triage run has no stop #1 or #2: its proposal is approved in the app (Runs > Triage), and nothing in the run approves it")
     if what not in ("plan", "ship") or by not in ("user", "test", "eval"):
@@ -1478,6 +1552,185 @@ def cmd_triage(run):
                f"{len(suggestions)} suggested, {len(out_of_scope)} out of scope")
     print(f"triage=pass {len(groups)} group(s), {placed} ticket(s) grouped, {len(needs)} need you, {len(closes)} to close, "
           f"{len(suggestions)} suggested, {len(out_of_scope)} out of scope")
+
+
+WEBQA_RESULTS = ("PASS", "FAIL", "ERROR")
+WEBQA_SEVERITIES = ("low", "medium", "high")
+WEBQA_SHOT = re.compile(r"^webqa/shots/[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.png$")
+WEBQA_MAX_FINDINGS = 50
+WEBQA_FIELD = 2000
+
+
+def webqa_key(title):
+    """A finding's key across passes: its title lower-cased, with whitespace collapsed."""
+    return " ".join(str(title).lower().split())
+
+
+def webqa_shot_problem(run, rel):
+    """None when `rel` (webqa/shots/<name>.png) is a real file of at most 5 MB inside the run, else the reason."""
+    if not WEBQA_SHOT.match(rel):
+        return f"{rel!r} is not webqa/shots/<name>.png"
+    path = os.path.join(run, rel)
+    try:
+        if os.path.islink(path) or not os.path.isfile(path):
+            return f"screenshot {rel} is missing"
+        if os.path.getsize(path) > 5 * 1024 * 1024:
+            return f"screenshot {rel} is over 5 MB"
+    except OSError:
+        return f"screenshot {rel} is missing"
+    return None
+
+
+def webqa_parse(run, charters, problems):
+    """Parse webqa/results.md into (overall, rows, findings); appends every problem found to `problems`."""
+    text = read(os.path.join(run, "webqa", "results.md"))
+    if not text.strip():
+        problems.append("webqa/results.md is missing or empty")
+        return None, [], []
+    lines = text.splitlines()
+    head = re.match(r"^WEBQA:\s*(pass|fail|error)\b", lines[0].strip(), re.I)
+    if not head:
+        problems.append("the first line of webqa/results.md must be `WEBQA: pass|fail|error`")
+    overall = head.group(1).lower() if head else None
+    split = next((i for i, l in enumerate(lines) if re.match(r"^##\s+Findings\s*$", l)), len(lines))
+    rows, seen = [], set()
+    for line in lines[1:split]:
+        if not line.strip() or line.lstrip().startswith(("#", ">")):
+            continue
+        m = re.match(r"^\s*(\S+)\s*\|\s*(PASS|FAIL|ERROR)\s*\|\s*(.*?)\s*\|\s*(\S+)\s*$", line)
+        if not m:
+            problems.append(f"row {line.strip()[:60]!r} is not `<charter id> | PASS|FAIL|ERROR | <reason> | webqa/shots/<name>.png`")
+            continue
+        cid, result, reason, shot = m.groups()
+        if cid not in charters:
+            problems.append(f"row for {cid}: not a charter of this pass")
+            continue
+        if cid in seen:
+            problems.append(f"charter {cid} has more than one row")
+            continue
+        seen.add(cid)
+        why = webqa_shot_problem(run, shot)
+        if why:
+            problems.append(f"{cid}: {why}")
+        rows.append({"charter": cid, "title": charters[cid], "result": result, "reason": reason[:WEBQA_FIELD], "shot": shot})
+    for cid in charters:
+        if cid not in seen:
+            problems.append(f"charter {cid} has no row")
+    findings = []
+    cur = None
+    for line in lines[split + 1:] if split < len(lines) else []:
+        h = re.match(r"^###\s*(.*?)\s*$", line)
+        if h:
+            cur = {"title": h.group(1), "severity": "medium", "steps": "", "expected": "", "seen": "", "shot": None, "_last": None}
+            findings.append(cur)
+            continue
+        if cur is None:
+            continue
+        f = re.match(r"^\s*(?:[-*]\s*)?(severity|steps|expected|seen|shot)\s*:\s*(.*?)\s*$", line, re.I)
+        if f:
+            cur["_last"] = f.group(1).lower()
+            cur[cur["_last"]] = f.group(2) if cur["_last"] != "shot" else (f.group(2) or None)
+        elif cur["_last"] in ("steps", "expected", "seen") and line.strip():
+            cur[cur["_last"]] = (cur[cur["_last"]] + "\n" + line.strip()).strip()
+    if len(findings) > WEBQA_MAX_FINDINGS:
+        problems.append(f"{len(findings)} findings: at most {WEBQA_MAX_FINDINGS} per pass")
+    keys = set()
+    for i, f in enumerate(findings, 1):
+        f.pop("_last", None)
+        label = f"finding {i}" + (f" ({f['title'][:40]})" if f["title"] else "")
+        if not f["title"]:
+            problems.append(f"finding {i} has no title (`### <title>`)")
+        for field in ("steps", "expected", "seen"):
+            if not f[field].strip():
+                problems.append(f"{label} has no `{field}:` line")
+            f[field] = f[field][:WEBQA_FIELD]
+        f["severity"] = f["severity"].lower()
+        if f["severity"] not in WEBQA_SEVERITIES:
+            problems.append(f"{label}: severity must be low, medium or high")
+        if f["shot"]:
+            why = webqa_shot_problem(run, f["shot"])
+            if why:
+                problems.append(f"{label}: {why}")
+        f["key"] = webqa_key(f["title"])
+        if f["key"] and f["key"] in keys:
+            problems.append(f"{label}: the title repeats an earlier finding")
+        keys.add(f["key"])
+        f["title"] = f["title"][:200]
+    if overall:
+        results = [r["result"] for r in rows]
+        want = "error" if "ERROR" in results else "fail" if "FAIL" in results else "pass"
+        if not any(p.startswith("charter ") and "no row" in p for p in problems) and overall != want:
+            problems.append(f"the first line says {overall} but the rows say {want}")
+    return overall, rows, findings
+
+
+def webqa_compare(previous, rows, findings):
+    """Mark each row and finding new / fixed / still-failing against the previous pass (None: unchanged, or a first pass)."""
+    if not isinstance(previous, dict):
+        return {"first": True, "rows": {}, "findings": {}, "fixedFindings": []}
+    prev_rows = {}
+    for r in previous.get("rows") or []:
+        if isinstance(r, dict) and isinstance(r.get("charter"), str):
+            prev_rows[r["charter"]] = r.get("result")
+    prev_findings = {webqa_key(k) for k in previous.get("findings") or [] if isinstance(k, str)}
+    row_marks = {}
+    for r in rows:
+        before = prev_rows.get(r["charter"])
+        if before is None:
+            mark = "new"
+        elif r["result"] == "PASS":
+            mark = "fixed" if before != "PASS" else None
+        else:
+            mark = "still-failing" if before != "PASS" else "new"
+        row_marks[r["charter"]] = mark
+    finding_marks = {f["key"]: ("still-failing" if f["key"] in prev_findings else "new") for f in findings}
+    fixed = sorted(k for k in prev_findings if k not in finding_marks)
+    return {"first": False, "rows": row_marks, "findings": finding_marks, "fixedFindings": fixed}
+
+
+def cmd_webqa(run):
+    """Check webqa/results.md (docs/run-folder.md, Web QA): a row for every charter, every screenshot present, every finding
+    with a title, steps, expected and seen. On a pass write webqa.json and, for a web QA run, record status.json webqa."""
+    run = os.path.abspath(run)
+    release = os.path.isfile(os.path.join(run, "release.json")) and os.path.isfile(os.path.join(run, "webqa-target.json"))
+    if not webqa_mode(run) and not release:
+        die("NOT WRITTEN: webqa is for a web QA run (meta.json mode web-qa) or a release QA folder (release.json and webqa-target.json)")
+    target = load_json(os.path.join(run, "webqa-target.json"))
+    charters_list = target.get("charters") if isinstance(target, dict) else None
+    if not isinstance(charters_list, list) or not charters_list:
+        die("NOT WRITTEN: webqa-target.json needs at least one charter")
+    charters = {}
+    for c in charters_list:
+        if isinstance(c, dict) and isinstance(c.get("id"), str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,60}", c["id"]):
+            charters[c["id"]] = str(c.get("title") or c["id"])[:200]
+    if len(charters) != len(charters_list):
+        die("NOT WRITTEN: webqa-target.json: every charter needs a unique id of letters, digits, dot, dash or underscore")
+    problems = []
+    overall, rows, findings = webqa_parse(run, charters, problems)
+    if problems:
+        more = f"; and {len(problems) - 12} more" if len(problems) > 12 else ""
+        die("NOT WRITTEN: webqa/results.md: " + "; ".join(problems[:12]) + more)
+    comparison = webqa_compare(target.get("previous"), rows, findings)
+    for r in rows:
+        r["comparison"] = comparison["rows"].get(r["charter"])
+    for f in findings:
+        f["comparison"] = comparison["findings"].get(f["key"])
+    digest = webqa_results_digest(run)
+    atomic_write(os.path.join(run, "webqa.json"), json.dumps(
+        {"schema": 1, "runId": os.path.basename(run), "createdAt": now(), "digest": digest, "result": overall,
+         "target": {"id": target.get("id"), "name": target.get("name")}, "rows": rows, "findings": findings,
+         "comparison": {"first": comparison["first"], "fixedFindings": comparison["fixedFindings"]}}, indent=2) + "\n")
+    if webqa_mode(run):
+        st = load_status(run)
+        st["webqa"] = {"digest": digest, "at": now()}
+        for m in write_status(run, st, trusted=True, plan_trace=False):
+            print(m)
+        append_log(run, st.get("stage") or "planning",
+                   f"webqa checked: {overall}, {len(rows)} charter(s), {len(findings)} finding(s)")
+    print(f"webqa={overall} {len(rows)} charter(s), {len(findings)} finding(s)")
+    for r in rows:
+        if r["result"] != "PASS":
+            print(f"{r['result']} {r['charter']}: {r['reason'] or r['title']}")
 
 
 def cmd_base(repo, run=None):
@@ -3603,7 +3856,7 @@ def main(argv):
     cmd, args = (argv[0] if argv else ""), argv[1:]
     need = {"preflight": 1, "put": 1, "approve": 3, "plan": 2, "base": 1, "worktree": 4, "ship-check": 1, "ship-pr": 2, "writeback": 1, "testmode": 0,
             "gate": 4, "report": 1, "mode": 1, "draft-pr": 2, "push": 2, "post-review": 3, "comment": 4, "ready": 2, "bmad-size": 2, "bmad-init": 1, "bmad-check": 1,
-            "cleanup": 1, "waves": 1, "scope": 2, "request": 2, "request-wait": 2, "qa-serve": 3, "qa": 3, "triage": 1}
+            "cleanup": 1, "waves": 1, "scope": 2, "request": 2, "request-wait": 2, "qa-serve": 3, "qa": 3, "triage": 1, "webqa": 1}
     if cmd not in need or len(args) < need[cmd]:
         die("usage: see the header of state.sh", 2)
     if cmd == "preflight": cmd_preflight(args[0], "resume" in args[1:])
@@ -3612,6 +3865,7 @@ def main(argv):
     elif cmd == "approve": cmd_approve(args[0], args[1], args[2])
     elif cmd == "waves": cmd_waves(args[0])
     elif cmd == "triage": cmd_triage(args[0])
+    elif cmd == "webqa": cmd_webqa(args[0])
     elif cmd == "scope": cmd_scope(args[0], args[1])
     elif cmd == "plan": cmd_plan(args[0], args[1], args[2] if len(args) > 2 else None)
     elif cmd == "base": cmd_base(args[0], args[1] if len(args) > 1 else None)

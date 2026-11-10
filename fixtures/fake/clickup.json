@@ -1,4 +1,20 @@
 {
-  "clickup_token_status": {"saved": false},
-  "clickup_run_state": null
+  "clickup_token_status": {
+    "accountId": "default",
+    "saved": false,
+    "problem": null
+  },
+  "clickup_run_state": {
+    "hasTickets": false,
+    "ticketCount": 0,
+    "fetchedAt": null,
+    "ticketsProblem": null,
+    "pulled": [],
+    "updateFile": null,
+    "drafts": null,
+    "draftsVersion": null,
+    "writebackProblem": null,
+    "autoPost": null,
+    "merged": []
+  }
 }

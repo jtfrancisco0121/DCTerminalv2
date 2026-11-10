@@ -19,3 +19,8 @@ pub use tabs::{
     reopen_closed_tab, select_tab, set_split_ratio, set_tab_folder, split_tab,
 };
 pub use usage::get_claude_usage;
+// The types the faked-backend shape test (src/fake_shapes.rs) builds samples of.
+#[cfg(test)]
+pub(crate) use settings::{ClaudeAccountLogin, ResolvedClaudeAccount, SettingsView};
+#[cfg(test)]
+pub(crate) use tabs::{AppStateSnapshot, ClosedTabSummary, SplitSummary};

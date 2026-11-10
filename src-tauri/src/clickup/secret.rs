@@ -33,7 +33,7 @@ impl KeychainStore {
 
 /// What went wrong, by kind only. Some keyring errors carry the stored bytes
 /// (`BadEncoding`), so the error's own text is never used.
-fn keychain_error(err: &keyring::Error) -> String {
+pub(crate) fn keychain_error(err: &keyring::Error) -> String {
     use keyring::Error;
     let what = match err {
         Error::NoStorageAccess(_) => "DCTerminalv2 was not allowed to use it",

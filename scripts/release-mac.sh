@@ -11,8 +11,12 @@
 # disagree (package.json, src-tauri/tauri.conf.json, src-tauri/Cargo.toml; plugin/VERSION,
 # plugin/.claude-plugin/plugin.json), and a host that is not arm64 (the default DMG is labelled
 # aarch64) unless --universal. With --universal also: a missing Rust target (the message names the
-# `rustup target add` line). With --publish also: an existing tag v<version> (local or remote), no gh, and a HEAD
-# that is not the tip of the remote default branch.
+# `rustup target add` line). With --publish also: an existing tag v<version> (local or remote), no gh, a HEAD
+# that is not the tip of the remote default branch, and a release QA that does not pass for this version and HEAD:
+# scripts/release-qa/check.sh <version> re-validates the installed-app results in /Users/Shared/dcv2-release-qa/<version>/
+# (webqa/results.md and its screenshots, through state.sh webqa; an existing webqa.json is never trusted), release.json
+# and webqa-target.json must be yours and not group/world-writable, and release.json must name this version and HEAD
+# (docs/release-qa.md). The refusal names the failing charters.
 #
 # Order: build the app (and dcv2-hook), add dcv2-hook to Contents/MacOS when missing, sign ad hoc
 # (`codesign --force --deep --sign -`), verify the seal (`--verify --deep --strict`), make the DMG
@@ -143,6 +147,23 @@ require_head_is_remote_tip() {
   fi
 }
 
+# The release QA gate: the installed app was tried for this version and commit by a separate test user, and the check
+# passes now. check.sh re-runs the validator (state.sh webqa) on the results; this adds the version and commit binding.
+require_release_qa() { # <version>
+  local version="$1" qa_root="${DCV2_RELEASE_QA_ROOT:-/Users/Shared/dcv2-release-qa}" check out head rel_version rel_commit
+  check="$ROOT/scripts/release-qa/check.sh"
+  [ -f "$check" ] || die "--publish needs a release QA, and $check is missing."
+  if ! out="$(DCV2_RELEASE_QA_ROOT="$qa_root" bash "$check" "$version" 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    die "--publish needs a passing release QA for $version (see above; docs/release-qa.md). Nothing was built."
+  fi
+  rel_version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9A-Za-z.-]*\)".*/\1/p' "$qa_root/$version/release.json" | head -n 1)"
+  rel_commit="$(sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' "$qa_root/$version/release.json" | head -n 1)"
+  head="$(git -C "$ROOT" rev-parse HEAD)"
+  [ "$rel_version" = "$version" ] || die "release QA is for version ${rel_version:-none}, not $version."
+  [ "$rel_commit" = "$head" ] || die "release QA was run for commit ${rel_commit:-none}, but HEAD is $head. Run the release QA again for this commit."
+}
+
 require_publish_ready() { # <tag>
   local tag="$1"
   command -v gh >/dev/null 2>&1 || die "--publish needs gh (the GitHub CLI), and it is not installed."
@@ -153,6 +174,7 @@ require_publish_ready() { # <tag>
     die "the tag $tag already exists on origin."
   fi
   require_head_is_remote_tip
+  require_release_qa "${tag#v}"
 }
 
 # --- the bundle --------------------------------------------------------------------------------
@@ -263,7 +285,7 @@ main() {
     case "$arg" in
       --publish) publish=1 ;;
       --universal) universal=1 ;;
-      -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+      -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
       *) die "unknown option: $arg" ;;
     esac
   done
