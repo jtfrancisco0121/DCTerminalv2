@@ -61,6 +61,12 @@ describe("the Receipt section", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
+  it("shows the trace row as its button only, without the Markdown tail", () => {
+    render(<ReceiptSection pr={pr(rows)} runId={RUN} onOpenTrace={vi.fn()} />);
+    const li = screen.getByRole("button", { name: "Trace on the machine that ran it" }).closest("li")!;
+    expect(li.textContent).toBe("Trace on the machine that ran it");
+  });
+
   it("renders nothing for a backend that sends no receipt", () => {
     render(<ReceiptSection pr={pr(undefined)} runId={RUN} />);
     expect(document.querySelector("details")).toBeNull();
