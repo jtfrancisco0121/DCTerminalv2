@@ -636,6 +636,27 @@ describe("RunPanelView", () => {
   });
 });
 
+describe("the Receipt section in the run panel", () => {
+  it("follows the QA section of every PR", () => {
+    const withReceipt = view.prs.map((pr, at) => ({
+      ...pr,
+      receipt: at === 0 ? { state: "rows", rows: ["Gate: PASS"] } : { state: "off", rows: [] },
+      qa: at === 0 ? { round: 1, result: "pass", tried: 1, total: 1, failed: 0, path: null, criteria: [] } : undefined,
+    }));
+    renderPanel({ prs: withReceipt as unknown as RunView["prs"] });
+    for (const pr of view.prs) {
+      const block = screen.getByTestId(`pr-${pr.id}`);
+      const receipt = within(block).getByTestId(`receipt-${pr.id}`);
+      expect(within(block).getByLabelText(`Receipt for ${pr.id}`)).toBeTruthy();
+      const qa = block.querySelector(`[data-testid="qa-${pr.id}"]`);
+      if (pr.id === "PR1") {
+        expect(qa, "PR1 shows its QA result").toBeTruthy();
+        expect(qa!.compareDocumentPosition(receipt) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      }
+    }
+  });
+});
+
 describe("JanitorDialog", () => {
   it("lists clean and dirty worktrees and removes only the clean ones after a confirm", () => {
     const onRemove = vi.fn();

@@ -133,6 +133,32 @@ pub struct PrView {
     /// `prs[].qa` (written by `state.sh qa`) with the criterion rows of its QA file; None when QA did not run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub qa: Option<QaView>,
+    /// The `- ` rows of the PR body's Receipt block, read from `pr-bodies/<PR>.md` (state.sh builds them; the app only shows them).
+    pub receipt: ReceiptView,
+}
+
+/// A PR's Receipt for the run panel: `rows` (the block's bullet lines), `off` (the repo's receipts are off in repos.json),
+/// `none` (no body or no Receipt block yet) or `unreadable` (a link, an over-size body, a read error or a block without rows).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceiptView {
+    pub state: String,
+    pub rows: Vec<String>,
+}
+
+impl Default for ReceiptView {
+    fn default() -> Self {
+        Self::of("none")
+    }
+}
+
+impl ReceiptView {
+    fn of(state: &str) -> Self {
+        Self {
+            state: state.into(),
+            rows: Vec::new(),
+        }
+    }
 }
 
 /// One PR's QA result: the recorded verdict and, read app-side from `reviews/PR<n>-qa<r>.md`, its criterion rows.
@@ -370,6 +396,112 @@ fn parse_bmad(value: &Value) -> Option<BmadView> {
     })
 }
 
+/// A PR body is at most a few tens of KB (state.sh caps it); anything bigger is not read.
+const MAX_RECEIPT_BODY: u64 = 256 * 1024;
+const MAX_RECEIPT_ROWS: usize = 60;
+const MAX_RECEIPT_ROW: usize = 600;
+
+/// The Receipt reads only `PR<n>`: a stricter id than [`valid_pr_id`], checked before a path is built.
+fn receipt_pr_id(id: &str) -> bool {
+    id.strip_prefix("PR")
+        .is_some_and(|n| !n.is_empty() && n.len() <= 6 && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The bullet text of the last `## Receipt` block of a PR body: inside its `<details>`, the `- ` lines in order. state.sh
+/// writes the block last, right before the footer, so earlier text (plan or review words, a forged heading) never counts.
+/// `None`: no Receipt block. `Some(vec![])`: a block with no rows.
+fn receipt_rows(body: &str) -> Option<Vec<String>> {
+    let lines: Vec<&str> = body.lines().collect();
+    let start = lines.iter().rposition(|l| l.trim_end() == "## Receipt")?;
+    let mut in_details = false;
+    let mut saw_details = false;
+    let mut rows = Vec::new();
+    for line in &lines[start + 1..] {
+        if line.starts_with("## ") {
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.starts_with("<details") {
+            in_details = true;
+            saw_details = true;
+        } else if trimmed == "</details>" {
+            in_details = false;
+        } else if in_details {
+            if let Some(text) = line.strip_prefix("- ") {
+                if rows.len() < MAX_RECEIPT_ROWS {
+                    rows.push(text.trim_end().chars().take(MAX_RECEIPT_ROW).collect());
+                }
+            }
+        }
+    }
+    saw_details.then_some(rows)
+}
+
+/// `pr-bodies/<PR id>.md` read without following a link: the id is `PR<n>`, the folder and the file are regular (never links),
+/// the file is opened with O_NOFOLLOW and its opened metadata checked again, and the size is capped.
+fn read_pr_body(run_dir: &Path, pr_id: &str) -> Result<Option<String>, ()> {
+    use std::io::Read;
+    if !receipt_pr_id(pr_id) {
+        return Err(());
+    }
+    let dir = run_dir.join("pr-bodies");
+    match std::fs::symlink_metadata(&dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+        Ok(m) if m.file_type().is_symlink() || !m.is_dir() => return Err(()),
+        Ok(_) => {}
+    }
+    let file = dir.join(format!("{pr_id}.md"));
+    match std::fs::symlink_metadata(&file) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+        Ok(m) if m.file_type().is_symlink() || !m.is_file() || m.len() > MAX_RECEIPT_BODY => {
+            return Err(())
+        }
+        Ok(_) => {}
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    let handle = opts.open(&file).map_err(|_| ())?;
+    let meta = handle.metadata().map_err(|_| ())?;
+    if !meta.is_file() || meta.len() > MAX_RECEIPT_BODY {
+        return Err(());
+    }
+    let mut bytes = Vec::new();
+    handle
+        .take(MAX_RECEIPT_BODY + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ())?;
+    if bytes.len() as u64 > MAX_RECEIPT_BODY {
+        return Err(());
+    }
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+/// What the Receipt section of one PR shows. `on`: the PR's repo has `receipt: true` in repos.json.
+pub fn read_receipt(run_dir: &Path, pr_id: &str, on: bool) -> ReceiptView {
+    if !on {
+        return ReceiptView::of("off");
+    }
+    match read_pr_body(run_dir, pr_id) {
+        Err(()) => ReceiptView::of("unreadable"),
+        Ok(None) => ReceiptView::of("none"),
+        Ok(Some(body)) => match receipt_rows(&body) {
+            None => ReceiptView::of("none"),
+            Some(rows) if rows.is_empty() => ReceiptView::of("unreadable"),
+            Some(rows) => ReceiptView {
+                state: "rows".into(),
+                rows,
+            },
+        },
+    }
+}
+
 fn parse_pr(pr: &Value, index: usize) -> PrView {
     let stories = obj(pr, "stories");
     let check = obj(pr, "check");
@@ -578,6 +710,20 @@ pub fn repo_checks(run_dir: &Path) -> std::collections::BTreeMap<PathBuf, Option
         .collect()
 }
 
+/// repos.json `receipt` by canonical repo path: whether the repo opted in to a Receipt in its PR bodies.
+pub fn repo_receipts(run_dir: &Path) -> std::collections::BTreeMap<PathBuf, bool> {
+    read_json_value(&run_dir.join("repos.json"))
+        .and_then(|v| v.get("repos").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|repo| {
+            let path = s(repo, "path")?;
+            let on = repo.get("receipt").and_then(Value::as_bool) == Some(true);
+            Some((super::git::canonical(Path::new(&path)), on))
+        })
+        .collect()
+}
+
 /// The repos.json check for a PR: by its verified main checkout, else by
 /// status.json's `repoPath` (display only; nothing runs unverified).
 pub fn check_for(
@@ -698,6 +844,7 @@ pub fn read_run(run_dir: &Path, checks_running: bool) -> RunView {
     let checks = read_app_checks(run_dir);
     let github = super::github::read_github(run_dir);
     let repo_checks = repo_checks(run_dir);
+    let repo_receipts = repo_receipts(run_dir);
     for pr in &mut view.prs {
         pr.gate = read_gate(run_dir, &pr.id);
         if let Some(qa) = pr.qa.as_mut() {
@@ -735,6 +882,17 @@ pub fn read_run(run_dir: &Path, checks_running: bool) -> RunView {
             pr.repo_path.as_deref(),
         );
         pr.check_known = pr.app_command.is_some();
+        let receipt_on = verified
+            .as_ref()
+            .map(|(_, main)| super::git::canonical(main))
+            .or_else(|| {
+                pr.repo_path
+                    .as_deref()
+                    .map(|p| super::git::canonical(Path::new(p)))
+            })
+            .and_then(|key| repo_receipts.get(&key).copied())
+            .unwrap_or(false);
+        pr.receipt = read_receipt(run_dir, &pr.id, receipt_on);
         let (head, clean) = verified
             .as_ref()
             .map(|(wt, _)| worktree_state(wt))
@@ -1266,5 +1424,173 @@ mod fixture_tests {
             kinds,
             ["claimed", "claimed", "unreadable", "none", "review-only"]
         );
+    }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+    use crate::test_support::TempDir;
+    use serde_json::json;
+
+    /// A PR body laid out like state.sh's `receipt_block`: the sections, then `## Receipt`, its `<details>` block, the footer.
+    fn body_with_receipt(rows: &[&str]) -> String {
+        let bullets = rows
+            .iter()
+            .map(|r| format!("- {r}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            "## Why\n\nBecause.\n\n## Verification\n\n- Check: pass\n\n## Receipt\n\n<details>\n<summary>Eagle-Eye receipt</summary>\n\n{bullets}\n\n</details>\n\nPlan: Eagle-Eye run r-1\n"
+        )
+    }
+
+    fn write_body(dir: &TempDir, pr: &str, text: &str) {
+        std::fs::create_dir_all(dir.join("pr-bodies")).unwrap();
+        std::fs::write(dir.join(format!("pr-bodies/{pr}.md")), text).unwrap();
+    }
+
+    const RECEIPT_ROWS: [&str; 4] = [
+        "Agent implementer (for the whole run, 2 PRs, as of 2026-11-10T10:00:00Z): 2 run(s), 6.5 min active",
+        "Minutes (whole run): 12.0 active, 3.0 waiting",
+        "Check: `npm run check` passed at abc1234",
+        "Trace on the machine that ran it: [dcterminalv2://run/r-1](dcterminalv2://run/r-1) (`dcterminalv2://run/r-1`)",
+    ];
+
+    #[test]
+    fn receipt_rows_are_the_bullet_lines_of_the_body_row_for_row() {
+        let dir = TempDir::new("status_receipt_rows");
+        write_body(&dir, "PR1", &body_with_receipt(&RECEIPT_ROWS));
+        let view = read_receipt(dir.path(), "PR1", true);
+        assert_eq!(view.state, "rows");
+        assert_eq!(view.rows, RECEIPT_ROWS.to_vec());
+    }
+
+    #[test]
+    fn receipts_off_for_a_repo_without_the_flag_none_without_a_body_or_a_block() {
+        let dir = TempDir::new("status_receipt_states");
+        write_body(&dir, "PR1", &body_with_receipt(&RECEIPT_ROWS));
+        assert_eq!(read_receipt(dir.path(), "PR1", false).state, "off");
+        assert_eq!(read_receipt(dir.path(), "PR2", true).state, "none");
+        write_body(
+            &dir,
+            "PR3",
+            "## Why\n\nNo receipt here.\n\nPlan: Eagle-Eye run r-1\n",
+        );
+        let none = read_receipt(dir.path(), "PR3", true);
+        assert_eq!((none.state.as_str(), none.rows.len()), ("none", 0));
+        let empty = TempDir::new("status_receipt_nodir");
+        assert_eq!(read_receipt(empty.path(), "PR1", true).state, "none");
+    }
+
+    #[test]
+    fn a_block_with_details_but_no_rows_is_unreadable() {
+        let dir = TempDir::new("status_receipt_norows");
+        write_body(&dir, "PR1", &body_with_receipt(&[]));
+        assert_eq!(read_receipt(dir.path(), "PR1", true).state, "unreadable");
+    }
+
+    #[test]
+    fn an_over_size_body_is_unreadable() {
+        let dir = TempDir::new("status_receipt_big");
+        let mut text = body_with_receipt(&RECEIPT_ROWS);
+        text.push_str(&"x".repeat(MAX_RECEIPT_BODY as usize));
+        write_body(&dir, "PR1", &text);
+        assert_eq!(read_receipt(dir.path(), "PR1", true).state, "unreadable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_body_or_folder_is_unreadable_and_never_followed() {
+        let dir = TempDir::new("status_receipt_link");
+        let outside = TempDir::new("status_receipt_outside");
+        std::fs::write(outside.join("secret.md"), body_with_receipt(&["leaked"])).unwrap();
+        std::fs::create_dir_all(dir.join("pr-bodies")).unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.md"), dir.join("pr-bodies/PR1.md"))
+            .unwrap();
+        let view = read_receipt(dir.path(), "PR1", true);
+        assert_eq!((view.state.as_str(), view.rows.len()), ("unreadable", 0));
+        // The folder itself a link.
+        let linked = TempDir::new("status_receipt_linkdir");
+        std::fs::write(outside.join("PR1.md"), body_with_receipt(&["leaked"])).unwrap();
+        std::os::unix::fs::symlink(outside.path(), linked.join("pr-bodies")).unwrap();
+        assert_eq!(read_receipt(linked.path(), "PR1", true).state, "unreadable");
+    }
+
+    #[test]
+    fn a_bad_pr_id_never_leaves_the_run_folder() {
+        let dir = TempDir::new("status_receipt_badid");
+        let parent = dir.join("..");
+        std::fs::write(
+            parent.join("outside-receipt.md"),
+            body_with_receipt(&["leaked"]),
+        )
+        .unwrap();
+        for id in [
+            "../../outside-receipt",
+            "../outside-receipt",
+            "PR1/../../x",
+            "pr1",
+            "PR",
+            "PRx",
+            "",
+        ] {
+            let view = read_receipt(dir.path(), id, true);
+            assert_eq!(
+                (view.state.as_str(), view.rows.len()),
+                ("unreadable", 0),
+                "{id}"
+            );
+        }
+        std::fs::remove_file(parent.join("outside-receipt.md")).unwrap();
+    }
+
+    #[test]
+    fn the_last_receipt_block_counts_not_a_forged_one_in_story_text() {
+        let dir = TempDir::new("status_receipt_forged");
+        let forged =
+            "## Why\n\n## Receipt\n\n<details>\n\n- Agent evil: 99 run(s)\n\n</details>\n\n";
+        let text = format!("{forged}{}", body_with_receipt(&RECEIPT_ROWS));
+        write_body(&dir, "PR1", &text);
+        assert_eq!(
+            read_receipt(dir.path(), "PR1", true).rows,
+            RECEIPT_ROWS.to_vec()
+        );
+    }
+
+    #[test]
+    fn read_run_gives_each_pr_its_receipt_by_its_repos_flag() {
+        let dir = TempDir::new("status_receipt_run");
+        let on = TempDir::new("status_receipt_repo_on");
+        let off = TempDir::new("status_receipt_repo_off");
+        std::fs::write(
+            dir.join("status.json"),
+            json!({"schema": 1, "prs": [
+                {"id": "PR1", "repoPath": on.path().display().to_string()},
+                {"id": "PR2", "repoPath": off.path().display().to_string()},
+                {"id": "PR3"},
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("repos.json"),
+            json!({"repos": [
+                {"path": on.path().display().to_string(), "receipt": true},
+                {"path": off.path().display().to_string(), "check": "npm test"},
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        write_body(&dir, "PR1", &body_with_receipt(&RECEIPT_ROWS));
+        write_body(&dir, "PR2", &body_with_receipt(&RECEIPT_ROWS));
+        let view = read_run(dir.path(), false);
+        let states: Vec<&str> = view
+            .prs
+            .iter()
+            .map(|pr| pr.receipt.state.as_str())
+            .collect();
+        assert_eq!(states, ["rows", "off", "off"]);
+        assert_eq!(view.prs[0].receipt.rows, RECEIPT_ROWS.to_vec());
     }
 }

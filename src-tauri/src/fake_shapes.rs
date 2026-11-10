@@ -217,6 +217,10 @@ fn run_view() -> crate::run::status::RunView {
         ci_at: Some("2026-10-22T13:40:00Z".into()),
         ci_error: Some("e".into()),
         pr_state: Some("OPEN".into()),
+        receipt: ReceiptView {
+            state: "rows".into(),
+            rows: vec!["r".into()],
+        },
         qa: Some(QaView {
             round: Some(1),
             result: "pass".into(),

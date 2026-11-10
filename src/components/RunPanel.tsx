@@ -47,6 +47,7 @@ import { ClickUpRunSection } from "../clickup/ClickUpRunSection";
 import { FleetTimeline } from "./FleetTimeline";
 import { Pill } from "./Pill";
 import { QaSection } from "./QaSection";
+import { ReceiptSection } from "./ReceiptSection";
 import { Stepper } from "./Stepper";
 import { checkLogPr, readCheckLog } from "../run/observe";
 import { RUN_STATE_EVENT, usePushRefresh } from "../run/events";
@@ -89,6 +90,8 @@ type ViewProps = {
    * eval run and has no run mode (an epic-plan run builds nothing, so there is no task to repeat).
    */
   onEvaluate?: () => void;
+  /** Opens the Session Inspector on this run (the Receipt's trace-link row). */
+  onOpenTrace?: () => void;
 };
 
 type PrActionProps = Pick<ViewProps, "worktrees" | "onPrAction" | "onCopyBranch">;
@@ -233,7 +236,9 @@ function PrRow({
   onPrAction,
   onCopyBranch,
   onSlopCheck,
-}: { pr: PrView; runDir: string } & Pick<ViewProps, "onOpenFile" | "onOpenUrl" | "onSlopCheck"> & PrActionProps) {
+  runId,
+  onOpenTrace,
+}: { pr: PrView; runDir: string; runId: string } & Pick<ViewProps, "onOpenFile" | "onOpenUrl" | "onSlopCheck" | "onOpenTrace"> & PrActionProps) {
   const wt = worktrees?.[pr.id];
   const why = !wt ? "Checking the worktree…" : wt.verified ? undefined : (wt.reason ?? "The worktree is not verified.");
   const act = (action: PrWorktreeAction, label: string) => (
@@ -315,6 +320,7 @@ function PrRow({
         </Pill>
       )}
       <QaSection runDir={runDir} pr={pr} />
+      <ReceiptSection pr={pr} runId={runId} onOpenTrace={onOpenTrace} />
       {pr.note && <div className="run-pr-note">{pr.note}</div>}
       <div className="run-pr-actions" data-testid={`actions-${pr.id}`}>
         {pr.branch && (
@@ -405,7 +411,7 @@ function BmadSection({
 }
 
 /** The progress panel for one run, drawn from a read of its folder. */
-export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch, onSlopCheck, away, onEvaluate }: ViewProps) {
+export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch, onSlopCheck, away, onEvaluate, onOpenTrace }: ViewProps) {
   const timeline = groupTimeline(view.timeline, 30, view.eval);
   return (
     <aside className="run-panel" aria-label="Run progress">
@@ -471,6 +477,8 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
               key={pr.id}
               pr={pr}
               runDir={view.runDir}
+              runId={view.runId}
+              onOpenTrace={onOpenTrace}
               onOpenFile={onOpenFile}
               onOpenUrl={onOpenUrl}
               worktrees={worktrees}
@@ -793,6 +801,7 @@ export function RunPanel({
         onCopyBranch={copyBranch}
         onSlopCheck={(prId) => slopCheck(runDir, prId)}
         onEvaluate={onEvaluate ? () => onEvaluate(runDir) : undefined}
+        onOpenTrace={onOpenTrace ? () => onOpenTrace() : undefined}
         away={away}
         session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} onOpenTrace={onOpenTrace ? () => onOpenTrace() : undefined} /> : undefined}
         extra={

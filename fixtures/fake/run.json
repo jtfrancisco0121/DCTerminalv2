@@ -94,6 +94,21 @@
               "image": "S1.2"
             }
           ]
+        },
+        "receipt": {
+          "state": "rows",
+          "rows": [
+            "Agent planner (for the whole run, 5 PRs, as of 2026-10-22T13:39:30Z): 1 run(s), 10.0 min active",
+            "Agent implementer (for the whole run, 5 PRs, as of 2026-10-22T13:39:30Z): 2 run(s), 23.0 min active",
+            "Time (for the whole run, 5 PRs, as of 2026-10-22T13:39:30Z): 32.0 min active, 4.0 min waiting",
+            "Tokens (for the whole run, 5 PRs, as of 2026-10-22T13:39:30Z): input 12,400, output 31,200, cache write 88,000, cache read 402,000",
+            "App re-run of the check `npm test`: pass at abc1234",
+            "Review: 1 round(s), final verdict APPROVED",
+            "Gate: PASS",
+            "QA: pass, 2 of 2 criteria tried",
+            "Guard blocks (whole run): none",
+            "Trace on the machine that ran it: [dcterminalv2://run/r-20261022-1304](dcterminalv2://run/r-20261022-1304) (`dcterminalv2://run/r-20261022-1304`)"
+          ]
         }
       },
       {
@@ -151,7 +166,11 @@
         "storiesTotal": 1,
         "title": "Use multiply() in the CLI",
         "worktree": null,
-        "worktreeClean": null
+        "worktreeClean": null,
+        "receipt": {
+          "state": "off",
+          "rows": []
+        }
       },
       {
         "appCheck": null,
@@ -197,7 +216,11 @@
         "storiesTotal": 1,
         "title": "Docs",
         "worktree": null,
-        "worktreeClean": null
+        "worktreeClean": null,
+        "receipt": {
+          "state": "off",
+          "rows": []
+        }
       },
       {
         "appCheck": null,
@@ -247,7 +270,11 @@
         "storiesTotal": null,
         "title": "Opened one",
         "worktree": null,
-        "worktreeClean": null
+        "worktreeClean": null,
+        "receipt": {
+          "state": "none",
+          "rows": []
+        }
       },
       {
         "appCheck": null,
@@ -293,7 +320,11 @@
         "storiesTotal": 1,
         "title": "Notes",
         "worktree": null,
-        "worktreeClean": null
+        "worktreeClean": null,
+        "receipt": {
+          "state": "off",
+          "rows": []
+        }
       }
     ],
     "reviewMode": "local",

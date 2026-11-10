@@ -2521,6 +2521,20 @@
               "optional": true,
               "type": "object"
             },
+            "receipt": {
+              "fields": {
+                "rows": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "state": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
             "repo": {
               "type": "string"
             },

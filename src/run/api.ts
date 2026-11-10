@@ -169,7 +169,15 @@ export type PrView = {
   prState?: string | null;
   /** QA (trying the PR in the app): the recorded result and its criterion rows; null/absent when QA did not run. */
   qa?: QaView | null;
+  /**
+   * The Receipt of the PR body (state.sh builds it, `read_run` parses its `- ` rows). Missing on an older backend: the section
+   * then shows nothing.
+   */
+  receipt?: ReceiptView;
 };
+
+/** `rows`: the Receipt's bullet lines; `off`: receipts are off for the repo; `none`: no Receipt in the body yet; `unreadable`. */
+export type ReceiptView = { state: "rows" | "off" | "none" | "unreadable"; rows: string[] };
 
 /** One criterion row of a PR's QA file; `image` is the screenshot's file stem for `runQaImage`. */
 export type QaCriterion = { id: string; result: "PASS" | "FAIL" | "ERROR" | string; text: string; image: string | null };
