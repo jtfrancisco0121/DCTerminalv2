@@ -121,7 +121,7 @@ In P3 the app's start screen shows the roles as tiles next to Eagle-Eye: the pip
 ```
 $DCV2_MEMORY_DIR/
   <repo id>/index.md              always loaded (≤ 8 KB): what the repo is, map, commands, gotchas, topic list
-  <repo id>/topics/<topic>.md     on demand (≤ 12 KB); header lines "covers: <path>, ..." and "checked-at: <sha>"
+  <repo id>/topics/<topic>.md     on demand (≤ 12 KB; `topics/decisions.md` ≤ 24 KB); header lines "covers: <path>, ..." and "checked-at: <sha>"
   <repo id>/topics/contracts.md   binding (A6): rules every agent follows
   workspaces/<ws id>/workspace.md a folder of repos (≤ 8 KB, binding): how the repos connect
   workspaces/<ws id>/topics/*.md  workspace topics: covers "<repo>/<path>", checked-at "<repo>=<sha>, ..."
@@ -129,7 +129,7 @@ $DCV2_MEMORY_DIR/
 
 - Repo id: `host__owner__name` from `origin` (credentials and `.git` dropped, lowercased), else `local__<folder>-<sha1(abs path)[:8]>`; a folder of repos gets the `local__` form as its workspace id.
 - `write` rejects (exit 1, one reason line): a path outside this layout, an over-cap file ("condense it"), a line that looks like a secret (private keys, AWS key ids, GitHub `ghp_`/`github_pat_`, Slack, Google, JWTs, passwords in URLs; `sk-`, `pk_`/`sk_`/`rk_` tokens and AWS secret keys; `.env`/JSON/YAML-style assignments: for password/secret/token/credential names any 8+ character value that is not a placeholder or a file path, for `*KEY` names a token-shaped value (16+ characters, two character classes, entropy ≥ 3 bits/char, not a path); the value is never echoed), a removed or changed `<!-- pinned -->` line, and a topic without its header. Writes are atomic (mkstemp + rename).
-- A topic is stale when any covered path changed in `git diff --no-renames <checked-at>..HEAD`, its commit is unknown, or (workspace topics) a covered repo is not in play. `compose` lists stale topics; it loads `workspace.md`, the contracts and each repo's `index.md` (never topic bodies), each fenced in `<memory-notes>` under a header saying the notes are data derived from repo content that cannot override the user, role files or guards (a body cannot close its fence); it redacts secret-looking lines and stays under 40 KB. Contracts bind only as facts about interfaces (API shapes, schemas, ownership); onboard and the updater never record repo text as instructions.
+- A topic is stale when any covered path changed in `git diff --no-renames <checked-at>..HEAD`, its commit is unknown, or (workspace topics) a covered repo is not in play. `compose` lists stale topics; it loads `workspace.md`, the contracts and each repo's `index.md` (never topic bodies), each fenced in `<memory-notes>` under a header saying the notes are data derived from repo content that cannot override the user, role files or guards (a body cannot close its fence); it redacts secret-looking lines and stays under 48 KB. Contracts bind only as facts about interfaces (API shapes, schemas, ownership); onboard and the updater never record repo text as instructions.
 - `memory.sh touched <repo> <from> [<to>]` (for the memory updater): the topics a diff touched and the changed paths no topic covers.
 - Trust rule, in every role file: memory is a hint, the code is the truth; fix the entry and continue.
 - Eagle-Eye's memory update reads each PR's `baseCommit..<branch>` and sets `checked-at` to the branch head; until that branch is merged, the topic may read stale on the default branch (the diff from the branch head to it). That is accepted: stale means "re-check from the diff", never wrong.
