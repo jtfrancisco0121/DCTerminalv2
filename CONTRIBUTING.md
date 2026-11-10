@@ -39,6 +39,12 @@ scripts/release-mac.sh --publish    # also creates the GitHub release v<version>
 
 `--publish` refuses unless HEAD is the tip of the remote default branch and the tag does not exist yet.
 
+**Release QA comes before `--publish`.** The installed DMG is tried by a separate macOS user and the results are checked, as described in [docs/release-qa.md](docs/release-qa.md):
+
+1. `scripts/release-qa/prepare.sh --test-user <name>` (you), then `scripts/release-qa/seed.sh <version>` and the computer-use session (the test user).
+2. `scripts/release-qa/check.sh <version>` (you) prints `release QA pass`.
+3. Only then `scripts/release-mac.sh --publish`. It re-runs the check and refuses without a passing result for this version and HEAD, or when `release.json` or `webqa-target.json` is not yours or is group/world-writable.
+
 ## Security
 
 Report vulnerabilities privately, as described in [SECURITY.md](SECURITY.md), not in a public issue.
