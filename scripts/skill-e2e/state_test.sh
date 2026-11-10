@@ -1644,6 +1644,101 @@ expect 0 "triage: a forged triage field is not kept" tput < <(tstatus done | pyt
 python3 -c 'import json,sys; sys.exit(1 if json.load(open(sys.argv[1]))["triage"]["digest"]=="forged" else 0)' "$T/status.json" && ok "  the forged digest was not kept" || bad "  forged triage digest kept"
 unset DCV2_RUN_DIR
 
+echo "# web QA mode: webqa/results.md, webqa.json, comparison, refusals, done and the secret file (S6)"
+W="$d/runs/r-wq"; mkdir -p "$W/webqa/shots" "$W/webqa/steps"; export DCV2_RUN_DIR="$W"
+printf 'folder: %s\n' "$WS" > "$W/request.md"
+printf '{"schema":1,"mode":"web-qa","bmad":{"mode":"off"}}\n' > "$W/meta.json"
+wtarget() { python3 - "$W/webqa-target.json" "$1" <<'PY'
+import json, sys
+prev = None if sys.argv[2] == "first" else {"rows": [{"charter": "A", "result": "FAIL"}, {"charter": "B", "result": "PASS"}], "findings": ["login button hidden"]}
+json.dump({"schema": 1, "id": "t1", "name": "Staging", "allowlist": ["https://app.example.com/"],
+           "charters": [{"id": "A", "title": "Sign in", "text": "Sign in and see the home page", "mayChangeData": False},
+                        {"id": "B", "title": "Search", "text": "Search for a word", "mayChangeData": False}],
+           "clickupListId": None, "previous": prev}, open(sys.argv[1], "w"))
+PY
+}
+wtarget prev
+printf '{"username":"u","password":"p"}\n' > "$W/webqa-secret.json"
+printf 'png' > "$W/webqa/shots/a.png"; printf 'png' > "$W/webqa/shots/b.png"
+wstatus() { python3 - "$W" "$1" <<'PY'
+import json, os, sys
+run, stage = sys.argv[1:3]
+print(json.dumps({"schema": 1, "runId": os.path.basename(run), "stage": stage, "waitingFor": None, "folder": "/x", "plan": None,
+                  "prs": [], "ship": None, "writeback": None, "error": "boom" if stage == "failed" else None}))
+PY
+}
+wput() { bash "$STATE" put "$W/status.json"; }
+wres() { printf '%s\n' "$@" > "$W/webqa/results.md"; }
+FIND1=("## Findings" "### Login   Button hidden" "- severity: high" "- steps: open /login" "- expected: a Sign in button" "- seen: no button" "- shot: webqa/shots/a.png")
+expect 0 "webqa: put planning" wput < <(wstatus planning)
+expect 1 "webqa: refused with no results.md" bash "$STATE" webqa "$W"
+wres "WEBQA: fail" "A | PASS | signed in | webqa/shots/a.png"
+expect 1 "webqa: a missing charter row is refused" bash "$STATE" webqa "$W"
+has "  names the charter" "charter B has no row"
+wres "WEBQA: fail" "A | PASS | signed in | webqa/shots/a.png" "B | FAIL | no results | webqa/shots/gone.png"
+expect 1 "webqa: a missing screenshot is refused" bash "$STATE" webqa "$W"
+has "  names the screenshot" "webqa/shots/gone.png is missing"
+wres "WEBQA: fail" "A | PASS | ok | webqa/shots/a.png" "B | FAIL | no results | webqa/shots/b.png" "## Findings" "###" "- steps: s" "- expected: e" "- seen: x"
+expect 1 "webqa: a finding without a title is refused" bash "$STATE" webqa "$W"
+has "  says title" "has no title"
+wres "WEBQA: fail" "A | PASS | ok | webqa/shots/a.png" "B | FAIL | no results | webqa/shots/b.png" "## Findings" "### No steps" "- expected: e" "- seen: x"
+expect 1 "webqa: a finding without steps is refused" bash "$STATE" webqa "$W"
+has "  says steps" "no \`steps:\` line"
+wres "WEBQA: pass" "A | PASS | ok | webqa/shots/a.png" "B | FAIL | no results | webqa/shots/b.png"
+expect 1 "webqa: a first line that disagrees with the rows is refused" bash "$STATE" webqa "$W"
+wres "WEBQA: fail" "A | PASS | ok | webqa/shots/a.png" "B | FAIL | no results | webqa/shots/b.png" "C | PASS | extra | webqa/shots/b.png"
+expect 1 "webqa: a row for an unknown charter is refused" bash "$STATE" webqa "$W"
+[[ ! -e "$W/webqa.json" ]] && ok "  no webqa.json after the refusals" || bad "  webqa.json written"
+wres "WEBQA: fail" "A | PASS | signed in | webqa/shots/a.png" "B | FAIL | the search box is empty | webqa/shots/b.png" "${FIND1[@]}" "### Brand new problem" "- steps: click Search" "- expected: results" "- seen: a spinner"
+expect 0 "webqa: a valid pass" bash "$STATE" webqa "$W"
+has "  counts" "webqa=fail 2 charter(s), 2 finding(s)"
+has "  names the failing charter" "FAIL B: the search box is empty"
+is "  webqa.json schema 1" "$W/webqa.json" schema 1
+is "  result" "$W/webqa.json" result '"fail"'
+is "  A was failing and passes now: fixed" "$W/webqa.json" rows.0.comparison '"fixed"'
+is "  B was passing and fails now: new" "$W/webqa.json" rows.1.comparison '"new"'
+is "  a finding with the same normalised title: still-failing" "$W/webqa.json" findings.0.comparison '"still-failing"'
+is "  a finding not seen before: new" "$W/webqa.json" findings.1.comparison '"new"'
+is "  the finding key is the normalised title" "$W/webqa.json" findings.0.key '"login button hidden"'
+is "  not a first pass" "$W/webqa.json" comparison.first 'false'
+python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["webqa"]["digest"] else 1)' "$W/status.json" && ok "  the run status records the webqa digest" || bad "  no webqa digest in the run status"
+wtarget first
+expect 0 "webqa: a first pass compares with nothing" bash "$STATE" webqa "$W"
+is "  first pass" "$W/webqa.json" comparison.first 'true'
+expect 1 "webqa: worktree refused" bash "$STATE" worktree "$W" "$R" PR1 "$BASE"
+has "  says web QA" "web QA run"
+for c in draft-pr ship-pr push ready; do expect 1 "webqa: $c refused" bash "$STATE" "$c" "$W" PR1; done
+expect 1 "webqa: stage building refused" wput < <(wstatus building)
+expect 1 "webqa: stage plan-approval refused" wput < <(wstatus plan-approval)
+expect 1 "webqa: approve plan refused" bash "$STATE" approve "$W" plan user
+expect 1 "webqa: a non-empty prs[] refused" wput < <(wstatus planning | python3 -c 'import json,sys; d=json.load(sys.stdin); d["prs"]=[{"id":"PR1","state":"pending"}]; print(json.dumps(d))')
+expect 0 "webqa: preflight prints the mode" bash "$STATE" preflight "$W"
+has "  mode=web-qa" "mode=web-qa"
+echo "x" >> "$W/webqa/results.md"
+expect 1 "webqa: done refused on a stale digest" wput < <(wstatus done)
+has "  says results changed" "webqa/results.md changed"
+[[ -e "$W/webqa-secret.json" ]] && ok "  the secret stays after a refused done" || bad "  the secret was removed by a refused write"
+sed '$d' "$W/webqa/results.md" > "$W/webqa/results.tmp" && mv "$W/webqa/results.tmp" "$W/webqa/results.md"
+expect 0 "webqa: done accepted with a current digest, no plan approval and no ship approval" wput < <(wstatus done)
+[[ ! -e "$W/webqa-secret.json" ]] && ok "  done removed webqa-secret.json" || bad "  webqa-secret.json is still there after done"
+printf '{"username":"u","password":"p"}\n' > "$W/webqa-secret.json"
+expect 0 "webqa: a forged webqa field is not kept" wput < <(wstatus done | python3 -c 'import json,sys; d=json.load(sys.stdin); d["webqa"]={"digest":"forged","at":"x"}; print(json.dumps(d))')
+python3 -c 'import json,sys; sys.exit(1 if json.load(open(sys.argv[1]))["webqa"]["digest"]=="forged" else 0)' "$W/status.json" && ok "  the forged digest was not kept" || bad "  forged webqa digest kept"
+[[ ! -e "$W/webqa-secret.json" ]] && ok "  a second done removes the secret again" || bad "  secret kept"
+printf '{"username":"u","password":"p"}\n' > "$W/webqa-secret.json"
+expect 0 "webqa: stage failed" wput < <(wstatus failed)
+[[ ! -e "$W/webqa-secret.json" ]] && ok "  failed removed webqa-secret.json" || bad "  webqa-secret.json is still there after failed"
+# A release QA folder (release.json and webqa-target.json): same results layout, no run status.
+RQ="$d/rq"; mkdir -p "$RQ/webqa/shots"; printf '{"version":"0.1.0"}\n' > "$RQ/release.json"
+cp "$W/webqa-target.json" "$RQ/webqa-target.json"; printf 'png' > "$RQ/webqa/shots/a.png"; printf 'png' > "$RQ/webqa/shots/b.png"
+printf '%s\n' "WEBQA: pass" "A | PASS | ok | webqa/shots/a.png" "B | PASS | ok | webqa/shots/b.png" > "$RQ/webqa/results.md"
+expect 0 "webqa: a release QA folder is accepted" bash "$STATE" webqa "$RQ"
+has "  pass" "webqa=pass 2 charter(s), 0 finding(s)"
+[[ -s "$RQ/webqa.json" ]] && ok "  webqa.json written in the release folder" || bad "  no webqa.json in the release folder"
+RN="$d/rn"; mkdir -p "$RN"; printf '{"mode":"triage"}\n' > "$RN/meta.json"
+expect 1 "webqa: a folder that is neither a web QA run nor a release folder is refused" bash "$STATE" webqa "$RN"
+unset DCV2_RUN_DIR
+
 echo "# QA: serve, verdict, gate and PR body (S5)"
 QW="$d/qw"; QR="$QW/qr"; QRUN="$d/runs/r-q"; mkdir -p "$QR" "$QRUN"
 git -C "$QR" init -q -b main; git -C "$QR" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
