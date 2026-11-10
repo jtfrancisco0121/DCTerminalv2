@@ -61,7 +61,10 @@ export function WebQaTargets({ targets, onSaved }: Props) {
             <li key={target.id} className="account-row webqa-target">
               <strong>{target.name}</strong>
               <span className="hint">
-                {target.allowlist.join(", ")} · {target.charters.length} charter{target.charters.length === 1 ? "" : "s"}
+                {target.allowlist.join(", ")} ·{" "}
+                {target.charters.length === 0
+                  ? "no charters: add one to test it"
+                  : `${target.charters.length} charter${target.charters.length === 1 ? "" : "s"}`}
                 {target.username ? ` · test account ${target.username}` : ""}
               </span>
               <span className="field-row">
@@ -143,6 +146,7 @@ function TargetForm({
   const [listId, setListId] = useState(initial.clickupListId ?? "");
   const [charters, setCharters] = useState<WebQaCharter[]>(byTitle(initial.charters));
   const [problem, setProblem] = useState<string | null>(null);
+  const [charterProblem, setCharterProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [password, setPassword] = useState("");
   const [pw, setPw] = useState<PasswordStatus | null>(null);
@@ -162,6 +166,8 @@ function TargetForm({
     if (bad) return setProblem(bad);
     if (!name.trim()) return setProblem("Give the target a name.");
     setProblem(null);
+    if (charters.length === 0) return setCharterProblem("Add at least one charter.");
+    setCharterProblem(null);
     setBusy(true);
     await onSave({ ...initial, name: name.trim(), allowlist: lines, username: username.trim(), clickupListId: listId.trim() || null, charters });
     setBusy(false);
@@ -236,6 +242,7 @@ function TargetForm({
         <input className="text-input" aria-label="ClickUp list id" value={listId} onChange={(e) => setListId(e.target.value)} />
       </label>
       <h3>Charters</h3>
+      {charterProblem && <InlineNotice tone="error">{charterProblem}</InlineNotice>}
       <ul className="account-list">
         {charters.map((charter, index) => (
           <li key={charter.id || `new-${index}`} className="account-row">
@@ -271,7 +278,7 @@ function TargetForm({
       <button
         type="button"
         className="secondary-button"
-        onClick={() => setCharters((rows) => [...rows, { id: "", title: "", text: "", mayChangeData: false }])}
+        onClick={() => (setCharterProblem(null), setCharters((rows) => [...rows, { id: "", title: "", text: "", mayChangeData: false }]))}
       >
         Add charter
       </button>

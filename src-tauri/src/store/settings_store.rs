@@ -721,8 +721,13 @@ fn plain_line(text: &str, max: usize) -> bool {
 }
 
 /// Trimmed, checked and tidied web QA targets: unique names, valid allowlist entries, charters ordered by title (a new
-/// target or charter without an id gets one). A bad value refuses the whole save, naming the target.
-pub fn clean_web_qa_targets(next: Vec<WebQaTarget>) -> Result<Vec<WebQaTarget>, String> {
+/// target or charter without an id gets one). A bad value refuses the whole save, naming the target. A target needs at least
+/// one charter, except one that is already saved exactly as sent with none (`saved`): the whole list is saved at once, so old
+/// data must not block another edit; changing such a target means giving it a charter.
+pub fn clean_web_qa_targets(
+    next: Vec<WebQaTarget>,
+    saved: &[WebQaTarget],
+) -> Result<Vec<WebQaTarget>, String> {
     if next.len() > MAX_WEBQA_TARGETS {
         return Err(format!("At most {MAX_WEBQA_TARGETS} web QA targets."));
     }
@@ -816,6 +821,9 @@ pub fn clean_web_qa_targets(next: Vec<WebQaTarget>) -> Result<Vec<WebQaTarget>, 
             seen.push(charter.id.clone());
         }
         target.charters.sort_by_key(|c| c.title.to_lowercase());
+        if target.charters.is_empty() && !saved.contains(&target) {
+            return Err(format!("{name}: add at least one charter."));
+        }
         out.push(target);
     }
     Ok(out)
@@ -1299,7 +1307,7 @@ impl SettingsStore {
 
     /// Saves the whole target list (checked and tidied). A refused save keeps the old list.
     pub fn set_web_qa_targets(&mut self, next: Vec<WebQaTarget>) -> Result<WebQaSettings, String> {
-        let clean = clean_web_qa_targets(next)?;
+        let clean = clean_web_qa_targets(next, &self.data.web_qa.targets)?;
         self.data.web_qa = WebQaSettings { targets: clean };
         self.save()?;
         Ok(self.data.web_qa.clone())
