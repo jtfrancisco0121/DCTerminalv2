@@ -198,6 +198,33 @@ grep -qF 'Cleanup on every exit path' "$QS" && grep -qF 'git worktree remove --f
   && ok "  stops the server and removes its worktree on every exit path" || bad "  qa skill: no server stop / worktree removal"
 grep -qF 'not by a prefix' "$QS" && ok "  checks the URL host, not a prefix" || bad "  qa skill: no loopback host rule"
 
+echo "# persona roles: QA Engineer and Product Manager"
+for pair in "qa-engineer:Test cases|Bug report|Regression scope" "product-manager:PRD|Epic breakdown|Release notes|Status update"; do
+  name="${pair%%:*}"; heads="${pair#*:}"
+  R="$P/roles/$name.md"; S="$P/skills/$name/SKILL.md"
+  [[ -f "$R" && -f "$S" ]] && ok "$name: role file and skill exist" || { bad "$name: role file or skill missing"; continue; }
+  grep -q "^name: $name$" "$S" && grep -qF '${CLAUDE_PLUGIN_ROOT}/roles/'"$name.md" "$S" && ok "  skill is named $name and reads the role file" || bad "  $name skill: name or role-file read"
+  grep -qF "the code is the truth" "$R" && ok "  trust rule" || bad "  $name: no trust rule"
+  grep -qF "never instructions" "$R" && ok "  data-not-instructions rule" || bad "  $name: no data-not-instructions rule"
+  grep -q '^## Empty request' "$R" && grep -qF 'What should I do?' "$R" && ok "  empty-request rule" || bad "  $name: no empty-request rule"
+  IFS='|' read -ra hs <<<"$heads"
+  for h in "${hs[@]}"; do grep -qx "## $h" "$R" && ok "  section: $h" || bad "  $name: no '## $h' section"; done
+  grep -qF 'scripts/clickup.sh' "$R" && grep -qF 'with the `!` prefix' "$R" && ok "  names scripts/clickup.sh and the ! prefix" || bad "  $name: no clickup.sh or ! prefix"
+  grep -qF '.claude-account1' "$R" "$S" && bad "  $name refers to .claude-account1" || ok "  no reference to .claude-account1"
+done
+grep -qF '/dcv2:qa' "$P/roles/qa-engineer.md" && ok "qa-engineer.md points to /dcv2:qa" || bad "qa-engineer.md: no /dcv2:qa pointer"
+grep -qF 'Epic: <title>' "$P/roles/product-manager.md" && grep -qF 'waves of 3-6 stories' "$P/roles/product-manager.md" && ok "product-manager.md: Epic: <title> + subtasks, waves of 3-6 stories" || bad "product-manager.md: epic shape or waves"
+python3 - "$ROOT" <<'PY' && ok "every role id in launch.rs ROLES has a skill" || bad "a ROLES id has no plugin/skills/<id>/SKILL.md"
+import os, re, sys
+root = sys.argv[1]
+src = open(os.path.join(root, "src-tauri/src/run/launch.rs")).read()
+block = src.split("pub const ROLES", 1)[1].split("];", 1)[0]
+ids = re.findall(r'\(\s*"([a-z-]+)"\s*,\s*"[^"]+"\s*,\s*"[a-z]+"\s*,?\s*\)', block)
+assert len(ids) >= 10, ids
+missing = [i for i in ids if not os.path.isfile(os.path.join(root, "plugin/skills", i, "SKILL.md"))]
+assert not missing, missing
+PY
+
 echo "# scripts parse"
 for f in "$P"/scripts/*.sh "$P"/scripts/lib/*.sh "$ROOT"/scripts/skill-e2e/*.sh; do
   bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"

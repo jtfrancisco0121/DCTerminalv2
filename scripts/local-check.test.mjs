@@ -157,7 +157,7 @@ describe("spawnCommand", () => {
 describe("check steps", () => {
   it("runs fmt, clippy, cargo test, vitest and the build, in that order, then the plugin suites", () => {
     const base = ["cargo fmt", "cargo clippy", "cargo test", "npm test", "npm run build", "no faked backend in dist"];
-    const suites = ["guard", "state", "memory", "github", "stop_check", "plugin", "qa_browser", "release_qa"].map(
+    const suites = ["guard", "state", "memory", "github", "stop_check", "plugin", "qa_browser", "release_qa", "clickup"].map(
       (name) => `plugin suite ${name}`,
     );
     expect(stepsFor("darwin").map((step) => step.name)).toEqual([...base, ...suites, RELEASE_STEP.name]);
@@ -168,7 +168,7 @@ describe("check steps", () => {
   });
 
   it("runs the hermetic bash suites and no live one", () => {
-    expect(PLUGIN_SUITES).toEqual(["guard", "state", "memory", "github", "stop_check", "plugin", "qa_browser", "release_qa"]);
+    expect(PLUGIN_SUITES).toEqual(["guard", "state", "memory", "github", "stop_check", "plugin", "qa_browser", "release_qa", "clickup"]);
     const scripts = stepsFor("darwin")
       .filter((step) => step.cmd === "bash")
       .map((step) => step.args.join(" "));

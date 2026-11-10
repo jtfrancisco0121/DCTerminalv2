@@ -12,21 +12,29 @@ use std::path::{Path, PathBuf};
 /// Explicit plugin folder (tests, a plugin checkout elsewhere).
 pub const PLUGIN_DIR_ENV: &str = "DCTV2_PLUGIN_DIR";
 pub const TEST_MODE_ENV: &str = "DCV2_TEST_MODE";
+/// The tab's Claude account id (the window's account), read by the plugin's ClickUp helper to pick the keychain item.
+pub const ACCOUNT_ID_ENV: &str = "DCV2_ACCOUNT_ID";
 
-/// The eight role tiles: (skill, label).
-pub const ROLES: &[(&str, &str)] = &[
-    ("planner", "Planner"),
-    ("plan-reviewer", "Plan Reviewer"),
-    ("risk-reviewer", "Risk Reviewer"),
-    ("developer", "Developer"),
-    ("pr-reviewer", "PR Reviewer"),
-    ("recommendation", "Recommendation"),
-    ("codebase-audit", "Codebase Audit"),
-    ("onboard", "Onboard"),
+/// The role tiles: (skill, label, group). The start screen shows the groups in first-seen order:
+/// `pipeline` (the roles of the Eagle-Eye pipeline) and `persona` (QA Engineer, Product Manager).
+pub const ROLES: &[(&str, &str, &str)] = &[
+    ("planner", "Planner", "pipeline"),
+    ("plan-reviewer", "Plan Reviewer", "pipeline"),
+    ("risk-reviewer", "Risk Reviewer", "pipeline"),
+    ("developer", "Developer", "pipeline"),
+    ("pr-reviewer", "PR Reviewer", "pipeline"),
+    ("recommendation", "Recommendation", "pipeline"),
+    ("codebase-audit", "Codebase Audit", "pipeline"),
+    ("onboard", "Onboard", "pipeline"),
+    ("qa-engineer", "QA Engineer", "persona"),
+    ("product-manager", "Product Manager", "persona"),
 ];
 
 pub fn role_label(role: &str) -> Option<&'static str> {
-    ROLES.iter().find(|(id, _)| *id == role).map(|(_, l)| *l)
+    ROLES
+        .iter()
+        .find(|(id, _, _)| *id == role)
+        .map(|(_, label, _)| *label)
 }
 
 /// A folder with `.claude-plugin/plugin.json`.
@@ -80,6 +88,8 @@ pub struct LaunchInput {
     pub prompt: String,
     pub plugin_dir: PathBuf,
     pub memory_dir: PathBuf,
+    /// The window's Claude account id (`DCV2_ACCOUNT_ID`).
+    pub account_id: String,
     /// Eagle-Eye only.
     pub run_dir: Option<PathBuf>,
     pub max_implementers: u32,
@@ -94,12 +104,19 @@ pub struct LaunchInput {
     pub orchestrator_mode: Option<String>,
 }
 
+/// Sets `DCV2_ACCOUNT_ID` in an env list: drops any earlier value, then pushes the given one.
+pub fn with_account_id(env: &mut Vec<(String, String)>, account_id: &str) {
+    env.retain(|(k, _)| k != ACCOUNT_ID_ENV);
+    env.push((ACCOUNT_ID_ENV.to_string(), account_id.to_string()));
+}
+
 /// The tab's launch record (docs/launch.md "Command").
 pub fn launch_spec(input: &LaunchInput) -> TabLaunch {
     let mut env = vec![(
         "DCV2_MEMORY_DIR".to_string(),
         input.memory_dir.display().to_string(),
     )];
+    with_account_id(&mut env, &input.account_id);
     if let Some(run) = &input.run_dir {
         env.push(("DCV2_RUN_DIR".into(), run.display().to_string()));
         env.push((
@@ -244,11 +261,15 @@ pub fn fresh_prompt(launch: &TabLaunch) -> String {
 }
 
 /// Adds a launch's flags, env and (on a fresh start) its prompt to the
-/// command. Returns the env names to drop from the inherited environment.
+/// command. `account_id` is the tab's current window account: like
+/// `CLAUDE_CONFIG_DIR` it is set again at every spawn, whatever the record
+/// holds (a window can move to another account; older records have none).
+/// Returns the env names to drop from the inherited environment.
 pub fn apply_launch(
     command: &mut ProgramArgs,
     launch: Option<&TabLaunch>,
     resumed: bool,
+    account_id: &str,
 ) -> Vec<String> {
     let Some(launch) = launch else {
         return Vec::new();
@@ -261,9 +282,10 @@ pub fn apply_launch(
         launch
             .env
             .iter()
-            .filter(|(k, _)| k != TEST_MODE_ENV && k != "CLAUDE_CONFIG_DIR")
+            .filter(|(k, _)| k != TEST_MODE_ENV && k != "CLAUDE_CONFIG_DIR" && k != ACCOUNT_ID_ENV)
             .cloned(),
     );
+    with_account_id(&mut command.env, account_id);
     vec![TEST_MODE_ENV.to_string()]
 }
 
@@ -279,6 +301,7 @@ mod tests {
             prompt: "/dcv2:eagle-eye run=/d/runs/r1".into(),
             plugin_dir: "/app/plugin".into(),
             memory_dir: "/d/memory".into(),
+            account_id: "acct-1".into(),
             run_dir: run.map(PathBuf::from),
             max_implementers: 2,
             stop_hooks: false,
@@ -334,6 +357,88 @@ mod tests {
         assert_eq!(role_prompt("onboard", ""), "/dcv2:onboard");
     }
 
+    fn account_ids(env: &[(String, String)]) -> Vec<&str> {
+        env.iter()
+            .filter(|(k, _)| k == ACCOUNT_ID_ENV)
+            .map(|(_, v)| v.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn the_faked_backends_roles_are_the_roles_in_order() {
+        // AD-12: the start screen's render test counts tiles from this fixture, so it must not drift from ROLES.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/fake/runs.json");
+        let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let faked: Vec<(String, String, String)> = fixture["run_overview"]["roles"]
+            .as_array()
+            .expect("run_overview.roles")
+            .iter()
+            .map(|r| {
+                let field = |k: &str| r[k].as_str().unwrap_or_default().to_string();
+                (field("id"), field("label"), field("group"))
+            })
+            .collect();
+        let wanted: Vec<(String, String, String)> = ROLES
+            .iter()
+            .map(|(id, label, group)| (id.to_string(), label.to_string(), group.to_string()))
+            .collect();
+        assert_eq!(faked, wanted);
+    }
+
+    #[test]
+    fn eight_pipeline_roles_come_before_the_two_personas() {
+        let groups: Vec<&str> = ROLES.iter().map(|(_, _, g)| *g).collect();
+        assert_eq!(groups.len(), 10);
+        assert!(groups[..8].iter().all(|g| *g == "pipeline"));
+        assert!(groups[8..].iter().all(|g| *g == "persona"));
+        assert_eq!(role_label("qa-engineer"), Some("QA Engineer"));
+        assert_eq!(role_label("nope"), None);
+    }
+
+    #[test]
+    fn every_launch_record_carries_the_window_account() {
+        for run in [Some("/d/runs/r1"), None] {
+            let spec = launch_spec(&input(run));
+            assert_eq!(account_ids(&spec.env), ["acct-1"], "{run:?}");
+        }
+        let resume = launch_spec(&LaunchInput {
+            role: "eagle-eye-resume".into(),
+            account_id: "acct-2".into(),
+            ..input(Some("/d/runs/r1"))
+        });
+        assert_eq!(account_ids(&resume.env), ["acct-2"]);
+    }
+
+    #[test]
+    fn with_account_id_replaces_a_stale_value() {
+        let mut env = vec![
+            ("A".to_string(), "1".to_string()),
+            (ACCOUNT_ID_ENV.to_string(), "old".to_string()),
+        ];
+        with_account_id(&mut env, "new");
+        assert_eq!(account_ids(&env), ["new"]);
+        assert_eq!(env.len(), 2);
+    }
+
+    #[test]
+    fn the_spawn_sets_the_tabs_current_account_whatever_the_record_holds() {
+        let mut spec = launch_spec(&input(None));
+        spec.env.retain(|(k, _)| k != ACCOUNT_ID_ENV);
+        // A record made before the account id existed: it is added.
+        let mut command = ProgramArgs::new("claude", vec![]);
+        apply_launch(&mut command, Some(&spec), true, "new");
+        assert_eq!(account_ids(&command.env), ["new"]);
+        // A stale value in the record (the window moved to another account): exactly one, the current one.
+        spec.env.push((ACCOUNT_ID_ENV.into(), "old".into()));
+        let mut command = ProgramArgs::new("claude", vec![]);
+        apply_launch(&mut command, Some(&spec), false, "new");
+        assert_eq!(account_ids(&command.env), ["new"]);
+        // A plain tab (no launch record) gets none.
+        let mut plain = ProgramArgs::new("claude", vec![]);
+        apply_launch(&mut plain, None, false, "new");
+        assert!(account_ids(&plain.env).is_empty());
+    }
+
     #[test]
     fn only_an_eagle_eye_tab_is_pinned_and_never_to_bypass_permissions() {
         let flag = |spec: &TabLaunch, name: &str| {
@@ -383,7 +488,7 @@ mod tests {
     fn a_resumed_tab_keeps_env_and_flags_but_not_the_prompt() {
         let spec = launch_spec(&input(Some("/d/runs/r1")));
         let mut fresh = ProgramArgs::new("claude", vec!["--session-id".into(), "x".into()]);
-        let drop = apply_launch(&mut fresh, Some(&spec), false);
+        let drop = apply_launch(&mut fresh, Some(&spec), false, "acct-1");
         assert_eq!(drop, ["DCV2_TEST_MODE"]);
         assert_eq!(fresh.args.last().unwrap(), "/dcv2:eagle-eye run=/d/runs/r1");
         assert!(
@@ -394,11 +499,11 @@ mod tests {
             "the prompt file does not exist, so the flag is dropped"
         );
         let mut resumed = ProgramArgs::new("claude", vec![]);
-        apply_launch(&mut resumed, Some(&spec), true);
+        apply_launch(&mut resumed, Some(&spec), true, "acct-1");
         assert!(!resumed.args.iter().any(|a| a.starts_with("/dcv2")));
         assert!(resumed.env.iter().any(|(k, _)| k == "DCV2_RUN_DIR"));
         let mut plain = ProgramArgs::new("claude", vec![]);
-        assert!(apply_launch(&mut plain, None, false).is_empty());
+        assert!(apply_launch(&mut plain, None, false, "acct-1").is_empty());
 
         let dir = TempDir::new("fresh_prompt");
         let run = dir.join("r1");

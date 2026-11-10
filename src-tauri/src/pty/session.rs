@@ -1095,7 +1095,8 @@ mod tests {
             ..Default::default()
         };
         let mut command = crate::provider::ProgramArgs::new("/bin/sh", vec![]);
-        let env_remove = crate::run::launch::apply_launch(&mut command, Some(&launch), true);
+        let env_remove =
+            crate::run::launch::apply_launch(&mut command, Some(&launch), true, "acct");
         let session = PtySession::spawn(SpawnSpec {
             program: "/bin/sh".into(),
             args: vec!["-c".into(), "echo \"TM=[${DCV2_TEST_MODE-unset}]\"".into()],

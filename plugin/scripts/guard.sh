@@ -63,6 +63,9 @@
 # state.sh. When DCV2_MEMORY_DIR is set (every dcv2 launch), nobody writes into it with
 # Edit/Write or a shell redirect/copy: agents use memory.sh write (the app's editor writes as the
 # user, outside Claude). Sessions with no DCV2_RUN_DIR and no pipeline agent are not affected otherwise.
+# ClickUp tickets (docs/skills.md, "ClickUp helper"): a command naming a file ending in clickup.sh or clickup.py (any path) and the
+# word `create` is blocked in a bound run; standalone it gets a PreToolUse `ask` when the payload's permission_mode shows prompts
+# (default, acceptEdits, plan) and is blocked in any other or missing mode (the user types it with `!`). A block of any other rule wins.
 # Every block in a bound run appends one line to <run>/logs/guard.log (docs/run-folder.md): UTC, rule id (the RULES table),
 # tool, agent id (main), tool_use_id (-), tab separated. Never command text, paths or the message; a write failure changes
 # nothing. logs/guard.log is protected like the other run records. The three blocks made in bash before Python starts
@@ -255,6 +258,7 @@ RULES = {
     "webqa-command": "a web-qa shell command outside the driver, state.sh webqa and ls / mkdir under webqa/",
     "webqa-secret": "the web QA test account's password file",
     "webqa-read-scope": "a web-qa read outside the run and plugin folders",
+    "clickup-create": "creating ClickUp tickets without a permission prompt",
 }
 
 
@@ -1793,16 +1797,52 @@ def webqa_command_check(cmd):
             fail(f"{os.path.basename(words[0])} with these arguments is not on the list")
 
 
+CLICKUP_HELPER_RE = re.compile(r"(?:^|[\s/\"'=(;|&`])clickup\.(?:sh|py)(?![\w.-])", re.I)
+CLICKUP_CREATE_RE = re.compile(r"\bcreate\b", re.I)
+CLICKUP_ARGS_RE = re.compile(r"\bcreate\b[\s\"',\[\]]*(\d+)[\s\"',]+([^\s\"',\]\)]+)", re.I)
+ASKING_MODES = ("default", "acceptEdits", "plan")  # the permission modes that show prompts; any other mode cannot be asked
+
+
+def printable(text, limit):
+    return "".join(c if c.isprintable() else " " for c in text)[:limit]
+
+
+def clickup_create(cmd):
+    """The whole command text (heredoc bodies and quoted interpreter code included): the ClickUp helper's file name and `create`."""
+    cmd = expand_vars(cmd)
+    return bool(CLICKUP_HELPER_RE.search(cmd) and CLICKUP_CREATE_RE.search(cmd))
+
+
+def clickup_ask(cmd):
+    m = CLICKUP_ARGS_RE.search(expand_vars(cmd))
+    reason = f"Create ClickUp tickets from {printable(m.group(2), 200)} in list {m.group(1)}?" if m else "Create ClickUp tickets?"
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
+                                              "permissionDecisionReason": reason}}))
+    sys.exit(0)
+
+
 CMD = str(inp.get("command") or "")
 secret_command_check(CMD, cwd0)
+CLICKUP = clickup_create(CMD)
+if CLICKUP:
+    if bound:
+        block("clickup-create", "ClickUp tickets are not created inside an Eagle-Eye run (to read the helper, use the Read tool; "
+              "to commit a message that names it, use git commit -F <file>).")
+    if str(data.get("permission_mode") or "") not in ASKING_MODES:
+        block("clickup-create", "This session's permission mode may skip prompts, so the guard cannot ask you. To create the tickets, "
+              "type the command yourself with the ! prefix: ! " + printable(" ".join(CMD.split()), 300))
 if role == "web-qa":
     webqa_command_check(CMD)
 if UNCHECKED:
+    if CLICKUP:
+        clickup_ask(CMD)
     sys.exit(0)
 if bound and "DCV2_TEST_LOCAL_REMOTES" in CMD:
     block("test-remotes", "DCV2_TEST_LOCAL_REMOTES is set only by the test suites, never from inside a run.")
 MEM_MENTIONED = bool(mem) and ("DCV2_MEMORY_DIR" in CMD or mem.casefold() in CMD.casefold())
 analyze(CMD, cwd0)
+if CLICKUP:
+    clickup_ask(CMD)
 sys.exit(0)
 PY
 

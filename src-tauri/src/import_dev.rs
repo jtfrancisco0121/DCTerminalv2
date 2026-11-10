@@ -107,7 +107,7 @@ fn same_dir(a: &str, b: &str) -> bool {
 }
 
 /// The launch, pointed at this app (see the module notes).
-pub fn repoint(launch: &TabLaunch, folder: &Path, re: &Relaunch) -> TabLaunch {
+pub fn repoint(launch: &TabLaunch, folder: &Path, re: &Relaunch, account_id: &str) -> TabLaunch {
     let mut args = Vec::new();
     let mut iter = launch.args.iter();
     while let Some(arg) = iter.next() {
@@ -130,7 +130,7 @@ pub fn repoint(launch: &TabLaunch, folder: &Path, re: &Relaunch) -> TabLaunch {
             _ => args.push(arg.clone()),
         }
     }
-    let env = launch
+    let mut env: Vec<(String, String)> = launch
         .env
         .iter()
         .filter(|(k, _)| k != crate::run::launch::TEST_MODE_ENV)
@@ -142,6 +142,8 @@ pub fn repoint(launch: &TabLaunch, folder: &Path, re: &Relaunch) -> TabLaunch {
             }
         })
         .collect();
+    // The account the tab's new window runs on (the dev app's id may not exist here).
+    crate::run::launch::with_account_id(&mut env, account_id);
     TabLaunch {
         role: launch.role.clone(),
         prompt: launch.prompt.clone(),
@@ -289,7 +291,7 @@ pub fn import(
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(&tab.cwd))
     };
-    let mut bring = |tab: &TabRecord, window: &str| -> Option<TabRecord> {
+    let mut bring = |tab: &TabRecord, window: &str, account_id: &str| -> Option<TabRecord> {
         if tab
             .claude_session_id
             .as_ref()
@@ -304,7 +306,10 @@ pub fn import(
         known_ids.insert(next.id.clone());
         next.window_id = window.to_string();
         next.closed_at = Some(tab.closed_at.clone().unwrap_or_else(|| now.to_string()));
-        next.launch = tab.launch.as_ref().map(|l| repoint(l, &folder_of(tab), re));
+        next.launch = tab
+            .launch
+            .as_ref()
+            .map(|l| repoint(l, &folder_of(tab), re, account_id));
         Some(next)
     };
 
@@ -334,7 +339,7 @@ pub fn import(
         let mut tab_ids = Vec::new();
         let mut active = None;
         for tab in open {
-            if let Some(next) = bring(tab, &label) {
+            if let Some(next) = bring(tab, &label, &account_id) {
                 if window.active_tab_id.as_deref() == Some(tab.id.as_str()) {
                     active = Some(next.id.clone());
                 }
@@ -351,7 +356,7 @@ pub fn import(
         {
             for id in &arch.tab_ids {
                 if let Some(tab) = dev_state.closed_tabs.iter().find(|t| &t.id == id) {
-                    if let Some(next) = bring(tab, &label) {
+                    if let Some(next) = bring(tab, &label, &account_id) {
                         tab_ids.push(next.id.clone());
                         closed.push(next);
                         summary.tabs += 1;
@@ -379,14 +384,14 @@ pub fn import(
         if in_archived.contains(&tab.id) {
             continue;
         }
-        let Some(label) = dev_windows
+        let Some((label, account_id)) = dev_windows
             .iter()
             .find(|w| crate::store::window_matches(&tab.window_id, &w.id))
-            .and_then(|w| labels.get(&w.id))
+            .and_then(|w| Some((labels.get(&w.id)?, account_for(&w.account_id)?)))
         else {
             continue;
         };
-        if let Some(next) = bring(tab, label) {
+        if let Some(next) = bring(tab, label, &account_id) {
             closed.push(next);
             summary.closed_tabs += 1;
         }
@@ -1147,7 +1152,7 @@ mod tests {
             })
             .unwrap(),
         );
-        let drop = crate::run::launch::apply_launch(&mut command, Some(launch), true);
+        let drop = crate::run::launch::apply_launch(&mut command, Some(launch), true, "work");
         let prompt = built.join("launch");
         let prompt_file = std::fs::read_dir(&prompt)
             .unwrap()
@@ -1176,7 +1181,17 @@ mod tests {
                 ("DCV2_RUN_DIR".into(), run.display().to_string()),
                 ("DCV2_MAX_IMPLEMENTERS".into(), "3".into()),
                 ("DCV2_STOP_HOOKS".into(), "on".into()),
+                ("DCV2_ACCOUNT_ID".into(), "work".into()),
             ]
+        );
+        // The re-pointed record itself carries the new window's account (the dev record had none).
+        assert_eq!(
+            launch
+                .env
+                .iter()
+                .filter(|(k, _)| k == "DCV2_ACCOUNT_ID")
+                .collect::<Vec<_>>(),
+            [&("DCV2_ACCOUNT_ID".to_string(), "work".to_string())]
         );
         assert_eq!(drop, ["DCV2_TEST_MODE"]);
         assert_eq!(

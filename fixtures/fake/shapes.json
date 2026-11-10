@@ -2715,6 +2715,9 @@
       "roles": {
         "items": {
           "fields": {
+            "group": {
+              "type": "string"
+            },
             "id": {
               "type": "string"
             },

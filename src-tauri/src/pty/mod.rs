@@ -705,7 +705,8 @@ fn spawn_spec(
                 settings,
             })?;
             command.env.push(claude_scheme_env());
-            let env_remove = crate::run::launch::apply_launch(&mut command, launch, start.resumed);
+            let env_remove =
+                crate::run::launch::apply_launch(&mut command, launch, start.resumed, &account);
             if let Some((_, env, _)) = hooks {
                 command.env.extend(env);
             }

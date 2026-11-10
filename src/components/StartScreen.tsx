@@ -13,6 +13,7 @@ import {
   type FolderRepos,
   type BmadMode,
   type ReviewMode,
+  type RoleTile,
   type RunOverview,
   type StartedRun,
 } from "../run/api";
@@ -137,6 +138,23 @@ function rememberBmadMode(folder: string, mode: BmadMode): void {
  * New run: a folder, what to do, and Start Eagle-Eye. One role on its own
  * is one tile. Earlier runs can be resumed.
  */
+/** The heading of each role group; a group not named here shows its own name. */
+const ROLE_GROUP_HEADINGS: Record<string, string> = {
+  pipeline: "Or one role on its own, in this folder:",
+  persona: "Personas",
+};
+
+/** The roles grouped by their `group`, in first-seen order; a group with no roles is not returned. */
+function roleGroups(roles: RoleTile[]): Array<{ group: string; roles: RoleTile[] }> {
+  const groups: Array<{ group: string; roles: RoleTile[] }> = [];
+  for (const role of roles) {
+    const found = groups.find((g) => g.group === role.group);
+    if (found) found.roles.push(role);
+    else groups.push({ group: role.group, roles: [role] });
+  }
+  return groups;
+}
+
 export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, onShowAllRuns, onEvalResults, usageWindows }: Props) {
   const [folder, setFolder] = useState(initialFolder);
   const [found, setFound] = useState<FolderRepos | null>(null);
@@ -536,20 +554,29 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           {startReason}
         </p>
       )}
-      <p className="hint run-tiles-hint">Or one role on its own, in this folder:</p>
-      <div className="role-tiles">
-        {(overview?.roles ?? []).map((role) => (
-          <button
-            key={role.id}
-            type="button"
-            className="role-tile"
-            disabled={busy || !folder.trim()}
-            onClick={() => void launch(role.id)}
+      {roleGroups(overview?.roles ?? []).map(({ group, roles }) => (
+        <div key={group} role="group" aria-labelledby={`role-group-${group}`}>
+          <p
+            id={`role-group-${group}`}
+            className={group === "pipeline" ? "hint role-group-heading run-tiles-hint" : "hint role-group-heading"}
           >
-            {role.label}
-          </button>
-        ))}
-      </div>
+            {ROLE_GROUP_HEADINGS[group] ?? group}
+          </p>
+          <div className="role-tiles">
+            {roles.map((role) => (
+              <button
+                key={role.id}
+                type="button"
+                className="role-tile"
+                disabled={busy || !folder.trim()}
+                onClick={() => void launch(role.id)}
+              >
+                {role.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
       {folder.trim() && found && found.repos.length > 0 && (
         <MemoryPanel
           folder={folder.trim()}

@@ -40,7 +40,8 @@ export type FolderRepos = {
   repos: Repo[];
 };
 
-export type RoleTile = { id: string; label: string };
+/** `group` is `pipeline` or `persona` (run/launch.rs `ROLES`); the start screen groups the tiles by it. */
+export type RoleTile = { id: string; label: string; group: "pipeline" | "persona" | (string & {}) };
 
 /** What the Runs view shows from a finished run's record (`app-usage.json`). */
 export type RecordTotals = {
