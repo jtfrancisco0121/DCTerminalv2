@@ -1,0 +1,416 @@
+{
+ "comment": "Shared by the driver (plugin/scripts/qa-browser.mjs isAllowedUrl) and src-tauri/src/store/settings_store.rs url_allowed: both must give `allowed` for every case.",
+ "cases": [
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://app.example.com/",
+   "allowed": true,
+   "why": "the allowed origin"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://app.example.com",
+   "allowed": true,
+   "why": "no path is the root path"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://app.example.com/a/b?x=1#h",
+   "allowed": true,
+   "why": "a path, query and fragment below the origin"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://APP.Example.COM/",
+   "allowed": true,
+   "why": "host case does not matter"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://app.example.com:443/",
+   "allowed": true,
+   "why": "an explicit default port"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://app.example.com.evil.com/",
+   "allowed": false,
+   "why": "lookalike host: the allowed name as a prefix of another host"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://evil.com/app.example.com",
+   "allowed": false,
+   "why": "the allowed name only in the path"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://xapp.example.com/",
+   "allowed": false,
+   "why": "the allowed name as a suffix of another host"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://sub.app.example.com/",
+   "allowed": false,
+   "why": "a subdomain is another host"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://app.example.com./",
+   "allowed": false,
+   "why": "a trailing dot is another host string"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://evil.com@app.example.com/",
+   "allowed": false,
+   "why": "userinfo"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://app.example.com@evil.com/",
+   "allowed": false,
+   "why": "userinfo naming the allowed host"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://user:pw@app.example.com/",
+   "allowed": false,
+   "why": "userinfo with a password"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "http://app.example.com/",
+   "allowed": false,
+   "why": "scheme mismatch"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://app.example.com:8443/",
+   "allowed": false,
+   "why": "port mismatch"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "javascript:alert(1)",
+   "allowed": false,
+   "why": "javascript: scheme"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "file:///etc/passwd",
+   "allowed": false,
+   "why": "file: scheme"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "data:text/html,hi",
+   "allowed": false,
+   "why": "data: scheme"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "ftp://app.example.com/",
+   "allowed": false,
+   "why": "ftp: scheme"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "about:blank",
+   "allowed": false,
+   "why": "about:blank is never opened by a step"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "",
+   "allowed": false,
+   "why": "empty"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "not a url",
+   "allowed": false,
+   "why": "not a URL"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://app.example.com/ x",
+   "allowed": false,
+   "why": "white space"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/"
+   ],
+   "url": "https://app.example.com\\@evil.com/",
+   "allowed": false,
+   "why": "a backslash"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com:8443/"
+   ],
+   "url": "https://app.example.com:8443/x",
+   "allowed": true,
+   "why": "the allowed non-default port"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com:8443/"
+   ],
+   "url": "https://app.example.com/",
+   "allowed": false,
+   "why": "the default port when another is allowed"
+  },
+  {
+   "allowlist": [
+    "http://127.0.0.1:3000/"
+   ],
+   "url": "http://127.0.0.1:3000/",
+   "allowed": true,
+   "why": "a loopback entry on the allowlist"
+  },
+  {
+   "allowlist": [
+    "http://127.0.0.1:3000/"
+   ],
+   "url": "http://localhost:3000/",
+   "allowed": false,
+   "why": "localhost is another host than 127.0.0.1"
+  },
+  {
+   "allowlist": [
+    "http://127.0.0.1:3000/"
+   ],
+   "url": "http://127.0.0.1:3001/",
+   "allowed": false,
+   "why": "another port"
+  },
+  {
+   "allowlist": [
+    "http://127.0.0.1:3000/"
+   ],
+   "url": "http://127.0.0.1/",
+   "allowed": false,
+   "why": "port 80 is not 3000"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/app"
+   ],
+   "url": "https://app.example.com/app",
+   "allowed": true,
+   "why": "the prefix itself"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/app"
+   ],
+   "url": "https://app.example.com/app/",
+   "allowed": true,
+   "why": "the prefix with a slash"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/app"
+   ],
+   "url": "https://app.example.com/app/x",
+   "allowed": true,
+   "why": "below the prefix"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/app"
+   ],
+   "url": "https://app.example.com/app/./x",
+   "allowed": true,
+   "why": "a dot segment that stays below the prefix"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/app"
+   ],
+   "url": "https://app.example.com/application",
+   "allowed": false,
+   "why": "the prefix must end at a / boundary"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/app"
+   ],
+   "url": "https://app.example.com/ap",
+   "allowed": false,
+   "why": "shorter than the prefix"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/app"
+   ],
+   "url": "https://app.example.com/",
+   "allowed": false,
+   "why": "above the prefix"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/app"
+   ],
+   "url": "https://app.example.com/app/../secret",
+   "allowed": false,
+   "why": "dot-dot leaves the prefix"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/app"
+   ],
+   "url": "https://app.example.com/app/%2e%2e/secret",
+   "allowed": false,
+   "why": "an encoded dot-dot leaves the prefix"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/app"
+   ],
+   "url": "https://app.example.com/APP/x",
+   "allowed": false,
+   "why": "paths are case sensitive"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/app/"
+   ],
+   "url": "https://app.example.com/app",
+   "allowed": true,
+   "why": "a prefix written with a trailing slash"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/app/"
+   ],
+   "url": "https://app.example.com/app/x",
+   "allowed": true,
+   "why": "below it"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/app/"
+   ],
+   "url": "https://app.example.com/application",
+   "allowed": false,
+   "why": "still a / boundary"
+  },
+  {
+   "allowlist": [
+    "https://a.example.com/",
+    "https://b.example.com/x"
+   ],
+   "url": "https://a.example.com/y",
+   "allowed": true,
+   "why": "the first entry"
+  },
+  {
+   "allowlist": [
+    "https://a.example.com/",
+    "https://b.example.com/x"
+   ],
+   "url": "https://b.example.com/x/y",
+   "allowed": true,
+   "why": "the second entry with its prefix"
+  },
+  {
+   "allowlist": [
+    "https://a.example.com/",
+    "https://b.example.com/x"
+   ],
+   "url": "https://b.example.com/y",
+   "allowed": false,
+   "why": "the second entry's prefix"
+  },
+  {
+   "allowlist": [
+    "ftp://app.example.com/"
+   ],
+   "url": "ftp://app.example.com/",
+   "allowed": false,
+   "why": "an ftp entry never matches"
+  },
+  {
+   "allowlist": [
+    "https://app.example.com/?q=1"
+   ],
+   "url": "https://app.example.com/",
+   "allowed": false,
+   "why": "an entry with a query is invalid and never matches"
+  },
+  {
+   "allowlist": [
+    "http://[::1]:8080/"
+   ],
+   "url": "http://[::1]:8080/x",
+   "allowed": true,
+   "why": "an IPv6 literal"
+  },
+  {
+   "allowlist": [
+    "http://[::1]:8080/"
+   ],
+   "url": "http://[::2]:8080/",
+   "allowed": false,
+   "why": "another IPv6 literal"
+  },
+  {
+   "allowlist": [
+    "http://app.example.com/"
+   ],
+   "url": "http://app.example.com:80/",
+   "allowed": true,
+   "why": "an explicit port 80 is the default for http"
+  }
+ ]
+}

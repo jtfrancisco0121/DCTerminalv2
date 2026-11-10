@@ -134,6 +134,75 @@ expect 1 "an over-cap full-page screenshot fails" env STUB_BIG=1 node "$QB" --ou
 has "  says why" "over 5 MB"
 [[ ! -e "$OUT/bigfull.png" ]] && ok "  no file written" || bad "  bigfull.png was written"
 
+echo "# web mode: the allowlist, the secret and the browser flags (S7)"
+node "$ROOT/scripts/skill-e2e/qa_webqa_urls.mjs" >"$d/urls.out" 2>&1 && ok "Shared URL cases: the driver agrees on every case ($(tail -1 "$d/urls.out"))" || bad "shared URL cases: $(head -c 600 "$d/urls.out")"
+WRUN="$d/wrun"; WOUT="$WRUN/webqa/shots"; mkdir -p "$WRUN/webqa/steps"
+printf '{"schema":1,"mode":"web-qa"}\n' > "$WRUN/meta.json"
+printf '{"schema":1,"id":"t1","name":"Staging","allowlist":["https://app.example.com/","http://127.0.0.1:3000/app"],"charters":[{"id":"A","title":"t","text":"x","mayChangeData":false}]}\n' > "$WRUN/webqa-target.json"
+printf '{"username":"alice-u","password":"s3cr3t-pw"}\n' > "$WRUN/webqa-secret.json"; chmod 600 "$WRUN/webqa-secret.json"
+wsteps="$d/wsteps.jsonl"; slog="$d/slog.jsonl"; argv="$d/argv.txt"
+webqa() { env DCV2_RUN_DIR="$WRUN" "$@"; }
+printf '%s\n' '{"op":"open","url":"https://app.example.com/login"}' '{"op":"screenshot","name":"A"}' > "$wsteps"
+expect 0 "an allowlisted URL opens and the screenshot goes to <run>/webqa/shots" webqa env STUB_ARGV_FILE="$argv" node "$QB" --out "$WOUT" --steps "$wsteps"
+[[ -s "$WOUT/A.png" ]] && ok "  webqa/shots/A.png written" || bad "  no PNG in webqa/shots"
+grep -qxF -- '--no-proxy-server' "$argv" && ok "  Chrome gets --no-proxy-server" || bad "  no --no-proxy-server: $(cat "$argv")"
+grep -qF -- '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE app.example.com, EXCLUDE 127.0.0.1' "$argv" && ok "  the resolver rules exclude only the allowlist hosts" || bad "  resolver rules: $(grep resolver "$argv")"
+if grep -qF 'EXCLUDE localhost' "$argv"; then bad "  localhost must not be reachable in web mode"; else ok "  localhost is not excluded in web mode"; fi
+expect 2 "web mode: --out elsewhere is refused" webqa node "$QB" --out "$RUN/reviews/qa" --steps "$wsteps"
+for url in "https://app.example.com.evil.com/" "https://evil.com@app.example.com/" "http://127.0.0.1:3000/other" "http://example.com/" "javascript:alert(1)" "file:///etc/passwd" "https://app.example.com:8443/"; do
+  printf '%s\n' "{\"op\":\"open\",\"url\":\"$url\"}" > "$wsteps"
+  expect 2 "web mode: open $url is refused" webqa node "$QB" --out "$WOUT" --steps "$wsteps"
+  has "  says outside the allowlist" "outside the allowlist"
+done
+printf '%s\n' '{"op":"open","url":"http://127.0.0.1:3000/app/x"}' > "$wsteps"
+expect 0 "web mode: a loopback URL on the allowlist opens" webqa node "$QB" --out "$WOUT" --steps "$wsteps"
+printf '%s\n' '{"op":"open","url":"https://app.example.com/","allowlist":["https://evil.com/"]}' '{"op":"open","url":"https://evil.com/"}' > "$wsteps"
+expect 2 "an allowlist in a step is ignored" webqa node "$QB" --out "$WOUT" --steps "$wsteps"
+printf '%s\n' '{"op":"open","url":"https://evil.com/"}' > "$wsteps"
+expect 2 "web mode cannot be extended by an argument" webqa node "$QB" --out "$WOUT" --steps "$wsteps" --allow https://evil.com/
+expect 2 "web mode cannot be extended by an environment variable" webqa env DCV2_WEBQA_ALLOWLIST=https://evil.com/ DCV2_QA_ALLOW=https://evil.com/ node "$QB" --out "$WOUT" --steps "$wsteps"
+# Not a web QA run folder: the loopback rules, whatever the folder holds.
+NRUN="$d/nrun"; mkdir -p "$NRUN/reviews" "$NRUN/webqa"
+printf '{"schema":1}\n' > "$NRUN/meta.json"; cp "$WRUN/webqa-target.json" "$NRUN/webqa-target.json"
+printf '%s\n' '{"op":"open","url":"https://app.example.com/"}' > "$wsteps"
+expect 2 "a run folder that is not mode web-qa keeps the loopback rules" env DCV2_RUN_DIR="$NRUN" node "$QB" --out "$NRUN/reviews/qa" --steps "$wsteps"
+printf '%s\n' '{"op":"open","url":"http://127.0.0.1:1530/"}' '{"op":"type","selector":"input","secret":"username"}' > "$wsteps"
+expect 2 "a secret step outside web mode is refused" env DCV2_RUN_DIR="$NRUN" node "$QB" --out "$NRUN/reviews/qa" --steps "$wsteps"
+printf '%s\n' '{"op":"open","url":"https://app.example.com/"}' '{"op":"type","selector":"input[type=password]","secret":"password","text":"x"}' > "$wsteps"
+expect 2 "a type step with both text and secret is refused" webqa node "$QB" --out "$WOUT" --steps "$wsteps"
+printf '%s\n' '{"op":"open","url":"https://app.example.com/"}' '{"op":"type","selector":"input[type=password]","secret":"token"}' > "$wsteps"
+expect 2 "a secret other than username or password is refused" webqa node "$QB" --out "$WOUT" --steps "$wsteps"
+
+echo "## a redirect or a navigation away"
+printf '%s\n' '{"op":"open","url":"https://app.example.com/"}' > "$wsteps"
+expect 1 "a redirect off the allowlist fails the step naming the URL" webqa env STUB_REDIRECT=https://evil.example/ node "$QB" --out "$WOUT" --steps "$wsteps"
+has "  names the URL" "the page left the allowlist (https://evil.example/)"
+expect 1 "a main-frame navigation off the allowlist fails the step" webqa env STUB_NAV_AWAY=https://evil.example/x node "$QB" --out "$WOUT" --steps "$wsteps"
+has "  names the URL" "the page left the allowlist (https://evil.example/x)"
+printf '%s\n' '{"op":"open","url":"https://app.example.com/"}' '{"op":"text"}' > "$wsteps"
+expect 0 "blocked hosts are counted and reported in one line" webqa env STUB_BLOCKED=1 node "$QB" --out "$WOUT" --steps "$wsteps"
+[[ "$(grep -c 'blocked hosts' <<<"$out")" == 1 ]] && ok "  one blocked-hosts line" || bad "  blocked-hosts lines: $out"
+has "  names the count and the host" '"message":"blocked hosts: 1 (cdn.other.example)"'
+
+echo "## the test account"
+: > "$slog"
+printf '%s\n' '{"op":"open","url":"https://app.example.com/login"}' '{"op":"type","selector":"input[name=user]","secret":"username"}' \
+  '{"op":"type","selector":"input[type=password]","secret":"password"}' '{"op":"text"}' > "$wsteps"
+expect 0 "the username and password are typed" webqa env STUB_LOG="$slog" STUB_LEAK=1 STUB_PAGE_ERRORS=1 node "$QB" --out "$WOUT" --steps "$wsteps"
+if grep -qF 's3cr3t-pw' <<<"$out" || grep -qF 'alice-u' <<<"$out"; then bad "  the secret is in the driver output: $out"; else ok "  the secret value is not in stdout or stderr"; fi
+has "  page text is redacted" '"text":"Stub text [redacted]"'
+has "  a page error is redacted" 'pw=[redacted]'
+grep -qF '"text":"alice-u"' "$slog" && grep -qF '"text":"s3cr3t-pw"' "$slog" && ok "  the browser received both values" || bad "  insertText calls: $(cat "$slog")"
+: > "$slog"
+printf '%s\n' '{"op":"open","url":"https://app.example.com/login"}' '{"op":"type","selector":"input[name=user]","secret":"password"}' > "$wsteps"
+expect 1 "the password is typed only into a password field" webqa env STUB_LOG="$slog" STUB_NOT_PASSWORD=1 node "$QB" --out "$WOUT" --steps "$wsteps"
+has "  says why" "input[type=password]"
+grep -qF 's3cr3t-pw' "$slog" && bad "  the password reached a non-password field" || ok "  nothing was typed"
+rm -f "$WRUN/webqa-secret.json"
+printf '%s\n' '{"op":"open","url":"https://app.example.com/login"}' '{"op":"type","selector":"input","secret":"username"}' > "$wsteps"
+expect 1 "no secret file: the step fails" webqa node "$QB" --out "$WOUT" --steps "$wsteps"
+has "  says there is no test account" "no test account"
+
 echo "# no browser"
 expect 3 "no browser found exits 3" env DCV2_QA_BROWSER="$d/none" node "$QB" --out "$OUT" --steps "$steps"
 has "  names the problem" "no Chrome-family browser found"
