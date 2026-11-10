@@ -8,10 +8,21 @@
 //   {"op":"open","url":"http://127.0.0.1:1530/"}
 //   {"op":"click","selector":"button.start"}  or  {"op":"click","text":"Start"}
 //   {"op":"type","selector":"input","text":"hello"}   (selector optional: types into the focused element)
-//   {"op":"press","key":"Enter"}
+//   {"op":"press","key":"Enter"}                       (real key events: Enter, Escape, Tab, Space, arrows, PageUp,
+//                                                       PageDown, Home, End, Backspace, Delete, letters, digits)
+//   {"op":"press","key":"Meta+K"}  or  {"op":"press","key":"K","modifiers":["meta"]}   (alt, ctrl, meta, shift)
+//   {"op":"scroll","selector":".log"}  or  {"op":"scroll","text":"Receipt"}  or  {"op":"scroll","by":600}
+//                                                       (an element into view, or pixels down: "by" is a number or {"x":0,"y":600})
+//   {"op":"select","selector":"select#theme","label":"Light"}  or  ...,"value":"light"   (sets it, fires input and change;
+//                                                       a missing option fails the step naming it)
 //   {"op":"wait-text","text":"Planning","timeoutMs":5000}
 //   {"op":"text","selector":"main"}                    (selector optional: the whole page)
 //   {"op":"screenshot","name":"S1.1"}                  (writes <out>/S1.1.png)
+//   {"op":"screenshot","name":"S1.2","fullPage":true}  (the whole page, beyond the viewport; same 5 MB cap, no file when over)
+//
+// Page errors print as they are seen, between the step lines:
+//   {"event":"page-error","kind":"exception"|"console","message":"...","step":3}
+// (an uncaught exception, a console.error call, or an error entry of the browser's log; step 0 is before the first step)
 //
 // Exit: 0 all steps ok, 1 a step failed, 2 refused (non-loopback URL, bad out folder, bad step), 3 no Chrome-family
 // browser found. The browser runs in its own process group; it is killed on exit, on signals, and by a detached
@@ -117,7 +128,62 @@ async function readSteps(file) {
   return steps;
 }
 
-const OPS = new Set(["open", "click", "type", "press", "wait-text", "text", "screenshot"]);
+const OPS = new Set(["open", "click", "type", "press", "scroll", "select", "wait-text", "text", "screenshot"]);
+
+// CDP modifier bits.
+const MODIFIER_BITS = { alt: 1, ctrl: 2, meta: 4, shift: 8 };
+const NAMED_KEYS = {
+  Enter: { code: "Enter", vk: 13, text: "\r" },
+  Escape: { code: "Escape", vk: 27 },
+  Tab: { code: "Tab", vk: 9, text: "\t" },
+  " ": { code: "Space", vk: 32, text: " " },
+  Space: { key: " ", code: "Space", vk: 32, text: " " },
+  ArrowLeft: { code: "ArrowLeft", vk: 37 },
+  ArrowUp: { code: "ArrowUp", vk: 38 },
+  ArrowRight: { code: "ArrowRight", vk: 39 },
+  ArrowDown: { code: "ArrowDown", vk: 40 },
+  PageUp: { code: "PageUp", vk: 33 },
+  PageDown: { code: "PageDown", vk: 34 },
+  End: { code: "End", vk: 35 },
+  Home: { code: "Home", vk: 36 },
+  Backspace: { code: "Backspace", vk: 8 },
+  Delete: { code: "Delete", vk: 46 },
+};
+
+/**
+ * The CDP key events of a press step, or null when the key is not one the table covers. `key` may carry modifiers
+ * ("Meta+K"); `modifiers` adds more. Each event has `key`, `code`, `windowsVirtualKeyCode`, `nativeVirtualKeyCode`
+ * and the modifier bitmask; a printable key without Ctrl/Meta/Alt also carries its `text`.
+ */
+export function keyEvents(step) {
+  const parts = String(step.key ?? "").split("+");
+  let key = parts.pop();
+  if (key === "" && parts.length) key = "+"; // "Shift++"
+  const names = [...parts, ...(Array.isArray(step.modifiers) ? step.modifiers : [])].map((m) => String(m).toLowerCase());
+  if (names.some((m) => !(m in MODIFIER_BITS))) return null;
+  const modifiers = names.reduce((bits, m) => bits | MODIFIER_BITS[m], 0);
+  let spec = NAMED_KEYS[key];
+  let shown = key;
+  if (spec) shown = spec.key ?? key;
+  else if (/^[A-Za-z]$/.test(key)) {
+    const upper = key.toUpperCase();
+    shown = modifiers & MODIFIER_BITS.shift ? upper : key.toLowerCase();
+    spec = { code: `Key${upper}`, vk: upper.charCodeAt(0), text: shown };
+  } else if (/^[0-9]$/.test(key)) {
+    spec = { code: `Digit${key}`, vk: key.charCodeAt(0), text: key };
+  } else return null;
+  const base = { key: shown, code: spec.code, windowsVirtualKeyCode: spec.vk, nativeVirtualKeyCode: spec.vk, modifiers };
+  const typed = spec.text !== undefined && !(modifiers & (MODIFIER_BITS.ctrl | MODIFIER_BITS.meta | MODIFIER_BITS.alt));
+  return [
+    typed ? { type: "keyDown", ...base, text: spec.text } : { type: "rawKeyDown", ...base },
+    { type: "keyUp", ...base },
+  ];
+}
+
+const validBy = (by) =>
+  (typeof by === "number" && Number.isFinite(by)) ||
+  (by && typeof by === "object" && !Array.isArray(by) && Object.keys(by).length > 0 &&
+    Object.entries(by).every(([k, v]) => (k === "x" || k === "y") && typeof v === "number" && Number.isFinite(v)));
 
 function validate(steps) {
   steps.forEach((s, i) => {
@@ -125,6 +191,20 @@ function validate(steps) {
     if (s.op === "open" && !isLoopbackUrl(s.url)) refuse(`step ${i + 1}: ${String(s.url).slice(0, 80)} is not a loopback http URL`);
     if (s.op === "screenshot" && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(String(s.name ?? ""))) {
       refuse(`step ${i + 1}: screenshot name must be letters, digits, dot, dash or underscore`);
+    }
+    if (s.op === "screenshot" && s.fullPage !== undefined && typeof s.fullPage !== "boolean") {
+      refuse(`step ${i + 1}: fullPage must be true or false`);
+    }
+    if (s.op === "press" && !keyEvents(s)) refuse(`step ${i + 1}: press needs a known key and modifiers from alt, ctrl, meta, shift`);
+    if (s.op === "scroll") {
+      const given = ["selector", "text", "by"].filter((k) => s[k] !== undefined);
+      if (given.length !== 1) refuse(`step ${i + 1}: scroll needs exactly one of selector, text or by`);
+      if (s.by !== undefined && !validBy(s.by)) refuse(`step ${i + 1}: scroll "by" must be a number of pixels or {"x":n,"y":n}`);
+      if ((s.selector !== undefined || s.text !== undefined) && !String(s.selector ?? s.text)) refuse(`step ${i + 1}: scroll target is empty`);
+    }
+    if (s.op === "select") {
+      if (!s.selector || typeof s.selector !== "string") refuse(`step ${i + 1}: select needs a selector`);
+      if ((s.label === undefined) === (s.value === undefined)) refuse(`step ${i + 1}: select needs exactly one of label or value`);
     }
   });
 }
@@ -147,7 +227,7 @@ class Cdp {
     this.ws = new WebSocket(url);
     this.nextId = 1;
     this.pending = new Map();
-    this.events = [];
+    this.onEvent = null;
     this.opened = new Promise((resolve, reject) => {
       this.ws.addEventListener("open", resolve);
       this.ws.addEventListener("error", () => reject(new Error("cannot connect to the browser")));
@@ -158,7 +238,7 @@ class Cdp {
         const { resolve, reject } = this.pending.get(msg.id);
         this.pending.delete(msg.id);
         msg.error ? reject(new Error(msg.error.message || "cdp error")) : resolve(msg.result ?? {});
-      } else if (msg.method) this.events.push(msg);
+      } else if (msg.method) this.onEvent?.(msg);
     });
   }
   send(method, params = {}, sessionId) {
@@ -258,8 +338,23 @@ async function main() {
   const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
   const page = (method, params) => cdp.send(method, params, sessionId);
+  let currentStep = 0;
+  const pageError = (kind, message) => out({ event: "page-error", kind, message: String(message).slice(0, 300), step: currentStep });
+  cdp.onEvent = (msg) => {
+    if (msg.sessionId && msg.sessionId !== sessionId) return;
+    const p = msg.params || {};
+    if (msg.method === "Runtime.exceptionThrown") {
+      const d = p.exceptionDetails || {};
+      pageError("exception", d.exception?.description || d.text || "uncaught exception");
+    } else if (msg.method === "Runtime.consoleAPICalled" && p.type === "error") {
+      pageError("console", (p.args || []).map((a) => a.value ?? a.description ?? a.type).join(" "));
+    } else if (msg.method === "Log.entryAdded" && p.entry?.level === "error") {
+      pageError("console", p.entry.text || "log error");
+    }
+  };
   await page("Page.enable");
   await page("Runtime.enable");
+  await page("Log.enable");
   const evaluate = async (expression) => {
     const r = await page("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.text || "script error");
@@ -278,6 +373,7 @@ async function main() {
   let failed = 0;
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
+    currentStep = i + 1;
     const t0 = Date.now();
     try {
       if (Date.now() > deadline) throw new Error("time limit reached");
@@ -294,7 +390,7 @@ async function main() {
       } else if (s.op === "click") {
         const find = s.selector
           ? `const el = document.querySelector(${JSON.stringify(String(s.selector))});`
-          : `const want = ${JSON.stringify(String(s.text ?? ""))}.toLowerCase(); const el = [...document.querySelectorAll("button,a,[role=button],input[type=button],input[type=submit],summary,label")].find((e) => ((e.innerText || e.value || e.getAttribute("aria-label") || "") + "").toLowerCase().includes(want));`;
+          : `const want = ${JSON.stringify(String(s.text ?? ""))}.toLowerCase(); const el = [...document.querySelectorAll("button,a,[role=button],[role=menuitem],[role=tab],[role=option],option,input[type=button],input[type=submit],summary,label")].find((e) => ((e.innerText || e.value || e.getAttribute("aria-label") || "") + "").toLowerCase().includes(want));`;
         const pos = await evaluate(center(find));
         if (!pos) throw new Error("nothing to click");
         for (const type of ["mousePressed", "mouseReleased"]) {
@@ -309,9 +405,37 @@ async function main() {
         }
         await page("Input.insertText", { text: String(s.text ?? "") });
       } else if (s.op === "press") {
-        const key = String(s.key ?? "");
-        await page("Input.dispatchKeyEvent", { type: "keyDown", key });
-        await page("Input.dispatchKeyEvent", { type: "keyUp", key });
+        for (const event of keyEvents(s)) await page("Input.dispatchKeyEvent", event);
+        await sleep(100);
+      } else if (s.op === "scroll") {
+        let ok;
+        if (s.by !== undefined) {
+          const by = typeof s.by === "number" ? { x: 0, y: s.by } : { x: s.by.x ?? 0, y: s.by.y ?? 0 };
+          ok = await evaluate(`(() => { window.scrollBy(${by.x}, ${by.y}); return true; })()`);
+        } else {
+          const find = s.selector
+            ? `const el = document.querySelector(${JSON.stringify(String(s.selector))});`
+            : `const want = ${JSON.stringify(String(s.text))}.toLowerCase(); const el = [...document.querySelectorAll("body *")].filter((e) => e.children.length === 0 || e.matches("button,a,label,summary,h1,h2,h3,h4,p,li,td,th")).find((e) => ((e.innerText || "") + "").toLowerCase().includes(want));`;
+          ok = await evaluate(`(() => { ${find} if (!el) return false; el.scrollIntoView({block: "center", inline: "nearest"}); return true; })()`);
+        }
+        if (!ok) throw new Error("nothing to scroll to");
+        await sleep(100);
+      } else if (s.op === "select") {
+        const wanted = s.label !== undefined ? { by: "label", text: String(s.label) } : { by: "value", text: String(s.value) };
+        const r = await evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(s.selector)});
+          if (!el || el.tagName !== "SELECT") return { ok: false, error: "no-select" };
+          const want = ${JSON.stringify(wanted.text)};
+          const opt = [...el.options].find((o) => (${JSON.stringify(wanted.by)} === "label" ? (o.label || o.textContent || "").trim() : o.value) === want);
+          if (!opt) return { ok: false, error: "no-option" };
+          el.value = opt.value;
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          return { ok: true };
+        })()`);
+        if (!r?.ok) {
+          throw new Error(r?.error === "no-option" ? `no option ${wanted.by} "${wanted.text.slice(0, 60)}" in ${s.selector.slice(0, 60)}` : `no <select> matches ${s.selector.slice(0, 60)}`);
+        }
         await sleep(100);
       } else if (s.op === "wait-text") {
         const want = String(s.text ?? "");
@@ -330,7 +454,16 @@ async function main() {
         if (value === null) throw new Error("nothing matches the selector");
         extra = { text: String(value).slice(0, MAX_TEXT) };
       } else if (s.op === "screenshot") {
-        const { data } = await page("Page.captureScreenshot", { format: "png" });
+        let shot = { format: "png" };
+        if (s.fullPage) {
+          // The whole page: its content size as the clip, drawn beyond the viewport.
+          const m = await page("Page.getLayoutMetrics");
+          const size = m.cssContentSize || m.contentSize || {};
+          const width = Math.ceil(size.width || 1280);
+          const height = Math.min(Math.ceil(size.height || 800), 16000);
+          shot = { format: "png", captureBeyondViewport: true, clip: { x: 0, y: 0, width, height, scale: 1 } };
+        }
+        const { data } = await page("Page.captureScreenshot", shot);
         const bytes = Buffer.from(data, "base64");
         if (bytes.length > MAX_PNG_BYTES) throw new Error("screenshot is over 5 MB");
         const file = path.join(args.out, `${s.name}.png`);

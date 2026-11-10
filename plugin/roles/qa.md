@@ -16,8 +16,15 @@ Act as a careful tester who tries a change the way a person would: by opening th
 Drive the browser only with the plugin's driver: `node "${CLAUDE_PLUGIN_ROOT}/scripts/qa-browser.mjs" --out <run>/reviews/qa --steps <file>` (steps are JSON lines on stdin or in the file; see the header of the script). It starts a headless Chrome-family browser, runs the steps and prints one JSON result line per step.
 
 1. For each criterion `S<n>.<k>`: `open` the URL, do what the criterion says (`click`, `type`, `press`), `wait-text` for what it says should appear, then `screenshot` it with the name `S<n>.<k>`. Use `text` to read what is on the page when you need to quote it.
+   The steps beyond `open`, `click`, `type`, `wait-text`, `text` and `screenshot`:
+   - `{"op":"scroll","selector":".log"}`, `{"op":"scroll","text":"Receipt"}` or `{"op":"scroll","by":600}` brings an element into view, or scrolls that many pixels down.
+   - `{"op":"press","key":"Meta+K"}` or `{"op":"press","key":"K","modifiers":["meta"]}` sends real key events with modifiers (`alt`, `ctrl`, `meta`, `shift`); keys are Enter, Escape, Tab, Space, the arrows, PageUp, PageDown, Home, End, Backspace, Delete, letters and digits.
+   - `{"op":"select","selector":"select#theme","label":"Light"}` (or `"value"`) chooses an option and fires `input` and `change`. A missing option fails the step and names it.
+   - `{"op":"screenshot","name":"S1.1","fullPage":true}` captures the whole page, not just the viewport (same 5 MB cap; over it, the step fails and no file is written).
+   - `click` with `text` also finds menu items, tabs and options.
 2. A step that fails (`ok:false`) is the evidence: report what it said. Try a criterion once more only when the failure looks like slow loading.
-3. Exit code 3 with `no Chrome-family browser found` means QA cannot run here: write `QA: error - no Chrome-family browser found` and stop.
+3. The driver prints `{"event":"page-error","kind":"exception"|"console","message":"...","step":n}` for every uncaught page exception, `console.error` call and error log entry, between the step lines. A page error seen during a criterion makes that criterion FAIL (or ERROR when it stopped you from trying it), and the row's reason carries the message. A page error that appears before the first step (`step` 0) belongs to the page load: mention it, and judge the criterion on what you can see.
+4. Exit code 3 with `no Chrome-family browser found` means QA cannot run here: write `QA: error - no Chrome-family browser found` and stop.
 
 ## Result file
 
