@@ -39,6 +39,7 @@ vi.mock("../bridge", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
 
 const { SettingsPage, loginText } = await import("./SettingsPage");
+const { SETTINGS_SECTIONS } = await import("../settings/sections");
 
 function view(): SettingsView {
   return {
@@ -418,6 +419,52 @@ describe("SettingsPage focus", () => {
     render(<SettingsPage view={view()} onSaved={() => {}} onClose={onClose} />);
     fireEvent.change(screen.getByRole("combobox", { name: "Capture policy of Personal" }), { target: { value: "off" } });
     fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Discard unsaved changes?" })).toBeTruthy();
+  });
+});
+
+describe("SettingsPage index and filter", () => {
+  const sections = () => [...document.querySelectorAll<HTMLElement>("section.settings-section")];
+
+  it("renders every listed section and nothing else, in the list's order", () => {
+    render(<SettingsPage view={view()} onSaved={() => {}} onClose={() => {}} />);
+    expect(sections().map((el) => el.getAttribute("aria-label"))).toEqual([...SETTINGS_SECTIONS]);
+    const index = screen.getByRole("navigation", { name: "Settings sections" });
+    expect([...index.querySelectorAll("button")].map((b) => b.textContent)).toEqual([...SETTINGS_SECTIONS]);
+  });
+
+  it("marks the index item of the section in view with aria-current", () => {
+    render(<SettingsPage view={view()} onSaved={() => {}} onClose={() => {}} />);
+    const index = screen.getByRole("navigation", { name: "Settings sections" });
+    expect(index.querySelector('[aria-current="true"]')?.textContent).toBe("Claude accounts");
+    fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
+    const current = index.querySelectorAll('[aria-current="true"]');
+    expect(current).toHaveLength(1);
+    expect(current[0].textContent).toBe("Terminal");
+  });
+
+  it("hides fields that do not match without unmounting them, keeping an edit", () => {
+    render(<SettingsPage view={view()} onSaved={() => {}} onClose={() => {}} />);
+    const policy = screen.getByRole("combobox", { name: "Capture policy of Personal" }) as HTMLSelectElement;
+    fireEvent.change(policy, { target: { value: "off" } });
+    fireEvent.change(screen.getByRole("searchbox", { name: "Filter settings" }), { target: { value: "theme" } });
+    const shown = sections().filter((el) => !el.hidden);
+    expect(shown.map((el) => el.getAttribute("aria-label"))).toEqual(["Appearance"]);
+    expect(policy.isConnected).toBe(true);
+    expect(policy.closest("section")?.hidden).toBe(true);
+    expect(policy.value).toBe("off");
+    fireEvent.change(screen.getByRole("searchbox", { name: "Filter settings" }), { target: { value: "" } });
+    expect(sections().every((el) => !el.hidden)).toBe(true);
+    expect((screen.getByRole("combobox", { name: "Capture policy of Personal" }) as HTMLSelectElement).value).toBe("off");
+  });
+
+  it("still asks before discarding after an edit made while the filter hid it", () => {
+    const onClose = vi.fn();
+    render(<SettingsPage view={view()} onSaved={() => {}} onClose={onClose} />);
+    fireEvent.change(screen.getByRole("combobox", { name: "Capture policy of Personal" }), { target: { value: "off" } });
+    fireEvent.change(screen.getByRole("searchbox", { name: "Filter settings" }), { target: { value: "theme" } });
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByRole("dialog", { name: "Discard unsaved changes?" })).toBeTruthy();
   });

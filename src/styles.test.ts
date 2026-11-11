@@ -74,3 +74,12 @@ describe("size tokens follow the UI scale (S4)", () => {
     expect(raw.map((m) => m[0])).toEqual([]);
   });
 });
+
+describe("Settings filter (S6)", () => {
+  it("has a global [hidden] rule that beats the display set by field classes", () => {
+    expect(noComments).toMatch(/\n\[hidden\] \{\s*display: none !important;\s*\}/);
+    for (const cls of [".field-label", ".field-row", ".check-label"]) {
+      expect(noComments).toMatch(new RegExp(`\\n\\${cls}[^{]*\\{[^}]*display:`));
+    }
+  });
+});

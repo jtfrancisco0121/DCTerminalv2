@@ -29,6 +29,7 @@ import {
 } from "../bridge";
 import { accountsProblem, addAccount, MAX_ACCOUNTS } from "../settings/accounts";
 import { ATTENTION_KINDS, DEFAULT_EXPORT_ENDPOINT, PUSH_KINDS } from "../run/words";
+import { currentSection, matchesFilter, SETTINGS_SECTIONS } from "../settings/sections";
 import { THEME_CHOICES } from "../theme";
 import { detectPlatform, revealLabel, type Platform } from "../terminal/keys";
 import { Dialog } from "./Dialog";
@@ -221,6 +222,40 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
   }, []);
 
   const pageRef = useRef<HTMLDivElement>(null);
+  const [filter, setFilter] = useState("");
+  const [current, setCurrent] = useState(0);
+  const sectionEls = () => [...(pageRef.current?.querySelectorAll<HTMLElement>("section.settings-section") ?? [])];
+  const sectionByName = (name: string) => sectionEls().find((el) => el.getAttribute("aria-label") === name);
+  // The filter only sets `hidden`: nothing unmounts, so an edit in a field the filter hides is kept.
+  useEffect(() => {
+    const query = filter.trim();
+    for (const el of sectionEls()) {
+      const children = [...el.children].filter((child): child is HTMLElement => child instanceof HTMLElement && child.tagName !== "H2");
+      const titleMatches = query === "" || matchesFilter(el.getAttribute("aria-label") ?? "", query);
+      let shown = 0;
+      for (const child of children) {
+        const names = [...child.querySelectorAll("[aria-label]")].map((node) => node.getAttribute("aria-label")).join(" ");
+        const match = titleMatches || matchesFilter(`${child.textContent ?? ""} ${names}`, query);
+        child.hidden = !match;
+        if (match) shown += 1;
+      }
+      el.hidden = !titleMatches && shown === 0;
+    }
+  });
+  const spy = () => {
+    const page = pageRef.current;
+    if (!page) return;
+    const top = page.getBoundingClientRect().top;
+    const tops = SETTINGS_SECTIONS.map((name) => {
+      const el = sectionByName(name);
+      return el && !el.hidden ? el.getBoundingClientRect().top - top + page.scrollTop : Number.POSITIVE_INFINITY;
+    });
+    setCurrent(currentSection(tops, page.scrollTop));
+  };
+  const goTo = (name: string, index: number) => {
+    sectionByName(name)?.scrollIntoView?.({ block: "start" });
+    setCurrent(index);
+  };
   // Focus lands on the page itself so Escape works at once; it returns to the opener on close.
   useDialogFocus(pageRef, null);
   useEffect(() => {
@@ -480,6 +515,7 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
       role="dialog"
       aria-label="Settings"
       tabIndex={-1}
+      onScroll={spy}
       onKeyDown={(event) => {
         if (event.key !== "Escape") return;
         event.preventDefault();
@@ -513,6 +549,30 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
         </Dialog>
       )}
       {notice && <InlineNotice tone={notice.tone}>{notice.text}</InlineNotice>}
+      <nav className="settings-index" aria-label="Settings sections">
+        <input
+          type="search"
+          className="text-input"
+          aria-label="Filter settings"
+          placeholder="Filter settings"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+        />
+        <ul>
+          {SETTINGS_SECTIONS.map((name, index) => (
+            <li key={name}>
+              <button
+                type="button"
+                className="settings-index-item"
+                aria-current={current === index ? "true" : undefined}
+                onClick={() => goTo(name, index)}
+              >
+                {name}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </nav>
 
       <section className="settings-section" aria-label="Claude accounts">
         <h2>Claude accounts</h2>

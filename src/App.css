@@ -933,8 +933,66 @@ body,
   inset: 0;
   z-index: var(--z-overlay);
   overflow: auto;
-  padding: 1rem max(1rem, calc(50vw - 24rem));
+  padding: 1rem max(1rem, calc(50vw - 30rem));
   background: var(--bg);
+}
+
+/* Settings: an index in the left column, header and sections in the right one. */
+.settings-page {
+  display: grid;
+  grid-template-columns: 11rem minmax(0, 1fr);
+  column-gap: var(--space-4);
+  align-content: start;
+  padding-top: calc(var(--titlebar-h) + 1rem);
+}
+
+.settings-page > * {
+  grid-column: 2;
+}
+
+.settings-page > .settings-index {
+  grid-column: 1;
+  grid-row: 1 / span 30;
+  align-self: start;
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.settings-index ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.settings-index-item {
+  display: block;
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-index-item:hover {
+  background: var(--bg-hover);
+}
+
+.settings-index-item[aria-current="true"] {
+  background: var(--bg-muted);
+  color: var(--fg);
+}
+
+/* A field the Settings filter hides: .field-label, .field-row and .check-label set display, which would win over [hidden]. */
+[hidden] {
+  display: none !important;
 }
 
 .settings-header {

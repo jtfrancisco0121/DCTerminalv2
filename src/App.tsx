@@ -62,6 +62,7 @@ import { runFinished, stageText, tabProgress, type TabProgress } from "./run/wor
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
 import { TabBar } from "./components/TabBar";
+import { SETTINGS_SECTIONS } from "./settings/sections";
 import { applyUiScale } from "./uiScale";
 import { TitleBar } from "./components/TitleBar";
 import { UsagePopover } from "./components/UsagePopover";
@@ -88,18 +89,6 @@ import "./App.css";
 const USAGE_POLL_MS = 60_000;
 /** How often the status bar reads the attention summary (an in-memory read). */
 const ATTENTION_POLL_MS = 4_000;
-
-/** The Settings sections (their `aria-label`s) the command palette opens. */
-const SETTINGS_SECTIONS = [
-  "Claude accounts",
-  "ClickUp",
-  "Terminal",
-  "Runs",
-  "Activity",
-  "Notifications",
-  "Phone push",
-  "Appearance",
-];
 
 /** This window's label: the id every window-scoped command names. */
 function currentWindowId(): string {
