@@ -1,12 +1,14 @@
 /**
  * Colour themes. The palette lives in App.css as CSS variables on :root
- * (GitHub Dark) and one [data-theme="…"] block per other preset; this module
+ * (Soft Dusk, the default) and one [data-theme="…"] block per preset; this module
  * only flips the attribute, keeps the terminal palette in step, and caches
  * the choice so the next start paints the right colours before settings load.
  */
 import type { ITheme } from "@xterm/xterm";
 
 export type ThemeId =
+  | "soft-dusk"
+  | "soft-dusk-light"
   | "github-dark"
   | "github-light"
   | "dracula"
@@ -16,8 +18,15 @@ export type ThemeId =
 /** What is saved: a concrete theme, or "system" to follow the OS. */
 export type ThemeChoice = ThemeId | "system";
 
-export const DEFAULT_THEME: ThemeId = "github-dark";
+export const DEFAULT_THEME: ThemeId = "soft-dusk";
 export const SYSTEM_THEME = "system";
+
+/** What "Match system" paints: a dark and a light theme, one per OS setting. */
+export type ThemePair = { dark: ThemeId; light: ThemeId };
+/** The pair of a new install. */
+export const DEFAULT_PAIR: ThemePair = { dark: "soft-dusk", light: "soft-dusk-light" };
+/** The pair Match system painted before the choice existed: an existing user keeps it until they pick another. */
+export const LEGACY_PAIR: ThemePair = { dark: "github-dark", light: "github-light" };
 
 /** Swatch dots for the Settings picker: background, accent, success, attention, done. */
 export type ThemeSwatch = [string, string, string, string, string];
@@ -28,6 +37,18 @@ export const THEMES: {
   scheme: "dark" | "light";
   swatch: ThemeSwatch;
 }[] = [
+  {
+    id: "soft-dusk",
+    label: "Soft Dusk",
+    scheme: "dark",
+    swatch: ["#15171c", "#8ea2ff", "#8fd19e", "#f2c97d", "#b9a0f2"],
+  },
+  {
+    id: "soft-dusk-light",
+    label: "Soft Dusk Light",
+    scheme: "light",
+    swatch: ["#eef0f3", "#5562d6", "#2f8a4c", "#a86a00", "#7a4ccf"],
+  },
   {
     id: "github-dark",
     label: "GitHub Dark",
@@ -73,9 +94,10 @@ export const THEME_CHOICES: { id: ThemeChoice; label: string }[] = [
 ];
 
 const CACHE_KEY = "dcterminalv2.theme";
+const PAIR_CACHE_KEY = "dcterminalv2.themePair";
 const DARK_QUERY = "(prefers-color-scheme: dark)";
 
-/** A saved value as a choice. Unknown or missing values fall back to GitHub Dark. */
+/** A saved value as a choice. Unknown or missing values fall back to the default theme. */
 export function normalizeTheme(id: string | null | undefined): ThemeChoice {
   if (id === SYSTEM_THEME) return SYSTEM_THEME;
   return THEMES.some((theme) => theme.id === id) ? (id as ThemeId) : DEFAULT_THEME;
@@ -89,11 +111,23 @@ export function systemPrefersDark(): boolean {
   }
 }
 
-/** The concrete theme for a saved choice. */
-export function resolveTheme(id: string | null | undefined): ThemeId {
+/** A saved pair as a pair: a theme of the wrong scheme, an unknown id or a missing value gets `fallback`'s entry. */
+export function normalizePair(pair: { dark?: string | null; light?: string | null } | null | undefined, fallback: ThemePair = DEFAULT_PAIR): ThemePair {
+  const pick = (id: string | null | undefined, scheme: "dark" | "light", other: ThemeId) =>
+    THEMES.find((theme) => theme.id === id && theme.scheme === scheme)?.id ?? other;
+  return { dark: pick(pair?.dark, "dark", fallback.dark), light: pick(pair?.light, "light", fallback.light) };
+}
+
+/** The Match system pair of saved UI settings (a missing entry is the new-install one). */
+export function pairOf(ui: { systemDark?: string | null; systemLight?: string | null }): ThemePair {
+  return normalizePair({ dark: ui.systemDark, light: ui.systemLight });
+}
+
+/** The concrete theme for a saved choice; "system" resolves through `pair` by the OS setting. */
+export function resolveTheme(id: string | null | undefined, pair: ThemePair): ThemeId {
   const choice = normalizeTheme(id);
   if (choice !== SYSTEM_THEME) return choice;
-  return systemPrefersDark() ? "github-dark" : "github-light";
+  return systemPrefersDark() ? pair.dark : pair.light;
 }
 
 /** Calls back when the OS light/dark setting changes. Returns the unsubscribe. */
@@ -110,6 +144,52 @@ export function watchSystemTheme(onChange: () => void): () => void {
 }
 
 export const TERMINAL_THEMES: Record<ThemeId, ITheme> = {
+  "soft-dusk": {
+    background: "#1b1e24",
+    foreground: "#c8ccd4",
+    cursor: "#8ea2ff",
+    cursorAccent: "#1b1e24",
+    selectionBackground: "#343a52",
+    black: "#2c3039",
+    red: "#f2808c",
+    green: "#8fd19e",
+    yellow: "#f2c97d",
+    blue: "#8ea2ff",
+    magenta: "#b9a0f2",
+    cyan: "#7fd0d6",
+    white: "#c8ccd4",
+    brightBlack: "#6f7684",
+    brightRed: "#ff9aa3",
+    brightGreen: "#a8e0b4",
+    brightYellow: "#f7d99a",
+    brightBlue: "#b3c0ff",
+    brightMagenta: "#cfbcf8",
+    brightCyan: "#9fe0e5",
+    brightWhite: "#eef0f4",
+  },
+  "soft-dusk-light": {
+    background: "#fbfbfc",
+    foreground: "#343a44",
+    cursor: "#5562d6",
+    cursorAccent: "#fbfbfc",
+    selectionBackground: "#d3d8f7",
+    black: "#2a2f38",
+    red: "#c4313f",
+    green: "#2a6a45",
+    yellow: "#8a5d00",
+    blue: "#4350c0",
+    magenta: "#7a4ccf",
+    cyan: "#1b7c83",
+    white: "#5f6775",
+    brightBlack: "#5f6775",
+    brightRed: "#a6232f",
+    brightGreen: "#2f8a4c",
+    brightYellow: "#7d4e00",
+    brightBlue: "#3f4bb8",
+    brightMagenta: "#7a4ccf",
+    brightCyan: "#1b7c83",
+    brightWhite: "#5f6775",
+  },
   "github-dark": {
     background: "#0d1117",
     foreground: "#e6edf3",
@@ -255,13 +335,13 @@ export const TERMINAL_THEMES: Record<ThemeId, ITheme> = {
 };
 
 /** The terminal palette for a theme. */
-export function terminalTheme(id: string | null | undefined): ITheme {
-  return TERMINAL_THEMES[resolveTheme(id)];
+export function terminalTheme(id: string | null | undefined, pair: ThemePair): ITheme {
+  return TERMINAL_THEMES[resolveTheme(id, pair)];
 }
 
 /** The theme a choice paints is a light one (Claude Code is told so). */
-export function isLightTheme(id: string | null | undefined): boolean {
-  const theme = resolveTheme(id);
+export function isLightTheme(id: string | null | undefined, pair: ThemePair): boolean {
+  const theme = resolveTheme(id, pair);
   return THEMES.find((item) => item.id === theme)?.scheme === "light";
 }
 
@@ -273,19 +353,31 @@ export function cachedTheme(): ThemeChoice {
   }
 }
 
+/** The cached Match system pair. A missing or junk cache is an existing user's: the GitHub pair they always had. */
+export function cachedThemePair(): ThemePair {
+  try {
+    const raw = window.localStorage.getItem(PAIR_CACHE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as { dark?: string; light?: string }) : null;
+    return normalizePair(parsed, LEGACY_PAIR);
+  } catch {
+    return LEGACY_PAIR;
+  }
+}
+
 /**
- * Switch the app's CSS variables to a theme and remember the choice. For
- * "system" the OS setting picks the palette; the choice, not the palette, is
- * cached. Returns the concrete theme applied.
+ * Switch the app's CSS variables to a theme and remember the choice and the
+ * Match system pair. For "system" the OS setting picks the palette from `pair`;
+ * the choice, not the palette, is cached. Returns the concrete theme applied.
  */
-export function applyTheme(id: string | null | undefined): ThemeId {
+export function applyTheme(id: string | null | undefined, pair: ThemePair): ThemeId {
   const choice = normalizeTheme(id);
-  const theme = resolveTheme(choice);
+  const theme = resolveTheme(choice, pair);
   const root = document.documentElement;
   root.dataset.theme = theme;
   root.style.colorScheme = THEMES.find((item) => item.id === theme)?.scheme ?? "dark";
   try {
     window.localStorage.setItem(CACHE_KEY, choice);
+    window.localStorage.setItem(PAIR_CACHE_KEY, JSON.stringify(pair));
   } catch {
     // Private mode or storage disabled: the setting still lives in settings.json.
   }

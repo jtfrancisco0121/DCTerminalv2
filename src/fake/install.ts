@@ -6,9 +6,9 @@
 // fixtures/fake/*.json, `transformCallback` keeps callbacks, and the event plugin commands are faked so `listen` works.
 // A command without a fixture rejects with `fake: <command> not faked`. `fixtures/fake/not-faked.json` lists the
 // commands that are faked on purpose with no answer, each with its reason (src/fake/coverage.test.ts keeps both lists
-// complete). Three commands have a small behaviour on top of their fixture: `pty_open` pushes a banner through its
+// complete). Four commands have a small behaviour on top of their fixture: `pty_open` pushes a banner through its
 // channel, `resume_run` opens the run's tab in the faked app state, and `webqa_targets_save` keeps the saved Web QA targets
-// for `get_settings`.
+// for `get_settings`, and `set_ui_settings` echoes the look it is given.
 import app from "../../fixtures/fake/app.json";
 import clickup from "../../fixtures/fake/clickup.json";
 import run from "../../fixtures/fake/run.json";
@@ -62,6 +62,8 @@ export function installFakeBackend(
   let openedTab: { id: string } | null = null;
   // The Web QA targets saved in this session: `get_settings` shows them, so Settings and Runs agree (the fixture has none).
   let webQaTargets: unknown[] | null = null;
+  // The look saved in this session (`set_ui_settings` echoes it, `get_settings` shows it).
+  let savedUi: Record<string, unknown> | null = null;
 
   const invoke = async (
     command: string,
@@ -89,11 +91,18 @@ export function installFakeBackend(
         webQaTargets = JSON.parse(JSON.stringify(args?.targets ?? []));
         return { ...saved, targets: JSON.parse(JSON.stringify(webQaTargets)) };
       }
+      case "set_ui_settings": {
+        // Echo the saved look, and keep it for `get_settings` so the page shows what a click chose.
+        const shape = fakeAnswer(command, fixtures) as Record<string, unknown>;
+        savedUi = { ...shape, ...JSON.parse(JSON.stringify(args?.ui ?? {})) };
+        return JSON.parse(JSON.stringify(savedUi));
+      }
       case "get_settings": {
-        const view = fakeAnswer(command, fixtures) as { webQa?: Record<string, unknown> };
+        const view = fakeAnswer(command, fixtures) as { webQa?: Record<string, unknown>; ui?: Record<string, unknown> };
+        const shown = savedUi ? { ...view, ui: JSON.parse(JSON.stringify(savedUi)) } : view;
         return webQaTargets
-          ? { ...view, webQa: { ...view.webQa, targets: JSON.parse(JSON.stringify(webQaTargets)) } }
-          : view;
+          ? { ...shown, webQa: { ...view.webQa, targets: JSON.parse(JSON.stringify(webQaTargets)) } }
+          : shown;
       }
       case "get_app_state": {
         const state = fakeAnswer(command, fixtures) as { activeTabId: string | null; tabs: unknown[] };

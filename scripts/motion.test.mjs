@@ -13,7 +13,7 @@ const declared = (property) =>
 
 describe("motion", () => {
   it("defines the tokens on :root", () => {
-    const root = rules.find((rule) => rule.selector === ":root");
+    const root = rules.find((rule) => /^:root(,\s*:root\[data-theme="soft-dusk"\])?$/.test(rule.selector));
     expect(root?.body).toMatch(/--ease: cubic-bezier\(/);
     expect(root?.body).toMatch(/--dur-fast: 120ms;/);
     expect(root?.body).toMatch(/--dur-spin: 900ms;/);
@@ -41,8 +41,10 @@ describe("motion", () => {
     for (const { selector, value } of transitions) {
       if (value.startsWith("none")) continue;
       expect(value, selector).not.toMatch(/\b(?:width|all)\b/);
-      expect(value, selector).toContain("var(--dur-fast)");
-      expect(value.replace(/var\(--dur-fast\)|var\(--ease\)/g, ""), selector).not.toMatch(/\d+m?s/);
+      // The run panel's folds have their own duration (--dur-fold, defined on .fold).
+      const duration = /^\.fold/.test(selector) ? "var(--dur-fold)" : "var(--dur-fast)";
+      expect(value, selector).toContain(duration);
+      expect(value.replace(/var\(--dur-fast\)|var\(--dur-fold\)|var\(--ease\)/g, ""), selector).not.toMatch(/\d+m?s/);
     }
   });
 

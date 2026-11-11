@@ -70,7 +70,6 @@
   "set_split_ratio": "Changes the real window and tab state",
   "set_tab_folder": "Changes the real window and tab state",
   "set_terminal_settings": "Writes real settings, secrets or notifications",
-  "set_ui_settings": "Writes real settings, secrets or notifications",
   "set_window_account": "Changes the real window and tab state",
   "slop_check": "Runs git or the check command in a real worktree",
   "split_tab": "Changes the real window and tab state",

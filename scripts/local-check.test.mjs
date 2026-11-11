@@ -16,7 +16,11 @@ import {
   spawnCommand,
   steps,
   stepsFor,
+  strayFontSizes,
   strayHexColours,
+  unexplainedPx,
+  assertNoStrayFontSizes,
+  assertNoUnexplainedPx,
   usesCmdShim,
   windowsCmdPayload,
   windowsInvocation,
@@ -269,6 +273,13 @@ describe("strayHexColours", () => {
     expect(strayHexColours(css)).toEqual([]);
   });
 
+  it("accepts a comma list of theme selectors and refuses a mixed list", () => {
+    const ok = ':root, :root[data-theme="soft-dusk"] {\n  --bg: #1b1d2a;\n}\n';
+    expect(strayHexColours(ok)).toEqual([]);
+    const mixed = ':root, .panel {\n  --bg: #1b1d2a;\n}\n';
+    expect(strayHexColours(mixed)).toEqual([{ line: 2, text: "--bg: #1b1d2a;" }]);
+  });
+
   it("refuses a hex in a plain rule, in a var() fallback and after a theme block, with the line", () => {
     const css = [
       ":root {",
@@ -317,6 +328,98 @@ describe("strayHexColours", () => {
     const file = path.join(dir, "App.css");
     writeFileSync(file, ".a {\n  color: #fff;\n}\n");
     expect(() => assertNoStrayHexColours(file)).toThrow(/App\.css:2: color: #fff;/);
+  });
+});
+
+describe("strayFontSizes", () => {
+  it("refuses a raw size and allows var(), inherit and font tokens in a theme block", () => {
+    const css = [
+      ":root {",
+      "  --text-xs: 0.75rem;",
+      "}",
+      ".a { font-size: 12px; }",
+      ".b {",
+      "  font-size: 0.85em;",
+      "}",
+      ".c { font-size: var(--text-sm); }",
+      ".d { font-size: inherit; }",
+      ".e { font-size: calc(var(--text-sm) * 2); }",
+    ].join("\n");
+    expect(strayFontSizes(css)).toEqual([
+      { line: 4, text: ".a { font-size: 12px; }" },
+      { line: 6, text: "font-size: 0.85em;" },
+      { line: 10, text: ".e { font-size: calc(var(--text-sm) * 2); }" },
+    ]);
+  });
+
+  it("skips theme blocks", () => {
+    const css = ':root[data-theme="nord"] {\n  font-size: 14px;\n}\n';
+    expect(strayFontSizes(css)).toEqual([]);
+  });
+
+  it("reports nothing for the real App.css and throws naming the line for a bad file", () => {
+    expect(strayFontSizes(readFileSync("src/App.css", "utf8"))).toEqual([]);
+    expect(() => assertNoStrayFontSizes()).not.toThrow();
+    const dir = mkdtempSync(path.join(tmpdir(), "font-"));
+    const file = path.join(dir, "App.css");
+    writeFileSync(file, ".a {\n  font-size: 11px;\n}\n");
+    expect(() => assertNoStrayFontSizes(file)).toThrow(/App\.css:2: font-size: 11px;/);
+  });
+});
+
+describe("unexplainedPx", () => {
+  it("refuses a px length in a normal rule and in a :root token line", () => {
+    const css = [
+      ".a {",
+      "  padding: 4px 0.5rem;",
+      "}",
+      ":root {",
+      "  --space-9: 12px;",
+      "}",
+    ].join("\n");
+    expect(unexplainedPx(css)).toEqual([
+      { line: 2, text: "padding: 4px 0.5rem;" },
+      { line: 5, text: "--space-9: 12px;" },
+    ]);
+  });
+
+  it("refuses a px length in a theme block too", () => {
+    const css = ':root[data-theme="nord"] {\n  --gap: 3px;\n}\n';
+    expect(unexplainedPx(css)).toEqual([{ line: 2, text: "--gap: 3px;" }]);
+  });
+
+  it("allows borders, outlines, shadows, @media preludes, zero and a px: comment", () => {
+    const css = [
+      "@media (max-width: 1000px) {",
+      "  .a { gap: 0.5rem; }",
+      "}",
+      ".b {",
+      "  border: 1px solid red;",
+      "  border-radius: 6px;",
+      "  outline: 2px dashed red;",
+      "  box-shadow: 0 1px 3px red;",
+      "  margin: 0px;",
+      "  width: 1px; /* px: visually hidden */",
+      "}",
+    ].join("\n");
+    expect(unexplainedPx(css)).toEqual([]);
+  });
+
+  it("needs a reason after px:, and reports a multi-line value on the line of its px", () => {
+    const css = ".a {\n  width: 3px; /* px: */\n  background:\n    linear-gradient(red 0 2px, blue 2px 6px);\n}\n";
+    expect(unexplainedPx(css)).toEqual([
+      { line: 2, text: "width: 3px; /* px: */" },
+      { line: 4, text: "linear-gradient(red 0 2px, blue 2px 6px);" },
+    ]);
+  });
+
+  it("reports nothing for the real App.css and throws naming the line for a bad file", () => {
+    expect(unexplainedPx(readFileSync("src/App.css", "utf8"))).toEqual([]);
+    expect(() => assertNoUnexplainedPx()).not.toThrow();
+    const dir = mkdtempSync(path.join(tmpdir(), "px-"));
+    const file = path.join(dir, "App.css");
+    writeFileSync(file, ".a {\n  gap: 6px;\n}\n");
+    expect(() => assertNoUnexplainedPx(file)).toThrow(/App\.css:2: gap: 6px;/);
   });
 });
 

@@ -151,3 +151,21 @@ describe("RunPanelShell", () => {
     vi.useRealTimers();
   });
 });
+
+describe("RunPanelShell collapsed rail label", () => {
+  beforeEach(() => window.localStorage.clear());
+  afterEach(cleanup);
+
+  it("shows what the run waits for as text, not only a dot", () => {
+    window.localStorage.setItem(layoutKey("main"), JSON.stringify({ width: 20, collapsed: true }));
+    shell({ attention: true, waitingFor: "plan-approval", stage: "plan-approval" });
+    expect(screen.getByText("Plan")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Expand run panel" }).textContent).toContain("Plan");
+  });
+
+  it("shows no label when the run waits for nothing", () => {
+    window.localStorage.setItem(layoutKey("main"), JSON.stringify({ width: 20, collapsed: true }));
+    shell({ attention: false });
+    expect(document.querySelector(".run-rail-label")).toBeNull();
+  });
+});

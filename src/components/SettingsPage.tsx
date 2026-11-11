@@ -25,11 +25,14 @@ import {
   type RunSettings,
   type SettingsView,
   type TerminalSettings,
+  type UiSettings,
   type TriageScheduleRow,
 } from "../bridge";
 import { accountsProblem, addAccount, MAX_ACCOUNTS } from "../settings/accounts";
 import { ATTENTION_KINDS, DEFAULT_EXPORT_ENDPOINT, PUSH_KINDS } from "../run/words";
-import { THEME_CHOICES } from "../theme";
+import { currentSection, matchesFilter, SETTINGS_SECTIONS } from "../settings/sections";
+import { pairOf, SYSTEM_THEME, THEMES, type ThemeId } from "../theme";
+import { UI_SCALES } from "../uiScale";
 import { detectPlatform, revealLabel, type Platform } from "../terminal/keys";
 import { Dialog } from "./Dialog";
 import { useDialogFocus } from "./useDialogFocus";
@@ -221,6 +224,40 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
   }, []);
 
   const pageRef = useRef<HTMLDivElement>(null);
+  const [filter, setFilter] = useState("");
+  const [current, setCurrent] = useState(0);
+  const sectionEls = () => [...(pageRef.current?.querySelectorAll<HTMLElement>("section.settings-section") ?? [])];
+  const sectionByName = (name: string) => sectionEls().find((el) => el.getAttribute("aria-label") === name);
+  // The filter only sets `hidden`: nothing unmounts, so an edit in a field the filter hides is kept.
+  useEffect(() => {
+    const query = filter.trim();
+    for (const el of sectionEls()) {
+      const children = [...el.children].filter((child): child is HTMLElement => child instanceof HTMLElement && child.tagName !== "H2");
+      const titleMatches = query === "" || matchesFilter(el.getAttribute("aria-label") ?? "", query);
+      let shown = 0;
+      for (const child of children) {
+        const names = [...child.querySelectorAll("[aria-label]")].map((node) => node.getAttribute("aria-label")).join(" ");
+        const match = titleMatches || matchesFilter(`${child.textContent ?? ""} ${names}`, query);
+        child.hidden = !match;
+        if (match) shown += 1;
+      }
+      el.hidden = !titleMatches && shown === 0;
+    }
+  });
+  const spy = () => {
+    const page = pageRef.current;
+    if (!page) return;
+    const top = page.getBoundingClientRect().top;
+    const tops = SETTINGS_SECTIONS.map((name) => {
+      const el = sectionByName(name);
+      return el && !el.hidden ? el.getBoundingClientRect().top - top + page.scrollTop : Number.POSITIVE_INFINITY;
+    });
+    setCurrent(currentSection(tops, page.scrollTop));
+  };
+  const goTo = (name: string, index: number) => {
+    sectionByName(name)?.scrollIntoView?.({ block: "start" });
+    setCurrent(index);
+  };
   // Focus lands on the page itself so Escape works at once; it returns to the opener on close.
   useDialogFocus(pageRef, null);
   useEffect(() => {
@@ -407,16 +444,36 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
   };
 
   const [editor, setEditor] = useState(view.ui.editorCommand ?? "");
+  const pair = pairOf(view.ui);
+  const dark = THEMES.find((theme) => theme.id === pair.dark) ?? THEMES[0];
+  const light = THEMES.find((theme) => theme.id === pair.light) ?? THEMES[1];
   const [endpointDraft, setEndpointDraft] = useState(view.observe?.exportEndpoint ?? DEFAULT_EXPORT_ENDPOINT);
 
-  const saveEditor = async () => {
+  // The look settings save on change, each from the latest saved `ui`, so a theme click never reverts a scale change.
+  const uiRef = useRef(view.ui);
+  useEffect(() => {
+    uiRef.current = view.ui;
+  }, [view.ui]);
+  const saveUi = async (patch: Partial<UiSettings>): Promise<UiSettings | null> => {
+    // Optimistic: a second change made before this save returns builds on this one, not on the old `ui`.
+    const previous = uiRef.current;
+    const next = { ...previous, ...patch };
+    uiRef.current = next;
     try {
-      const ui = await setUiSettings({ ...view.ui, editorCommand: editor });
-      setEditor(ui.editorCommand ?? "");
+      const ui = await setUiSettings(next);
+      uiRef.current = ui;
       onSaved({ ...view, ui });
+      return ui;
     } catch (err) {
+      uiRef.current = previous;
       setNotice({ tone: "error", text: errorText(err) });
+      return null;
     }
+  };
+
+  const saveEditor = async () => {
+    const ui = await saveUi({ editorCommand: editor });
+    if (ui) setEditor(ui.editorCommand ?? "");
   };
 
   const saveObserve = async (patch: Partial<ObserveSettings>, text: string) => {
@@ -453,15 +510,6 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
     }
   };
 
-  const saveTheme = async (theme: string) => {
-    try {
-      const ui = await setUiSettings({ ...view.ui, theme });
-      onSaved({ ...view, ui });
-    } catch (err) {
-      setNotice({ tone: "error", text: errorText(err) });
-    }
-  };
-
   const checkLogins = async () => {
     setChecking(true);
     try {
@@ -480,6 +528,7 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
       role="dialog"
       aria-label="Settings"
       tabIndex={-1}
+      onScroll={spy}
       onKeyDown={(event) => {
         if (event.key !== "Escape") return;
         event.preventDefault();
@@ -513,6 +562,30 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
         </Dialog>
       )}
       {notice && <InlineNotice tone={notice.tone}>{notice.text}</InlineNotice>}
+      <nav className="settings-index" aria-label="Settings sections">
+        <input
+          type="search"
+          className="text-input"
+          aria-label="Filter settings"
+          placeholder="Filter settings"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+        />
+        <ul>
+          {SETTINGS_SECTIONS.map((name, index) => (
+            <li key={name}>
+              <button
+                type="button"
+                className="settings-index-item"
+                aria-current={current === index ? "true" : undefined}
+                onClick={() => goTo(name, index)}
+              >
+                {name}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </nav>
 
       <section className="settings-section" aria-label="Claude accounts">
         <h2>Claude accounts</h2>
@@ -1130,20 +1203,83 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
 
       <section className="settings-section" aria-label="Appearance">
         <h2>Appearance</h2>
+        <p className="hint">Each choice applies at once and is saved.</p>
+        <div className="theme-cards" role="radiogroup" aria-label="Theme">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={view.ui.theme === SYSTEM_THEME}
+            className="theme-card"
+            onClick={() => void saveUi({ theme: SYSTEM_THEME })}
+          >
+            <span className="theme-swatch" aria-hidden>
+              {[dark.swatch[0], light.swatch[0]].map((color, i) => (
+                <i key={i} style={{ background: color }} />
+              ))}
+            </span>
+            Match system
+          </button>
+          {THEMES.map((theme) => (
+            <button
+              key={theme.id}
+              type="button"
+              role="radio"
+              aria-checked={view.ui.theme === theme.id}
+              className="theme-card"
+              onClick={() => void saveUi({ theme: theme.id })}
+            >
+              <span className="theme-swatch" aria-hidden>
+                {theme.swatch.map((color, i) => (
+                  <i key={i} style={{ background: color }} />
+                ))}
+              </span>
+              {theme.label}
+            </button>
+          ))}
+        </div>
         <label className="field-label">
-          Theme
+          Match system: dark theme
           <select
             className="text-input text-input-narrow"
-            value={view.ui.theme}
-            onChange={(event) => void saveTheme(event.target.value)}
+            value={pair.dark}
+            onChange={(event) => void saveUi({ systemDark: event.target.value as ThemeId })}
           >
-            {THEME_CHOICES.map((choice) => (
-              <option key={choice.id} value={choice.id}>
-                {choice.label}
+            {THEMES.filter((theme) => theme.scheme === "dark").map((theme) => (
+              <option key={theme.id} value={theme.id}>
+                {theme.label}
               </option>
             ))}
           </select>
         </label>
+        <label className="field-label">
+          Match system: light theme
+          <select
+            className="text-input text-input-narrow"
+            value={pair.light}
+            onChange={(event) => void saveUi({ systemLight: event.target.value as ThemeId })}
+          >
+            {THEMES.filter((theme) => theme.scheme === "light").map((theme) => (
+              <option key={theme.id} value={theme.id}>
+                {theme.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field-label">
+          UI scale
+          <select
+            className="text-input text-input-narrow"
+            value={view.ui.scale ?? 100}
+            onChange={(event) => void saveUi({ scale: Number(event.target.value) })}
+          >
+            {UI_SCALES.map((percent) => (
+              <option key={percent} value={percent}>
+                {percent}%
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="hint">The terminal's font size is set under Terminal and is not scaled.</p>
       </section>
     </div>
   );

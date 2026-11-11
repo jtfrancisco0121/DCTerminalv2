@@ -713,3 +713,111 @@ describe("JanitorDialog", () => {
     expect(button()).toBeNull();
   });
 });
+
+describe("Now block and folding sections", () => {
+  const handlers = () => ({ onRerunChecks: vi.fn(), onOpenFile: vi.fn(), onOpenUrl: vi.fn(), onCleanUp: vi.fn() });
+  const panel = (overrides: Partial<RunView> = {}) =>
+    render(
+      <RunPanelView
+        view={{ ...view, ...overrides }}
+        checking={false}
+        {...handlers()}
+        session={<div data-testid="session-body">session</div>}
+        agents={<div data-testid="agents-body">agents</div>}
+        clickup={<div data-testid="clickup-body">clickup</div>}
+      />,
+    );
+  const before = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+  const calm = { stage: "building", waitingFor: null, shipApproved: false, prs: [] } as Partial<RunView>;
+
+  it("renders the approval and problems before Session, directly under the headline and stepper", () => {
+    panel({ stage: "plan-approval", waitingFor: "plan-approval", error: "it broke", pausedReason: "usage limit", prs: [] });
+    const card = screen.getByTestId("approval-card");
+    const session = screen.getByTestId("fold-session");
+    expect(before(screen.getByRole("list", { name: "Run steps" }), card)).toBe(true);
+    expect(before(card, session)).toBe(true);
+    expect(before(screen.getByText(/Paused: usage limit/), session)).toBe(true);
+    expect(before(screen.getByText("it broke"), session)).toBe(true);
+    cleanup();
+    panel({ statusProblem: "status.json is not valid", hasStatus: false });
+    expect(before(screen.getByText("status.json is not valid"), screen.getByTestId("fold-session"))).toBe(true);
+  });
+
+  it("folds each of the seven sections to a summary line", () => {
+    panel({
+      ...calm,
+      timeline: view.timeline,
+      cleanup: [{ prId: "PR1", prUrl: "u", outcome: "cleaned", worktree: "w", branch: "b", remote: "r", at: "t" }],
+      prs: [{ ...view.prs[0], state: "building" }],
+      plan: { ...view.plan!, approved: true },
+    });
+    for (const id of ["session", "plan", "prs", "cleanup", "agents", "clickup", "timeline"]) {
+      const section = screen.getByTestId(`fold-${id}`);
+      const head = within(section).getByRole("button", { expanded: true });
+      expect(head.getAttribute("aria-expanded"), id).toBe("true");
+      fireEvent.click(head);
+      expect(within(section).getByRole("button", { expanded: false, hidden: true }).getAttribute("aria-expanded"), id).toBe("false");
+      expect(section.querySelector(".fold-summary")?.textContent?.length, `${id} summary`).toBeGreaterThan(0);
+      expect(section.classList.contains("fold-open"), id).toBe(false);
+    }
+    expect(screen.getByTestId("fold-timeline").querySelector(".fold-summary")?.textContent).toBe("3 events");
+    expect(screen.getByTestId("fold-prs").querySelector(".fold-summary")?.textContent).toBe("0/1 done");
+  });
+
+  it("keeps a PR with failing QA visible: its section cannot be folded", () => {
+    const failing = { ...view.prs[0], id: "PR9", state: "qa", qa: { result: "fail", tried: 2, failed: 1, total: 2, rows: [] } } as unknown as RunView["prs"][number];
+    panel({ ...calm, prs: [failing] });
+    const section = screen.getByTestId("fold-prs");
+    const head = within(section).getByRole("button", { name: "PRs" });
+    expect((head as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(head);
+    expect(head.getAttribute("aria-expanded")).toBe("true");
+    expect(section.classList.contains("fold-open")).toBe(true);
+    expect(within(section).getByText(/PR9/)).toBeTruthy();
+    expect(section.querySelector(".fold-summary")?.textContent).toContain("something failed");
+  });
+
+  it("keeps Session and ClickUp open while they report a warning or a wait", () => {
+    for (const [prop, id, tone] of [["sessionTone", "session", "warn"], ["sessionTone", "session", "you"], ["clickupTone", "clickup", "warn"]] as const) {
+      localStorage.clear();
+      localStorage.setItem("dcv2.runPanelFolds", JSON.stringify({ [view.runId]: { folded: [id] } }));
+      render(
+        <RunPanelView view={{ ...view, ...calm } as RunView} checking={false} onRerunChecks={vi.fn()} onOpenFile={vi.fn()} onOpenUrl={vi.fn()} onCleanUp={vi.fn()}
+          session={<div>s</div>} clickup={<div>c</div>} {...{ [prop]: tone }} />,
+      );
+      const section = screen.getByTestId(`fold-${id}`);
+      expect(section.classList.contains("fold-open"), `${id} ${tone}`).toBe(true);
+      expect((within(section).getByRole("button", { name: /Session|ClickUp/ }) as HTMLButtonElement).disabled).toBe(true);
+      cleanup();
+    }
+    localStorage.clear();
+  });
+
+  it("cannot fold a section that waits for the user, and the plan waiting for approval is one", () => {
+    panel({ ...calm, stage: "plan-approval", waitingFor: "plan-approval", plan: { ...view.plan!, approved: false, verdict: null } });
+    const head = within(screen.getByTestId("fold-plan")).getByRole("button", { name: "Plan" }) as HTMLButtonElement;
+    expect(head.disabled).toBe(true);
+    expect(head.getAttribute("aria-expanded")).toBe("true");
+  });
+});
+
+describe("folds are remembered per run", () => {
+  it("restores a folded section on the next render of the same run and not on another run", () => {
+    localStorage.clear();
+    const props = { checking: false, onRerunChecks: vi.fn(), onOpenFile: vi.fn(), onOpenUrl: vi.fn(), onCleanUp: vi.fn() };
+    const calm = { ...view, stage: "building", waitingFor: null, shipApproved: false, prs: [], runId: "r-fold-a" } as RunView;
+    const first = render(<RunPanelView view={calm} {...props} />);
+    fireEvent.click(within(screen.getByTestId("fold-timeline")).getByRole("button", { name: "Timeline" }));
+    expect(screen.getByTestId("fold-timeline").classList.contains("fold-open")).toBe(false);
+    expect(JSON.parse(localStorage.getItem("dcv2.runPanelFolds") ?? "{}")["r-fold-a"].folded).toEqual(["timeline"]);
+    first.unmount();
+    render(<RunPanelView view={calm} {...props} />);
+    expect(screen.getByTestId("fold-timeline").classList.contains("fold-open")).toBe(false);
+    cleanup();
+    render(<RunPanelView view={{ ...calm, runId: "r-fold-b" }} {...props} />);
+    expect(screen.getByTestId("fold-timeline").classList.contains("fold-open")).toBe(true);
+    const keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i));
+    expect(keys.filter((key) => key?.startsWith("dcv2.runPanel."))).toEqual([]);
+    localStorage.clear();
+  });
+});

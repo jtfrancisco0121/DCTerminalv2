@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { errorText } from "../components/InlineNotice";
-import { localTime, safeUrl } from "../run/words";
+import { localTime, safeUrl, type Tone } from "../run/words";
 import {
   clickupAutoPostConsent,
   clickupAutoPostNow,
@@ -31,6 +31,8 @@ type Props = {
    * appears without a status.json change.
    */
   mergeKey?: string;
+  /** Reports "warn" while the section shows a problem, so the run panel never folds it away. */
+  onTone?: (tone: Tone) => void;
 };
 
 const name = (t: { id: string; customId: string | null }) => t.customId ?? t.id;
@@ -112,7 +114,7 @@ export function tellClaude(ids: string[], file: string): string {
  * (R8), and the write-back drafts with tick boxes (all unticked), the comment
  * editable in place, and Post ticked.
  */
-export function ClickUpRunSection({ runDir, stage, updatedAt, mergeKey }: Props) {
+export function ClickUpRunSection({ runDir, stage, updatedAt, mergeKey, onTone }: Props) {
   const [state, setState] = useState<RunClickUp | null>(null);
   const [changes, setChanges] = useState<ChangedTicket[] | null>(null);
   const [checking, setChecking] = useState(false);
@@ -167,6 +169,11 @@ export function ClickUpRunSection({ runDir, stage, updatedAt, mergeKey }: Props)
     autoChecked.current = runDir;
     check();
   }, [stage, state?.hasTickets, runDir, check]);
+
+  const tone: Tone = problem || state?.ticketsProblem || state?.writebackProblem ? "warn" : "muted";
+  useEffect(() => {
+    onTone?.(tone);
+  }, [tone, onTone]);
 
   if (!state || (!state.hasTickets && !state.drafts)) return null;
 

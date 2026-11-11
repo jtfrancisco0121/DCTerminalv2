@@ -1085,6 +1085,10 @@ fn table() -> BTreeMap<&'static str, Sample> {
 
     // ---- settings.json ----
     t.insert("get_settings", settings_view());
+    t.insert(
+        "set_ui_settings",
+        of(crate::store::settings_store::UiSettings::default()),
+    );
     t.insert("webqa_targets_save", of(web_qa_settings()));
     t.insert(
         "webqa_start",

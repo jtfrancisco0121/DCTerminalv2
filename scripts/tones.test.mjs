@@ -9,7 +9,7 @@ const themes = [...readFileSync(join(SRC, "theme.ts"), "utf8").matchAll(/id: "([
 
 /** The declarations of one theme's block (the default theme is the bare `:root`). */
 function block(theme) {
-  const head = theme === "github-dark" ? ":root {" : `:root[data-theme="${theme}"] {`;
+  const head = theme === "soft-dusk" ? ':root,\n:root[data-theme="soft-dusk"] {' : `:root[data-theme="${theme}"] {`;
   const start = css.indexOf(head);
   expect(start, `${theme} block`).toBeGreaterThanOrEqual(0);
   return css.slice(start, css.indexOf("\n}", start));
@@ -28,7 +28,7 @@ describe("tone classes", () => {
   });
 
   it.each(themes)("%s defines every token the tones use", (theme) => {
-    const text = block(theme) + (theme === "github-dark" ? "" : block("github-dark"));
+    const text = block(theme) + (theme === "soft-dusk" ? "" : block("soft-dusk"));
     for (const tone of TONES) {
       const tokens = [...toneRules(tone)[0].matchAll(/var\((--[a-z-]+)\)/g)].map((m) => m[1]);
       expect(tokens.length, tone).toBeGreaterThan(0);
