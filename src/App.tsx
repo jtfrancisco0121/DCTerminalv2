@@ -62,6 +62,7 @@ import { runFinished, stageText, tabProgress, type TabProgress } from "./run/wor
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
 import { TabBar } from "./components/TabBar";
+import { TitleBar } from "./components/TitleBar";
 import { UsagePopover } from "./components/UsagePopover";
 import { SplitTerminals } from "./components/SplitTerminals";
 import { destroyTerminal, TerminalView } from "./components/TerminalView";
@@ -861,28 +862,34 @@ function App() {
 
   return (
     <main className="workspace">
-      {state && state.tabs.length > 0 && (
-        <TabBar
-          tabs={state.tabs}
-          activeTabId={state.activeTabId}
-          exited={exited}
-          activity={activity}
-          progress={progress}
-          onActivityClick={(id) => setUsageTab((current) => (current === id ? null : id))}
-          onSelect={select}
-          onClose={requestClose}
-          onRename={rename}
-          onMove={move}
-          onDuplicate={duplicate}
-          onReveal={reveal}
-          onCloseMany={requestCloseMany}
-          onSplit={splitActive}
-          onNew={() => {
-            setPlainTab(false);
-            setDialog("new-tab");
-          }}
-        />
-      )}
+      <TitleBar
+        accountName={ctx?.accountName}
+        platform={detectPlatform(navigator.platform)}
+        onOpenPalette={() => setPaletteOpen(true)}
+      >
+        {state && state.tabs.length > 0 && (
+          <TabBar
+            tabs={state.tabs}
+            activeTabId={state.activeTabId}
+            exited={exited}
+            activity={activity}
+            progress={progress}
+            onActivityClick={(id) => setUsageTab((current) => (current === id ? null : id))}
+            onSelect={select}
+            onClose={requestClose}
+            onRename={rename}
+            onMove={move}
+            onDuplicate={duplicate}
+            onReveal={reveal}
+            onCloseMany={requestCloseMany}
+            onSplit={splitActive}
+            onNew={() => {
+              setPlainTab(false);
+              setDialog("new-tab");
+            }}
+          />
+        )}
+      </TitleBar>
       {usageTab && <UsagePopover key={usageTab} tabId={usageTab} onClose={() => setUsageTab(null)} />}
       <section className="workspace-body">
         <ClaudeVersionBanner windowId={windowId} />

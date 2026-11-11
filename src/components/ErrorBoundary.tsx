@@ -56,6 +56,7 @@ export class ErrorBoundary extends Component<Props, State> {
     const { kind, onClose } = this.props;
     return (
       <div className={`error-boundary error-boundary-${kind}`}>
+        {kind === "window" && <div className="error-boundary-drag" data-tauri-drag-region />}
         <InlineNotice
           tone="error"
           action={

@@ -94,6 +94,8 @@ body,
   --z-menu: 50;
   --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
   --term-pad: 6px;
+  --titlebar-h: 42px; /* px: the native title-bar row height stays fixed */
+  --traffic-inset: 78px; /* px: room for the macOS traffic lights stays fixed */
   /* Terminal search highlights (read by TerminalSearchBar; hex only). */
   --search-match: #f2c97d66;
   --search-match-border: #f2c97d;
@@ -611,6 +613,60 @@ body,
   display: flex;
   flex-direction: column;
   padding: 0.25rem 0.4rem 0;
+}
+
+/* Top row: tabs, drag area, account, search. The tab list scrolls inside the
+   row; the drag area and the search button never shrink to nothing. */
+.title-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--gutter);
+  flex: none;
+  min-height: var(--titlebar-h);
+  padding: 0 var(--space-2);
+  background: var(--bg);
+  user-select: none;
+}
+
+.title-bar-mac {
+  padding-left: var(--traffic-inset);
+}
+
+.title-bar .tab-bar {
+  flex: 0 1 auto;
+  min-width: 0;
+  align-self: flex-end;
+  background: transparent;
+}
+
+.title-bar-spacer {
+  flex: 1 0 2rem;
+  align-self: stretch;
+}
+
+.title-bar-account {
+  flex: none;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
+
+.title-bar-search {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  min-width: 7rem;
+  padding: var(--space-1) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.title-bar-search:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 .tab-bar {
@@ -3661,6 +3717,19 @@ body,
 /* A failed Page or Dialog: the message stays inside the surface, the terminals keep running. */
 .error-boundary {
   padding: var(--space-4);
+}
+
+/* The last-resort screen sits under the macOS traffic lights and still drags. */
+.error-boundary-window {
+  padding-top: var(--titlebar-h);
+}
+
+.error-boundary-drag {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--titlebar-h);
 }
 
 .error-boundary-dialog {

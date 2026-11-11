@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
-import { readFileSync } from "node:fs";
-import path from "node:path";
+import { readSource } from "./readSource";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyTheme,
@@ -90,7 +89,7 @@ describe("themes", () => {
 });
 
 describe("theme parity", () => {
-  const css = readFileSync(path.join(import.meta.dirname, "App.css"), "utf8");
+  const css = readSource("App.css");
 
   it("gives every theme a terminal palette and an App.css block", () => {
     expect(THEMES).toHaveLength(8);
@@ -107,7 +106,9 @@ describe("theme parity", () => {
       return css.slice(start, css.indexOf("\n}", start));
     };
     const colourTokens = (text: string) =>
-      [...text.matchAll(/^ {2}(--[a-z-]+): /gm)].map((m) => m[1]).filter((t) => !/^--(font|text|space|radius|elev|z|dur|ease|term|focus|gutter)/.test(t));
+      [...text.matchAll(/^ {2}(--[a-z-]+): ([^;]+);/gm)]
+        .filter((m) => /^(#[0-9a-f]+|rgba?\(.*\)|var\(--[a-z-]+\))$/i.test(m[2].trim()))
+        .map((m) => m[1]);
     const dusk = new Set(colourTokens(block("soft-dusk")));
     for (const { id } of THEMES) {
       const have = new Set(colourTokens(block(id)));
@@ -117,7 +118,7 @@ describe("theme parity", () => {
 });
 
 describe("Soft Dusk contrast", () => {
-  const css = readFileSync(path.join(import.meta.dirname, "App.css"), "utf8");
+  const css = readSource("App.css");
   const block = (head: string) => {
     const start = css.indexOf(head);
     return css.slice(start, css.indexOf("\n}", start));

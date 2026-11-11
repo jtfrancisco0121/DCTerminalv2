@@ -1,9 +1,8 @@
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { readSource } from "./readSource";
 
 /** App.css as text: rules about tokens and layout that no render test can see. */
-const css = readFileSync(path.join(import.meta.dirname, "App.css"), "utf8");
+const css = readSource("App.css");
 const noComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
 
 /** Every `--name: value;` definition in the file. */

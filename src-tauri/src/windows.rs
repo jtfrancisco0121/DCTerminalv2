@@ -1105,13 +1105,18 @@ fn build_window(app: &AppHandle, label: &str, title: &str) -> Result<(), String>
     if app.get_webview_window(label).is_some() {
         return retitle(app, label);
     }
-    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("index.html".into()))
-        .title(title)
-        .inner_size(1400.0, 900.0)
-        // A link in rendered Markdown (or anything else) never replaces the app: only the app origin loads.
-        .on_navigation(|url| navigation_allowed(url.as_str(), DEV_ORIGIN))
-        .build()
-        .map_err(|err| err.to_string())?;
+    let builder =
+        tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("index.html".into()))
+            .title(title)
+            .inner_size(1400.0, 900.0)
+            // A link in rendered Markdown (or anything else) never replaces the app: only the app origin loads.
+            .on_navigation(|url| navigation_allowed(url.as_str(), DEV_ORIGIN));
+    // macOS: the page draws the title row (tabs, account, search) under the traffic lights.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
+    builder.build().map_err(|err| err.to_string())?;
     Ok(())
 }
 
