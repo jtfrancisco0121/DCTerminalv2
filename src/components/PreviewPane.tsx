@@ -78,6 +78,14 @@ export function Markdown({ text, from, onNavigate }: { text: string; from: strin
         const only = Children.toArray(children)[0];
         return isValidElement(only) && only.type === MermaidBlock ? <>{only}</> : <pre>{children}</pre>;
       },
+      // Wide tables scroll sideways instead of squeezing every cell to one word per line.
+      table({ children }: { children?: ReactNode }) {
+        return (
+          <div className="preview-table">
+            <table>{children}</table>
+          </div>
+        );
+      },
       ...Object.fromEntries(
         (["h1", "h2", "h3", "h4", "h5", "h6"] as const).map((tag) => [
           tag,
@@ -100,8 +108,9 @@ export function Markdown({ text, from, onNavigate }: { text: string; from: strin
 }
 
 /** The preview beside the terminal: one file, re-read within about a second of a change, scroll kept. */
-export function PreviewPane({ target, onClose }: { target: PreviewTarget; onClose: () => void }) {
+export function PreviewPane({ target, onClose, onResize }: { target: PreviewTarget; onClose: () => void; onResize?: () => void }) {
   const [path, setPath] = useState(target.path);
+  const [wide, setWide] = useState(false);
   const [title, setTitle] = useState(target.title);
   const [view, setView] = useState<View>({ kind: "loading" });
   const scroller = useRef<HTMLDivElement>(null);
@@ -148,13 +157,23 @@ export function PreviewPane({ target, onClose }: { target: PreviewTarget; onClos
   }, [path, load]);
 
   const name = baseName(path) || path;
+  useEffect(() => {
+    const id = window.requestAnimationFrame(() => onResize?.());
+    return () => window.cancelAnimationFrame(id);
+    // Only a width change refits the terminal; onResize is a fresh closure each render.
+  }, [wide]);
   return (
-    <aside className="preview-pane" aria-label={`Preview: ${title}`} data-testid="preview-pane">
+    <aside className={wide ? "preview-pane wide" : "preview-pane"} aria-label={`Preview: ${title}`} data-testid="preview-pane">
       <header className="preview-head">
         <strong title={path}>{title === name ? name : `${title} · ${name}`}</strong>
-        <button type="button" className="link-button" onClick={onClose} aria-label="Close preview">
-          Close
-        </button>
+        <span className="preview-actions">
+          <button type="button" className="link-button" onClick={() => setWide((w) => !w)} aria-pressed={wide} data-testid="preview-wide">
+            {wide ? "Narrower" : "Wider"}
+          </button>
+          <button type="button" className="link-button" onClick={onClose} aria-label="Close preview">
+            Close
+          </button>
+        </span>
       </header>
       <div ref={scroller} className="preview-body">
         {view.kind === "loading" && <p className="hint">Loading…</p>}
@@ -197,5 +216,5 @@ export function PreviewHost({ onLayoutChange }: { onLayoutChange?: () => void })
     const id = window.requestAnimationFrame(() => refit.current?.());
     return () => window.cancelAnimationFrame(id);
   }, [target]);
-  return target ? <PreviewPane target={target} onClose={() => setTarget(null)} /> : null;
+  return target ? <PreviewPane target={target} onClose={() => setTarget(null)} onResize={() => refit.current?.()} /> : null;
 }

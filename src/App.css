@@ -2164,12 +2164,30 @@ body,
   overflow: hidden;
 }
 
+.preview-pane.wide {
+  flex-basis: min(65%, 1100px);
+}
+
 .preview-head {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
   gap: 8px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
+}
+
+.preview-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-actions {
+  display: flex;
+  flex: none;
+  gap: var(--space-3);
 }
 
 .preview-body {
@@ -2178,8 +2196,150 @@ body,
   padding: 8px 12px;
 }
 
+/* Document text at the UI's reading size, not the browser's 16px default with 2em headings. */
+.preview-markdown {
+  font-size: var(--text-md);
+  line-height: 1.55;
+  color: var(--fg-soft);
+  overflow-wrap: anywhere;
+}
+
+.preview-markdown h1,
+.preview-markdown h2,
+.preview-markdown h3,
+.preview-markdown h4,
+.preview-markdown h5,
+.preview-markdown h6 {
+  color: var(--fg);
+  line-height: 1.3;
+  margin: var(--space-5) 0 var(--space-2);
+}
+
+.preview-markdown h1 {
+  font-size: var(--text-xl);
+  padding-bottom: var(--space-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.preview-markdown h2 {
+  font-size: var(--text-lg);
+  padding-bottom: var(--space-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.preview-markdown h3 {
+  font-size: var(--text-md);
+}
+
+.preview-markdown h4,
+.preview-markdown h5,
+.preview-markdown h6 {
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+}
+
+.preview-markdown > :first-child {
+  margin-top: 0;
+}
+
+.preview-markdown p,
+.preview-markdown ul,
+.preview-markdown ol,
+.preview-markdown blockquote {
+  margin: 0 0 var(--space-3);
+}
+
+.preview-markdown ul,
+.preview-markdown ol {
+  padding-left: var(--space-5);
+}
+
+.preview-markdown li + li {
+  margin-top: var(--space-1);
+}
+
+.preview-markdown blockquote {
+  padding: 0 var(--space-3);
+  border-left: 3px solid var(--border);
+  color: var(--fg-muted);
+}
+
+.preview-markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 0.1em 0.3em;
+  border-radius: var(--radius-sm);
+  background: var(--bg-muted);
+  overflow-wrap: anywhere;
+}
+
 .preview-markdown pre {
   overflow: auto;
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+}
+
+.preview-markdown pre code {
+  padding: 0;
+  background: none;
+  font-size: var(--text-sm);
+  overflow-wrap: normal;
+}
+
+.preview-markdown hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: var(--space-4) 0;
+}
+
+.preview-table {
+  overflow-x: auto;
+  margin: 0 0 var(--space-3);
+}
+
+.preview-table table {
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.preview-table th,
+.preview-table td {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  /* Keep columns readable; the wrapper scrolls when they don't fit. */
+  min-width: 8rem;
+  max-width: 28rem;
+  overflow-wrap: break-word;
+}
+
+.preview-table th {
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.preview-table tr:nth-child(even) td {
+  background: var(--bg-hover);
+}
+
+.preview-mermaid {
+  overflow-x: auto;
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+}
+
+.preview-mermaid svg {
+  display: block;
+  margin: 0 auto;
+  height: auto;
 }
 
 .preview-markdown a[role="link"] {

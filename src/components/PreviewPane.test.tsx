@@ -7,9 +7,10 @@ const invoke = vi.hoisted(() => vi.fn());
 const openUrl = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl }));
+const mermaidInit = vi.hoisted(() => vi.fn());
 vi.mock("mermaid", () => ({
   default: {
-    initialize: vi.fn(),
+    initialize: mermaidInit,
     render: vi.fn(async () => ({
       svg: '<svg onload="window.pwned=5"><script>window.pwned=6</script><a href="javascript:alert(1)"><text onclick="x()">A</text></a><foreignObject><iframe src="https://evil.example"></iframe></foreignObject></svg>',
     })),
@@ -156,5 +157,34 @@ describe("PreviewPane", () => {
     render(<Markdown text={text} from={`${RUN}/big.md`} onNavigate={vi.fn()} />);
     expect(performance.now() - started).toBeLessThan(5000);
     expect(screen.getAllByText(/Line \d+ with/).length).toBeGreaterThan(100);
+  });
+});
+
+describe("document layout", () => {
+  it("wraps a table in a sideways-scrolling block so cells keep their width", () => {
+    render(<Markdown text={"| Area | Rule |\n| --- | --- |\n| Import | One renderer |"} from={`${RUN}/a.md`} onNavigate={vi.fn()} />);
+    const table = document.querySelector(".preview-table > table");
+    expect(table).not.toBeNull();
+    expect(table?.querySelectorAll("th")).toHaveLength(2);
+  });
+
+  it("draws Mermaid labels as SVG text, since the sanitiser removes foreignObject labels", async () => {
+    mermaidInit.mockClear();
+    render(<Markdown text={"```mermaid\nflowchart TD\n  A[Parent] --> B[Child]\n```"} from={`${RUN}/a.md`} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(mermaidInit).toHaveBeenCalled());
+    expect(mermaidInit.mock.calls[0][0]).toMatchObject({ securityLevel: "strict", htmlLabels: false, flowchart: { htmlLabels: false } });
+  });
+
+  it("toggles a wider pane and asks the terminal to refit", async () => {
+    invoke.mockImplementation(async (cmd: string) => (cmd === "preview_stat" ? { exists: true, mtimeMs: 1, size: 1 } : preview("# Doc")));
+    const onResize = vi.fn();
+    render(<PreviewPane target={{ path: `${RUN}/plan.md`, title: "Plan" }} onClose={vi.fn()} onResize={onResize} />);
+    const pane = screen.getByTestId("preview-pane");
+    expect(pane.classList.contains("wide")).toBe(false);
+    onResize.mockClear();
+    fireEvent.click(screen.getByTestId("preview-wide"));
+    expect(pane.classList.contains("wide")).toBe(true);
+    expect(screen.getByTestId("preview-wide").textContent).toBe("Narrower");
+    await waitFor(() => expect(onResize).toHaveBeenCalled());
   });
 });
