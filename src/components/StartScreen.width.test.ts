@@ -4,6 +4,7 @@
 // columns fit. It assumes the start screen spans the window width (`.start-screen` is a direct child of the app
 // layout), so a narrower container needs this test updated.
 import { describe, expect, it } from "vitest";
+import { UI_SCALES } from "../uiScale";
 
 // Read with node's fs (the repo has no @types/node, so the module names go through variables) because vitest
 // returns an empty string for a CSS file read through `?raw`.
@@ -17,7 +18,7 @@ const css = fs.readFileSync(
 
 const WINDOW_PX = 800;
 const MIN_COLUMNS = 3;
-const REM_PX = 16;
+const BASE_REM_PX = 16;
 
 type Rule = { selectors: string[]; body: string };
 
@@ -40,14 +41,14 @@ const rule = (cls: string) => {
   return found[0].body;
 };
 
-const rem = (text: string, what: string) => {
+const rem = (text: string, what: string, remPx: number) => {
   const n = Number(text);
   expect(Number.isFinite(n), `cannot read ${what}`).toBe(true);
-  return n * REM_PX;
+  return n * remPx;
 };
 
 /** The number of columns `repeat(auto-fill, minmax(min, 1fr))` gives at `WINDOW_PX`, from the three rules. */
-const columnsAtWindow = () => {
+const columnsAtWindow = (remPx: number) => {
   const padding = rule("start-screen").match(
     /padding:\s*[^;]*max\(\s*[\d.]+rem\s*,\s*calc\(\s*50%\s*-\s*([\d.]+)rem\s*\)\s*\)/,
   );
@@ -55,7 +56,7 @@ const columnsAtWindow = () => {
     padding,
     "cannot read the .start-screen side padding cap",
   ).not.toBeNull();
-  const side = Math.max(0, WINDOW_PX / 2 - rem(padding![1], "the padding cap"));
+  const side = Math.max(0, WINDOW_PX / 2 - rem(padding![1], "the padding cap", remPx));
   const content = WINDOW_PX - 2 * Math.max(0, side);
 
   const grid = rule("role-tiles");
@@ -63,7 +64,7 @@ const columnsAtWindow = () => {
     /grid-template-columns:\s*repeat\(\s*auto-fill\s*,\s*minmax\(\s*([\d.]+)rem\s*,/,
   );
   expect(minmax, "cannot read the .role-tiles minmax minimum").not.toBeNull();
-  const min = rem(minmax![1], "the minmax minimum");
+  const min = rem(minmax![1], "the minmax minimum", remPx);
 
   const gapText = grid.match(/(?:^|[\s;])gap:\s*([^;]+);?/)?.[1].trim();
   expect(gapText, "cannot read the .role-tiles gap").toBeTruthy();
@@ -76,7 +77,7 @@ const columnsAtWindow = () => {
     )?.[1];
   }
   expect(gapRem, `cannot resolve the gap ${gapText}`).toBeTruthy();
-  const gap = rem(gapRem!, "the gap");
+  const gap = rem(gapRem!, "the gap", remPx);
 
   return Math.floor((content + gap) / (min + gap));
 };
@@ -97,7 +98,8 @@ describe("start screen role tiles at 800 px", () => {
     }
   });
 
-  it(`fits at least ${MIN_COLUMNS} columns`, () => {
-    expect(columnsAtWindow()).toBeGreaterThanOrEqual(MIN_COLUMNS);
+  // UI scale sets the root font size to a percent, so a rem is 16 * scale / 100 px. Every offered scale must fit.
+  it.each(UI_SCALES)(`fits at least ${MIN_COLUMNS} columns at UI scale %i%%`, (scale) => {
+    expect(columnsAtWindow((BASE_REM_PX * scale) / 100)).toBeGreaterThanOrEqual(MIN_COLUMNS);
   });
 });

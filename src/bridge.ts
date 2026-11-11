@@ -90,6 +90,8 @@ export type UiSettings = {
   theme: string;
   /** "Open in editor" on a PR card: program and arguments, no shell. Empty: `code`. */
   editorCommand?: string;
+  /** UI scale in percent (one of `UI_SCALES` in uiScale.ts); missing: 100. */
+  scale?: number;
 };
 
 export type ClaudeAccount = {

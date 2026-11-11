@@ -6,10 +6,12 @@ import "@fontsource-variable/jetbrains-mono";
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { applyTheme, cachedTheme } from "./theme";
+import { applyUiScale, cachedUiScale } from "./uiScale";
 
-// Paint the last theme before settings.json loads. It reads storage inside
+// Paint the last theme and scale before settings.json loads. It reads storage inside
 // try/catch and falls back to the default.
 applyTheme(cachedTheme());
+applyUiScale(cachedUiScale());
 
 function mount() {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

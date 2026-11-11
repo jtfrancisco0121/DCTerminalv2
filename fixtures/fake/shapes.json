@@ -1760,6 +1760,9 @@
           "editorCommand": {
             "type": "string"
           },
+          "scale": {
+            "type": "number"
+          },
           "theme": {
             "type": "string"
           }

@@ -276,6 +276,9 @@ pub struct UiSettings {
     /// without a shell with the worktree last. Empty: `code`.
     #[serde(default)]
     pub editor_command: String,
+    /// UI scale in percent: one of `UI_SCALES`.
+    #[serde(default = "default_scale")]
+    pub scale: u32,
 }
 
 /// The editor when the setting is empty.
@@ -297,6 +300,14 @@ pub const UI_THEMES: &[&str] = &[
     "system",
 ];
 
+/// The offered UI scales, in percent (the same list as `UI_SCALES` in `src/uiScale.ts`; a test keeps them equal).
+pub const UI_SCALES: &[u32] = &[90, 100, 110, 125];
+pub const DEFAULT_SCALE: u32 = 100;
+
+fn default_scale() -> u32 {
+    DEFAULT_SCALE
+}
+
 fn default_theme() -> String {
     DEFAULT_THEME.to_string()
 }
@@ -306,6 +317,7 @@ impl Default for UiSettings {
         Self {
             theme: default_theme(),
             editor_command: String::new(),
+            scale: default_scale(),
         }
     }
 }
@@ -1364,9 +1376,15 @@ impl SettingsStore {
         if editor_command.chars().count() > 300 || editor_command.contains(['\n', '\r', '\0']) {
             return Err("The editor command must be one line (at most 300 characters).".into());
         }
+        let scale = if UI_SCALES.contains(&next.scale) {
+            next.scale
+        } else {
+            default_scale()
+        };
         self.data.ui = UiSettings {
             theme,
             editor_command,
+            scale,
         };
         self.save()
     }
@@ -1399,6 +1417,48 @@ mod tests {
         let ts = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/theme.ts"))
             .unwrap();
         assert!(ts.contains(&format!("DEFAULT_THEME: ThemeId = \"{DEFAULT_THEME}\"")));
+    }
+
+    #[test]
+    fn ui_scales_match_the_ones_the_page_offers() {
+        let ts = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/uiScale.ts"))
+            .unwrap();
+        let line = ts
+            .lines()
+            .find(|line| line.contains("export const UI_SCALES"))
+            .unwrap();
+        let list = line.split_once("= [").unwrap().1.split_once(']').unwrap().0;
+        let scales: Vec<u32> = list.split(',').map(|n| n.trim().parse().unwrap()).collect();
+        assert_eq!(UI_SCALES.to_vec(), scales);
+        assert!(UI_SCALES.contains(&DEFAULT_SCALE));
+    }
+
+    #[test]
+    fn the_ui_scale_defaults_to_100_and_an_unlisted_value_falls_back() {
+        let dir = TempDir::new("ui-scale");
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(store.ui().scale, 100);
+        store
+            .set_ui(UiSettings {
+                scale: 110,
+                ..UiSettings::default()
+            })
+            .unwrap();
+        assert_eq!(SettingsStore::open(dir.path()).unwrap().ui().scale, 110);
+        store
+            .set_ui(UiSettings {
+                scale: 137,
+                ..UiSettings::default()
+            })
+            .unwrap();
+        assert_eq!(store.ui().scale, 100);
+        let old = TempDir::new("ui-scale-old");
+        std::fs::write(
+            old.path().join("settings.json"),
+            r#"{"schemaVersion":1,"ui":{"theme":"nord"}}"#,
+        )
+        .unwrap();
+        assert_eq!(SettingsStore::open(old.path()).unwrap().ui().scale, 100);
     }
 
     #[test]
@@ -1517,6 +1577,7 @@ mod tests {
             .set_ui(UiSettings {
                 theme: "nord".into(),
                 editor_command: "  cursor --new-window ".into(),
+                ..UiSettings::default()
             })
             .unwrap();
         assert_eq!(store.ui().editor_command, "cursor --new-window");
@@ -1524,6 +1585,7 @@ mod tests {
             .set_ui(UiSettings {
                 theme: "nord".into(),
                 editor_command: "code\nrm -rf".into(),
+                ..UiSettings::default()
             })
             .is_err());
         let again = SettingsStore::open(dir.path()).unwrap();

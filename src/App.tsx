@@ -62,6 +62,7 @@ import { runFinished, stageText, tabProgress, type TabProgress } from "./run/wor
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
 import { TabBar } from "./components/TabBar";
+import { applyUiScale } from "./uiScale";
 import { TitleBar } from "./components/TitleBar";
 import { UsagePopover } from "./components/UsagePopover";
 import { SplitTerminals } from "./components/SplitTerminals";
@@ -117,6 +118,7 @@ function applySettings(view: SettingsView): void {
   setCompactPaste(view.terminal.compactPaste ?? true);
   setFileLinkEditor(view.terminal.fileLinkEditor ?? "finder");
   applyTheme(view.ui.theme);
+  applyUiScale(view.ui.scale);
   setTerminalTheme(view.ui.theme);
 }
 

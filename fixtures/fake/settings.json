@@ -10,6 +10,7 @@
     },
     "ui": {
       "theme": "soft-dusk",
+      "scale": 100,
       "editorCommand": ""
     },
     "claude": {
