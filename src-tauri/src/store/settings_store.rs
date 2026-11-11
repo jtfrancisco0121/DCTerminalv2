@@ -885,7 +885,7 @@ pub fn clean_repo_setup(next: RepoSetup) -> Result<RepoSetup, String> {
                 || command.chars().count() > MAX_SETUP_CHARS
             {
                 return Err(
-                    "QA command: enter one line (at most 400 characters), for example npm run dev:fake."
+                    "QA command: enter one line (at most 400 characters), for example npm run dev -- --port %PORT%."
                         .into(),
                 );
             }

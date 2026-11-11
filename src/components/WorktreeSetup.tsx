@@ -127,13 +127,13 @@ function RepoRow({ repo, onSaved }: { repo: Repo; onSaved?: () => void }) {
       {qaOn && (
         <>
           <label className="field-label">
-            QA start command (it must read the PORT environment variable)
+            QA start command, run in the PR&apos;s worktree (use %PORT% or the PORT environment variable)
             <input
               className="text-input"
               aria-label={`QA command of ${repo.name}`}
               aria-describedby={note?.tone === "error" ? errorId : undefined}
               value={qaCommand}
-              placeholder="npm run dev:fake"
+              placeholder="npm run dev -- --port %PORT%"
               onChange={(event) => setQaCommand(event.target.value)}
             />
           </label>

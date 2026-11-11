@@ -167,6 +167,53 @@ pub fn detect_check(folder: &Path) -> Option<String> {
     None
 }
 
+/// The script an `npm run <name>` style QA command (npm, pnpm or yarn `run`) names; `None` for any other command.
+fn package_script(command: &str) -> Option<&str> {
+    let mut words = command.split_whitespace();
+    let tool = words.next()?;
+    let verb = words.next()?;
+    let runs = matches!(tool, "npm" | "pnpm" | "yarn")
+        && (verb == "run" || (tool == "npm" && verb == "run-script"));
+    if !runs {
+        return None;
+    }
+    words.find(|w| !w.starts_with('-'))
+}
+
+/// Why a QA command cannot run in `folder`: it names a package.json script the repo does not have. `None` for any
+/// other command, or when package.json is not JSON (the run finds out then). state.sh `qa_command_problem` is the
+/// same rule at serve time, against the PR's worktree.
+pub fn qa_command_problem(folder: &Path, command: &str) -> Option<String> {
+    let name = package_script(command)?;
+    let text = match std::fs::read_to_string(folder.join("package.json")) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Some(format!(
+                "QA command: it runs the script \"{name}\" but this repo has no package.json."
+            ))
+        }
+        Err(_) => return None,
+    };
+    let json = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+    let scripts = json.get("scripts").and_then(|s| s.as_object());
+    if scripts.is_some_and(|s| s.contains_key(name)) {
+        return None;
+    }
+    let mut have: Vec<&str> = scripts
+        .map(|s| s.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    have.sort_unstable();
+    have.truncate(12);
+    let have = if have.is_empty() {
+        "none".to_string()
+    } else {
+        have.join(", ")
+    };
+    Some(format!(
+        "QA command: package.json has no script \"{name}\" (it has: {have})."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +315,35 @@ mod tests {
         assert_eq!(detect_check(p).as_deref(), Some("npm run check"));
         std::fs::write(p.join("go.mod"), "module x\n").unwrap();
         assert_eq!(detect_check(p).as_deref(), Some("go test ./..."));
+    }
+
+    #[test]
+    fn a_qa_command_naming_a_missing_script_is_refused() {
+        let dir = TempDir::new("repos_qa_script");
+        let p = dir.path();
+        assert!(qa_command_problem(p, "npm run dev:fake")
+            .unwrap()
+            .contains("no package.json"));
+        std::fs::write(
+            p.join("package.json"),
+            r#"{"scripts":{"verify":"x","dev":"next dev"}}"#,
+        )
+        .unwrap();
+        let why = qa_command_problem(p, "npm run dev:fake").unwrap();
+        assert!(why.contains("no script \"dev:fake\""), "{why}");
+        assert!(why.contains("it has: dev, verify"), "{why}");
+        assert!(qa_command_problem(p, "pnpm run --silent dev:fake").is_some());
+        assert!(qa_command_problem(p, "npm run-script dev:fake").is_some());
+        for fine in [
+            "npm run dev -- --port %PORT%",
+            "yarn run dev",
+            "npx next dev -p %PORT%",
+            "bash -c 'npm run dev:fake'",
+            "npm start",
+        ] {
+            assert_eq!(qa_command_problem(p, fine), None, "{fine}");
+        }
+        std::fs::write(p.join("package.json"), "not json").unwrap();
+        assert_eq!(qa_command_problem(p, "npm run dev:fake"), None);
     }
 }

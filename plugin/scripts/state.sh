@@ -25,7 +25,9 @@
 #                                             write webqa.json (digest, rows, findings, comparison with the previous pass) and
 #                                             record status.json webqa {digest, at}
 #   state.sh qa-serve <run> <PR> start|stop   QA (repos.json qa on): start the PR's build detached on a free loopback port
-#                                             (prints `url=<url>` or `serve=failed reason=...`, exit 3), or stop it
+#                                             (prints `url=<url>` or `serve=failed reason=...`, exit 3), or stop it; a reason
+#                                             starting `the QA command cannot run:` (no such package.json script, Missing
+#                                             script, command not found) is a setting to fix, never worth a retry
 #   state.sh qa <run> <PR> <round>            read reviews/<PR>-qa<round>.md and record prs[].qa; pass -> reviewed, fail -> a
 #                                             FAIL gate for the round, error -> needs-attention
 #   state.sh waves <run>                      epic-plan run: check waves.md (every ticket in exactly one wave or out of scope,
@@ -3247,6 +3249,52 @@ def qa_start_once(run, pid, wt, qa, wait):
     return None, "timeout"
 
 
+QA_CANNOT_RUN = "the QA command cannot run: "
+# Lines in the serve log that mean the command itself is wrong: a retry fails the same way, so it is skipped.
+QA_FATAL_LINE = re.compile(r"Missing script:|command not found|ERR_PNPM_NO_SCRIPT|Couldn't find a script named")
+
+
+def qa_package_script(command):
+    """The script an `npm run <name>` style command (npm, pnpm or yarn `run`) names, else None."""
+    words = command.split()
+    if len(words) < 3 or words[0] not in ("npm", "pnpm", "yarn"):
+        return None
+    if not (words[1] == "run" or (words[0] == "npm" and words[1] == "run-script")):
+        return None
+    return next((w for w in words[2:] if not w.startswith("-")), None)
+
+
+def qa_command_problem(wt, command):
+    """Why the QA command cannot run in the worktree: it names a package.json script the repo does not have. None for any
+    other command, or when package.json cannot be read as JSON (the serve finds out then)."""
+    name = qa_package_script(command)
+    if not name:
+        return None
+    try:
+        with open(os.path.join(wt, "package.json"), encoding="utf-8") as f:
+            scripts = json.load(f).get("scripts")
+    except FileNotFoundError:
+        return f"{QA_CANNOT_RUN}it runs the script \"{name}\" but the repo has no package.json (fix it in Worktree setup; a new run picks it up)"
+    except (OSError, ValueError, AttributeError):
+        return None
+    if isinstance(scripts, dict) and name in scripts:
+        return None
+    have = ", ".join(sorted(k for k in scripts if isinstance(k, str))[:12]) if isinstance(scripts, dict) and scripts else "none"
+    return f"{QA_CANNOT_RUN}package.json has no script \"{name}\" (it has: {have}; fix it in Worktree setup; a new run picks it up)"
+
+
+def qa_fatal_line(run, pid):
+    """The serve log's first line that says the command itself is wrong (at most 200 chars), else None."""
+    try:
+        with open(os.path.join(run, "logs", f"{pid}-qa-serve.txt"), encoding="utf-8", errors="replace") as f:
+            for line in f.read(65536).splitlines():
+                if QA_FATAL_LINE.search(line):
+                    return line.strip()[:200]
+    except OSError:
+        pass
+    return None
+
+
 def qa_drop_record(run, pid):
     try:
         os.remove(qa_record_path(run, pid))
@@ -3277,9 +3325,18 @@ def cmd_qa_serve(run, pid, action):
     if re.fullmatch(r"\d{1,3}", env_wait) and 1 <= int(env_wait) <= QA_WAIT_MAX:
         wait = int(env_wait)  # tests only shorten the wait; it is never longer than 120 s
     qa_stop_record(run, pid)  # a leftover server of an earlier round
-    url, why = qa_start_once(run, pid, pr["worktree"], qa, wait)
+    why = qa_command_problem(pr["worktree"], qa["command"])
+    url = None
+    if not why:
+        url, why = qa_start_once(run, pid, pr["worktree"], qa, wait)
     if why == "early":
-        url, why = qa_start_once(run, pid, pr["worktree"], qa, wait)  # the port may have been taken between probe and bind
+        fatal = qa_fatal_line(run, pid)
+        if fatal:
+            why = f"{QA_CANNOT_RUN}{fatal} (see logs/{pid}-qa-serve.txt)"
+        else:
+            url, why = qa_start_once(run, pid, pr["worktree"], qa, wait)  # the port may have been taken between probe and bind
+            fatal = qa_fatal_line(run, pid) if why == "early" else None
+            why = f"{QA_CANNOT_RUN}{fatal} (see logs/{pid}-qa-serve.txt)" if fatal else why
     if url:
         append_log(run, st.get("stage") or "building", f"{pid} qa server up at {url}")
         print(f"url={url}")

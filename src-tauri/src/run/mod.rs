@@ -272,9 +272,13 @@ pub fn set_repo_setup(
     repo_path: String,
     setup: crate::store::RepoSetup,
 ) -> Result<crate::store::RepoSetup, String> {
-    let key = git::canonical(Path::new(repo_path.trim()))
-        .display()
-        .to_string();
+    let folder = git::canonical(Path::new(repo_path.trim()));
+    if let Some(qa) = &setup.qa {
+        if let Some(why) = repos::qa_command_problem(&folder, qa.command.trim()) {
+            return Err(why);
+        }
+    }
+    let key = folder.display().to_string();
     let settings = app.state::<Mutex<SettingsStore>>();
     let mut settings = settings.lock().map_err(|e| e.to_string())?;
     settings.set_repo_setup(&key, setup)

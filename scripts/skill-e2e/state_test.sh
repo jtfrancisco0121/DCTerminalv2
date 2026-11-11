@@ -1864,6 +1864,20 @@ expect 0 "qa-serve stop after the retry" bash "$STATE" qa-serve "$QRUN" PR1 stop
 qrepos "exit 1" "http://127.0.0.1:%PORT%/"
 expect 3 "qa-serve whose command always exits fails" bash "$STATE" qa-serve "$QRUN" PR1 start
 has "  says serve=failed with a reason" "serve=failed reason="
+# a command naming a package.json script the repo lacks fails before anything starts
+printf '{"scripts":{"dev":"next dev","verify":"x"}}\n' > "$QWT/package.json"
+qrepos "npm run dev:fake" "http://127.0.0.1:%PORT%/"
+expect 3 "qa-serve with a missing package.json script fails at once" bash "$STATE" qa-serve "$QRUN" PR1 start
+has "  says the command cannot run" 'serve=failed reason=the QA command cannot run: package.json has no script "dev:fake"'
+has "  lists the scripts it has" "it has: dev, verify"
+[[ ! -f "$QRUN/logs/.qa-serve-PR1.json" ]] && ok "  nothing started" || bad "  a server record was written"
+rm -f "$QWT/package.json"
+# an early exit whose log says the command is wrong is not retried, and the line is in the reason
+rm -f "$d/qa-count"
+qrepos "echo x >> $d/qa-count; echo 'npm error Missing script: \"dev:fake\"'; exit 1" "http://127.0.0.1:%PORT%/"
+expect 3 "qa-serve with a Missing script exit fails without a retry" bash "$STATE" qa-serve "$QRUN" PR1 start
+has "  quotes the log line" 'reason=the QA command cannot run: npm error Missing script: "dev:fake"'
+[[ "$(wc -l < "$d/qa-count" | tr -d ' ')" == 1 ]] && ok "  started once" || bad "  started $(wc -l < "$d/qa-count") times"
 qrepos "sleep 30" "http://127.0.0.1:%PORT%/"
 expect 3 "qa-serve with no HTTP answer fails within the wait" env DCV2_QA_WAIT=2 bash "$STATE" qa-serve "$QRUN" PR1 start
 has "  says no answer" "no HTTP answer"
