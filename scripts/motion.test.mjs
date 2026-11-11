@@ -13,7 +13,7 @@ const declared = (property) =>
 
 describe("motion", () => {
   it("defines the tokens on :root", () => {
-    const root = rules.find((rule) => rule.selector === ":root");
+    const root = rules.find((rule) => /^:root(,\s*:root\[data-theme="soft-dusk"\])?$/.test(rule.selector));
     expect(root?.body).toMatch(/--ease: cubic-bezier\(/);
     expect(root?.body).toMatch(/--dur-fast: 120ms;/);
     expect(root?.body).toMatch(/--dur-spin: 900ms;/);

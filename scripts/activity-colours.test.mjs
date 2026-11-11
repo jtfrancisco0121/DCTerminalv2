@@ -9,7 +9,7 @@ const themes = [...readFileSync(join(SRC, "theme.ts"), "utf8").matchAll(/id: "([
 
 /** The declarations of one theme's block (the default theme is the bare `:root`). */
 function block(theme) {
-  const head = theme === "github-dark" ? ":root {" : `:root[data-theme="${theme}"] {`;
+  const head = theme === "soft-dusk" ? ':root,\n:root[data-theme="soft-dusk"] {' : `:root[data-theme="${theme}"] {`;
   const start = css.indexOf(head);
   expect(start, `${theme} block`).toBeGreaterThanOrEqual(0);
   return css.slice(start, css.indexOf("\n}", start));
@@ -18,8 +18,8 @@ function block(theme) {
 const value = (text, name) => new RegExp(`${name}: ([^;]+);`).exec(text)?.[1]?.trim();
 
 describe("the waiting dot colour", () => {
-  it("covers all six themes", () => {
-    expect(themes).toHaveLength(6);
+  it("covers all eight themes", () => {
+    expect(themes).toHaveLength(8);
   });
 
   it.each(themes)("%s defines --activity-waiting apart from the working and needs-you colours", (theme) => {

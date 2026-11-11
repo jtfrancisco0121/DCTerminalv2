@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyTheme,
@@ -6,6 +8,7 @@ import {
   DEFAULT_THEME,
   isLightTheme,
   normalizeTheme,
+  TERMINAL_THEMES,
   terminalTheme,
   THEME_CHOICES,
   THEMES,
@@ -18,9 +21,11 @@ describe("themes", () => {
     document.documentElement.removeAttribute("data-theme");
   });
 
-  it("defaults to GitHub Dark and offers the light theme and four dark presets", () => {
-    expect(DEFAULT_THEME).toBe("github-dark");
+  it("defaults to Soft Dusk and offers the pair, GitHub's pair and four more presets", () => {
+    expect(DEFAULT_THEME).toBe("soft-dusk");
     expect(THEMES.map((t) => t.id)).toEqual([
+      "soft-dusk",
+      "soft-dusk-light",
       "github-dark",
       "github-light",
       "dracula",
@@ -29,10 +34,12 @@ describe("themes", () => {
       "catppuccin-mocha",
     ]);
     expect(normalizeTheme("nord")).toBe("nord");
-    expect(THEMES[0].label).toBe("GitHub Dark");
+    expect(THEMES[0].label).toBe("Soft Dusk");
+    expect(THEMES[1].label).toBe("Soft Dusk Light");
     expect(normalizeTheme("github-light")).toBe("github-light");
-    expect(normalizeTheme("solarized")).toBe("github-dark");
-    expect(normalizeTheme(undefined)).toBe("github-dark");
+    expect(normalizeTheme("github-dark")).toBe("github-dark");
+    expect(normalizeTheme("solarized")).toBe("soft-dusk");
+    expect(normalizeTheme(undefined)).toBe("soft-dusk");
   });
 
   it("switches the root data-theme and remembers it for the next start", () => {
@@ -82,9 +89,71 @@ describe("themes", () => {
   });
 });
 
+describe("theme parity", () => {
+  const css = readFileSync(path.join(import.meta.dirname, "App.css"), "utf8");
+
+  it("gives every theme a terminal palette and an App.css block", () => {
+    expect(THEMES).toHaveLength(8);
+    for (const { id } of THEMES) {
+      expect(TERMINAL_THEMES[id], `${id} terminal palette`).toBeTruthy();
+      expect(css, `${id} css block`).toMatch(new RegExp(`:root\\[data-theme="${id}"\\]\\s*\\{`));
+    }
+    expect(Object.keys(TERMINAL_THEMES).sort()).toEqual(THEMES.map((t) => t.id).sort());
+  });
+
+  it("defines the same colour tokens in every theme block as Soft Dusk", () => {
+    const block = (id: string) => {
+      const start = css.indexOf(`:root[data-theme="${id}"] {`);
+      return css.slice(start, css.indexOf("\n}", start));
+    };
+    const colourTokens = (text: string) =>
+      [...text.matchAll(/^ {2}(--[a-z-]+): /gm)].map((m) => m[1]).filter((t) => !/^--(font|text|space|radius|elev|z|dur|ease|term|focus|gutter)/.test(t));
+    const dusk = new Set(colourTokens(block("soft-dusk")));
+    for (const { id } of THEMES) {
+      const have = new Set(colourTokens(block(id)));
+      for (const token of dusk) expect(have.has(token), `${id} defines ${token}`).toBe(true);
+    }
+  });
+});
+
+describe("Soft Dusk contrast", () => {
+  const css = readFileSync(path.join(import.meta.dirname, "App.css"), "utf8");
+  const block = (head: string) => {
+    const start = css.indexOf(head);
+    return css.slice(start, css.indexOf("\n}", start));
+  };
+  const token = (text: string, name: string) => new RegExp(`${name}: (#[0-9a-fA-F]{6});`).exec(text)?.[1] as string;
+  const channel = (c: number) => (c / 255 <= 0.03928 ? c / 255 / 12.92 : ((c / 255 + 0.055) / 1.055) ** 2.4);
+  const luminance = (hex: string) => {
+    const n = parseInt(hex.slice(1), 16);
+    return 0.2126 * channel((n >> 16) & 255) + 0.7152 * channel((n >> 8) & 255) + 0.0722 * channel(n & 255);
+  };
+  const contrast = (a: string, b: string) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const surfaces = ["--bg", "--bg-elev", "--bg-inset", "--bg-muted", "--bg-hover"];
+
+  it.each([
+    ['soft-dusk', ':root,\n:root[data-theme="soft-dusk"] {'],
+    ["soft-dusk-light", ':root[data-theme="soft-dusk-light"] {'],
+  ])("%s: body text 11 to 12.5:1, muted text 4.5:1 on each surface, no #000000 background", (_id, head) => {
+    const text = block(head);
+    const ratio = contrast(token(text, "--fg"), token(text, "--bg"));
+    expect(ratio).toBeGreaterThanOrEqual(11);
+    expect(ratio).toBeLessThanOrEqual(12.5);
+    for (const surface of surfaces) {
+      expect(token(text, surface).toLowerCase(), surface).not.toBe("#000000");
+      expect(contrast(token(text, "--fg-muted"), token(text, surface)), surface).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+});
+
 describe("light themes", () => {
   it("tells light from dark, so Claude Code can be told the scheme", () => {
     expect(isLightTheme("github-light")).toBe(true);
+    expect(isLightTheme("soft-dusk-light")).toBe(true);
+    expect(isLightTheme("soft-dusk")).toBe(false);
     expect(isLightTheme("nord")).toBe(false);
     expect(isLightTheme("nope")).toBe(false);
   });

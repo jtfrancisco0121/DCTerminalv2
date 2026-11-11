@@ -179,6 +179,11 @@ function assertReleaseVersionsMatch() {
 }
 
 const THEME_SELECTOR = /^:root(?:\[data-theme="[a-z0-9-]+"\])?$/;
+
+/** A theme selector, or a comma list in which every member is one. */
+function isThemeSelector(selector) {
+  return selector.split(",").every((part) => THEME_SELECTOR.test(part.trim()));
+}
 const HEX_COLOUR = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\b/g;
 
 /**
@@ -211,7 +216,7 @@ export function strayHexColours(css) {
   };
   for (const char of clean) {
     if (char === "{") {
-      stack.push(THEME_SELECTOR.test(buffer.trim()));
+      stack.push(isThemeSelector(buffer.trim()));
       buffer = "";
     } else if (char === ";") {
       declaration();

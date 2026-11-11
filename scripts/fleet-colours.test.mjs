@@ -8,7 +8,7 @@ const css = readFileSync(join(SRC, "App.css"), "utf8");
 const themes = [...readFileSync(join(SRC, "theme.ts"), "utf8").matchAll(/id: "([a-z-]+)"/g)].map((m) => m[1]).filter((id) => id !== "system");
 
 function block(theme) {
-  const head = theme === "github-dark" ? ":root {" : `:root[data-theme="${theme}"] {`;
+  const head = theme === "soft-dusk" ? ':root,\n:root[data-theme="soft-dusk"] {' : `:root[data-theme="${theme}"] {`;
   const start = css.indexOf(head);
   expect(start, `${theme} block`).toBeGreaterThanOrEqual(0);
   return css.slice(start, css.indexOf("\n}", start));

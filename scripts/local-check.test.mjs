@@ -269,6 +269,13 @@ describe("strayHexColours", () => {
     expect(strayHexColours(css)).toEqual([]);
   });
 
+  it("accepts a comma list of theme selectors and refuses a mixed list", () => {
+    const ok = ':root, :root[data-theme="soft-dusk"] {\n  --bg: #1b1d2a;\n}\n';
+    expect(strayHexColours(ok)).toEqual([]);
+    const mixed = ':root, .panel {\n  --bg: #1b1d2a;\n}\n';
+    expect(strayHexColours(mixed)).toEqual([{ line: 2, text: "--bg: #1b1d2a;" }]);
+  });
+
   it("refuses a hex in a plain rule, in a var() fallback and after a theme block, with the line", () => {
     const css = [
       ":root {",

@@ -18,51 +18,52 @@ body,
 
 /* Theme variables. GitHub Dark is the default (:root); GitHub Light and
    the dark presets override them under [data-theme="…"]. */
-:root {
+:root,
+:root[data-theme="soft-dusk"] {
   color-scheme: dark;
-  --bg: #0d1117;
-  --bg-elev: #161b22;
-  --bg-inset: #010409;
-  --bg-muted: #21262d;
-  --bg-hover: #1c2128;
-  --border: #30363d;
-  --fg: #e6edf3;
-  --fg-soft: #c9d1d9;
-  --fg-muted: #8b949e;
-  --fg-subtle: #6e7681;
-  --accent: #388bfd;
-  --accent-fg: #58a6ff;
+  --bg: #15171c;
+  --bg-elev: #1f2229;
+  --bg-inset: #1b1e24;
+  --bg-muted: #272b33;
+  --bg-hover: #23262d;
+  --border: #2c3039;
+  --fg: #d3d7df;
+  --fg-soft: #c8ccd4;
+  --fg-muted: #9aa1ae;
+  --fg-subtle: #6f7684;
+  --accent: #8ea2ff;
+  --accent-fg: #8ea2ff;
   --activity-waiting: var(--accent-fg);
-  --accent-bright: #79c0ff;
-  --accent-emphasis: #1f6feb;
-  --accent-subtle: #15253a;
-  --success: #3fb950;
-  --success-emphasis: #238636;
-  --success-subtle: #152719;
-  --warning: #d29922;
-  --warning-bright: #e3b341;
-  --warning-subtle: #2a2419;
-  --attention: #f0c14b;
-  --attention-emphasis: #bb8009;
-  --danger: #f85149;
-  --danger-bright: #ff7b72;
-  --danger-soft: #ffa198;
-  --danger-subtle: #2d1b1b;
-  --done: #a371f7;
-  --done-bright: #d2a8ff;
-  --orange: #f0883e;
-  --orange-bright: #ffa657;
-  --syn-keyword: #ff7b72;
-  --syn-string: #a5d6ff;
-  --syn-number: #79c0ff;
-  --syn-title: #d2a8ff;
-  --syn-attr: #7ee787;
-  --syn-builtin: #ffa657;
-  --syn-deletion: #ffa198;
-  --shadow: rgba(1, 4, 9, 0.8);
-  --backdrop: rgba(0, 0, 0, 0.55);
+  --accent-bright: #b3c0ff;
+  --accent-emphasis: #8ea2ff;
+  --accent-subtle: #8ea2ff1f;
+  --success: #8fd19e;
+  --success-emphasis: #8fd19e;
+  --success-subtle: #8fd19e1f;
+  --warning: #f2c97d;
+  --warning-bright: #f2c97d;
+  --warning-subtle: #f2c97d24;
+  --attention: #f2c97d;
+  --attention-emphasis: #f2c97d;
+  --danger: #f2808c;
+  --danger-bright: #ff9aa3;
+  --danger-soft: #ffb0b7;
+  --danger-subtle: #f2808c1f;
+  --done: #b9a0f2;
+  --done-bright: #cfbcf8;
+  --orange: #f0a57a;
+  --orange-bright: #f7bc9a;
+  --syn-keyword: #f2808c;
+  --syn-string: #a9d6ef;
+  --syn-number: #b3c0ff;
+  --syn-title: #cfbcf8;
+  --syn-attr: #8fd19e;
+  --syn-builtin: #f7bc9a;
+  --syn-deletion: #ffb0b7;
+  --shadow: rgba(8, 9, 12, 0.6);
+  --backdrop: rgba(8, 9, 12, 0.55);
   /* Text on filled emphasis colours (primary buttons). */
-  --fg-on-emphasis: #ffffff;
+  --fg-on-emphasis: #11131a;
   /* R1 design tokens (theme-independent). */
   --text-2xs: 0.6875rem;
   --text-xs: 0.75rem;
@@ -93,10 +94,10 @@ body,
   --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
   --term-pad: 6px;
   /* Terminal search highlights (read by TerminalSearchBar; hex only). */
-  --search-match: #d2992266;
-  --search-match-border: #d29922;
-  --search-active: #f0883e;
-  --search-active-border: #ffa657;
+  --search-match: #f2c97d66;
+  --search-match-border: #f2c97d;
+  --search-active: #f0a57a;
+  --search-active-border: #f7bc9a;
   /* Bundled fonts (src/main.tsx), with the system stacks as fallbacks. */
   --font-ui: "Inter Variable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -108,6 +109,107 @@ body,
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --dur-fast: 120ms;
   --dur-spin: 900ms;
+}
+
+:root[data-theme="github-dark"] {
+  color-scheme: dark;
+  --activity-waiting: var(--accent-fg);
+  --bg: #0d1117;
+  --bg-elev: #161b22;
+  --bg-inset: #010409;
+  --bg-muted: #21262d;
+  --bg-hover: #1c2128;
+  --border: #30363d;
+  --fg: #e6edf3;
+  --fg-soft: #c9d1d9;
+  --fg-muted: #8b949e;
+  --fg-subtle: #6e7681;
+  --accent: #388bfd;
+  --accent-fg: #58a6ff;
+  --accent-bright: #79c0ff;
+  --accent-emphasis: #1f6feb;
+  --accent-subtle: #15253a;
+  --success: #3fb950;
+  --success-emphasis: #238636;
+  --success-subtle: #152719;
+  --warning: #d29922;
+  --warning-bright: #e3b341;
+  --warning-subtle: #2a2419;
+  --attention: #f0c14b;
+  --attention-emphasis: #bb8009;
+  --danger: #f85149;
+  --danger-bright: #ff7b72;
+  --danger-soft: #ffa198;
+  --danger-subtle: #2d1b1b;
+  --done: #a371f7;
+  --done-bright: #d2a8ff;
+  --orange: #f0883e;
+  --orange-bright: #ffa657;
+  --syn-keyword: #ff7b72;
+  --syn-string: #a5d6ff;
+  --syn-number: #79c0ff;
+  --syn-title: #d2a8ff;
+  --syn-attr: #7ee787;
+  --syn-builtin: #ffa657;
+  --syn-deletion: #ffa198;
+  --shadow: rgba(1, 4, 9, 0.8);
+  --backdrop: rgba(0, 0, 0, 0.55);
+  --fg-on-emphasis: #ffffff;
+  --search-match: #d2992266;
+  --search-match-border: #d29922;
+  --search-active: #f0883e;
+  --search-active-border: #ffa657;
+}
+
+/* Soft Dusk Light: warm paper, indigo accents. */
+:root[data-theme="soft-dusk-light"] {
+  color-scheme: light;
+  --bg: #eef0f3;
+  --bg-elev: #f7f8fa;
+  --bg-inset: #fbfbfc;
+  --bg-muted: #e8ebef;
+  --bg-hover: #ffffff;
+  --border: #dde1e7;
+  --fg: #2a2f38;
+  --fg-soft: #343a44;
+  --fg-muted: #5f6775;
+  --fg-subtle: #8a91a0;
+  --accent: #5562d6;
+  --accent-fg: #5562d6;
+  --activity-waiting: var(--accent-fg);
+  --accent-bright: #3f4bb8;
+  --accent-emphasis: #5562d6;
+  --accent-subtle: #5562d61a;
+  --success: #2f8a4c;
+  --success-emphasis: #2f8a4c;
+  --success-subtle: #2f8a4c18;
+  --warning: #a86a00;
+  --warning-bright: #a86a00;
+  --warning-subtle: #e3a33a26;
+  --attention: #a86a00;
+  --attention-emphasis: #a86a00;
+  --danger: #c4313f;
+  --danger-bright: #a6232f;
+  --danger-soft: #c4313f;
+  --danger-subtle: #c4313f14;
+  --done: #7a4ccf;
+  --done-bright: #7a4ccf;
+  --orange: #b45309;
+  --orange-bright: #b45309;
+  --syn-keyword: #c4313f;
+  --syn-string: #254a8a;
+  --syn-number: #3f4bb8;
+  --syn-title: #7a4ccf;
+  --syn-attr: #2a6a45;
+  --syn-builtin: #92400e;
+  --syn-deletion: #8c1d2a;
+  --shadow: rgba(29, 36, 51, 0.12);
+  --backdrop: rgba(29, 36, 51, 0.4);
+  --fg-on-emphasis: #ffffff;
+  --search-match: #e3a33a66;
+  --search-match-border: #a86a00;
+  --search-active: #e08a3c;
+  --search-active-border: #b45309;
 }
 
 :root[data-theme="github-light"] {

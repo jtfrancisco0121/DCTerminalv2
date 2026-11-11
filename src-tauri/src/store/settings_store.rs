@@ -281,7 +281,13 @@ pub struct UiSettings {
 /// The editor when the setting is empty.
 pub const DEFAULT_EDITOR: &str = "code";
 
+/// The theme a new install, an unknown value or a missing `ui.theme` gets
+/// (the same id as `DEFAULT_THEME` in `src/theme.ts`; a test keeps them equal).
+pub const DEFAULT_THEME: &str = "soft-dusk";
+
 pub const UI_THEMES: &[&str] = &[
+    "soft-dusk",
+    "soft-dusk-light",
     "github-dark",
     "github-light",
     "dracula",
@@ -292,7 +298,7 @@ pub const UI_THEMES: &[&str] = &[
 ];
 
 fn default_theme() -> String {
-    UI_THEMES[0].to_string()
+    DEFAULT_THEME.to_string()
 }
 
 impl Default for UiSettings {
@@ -1347,7 +1353,7 @@ impl SettingsStore {
         Ok(clean)
     }
 
-    /// Unknown themes fall back to GitHub Dark.
+    /// Unknown themes fall back to `DEFAULT_THEME`.
     pub fn set_ui(&mut self, next: UiSettings) -> Result<(), String> {
         let theme = if UI_THEMES.contains(&next.theme.as_str()) {
             next.theme
@@ -1370,6 +1376,72 @@ impl SettingsStore {
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
+
+    /// The theme ids `src/theme.ts` lists, in order.
+    fn theme_ids_in_ts() -> Vec<String> {
+        let ts = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/theme.ts"))
+            .unwrap();
+        let start = ts.find("export const THEMES").unwrap();
+        let end = start + ts[start..].find("\n];").unwrap();
+        ts[start..end]
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("id: \""))
+            .filter_map(|rest| rest.split('"').next())
+            .map(String::from)
+            .collect()
+    }
+
+    #[test]
+    fn ui_themes_match_the_ones_the_page_offers() {
+        let mut expected = theme_ids_in_ts();
+        expected.push("system".into());
+        assert_eq!(UI_THEMES.to_vec(), expected);
+        let ts = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/theme.ts"))
+            .unwrap();
+        assert!(ts.contains(&format!("DEFAULT_THEME: ThemeId = \"{DEFAULT_THEME}\"")));
+    }
+
+    #[test]
+    fn the_default_theme_is_soft_dusk_and_a_saved_one_is_kept() {
+        let missing = TempDir::new("ui-theme-none");
+        assert_eq!(
+            SettingsStore::open(missing.path()).unwrap().ui().theme,
+            "soft-dusk"
+        );
+        for (json, want) in [
+            (r#"{"schemaVersion":1}"#, "soft-dusk"),
+            (r#"{"schemaVersion":1,"ui":{}}"#, "soft-dusk"),
+            (
+                r#"{"schemaVersion":1,"ui":{"theme":"github-dark"}}"#,
+                "github-dark",
+            ),
+            (r#"{"schemaVersion":1,"ui":{"theme":"system"}}"#, "system"),
+        ] {
+            let dir = TempDir::new("ui-theme");
+            std::fs::write(dir.path().join("settings.json"), json).unwrap();
+            assert_eq!(
+                SettingsStore::open(dir.path()).unwrap().ui().theme,
+                want,
+                "{json}"
+            );
+        }
+        let dir = TempDir::new("ui-theme-set");
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        store
+            .set_ui(UiSettings {
+                theme: "soft-dusk-light".into(),
+                ..UiSettings::default()
+            })
+            .unwrap();
+        assert_eq!(store.ui().theme, "soft-dusk-light");
+        store
+            .set_ui(UiSettings {
+                theme: "solarized".into(),
+                ..UiSettings::default()
+            })
+            .unwrap();
+        assert_eq!(store.ui().theme, "soft-dusk");
+    }
 
     #[test]
     fn an_old_settings_file_loads_with_hooks_on_and_the_same_schema() {
@@ -1858,7 +1930,7 @@ mod tests {
         );
         assert_eq!(info.path, "/Users/jt/.claude");
         assert_eq!(store.terminal(), &TerminalSettings::default());
-        assert_eq!(store.ui().theme, "github-dark");
+        assert_eq!(store.ui().theme, "soft-dusk");
     }
 
     #[test]
@@ -2025,7 +2097,7 @@ mod tests {
         assert_eq!(again.terminal().font_size, 32);
         assert!(!again.terminal().option_as_meta);
         assert!(again.terminal().copy_on_select);
-        assert_eq!(again.ui().theme, "github-dark");
+        assert_eq!(again.ui().theme, "soft-dusk");
         let old: SettingsFile =
             serde_json::from_str(r#"{"schemaVersion":1,"terminal":{"fontSize":12}}"#).unwrap();
         assert!(
