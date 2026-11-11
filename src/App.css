@@ -3856,3 +3856,90 @@ body,
   display: flex;
   gap: var(--space-2);
 }
+
+/* ---- Run panel folds (14yq6g325n9): the only CSS of the run panel's Now block and folding sections ---- */
+/* Only the one-line headline stays in view while the panel scrolls. */
+.run-panel .run-stage {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  padding: var(--space-1) 0;
+  background: var(--bg-elev);
+}
+
+.fold {
+  margin: var(--space-1) 0;
+}
+
+.fold-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fold-head:disabled {
+  cursor: default;
+}
+
+.fold-caret {
+  display: inline-block;
+  width: 1em;
+  color: var(--fg-muted);
+  text-align: center;
+}
+
+.fold-open .fold-caret {
+  transform: rotate(90deg);
+}
+
+.fold-title {
+  font-weight: 600;
+}
+
+.fold-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The body folds by its row height: 0fr hides it, 1fr shows it. */
+.fold-body {
+  display: grid;
+  grid-template-rows: 0fr;
+}
+
+.fold-open > .fold-body {
+  grid-template-rows: 1fr;
+}
+
+.fold-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.fold:not(.fold-open) .fold-inner {
+  visibility: hidden;
+}
+
+/* The collapsed rail says what the run waits for, in words. */
+.run-rail-label {
+  writing-mode: vertical-rl;
+  margin-top: var(--space-1);
+  color: var(--warning);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+}
+/* ---- end Run panel folds ---- */

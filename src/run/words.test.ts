@@ -1,7 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import pushRs from "../../src-tauri/src/observe/push.rs?raw";
 import attentionRs from "../../src-tauri/src/observe/attention.rs?raw";
+import type { RunView } from "./api";
 import {
+  agentsFold,
+  cleanupFold,
+  clickupFold,
+  foldForcedOpen,
+  FOLD_TITLES,
+  planFold,
+  prsFold,
+  sessionFold,
+  timelineFold,
+  waitingLabel,
+  worstTone,
+  type Tone,
   prCount,
   prFraction,
   ATTENTION_KINDS,
@@ -561,5 +574,60 @@ describe("the PR plural rule", () => {
           .map(({ line, at }) => `${path}:${at}: ${line.trim()}`),
       );
     expect(offenders, "route PR counts through prCount / prFraction in src/run/words.ts").toEqual([]);
+  });
+});
+
+describe("run panel fold summaries", () => {
+  const pr = (over: Record<string, unknown> = {}) =>
+    ({ id: "PR1", state: "building", check: { result: null }, qa: null, prUrl: null, ...over }) as unknown as RunView["prs"][number];
+
+  it("orders tones by how much attention they need, muted for none", () => {
+    expect(worstTone([])).toBe("muted");
+    expect(worstTone(["success", "running"])).toBe("running");
+    expect(worstTone(["success", "warn", "running"])).toBe("warn");
+    expect(worstTone(["warn", "you"])).toBe("you");
+    expect(worstTone(["you", "danger", "success"])).toBe("danger");
+  });
+
+  it("forces only you, warn and danger sections open", () => {
+    expect(["you", "warn", "danger"].map((t) => foldForcedOpen(t as Tone))).toEqual([true, true, true]);
+    expect(["success", "running", "muted"].map((t) => foldForcedOpen(t as Tone))).toEqual([false, false, false]);
+  });
+
+  it("summarises the PRs and flags a failing one", () => {
+    expect(prsFold({ prs: [pr(), pr({ id: "PR2", state: "opened" })], waitingFor: null })).toEqual({ summary: "1/2 done", tone: "running" });
+    const failing = prsFold({ prs: [pr({ qa: { result: "fail", tried: 1, failed: 1, total: 1, rows: [] } })], waitingFor: null });
+    expect(failing.tone).toBe("danger");
+    expect(failing.summary).toBe("0/1 done · something failed");
+    expect(prsFold({ prs: [pr({ state: "opened" })], waitingFor: "ship-approval" }).tone).toBe("you");
+    expect(prsFold({ prs: [pr({ state: "fixing" })], waitingFor: null }).tone).toBe("warn");
+  });
+
+  it("summarises the plan, with BMAD, and makes a plan awaiting approval the user's", () => {
+    const plan = { approved: false, verdict: null, reviewRound: null, openFindings: null, riskVerdict: null, riskOpenFindings: null };
+    expect(planFold({ plan, bmad: null, waitingFor: null })).toEqual({ summary: "being written", tone: "muted" });
+    expect(planFold({ plan, bmad: null, waitingFor: "plan-approval" }).tone).toBe("you");
+    expect(planFold({ plan: { ...plan, approved: true, openFindings: 0 }, bmad: { mode: "on", size: "L" } as RunView["bmad"], waitingFor: null })).toEqual({
+      summary: "approved · BMAD size L",
+      tone: "success",
+    });
+    expect(planFold({ plan: { ...plan, approved: true, openFindings: 2 }, bmad: null, waitingFor: null }).tone).toBe("warn");
+    expect(planFold({ plan: null, bmad: null, waitingFor: null }).summary).toBe("no plan yet");
+  });
+
+  it("summarises cleanup, the timeline and the fixed sections", () => {
+    expect(cleanupFold([{}, {}])).toEqual({ summary: "2 cleaned up", tone: "muted" });
+    expect(cleanupFold([{ retry: true }, {}])).toEqual({ summary: "2 cleaned up, 1 to retry", tone: "warn" });
+    expect(timelineFold([1])).toEqual({ summary: "1 event", tone: "muted" });
+    expect(timelineFold([1, 2])).toEqual({ summary: "2 events", tone: "muted" });
+    for (const info of [sessionFold(), agentsFold(), clickupFold()]) expect(info.tone).toBe("muted");
+    expect(Object.keys(FOLD_TITLES)).toEqual(["session", "plan", "prs", "cleanup", "agents", "clickup", "timeline"]);
+  });
+
+  it("names what the collapsed rail waits for", () => {
+    expect(waitingLabel("plan-approval")).toBe("Plan");
+    expect(waitingLabel("ship-approval")).toBe("Ship");
+    expect(waitingLabel("other")).toBe("other");
+    expect(waitingLabel(null)).toBeNull();
   });
 });

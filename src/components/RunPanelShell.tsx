@@ -9,6 +9,7 @@ import {
   STEP_REM,
   type PanelLayout,
 } from "../runPanelLayout";
+import { waitingLabel } from "../run/words";
 import { Stepper } from "./Stepper";
 
 type Props = {
@@ -99,6 +100,7 @@ export function RunPanelShell({ windowId, stageLabel, attention, stage, waitingF
           onClick={() => update({ collapsed: false })}
         >
           <span className="run-rail-dot" aria-hidden />
+          {attention && waitingLabel(waitingFor) && <span className="run-rail-label">{waitingLabel(waitingFor)}</span>}
         </button>
       </aside>
     );

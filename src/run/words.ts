@@ -966,3 +966,94 @@ export function comparisonBadge(comparison: string | null | undefined): { text: 
       return null;
   }
 }
+
+// ---- The run panel's folding sections (14yq6g325n9) ----
+
+/** The sections of the run panel that fold, in the order they appear. */
+export type FoldId = "session" | "plan" | "prs" | "cleanup" | "agents" | "clickup" | "timeline";
+
+export const FOLD_TITLES: Record<FoldId, string> = {
+  session: "Session",
+  plan: "Plan",
+  prs: "PRs",
+  cleanup: "Cleanup",
+  agents: "Agents",
+  clickup: "ClickUp",
+  timeline: "Timeline",
+};
+
+/** What a folded section still says in one line, and the tone of what it holds. */
+export type FoldInfo = { summary: string; tone: Tone };
+
+/** A section holding something for the user, or something wrong, cannot be folded away. */
+export function foldForcedOpen(tone: Tone): boolean {
+  return tone === "you" || tone === "warn" || tone === "danger";
+}
+
+const TONE_RANK: Record<Tone, number> = { muted: 0, success: 1, running: 2, warn: 3, you: 4, danger: 5 };
+
+/** The tone that needs the most attention; `muted` for none. */
+export function worstTone(tones: ReadonlyArray<Tone>): Tone {
+  return tones.reduce<Tone>((worst, tone) => (TONE_RANK[tone] > TONE_RANK[worst] ? tone : worst), "muted");
+}
+
+/** The Plan section: the plan's state, and BMAD's size when it ran. A plan waiting for approval is the user's. */
+export function planFold(view: Pick<RunView, "plan" | "bmad" | "waitingFor">): FoldInfo {
+  const { plan, bmad } = view;
+  const parts: string[] = [];
+  const tones: Tone[] = [];
+  if (plan) {
+    parts.push(plan.approved ? "approved" : plan.verdict ? `review: ${plan.verdict}` : "being written");
+    tones.push(plan.approved ? "success" : "muted", planReviewTone(plan.openFindings), riskTone(plan.riskVerdict));
+  }
+  if (bmad && bmad.mode !== "off") parts.push(bmad.size ? `BMAD size ${bmad.size}` : "BMAD");
+  if (view.waitingFor === "plan-approval") tones.push("you");
+  return { summary: parts.join(" · ") || "no plan yet", tone: worstTone(tones) };
+}
+
+/** The PRs section: how many are done, and the worst thing any of them shows (a failing check, QA or CI is red). */
+export function prsFold(view: Pick<RunView, "prs" | "waitingFor">): FoldInfo {
+  const total = view.prs.length;
+  const done = prsDone(view.prs);
+  const tones = view.prs.flatMap((pr): Tone[] => [
+    prStateTone(pr.state),
+    checkTone(pr.check.result),
+    qaPill(pr)?.tone ?? "muted",
+    ciChip(pr)?.tone ?? "muted",
+  ]);
+  if (view.waitingFor === "ship-approval") tones.push("you");
+  const tone = worstTone(tones);
+  const trouble = tone === "danger" ? " · something failed" : tone === "warn" ? " · needs a look" : "";
+  return { summary: `${done}/${total} done${trouble}`, tone };
+}
+
+/** The Cleanup section: what the app removed for merged PRs; a retry still pending is a warning. */
+export function cleanupFold(records: ReadonlyArray<{ retry?: boolean }>): FoldInfo {
+  const retry = records.filter((rec) => rec.retry).length;
+  const summary = `${records.length} cleaned up${retry > 0 ? `, ${retry} to retry` : ""}`;
+  return { summary, tone: retry > 0 ? "warn" : "muted" };
+}
+
+/** The Timeline section: how many events, nothing to act on. */
+export function timelineFold(timeline: ReadonlyArray<unknown>): FoldInfo {
+  return { summary: `${timeline.length} ${timeline.length === 1 ? "event" : "events"}`, tone: "muted" };
+}
+
+/** The sections whose data the section's own component reads: a fixed line, nothing urgent. */
+export function sessionFold(): FoldInfo {
+  return { summary: "Cost and context of this tab", tone: "muted" };
+}
+export function agentsFold(): FoldInfo {
+  return { summary: "Who ran when", tone: "muted" };
+}
+export function clickupFold(): FoldInfo {
+  return { summary: "Ticket updates", tone: "muted" };
+}
+
+/** The short word the collapsed rail shows when the run waits for the user: "Plan" or "Ship". */
+export function waitingLabel(waitingFor: string | null | undefined): string | null {
+  if (!waitingFor) return null;
+  if (waitingFor === "plan-approval") return "Plan";
+  if (waitingFor === "ship-approval") return "Ship";
+  return waitingFor;
+}

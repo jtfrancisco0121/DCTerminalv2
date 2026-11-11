@@ -20,27 +20,38 @@ import {
   type WorktreeItem,
 } from "../run/api";
 import {
+  agentsFold,
   checkMark,
   checkSignature,
   checkTone,
   ciChip,
+  cleanupFold,
+  clickupFold,
   draftBadge,
   evalFinished,
+  foldForcedOpen,
+  FOLD_TITLES,
   gateTone,
   groupTimeline,
   localTime,
+  planFold,
   prStateText,
   prsDone,
+  prsFold,
   prStateTone,
   reachedStep,
   reviewText,
   reviewTone,
   runFinished,
   safeUrl,
+  sessionFold,
   snapshotFailure,
   stageText,
   storiesText,
+  timelineFold,
   wantsAppChecks,
+  type FoldId,
+  type FoldInfo,
   type TimelineGroup,
 } from "../run/words";
 import { ClickUpRunSection } from "../clickup/ClickUpRunSection";
@@ -71,8 +82,10 @@ type ViewProps = {
   onOpenFile: (path: string, title: string) => void;
   onOpenUrl: (url: string) => void;
   onCleanUp: () => void;
-  /** Drawn before the timeline (the ClickUp section). */
-  extra?: ReactNode;
+  /** The fleet timeline (the Agents section). */
+  agents?: ReactNode;
+  /** The ClickUp section. */
+  clickup?: ReactNode;
   /** P3b: the tab's session (state, watchdog, context, cost). */
   session?: ReactNode;
   /** Focus the tab's terminal, where the question is asked. */
@@ -410,8 +423,44 @@ function BmadSection({
   );
 }
 
+/**
+ * One folding section of the run panel: a header row (caret, name, one-line summary) and a body. A section that holds
+ * something for the user or something wrong (tone you, warn or danger) stays open and its control is disabled, so a
+ * fold can never hide a failing PR or an approval. The body stays mounted when folded (nothing is lost or re-read).
+ */
+function FoldSection({ id, info, children }: { id: FoldId; info: FoldInfo; children: ReactNode }) {
+  const [folded, setFolded] = useState(false);
+  const forced = foldForcedOpen(info.tone);
+  const open = forced || !folded;
+  return (
+    <div className={`fold fold-${id}${open ? " fold-open" : ""}`} data-tone={info.tone} data-testid={`fold-${id}`}>
+      <button
+        type="button"
+        className="fold-head"
+        aria-expanded={open}
+        aria-describedby={`fold-${id}-summary`}
+        disabled={forced}
+        title={forced ? "Stays open: this needs a look" : undefined}
+        onClick={() => setFolded(!folded)}
+      >
+        <span className="fold-caret" aria-hidden>
+          ›
+        </span>
+        <span className="fold-title">{FOLD_TITLES[id]}</span>
+        {/* Hidden from the name (it is the description), so the button is named by its section. */}
+        <span className="fold-summary" id={`fold-${id}-summary`} aria-hidden>
+          {info.summary}
+        </span>
+      </button>
+      <div className="fold-body" aria-hidden={!open}>
+        <div className="fold-inner">{children}</div>
+      </div>
+    </div>
+  );
+}
+
 /** The progress panel for one run, drawn from a read of its folder. */
-export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, extra, onGoToPrompt, worktrees, onPrAction, onCopyBranch, onSlopCheck, away, onEvaluate, onOpenTrace }: ViewProps) {
+export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, agents, clickup, onGoToPrompt, worktrees, onPrAction, onCopyBranch, onSlopCheck, away, onEvaluate, onOpenTrace }: ViewProps) {
   const timeline = groupTimeline(view.timeline, 30, view.eval);
   return (
     <aside className="run-panel" aria-label="Run progress">
@@ -441,13 +490,13 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
           </div>
         )}
       </header>
+      {/* Now: what needs the user, right under the headline and the stepper. */}
       {view.statusProblem && <p className="hint warn">{view.statusProblem}</p>}
       {snapshotFailure(view.timeline) !== null && (
         <p className="hint warn" data-testid="snapshot-failed">
           Trace snapshot failed: {snapshotFailure(view.timeline)}
         </p>
       )}
-      {session}
       {!view.hasStatus && !view.statusProblem && <p className="hint">Claude is starting the run in the tab.</p>}
       {view.waitingFor && (
         <ApprovalCard
@@ -459,50 +508,63 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
       )}
       {view.pausedReason && <p className="hint warn">Paused: {view.pausedReason}</p>}
       {view.error && <p className="error">{view.error}</p>}
-      {view.plan && (
-        <p className="run-plan">
-          Plan {view.plan.approved ? "✓ approved" : view.plan.verdict ? `review: ${view.plan.verdict}` : "being written"}
-          <button type="button" className="link-button" onClick={() => onOpenFile("plan.md", "Plan")}>
-            read
-          </button>
-        </p>
+      {session && (
+        <FoldSection id="session" info={sessionFold()}>
+          {session}
+        </FoldSection>
       )}
-      {view.bmad && view.bmad.mode !== "off" && (
-        <BmadSection bmad={view.bmad} stage={view.stage} onOpenFile={onOpenFile} />
+      {(view.plan || (view.bmad && view.bmad.mode !== "off")) && (
+        <FoldSection id="plan" info={planFold(view)}>
+          {view.plan && (
+            <p className="run-plan">
+              Plan {view.plan.approved ? "✓ approved" : view.plan.verdict ? `review: ${view.plan.verdict}` : "being written"}
+              <button type="button" className="link-button" onClick={() => onOpenFile("plan.md", "Plan")}>
+                read
+              </button>
+            </p>
+          )}
+          {view.bmad && view.bmad.mode !== "off" && (
+            <BmadSection bmad={view.bmad} stage={view.stage} onOpenFile={onOpenFile} />
+          )}
+        </FoldSection>
       )}
       {view.prs.length > 0 && (
-        <ul className="run-prs">
-          {view.prs.map((pr) => (
-            <PrRow
-              key={pr.id}
-              pr={pr}
-              runDir={view.runDir}
-              runId={view.runId}
-              onOpenTrace={onOpenTrace}
-              onOpenFile={onOpenFile}
-              onOpenUrl={onOpenUrl}
-              worktrees={worktrees}
-              onPrAction={onPrAction}
-              onCopyBranch={onCopyBranch}
-              onSlopCheck={onSlopCheck}
-            />
-          ))}
-        </ul>
+        <FoldSection id="prs" info={prsFold(view)}>
+          <ul className="run-prs">
+            {view.prs.map((pr) => (
+              <PrRow
+                key={pr.id}
+                pr={pr}
+                runDir={view.runDir}
+                runId={view.runId}
+                onOpenTrace={onOpenTrace}
+                onOpenFile={onOpenFile}
+                onOpenUrl={onOpenUrl}
+                worktrees={worktrees}
+                onPrAction={onPrAction}
+                onCopyBranch={onCopyBranch}
+                onSlopCheck={onSlopCheck}
+              />
+            ))}
+          </ul>
+        </FoldSection>
       )}
       {view.shipNote && <p className="hint">{view.shipNote}</p>}
       {(view.cleanup ?? []).length > 0 && (
-        <section className="run-cleanup" aria-label="Cleanup" data-testid="cleanup">
-          <h3>Cleaned up (merged PRs)</h3>
-          <ul className="hint">
-            {(view.cleanup ?? []).map((rec) => (
-              <li key={rec.prId} data-testid={`cleanup-${rec.prId}`}>
-                <strong>{rec.prId}</strong>{" "}
-                {[rec.note, rec.worktree, rec.branch, rec.remote].filter((part) => part).join("; ")}
-                {rec.retry && " (the app tries again later)"}
-              </li>
-            ))}
-          </ul>
-        </section>
+        <FoldSection id="cleanup" info={cleanupFold(view.cleanup ?? [])}>
+          <section className="run-cleanup" aria-label="Cleanup" data-testid="cleanup">
+            <h3>Cleaned up (merged PRs)</h3>
+            <ul className="hint">
+              {(view.cleanup ?? []).map((rec) => (
+                <li key={rec.prId} data-testid={`cleanup-${rec.prId}`}>
+                  <strong>{rec.prId}</strong>{" "}
+                  {[rec.note, rec.worktree, rec.branch, rec.remote].filter((part) => part).join("; ")}
+                  {rec.retry && " (the app tries again later)"}
+                </li>
+              ))}
+            </ul>
+          </section>
+        </FoldSection>
       )}
       <div className="button-row">
         {view.prs.length > 0 && (
@@ -524,14 +586,25 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
           </button>
         )}
       </div>
-      {extra}
+      {agents && (
+        <FoldSection id="agents" info={agentsFold()}>
+          {agents}
+        </FoldSection>
+      )}
+      {clickup && (
+        <FoldSection id="clickup" info={clickupFold()}>
+          {clickup}
+        </FoldSection>
+      )}
       {timeline.length > 0 && (
-        <section className="run-timeline" aria-label="Timeline">
-          <h3>Timeline</h3>
-          {timeline.map((group, at) => (
-            <TimelineGroupView key={group.key} group={group} openAtMount={at === 0} />
-          ))}
-        </section>
+        <FoldSection id="timeline" info={timelineFold(view.timeline)}>
+          <section className="run-timeline" aria-label="Timeline">
+            <h3>Timeline</h3>
+            {timeline.map((group, at) => (
+              <TimelineGroupView key={group.key} group={group} openAtMount={at === 0} />
+            ))}
+          </section>
+        </FoldSection>
       )}
     </aside>
   );
@@ -804,12 +877,8 @@ export function RunPanel({
         onOpenTrace={onOpenTrace ? () => onOpenTrace() : undefined}
         away={away}
         session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} onOpenTrace={onOpenTrace ? () => onOpenTrace() : undefined} /> : undefined}
-        extra={
-          <>
-            <FleetTimeline runDir={runDir} live={!runFinished(view)} onOpenLane={onOpenTrace ? (lane) => onOpenTrace(lane.agentId ?? (lane.id.startsWith("session-") ? "main" : undefined)) : undefined} />
-            <ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} mergeKey={mergeKey(view)} />
-          </>
-        }
+        agents={<FleetTimeline runDir={runDir} live={!runFinished(view)} onOpenLane={onOpenTrace ? (lane) => onOpenTrace(lane.agentId ?? (lane.id.startsWith("session-") ? "main" : undefined)) : undefined} />}
+        clickup={<ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} mergeKey={mergeKey(view)} />}
       />
       </div>
       </RunPanelShell>
