@@ -45,6 +45,7 @@ import {
   runFinished,
   safeUrl,
   sessionFold,
+  type Tone,
   snapshotFailure,
   stageText,
   storiesText,
@@ -89,6 +90,9 @@ type ViewProps = {
   clickup?: ReactNode;
   /** P3b: the tab's session (state, watchdog, context, cost). */
   session?: ReactNode;
+  /** The tones the Session and ClickUp bodies report, so a fold never hides a warning. */
+  sessionTone?: Tone;
+  clickupTone?: Tone;
   /** Focus the tab's terminal, where the question is asked. */
   onGoToPrompt?: () => void;
   /** Each PR's worktree check (undefined until it is known). */
@@ -468,7 +472,7 @@ function FoldSection({ runId, id, info, children }: { runId: string; id: FoldId;
 }
 
 /** The progress panel for one run, drawn from a read of its folder. */
-export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, agents, clickup, onGoToPrompt, worktrees, onPrAction, onCopyBranch, onSlopCheck, away, onEvaluate, onOpenTrace }: ViewProps) {
+export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpenUrl, onCleanUp, session, sessionTone, clickupTone, agents, clickup, onGoToPrompt, worktrees, onPrAction, onCopyBranch, onSlopCheck, away, onEvaluate, onOpenTrace }: ViewProps) {
   const timeline = groupTimeline(view.timeline, 30, view.eval);
   return (
     <aside className="run-panel" aria-label="Run progress">
@@ -517,7 +521,7 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
       {view.pausedReason && <p className="hint warn">Paused: {view.pausedReason}</p>}
       {view.error && <p className="error">{view.error}</p>}
       {session && (
-        <FoldSection runId={view.runId} id="session" info={sessionFold()}>
+        <FoldSection runId={view.runId} id="session" info={sessionFold(sessionTone)}>
           {session}
         </FoldSection>
       )}
@@ -600,7 +604,7 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
         </FoldSection>
       )}
       {clickup && (
-        <FoldSection runId={view.runId} id="clickup" info={clickupFold()}>
+        <FoldSection runId={view.runId} id="clickup" info={clickupFold(clickupTone)}>
           {clickup}
         </FoldSection>
       )}
@@ -731,6 +735,8 @@ export function RunPanel({
 }) {
   const [view, setView] = useState<RunView | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [sessionTone, setSessionTone] = useState<Tone>("muted");
+  const [clickupTone, setClickupTone] = useState<Tone>("muted");
   const [checking, setChecking] = useState(false);
   const [file, setFile] = useState<{ title: string; text: string } | null>(null);
   const [janitor, setJanitor] = useState<{ items: WorktreeItem[] | null; results: RemoveResult[] | null } | null>(
@@ -884,9 +890,11 @@ export function RunPanel({
         onEvaluate={onEvaluate ? () => onEvaluate(runDir) : undefined}
         onOpenTrace={onOpenTrace ? () => onOpenTrace() : undefined}
         away={away}
-        session={tabId ? <ObserveSection tabId={tabId} onResume={onResume ?? (() => undefined)} onOpenTrace={onOpenTrace ? () => onOpenTrace() : undefined} /> : undefined}
+        sessionTone={sessionTone}
+        clickupTone={clickupTone}
+        session={tabId ? <ObserveSection tabId={tabId} onTone={setSessionTone} onResume={onResume ?? (() => undefined)} onOpenTrace={onOpenTrace ? () => onOpenTrace() : undefined} /> : undefined}
         agents={<FleetTimeline runDir={runDir} live={!runFinished(view)} onOpenLane={onOpenTrace ? (lane) => onOpenTrace(lane.agentId ?? (lane.id.startsWith("session-") ? "main" : undefined)) : undefined} />}
-        clickup={<ClickUpRunSection runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} mergeKey={mergeKey(view)} />}
+        clickup={<ClickUpRunSection onTone={setClickupTone} runDir={runDir} stage={view.stage} updatedAt={view.updatedAt} mergeKey={mergeKey(view)} />}
       />
       </div>
       </RunPanelShell>

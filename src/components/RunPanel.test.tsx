@@ -777,6 +777,22 @@ describe("Now block and folding sections", () => {
     expect(section.querySelector(".fold-summary")?.textContent).toContain("something failed");
   });
 
+  it("keeps Session and ClickUp open while they report a warning or a wait", () => {
+    for (const [prop, id, tone] of [["sessionTone", "session", "warn"], ["sessionTone", "session", "you"], ["clickupTone", "clickup", "warn"]] as const) {
+      localStorage.clear();
+      localStorage.setItem("dcv2.runPanelFolds", JSON.stringify({ [view.runId]: { folded: [id] } }));
+      render(
+        <RunPanelView view={{ ...view, ...calm } as RunView} checking={false} onRerunChecks={vi.fn()} onOpenFile={vi.fn()} onOpenUrl={vi.fn()} onCleanUp={vi.fn()}
+          session={<div>s</div>} clickup={<div>c</div>} {...{ [prop]: tone }} />,
+      );
+      const section = screen.getByTestId(`fold-${id}`);
+      expect(section.classList.contains("fold-open"), `${id} ${tone}`).toBe(true);
+      expect((within(section).getByRole("button", { name: /Session|ClickUp/ }) as HTMLButtonElement).disabled).toBe(true);
+      cleanup();
+    }
+    localStorage.clear();
+  });
+
   it("cannot fold a section that waits for the user, and the plan waiting for approval is one", () => {
     panel({ ...calm, stage: "plan-approval", waitingFor: "plan-approval", plan: { ...view.plan!, approved: false, verdict: null } });
     const head = within(screen.getByTestId("fold-plan")).getByRole("button", { name: "Plan" }) as HTMLButtonElement;

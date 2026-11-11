@@ -1039,15 +1039,16 @@ export function timelineFold(timeline: ReadonlyArray<unknown>): FoldInfo {
   return { summary: `${timeline.length} ${timeline.length === 1 ? "event" : "events"}`, tone: "muted" };
 }
 
-/** The sections whose data the section's own component reads: a fixed line, nothing urgent. */
-export function sessionFold(): FoldInfo {
-  return { summary: "Cost and context of this tab", tone: "muted" };
+/** The sections whose data the section's own component reads: a fixed line. The tone comes from that component. */
+export function sessionFold(tone: Tone = "muted"): FoldInfo {
+  const summary = tone === "you" ? "Claude is waiting for you" : tone === "muted" ? "Cost and context of this tab" : "Needs a look";
+  return { summary, tone };
 }
 export function agentsFold(): FoldInfo {
   return { summary: "Who ran when", tone: "muted" };
 }
-export function clickupFold(): FoldInfo {
-  return { summary: "Ticket updates", tone: "muted" };
+export function clickupFold(tone: Tone = "muted"): FoldInfo {
+  return { summary: tone === "muted" ? "Ticket updates" : "Needs a look", tone };
 }
 
 /** The short word the collapsed rail shows when the run waits for the user: "Plan" or "Ship". */

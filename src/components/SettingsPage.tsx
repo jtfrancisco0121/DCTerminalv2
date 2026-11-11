@@ -455,12 +455,17 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
     uiRef.current = view.ui;
   }, [view.ui]);
   const saveUi = async (patch: Partial<UiSettings>): Promise<UiSettings | null> => {
+    // Optimistic: a second change made before this save returns builds on this one, not on the old `ui`.
+    const previous = uiRef.current;
+    const next = { ...previous, ...patch };
+    uiRef.current = next;
     try {
-      const ui = await setUiSettings({ ...uiRef.current, ...patch });
+      const ui = await setUiSettings(next);
       uiRef.current = ui;
       onSaved({ ...view, ui });
       return ui;
     } catch (err) {
+      uiRef.current = previous;
       setNotice({ tone: "error", text: errorText(err) });
       return null;
     }

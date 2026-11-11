@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { Tone } from "../run/words";
 import {
   activityText,
   costBarLabel,
@@ -175,8 +176,15 @@ export function ObserveView({ seen, nudging, onNudge, onResume, onOpenTrace }: V
   );
 }
 
-/** Polls the tab's session and shows [`ObserveView`]. */
-export function ObserveSection({ tabId, onResume, onOpenTrace }: { tabId: string; onResume: () => void; onOpenTrace?: () => void }) {
+/** What the Session section shows that the user must not miss: waiting is "you", a stall, a context warning or a problem is "warn". */
+export function observeTone(seen: TabObservation | null, problem: string | null): Tone {
+  if (seen?.waiting) return "you";
+  if (problem || seen?.stall || seen?.context?.warn) return "warn";
+  return "muted";
+}
+
+/** Polls the tab's session and shows [`ObserveView`]. `onTone` reports the tone the run panel's fold uses. */
+export function ObserveSection({ tabId, onResume, onOpenTrace, onTone }: { tabId: string; onResume: () => void; onOpenTrace?: () => void; onTone?: (tone: Tone) => void }) {
   const [seen, setSeen] = useState<TabObservation | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [nudging, setNudging] = useState(false);
@@ -193,6 +201,11 @@ export function ObserveSection({ tabId, onResume, onOpenTrace }: { tabId: string
       ),
     { fastMs: POLL_MS },
   );
+
+  const tone = observeTone(seen, problem);
+  useEffect(() => {
+    onTone?.(tone);
+  }, [tone, onTone]);
 
   const nudge = () => {
     setNudging(true);

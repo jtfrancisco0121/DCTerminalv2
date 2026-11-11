@@ -16,8 +16,8 @@ body,
   box-shadow: none;
 }
 
-/* Theme variables. GitHub Dark is the default (:root); GitHub Light and
-   the dark presets override them under [data-theme="…"]. */
+/* Theme variables. Soft Dusk is the default (:root); GitHub Dark, GitHub Light
+   and the other presets override them under [data-theme="…"]. */
 :root,
 :root[data-theme="soft-dusk"] {
   color-scheme: dark;
