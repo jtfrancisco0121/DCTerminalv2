@@ -1763,6 +1763,12 @@
           "scale": {
             "type": "number"
           },
+          "systemDark": {
+            "type": "string"
+          },
+          "systemLight": {
+            "type": "string"
+          },
           "theme": {
             "type": "string"
           }
@@ -3105,6 +3111,26 @@
         "type": "boolean"
       },
       "setup": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "set_ui_settings": {
+    "fields": {
+      "editorCommand": {
+        "type": "string"
+      },
+      "scale": {
+        "type": "number"
+      },
+      "systemDark": {
+        "type": "string"
+      },
+      "systemLight": {
+        "type": "string"
+      },
+      "theme": {
         "type": "string"
       }
     },

@@ -6,6 +6,12 @@ import {
   cachedTheme,
   DEFAULT_THEME,
   isLightTheme,
+  cachedThemePair,
+  DEFAULT_PAIR,
+  LEGACY_PAIR,
+  normalizePair,
+  pairOf,
+  resolveTheme,
   normalizeTheme,
   TERMINAL_THEMES,
   terminalTheme,
@@ -42,11 +48,11 @@ describe("themes", () => {
   });
 
   it("switches the root data-theme and remembers it for the next start", () => {
-    applyTheme("github-light");
+    applyTheme("github-light", LEGACY_PAIR);
     expect(document.documentElement.dataset.theme).toBe("github-light");
     expect(document.documentElement.style.colorScheme).toBe("light");
     expect(cachedTheme()).toBe("github-light");
-    applyTheme("github-dark");
+    applyTheme("github-dark", LEGACY_PAIR);
     expect(document.documentElement.dataset.theme).toBe("github-dark");
     expect(document.documentElement.style.colorScheme).toBe("dark");
     expect(cachedTheme()).toBe("github-dark");
@@ -65,14 +71,14 @@ describe("themes", () => {
     try {
       expect(normalizeTheme("system")).toBe("system");
       expect(THEME_CHOICES[0]).toEqual({ id: "system", label: "Match system" });
-      expect(applyTheme("system")).toBe("github-light");
+      expect(applyTheme("system", LEGACY_PAIR)).toBe("github-light");
       expect(document.documentElement.dataset.theme).toBe("github-light");
       expect(cachedTheme()).toBe("system");
-      const stop = watchSystemTheme(() => applyTheme("system"));
+      const stop = watchSystemTheme(() => applyTheme("system", LEGACY_PAIR));
       dark = true;
       listeners.forEach((fn) => fn());
       expect(document.documentElement.dataset.theme).toBe("github-dark");
-      expect(terminalTheme("system").background).toBe("#0d1117");
+      expect(terminalTheme("system", LEGACY_PAIR).background).toBe("#0d1117");
       stop();
       expect(listeners.size).toBe(0);
     } finally {
@@ -81,10 +87,55 @@ describe("themes", () => {
   });
 
   it("gives the terminal a matching palette", () => {
-    expect(terminalTheme("github-dark").background).toBe("#0d1117");
-    expect(terminalTheme("github-light").background).toBe("#ffffff");
-    expect(terminalTheme("github-light").foreground).toBe("#1f2328");
-    expect(terminalTheme("dracula").background).toBe("#282a36");
+    expect(terminalTheme("github-dark", LEGACY_PAIR).background).toBe("#0d1117");
+    expect(terminalTheme("github-light", LEGACY_PAIR).background).toBe("#ffffff");
+    expect(terminalTheme("github-light", LEGACY_PAIR).foreground).toBe("#1f2328");
+    expect(terminalTheme("dracula", LEGACY_PAIR).background).toBe("#282a36");
+  });
+});
+
+describe("Match system pair", () => {
+  const stubOs = (dark: boolean) =>
+    vi.stubGlobal("matchMedia", () => ({ matches: dark, addEventListener: () => {}, removeEventListener: () => {} }));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+    document.documentElement.removeAttribute("data-theme");
+  });
+
+  it("resolves Match system through the chosen pair", () => {
+    const pair = { dark: "nord", light: "soft-dusk-light" } as const;
+    stubOs(true);
+    expect(resolveTheme("system", pair)).toBe("nord");
+    expect(terminalTheme("system", pair).background).toBe("#2e3440");
+    stubOs(false);
+    expect(resolveTheme("system", pair)).toBe("soft-dusk-light");
+    expect(isLightTheme("system", pair)).toBe(true);
+    expect(resolveTheme("dracula", pair)).toBe("dracula");
+  });
+
+  it("refuses a theme of the wrong scheme in a pair", () => {
+    expect(normalizePair({ dark: "github-light", light: "nord" })).toEqual(DEFAULT_PAIR);
+    expect(normalizePair({ dark: "bogus", light: "github-light" })).toEqual({ dark: "soft-dusk", light: "github-light" });
+    expect(normalizePair(undefined, LEGACY_PAIR)).toEqual(LEGACY_PAIR);
+    expect(pairOf({ systemDark: "dracula", systemLight: "github-light" })).toEqual({ dark: "dracula", light: "github-light" });
+    expect(pairOf({})).toEqual(DEFAULT_PAIR);
+  });
+
+  it("paints the cached pair first, and the GitHub pair when no pair was cached", () => {
+    stubOs(false);
+    applyTheme("system", { dark: "nord", light: "soft-dusk-light" });
+    expect(cachedThemePair()).toEqual({ dark: "nord", light: "soft-dusk-light" });
+    expect(applyTheme(cachedTheme(), cachedThemePair())).toBe("soft-dusk-light");
+    // An existing user's cache: the choice is "system" and no pair was ever stored.
+    localStorage.clear();
+    localStorage.setItem("dcterminalv2.theme", "system");
+    expect(cachedThemePair()).toEqual(LEGACY_PAIR);
+    expect(applyTheme(cachedTheme(), cachedThemePair())).toBe("github-light");
+    stubOs(true);
+    expect(applyTheme(cachedTheme(), cachedThemePair())).toBe("github-dark");
+    localStorage.setItem("dcterminalv2.themePair", "{not json");
+    expect(cachedThemePair()).toEqual(LEGACY_PAIR);
   });
 });
 
@@ -152,11 +203,11 @@ describe("Soft Dusk contrast", () => {
 
 describe("light themes", () => {
   it("tells light from dark, so Claude Code can be told the scheme", () => {
-    expect(isLightTheme("github-light")).toBe(true);
-    expect(isLightTheme("soft-dusk-light")).toBe(true);
-    expect(isLightTheme("soft-dusk")).toBe(false);
-    expect(isLightTheme("nord")).toBe(false);
-    expect(isLightTheme("nope")).toBe(false);
+    expect(isLightTheme("github-light", LEGACY_PAIR)).toBe(true);
+    expect(isLightTheme("soft-dusk-light", LEGACY_PAIR)).toBe(true);
+    expect(isLightTheme("soft-dusk", LEGACY_PAIR)).toBe(false);
+    expect(isLightTheme("nord", LEGACY_PAIR)).toBe(false);
+    expect(isLightTheme("nope", LEGACY_PAIR)).toBe(false);
   });
 });
 
@@ -179,7 +230,7 @@ describe("light terminal palette (R22)", () => {
   };
 
   it("keeps the dim and bright colors readable (>= 4.5:1) on the light background", () => {
-    const light = terminalTheme("github-light");
+    const light = terminalTheme("github-light", LEGACY_PAIR);
     for (const key of [
       "yellow",
       "white",

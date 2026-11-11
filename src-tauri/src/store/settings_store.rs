@@ -279,6 +279,13 @@ pub struct UiSettings {
     /// UI scale in percent: one of `UI_SCALES`.
     #[serde(default = "default_scale")]
     pub scale: u32,
+    /// "Match system" paints this dark theme when the OS is dark. A saved `ui` without the key keeps the
+    /// GitHub pair that Match system always painted; only `UiSettings::default()` gives Soft Dusk.
+    #[serde(default = "legacy_system_dark")]
+    pub system_dark: String,
+    /// "Match system" paints this light theme when the OS is light.
+    #[serde(default = "legacy_system_light")]
+    pub system_light: String,
 }
 
 /// The editor when the setting is empty.
@@ -308,6 +315,28 @@ fn default_scale() -> u32 {
     DEFAULT_SCALE
 }
 
+/// The dark themes `system_dark` may name, and the light ones `system_light` may (the schemes in `THEMES` of `src/theme.ts`; a test keeps them equal).
+pub const DARK_THEMES: &[&str] = &[
+    "soft-dusk",
+    "github-dark",
+    "dracula",
+    "nord",
+    "tokyo-night",
+    "catppuccin-mocha",
+];
+pub const LIGHT_THEMES: &[&str] = &["soft-dusk-light", "github-light"];
+/// The Match system pair of a new install.
+const DEFAULT_SYSTEM_DARK: &str = "soft-dusk";
+const DEFAULT_SYSTEM_LIGHT: &str = "soft-dusk-light";
+
+fn legacy_system_dark() -> String {
+    "github-dark".to_string()
+}
+
+fn legacy_system_light() -> String {
+    "github-light".to_string()
+}
+
 fn default_theme() -> String {
     DEFAULT_THEME.to_string()
 }
@@ -318,6 +347,8 @@ impl Default for UiSettings {
             theme: default_theme(),
             editor_command: String::new(),
             scale: default_scale(),
+            system_dark: DEFAULT_SYSTEM_DARK.to_string(),
+            system_light: DEFAULT_SYSTEM_LIGHT.to_string(),
         }
     }
 }
@@ -1381,10 +1412,22 @@ impl SettingsStore {
         } else {
             default_scale()
         };
+        let system_dark = if DARK_THEMES.contains(&next.system_dark.as_str()) {
+            next.system_dark
+        } else {
+            DEFAULT_SYSTEM_DARK.to_string()
+        };
+        let system_light = if LIGHT_THEMES.contains(&next.system_light.as_str()) {
+            next.system_light
+        } else {
+            DEFAULT_SYSTEM_LIGHT.to_string()
+        };
         self.data.ui = UiSettings {
             theme,
             editor_command,
             scale,
+            system_dark,
+            system_light,
         };
         self.save()
     }
@@ -1417,6 +1460,87 @@ mod tests {
         let ts = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/theme.ts"))
             .unwrap();
         assert!(ts.contains(&format!("DEFAULT_THEME: ThemeId = \"{DEFAULT_THEME}\"")));
+    }
+
+    #[test]
+    fn the_dark_and_light_lists_match_the_schemes_the_page_declares() {
+        let ts = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/theme.ts"))
+            .unwrap();
+        let start = ts.find("export const THEMES").unwrap();
+        let end = start + ts[start..].find("\n];").unwrap();
+        let (mut dark, mut light) = (Vec::new(), Vec::new());
+        let mut id = String::new();
+        for line in ts[start..end].lines().map(str::trim) {
+            if let Some(rest) = line.strip_prefix("id: \"") {
+                id = rest.split('"').next().unwrap().to_string();
+            } else if line == "scheme: \"dark\"," {
+                dark.push(id.clone());
+            } else if line == "scheme: \"light\"," {
+                light.push(id.clone());
+            }
+        }
+        assert_eq!(DARK_THEMES.to_vec(), dark);
+        assert_eq!(LIGHT_THEMES.to_vec(), light);
+    }
+
+    #[test]
+    fn match_system_keeps_the_github_pair_for_an_old_file_and_soft_dusk_for_a_new_install() {
+        let none = TempDir::new("ui-pair-none");
+        let new = SettingsStore::open(none.path()).unwrap();
+        assert_eq!(new.ui().system_dark, "soft-dusk");
+        assert_eq!(new.ui().system_light, "soft-dusk-light");
+        for json in [
+            r#"{"schemaVersion":1,"ui":{"theme":"system"}}"#,
+            r#"{"schemaVersion":1,"ui":{"theme":"system","scale":110}}"#,
+        ] {
+            let dir = TempDir::new("ui-pair-old");
+            std::fs::write(dir.path().join("settings.json"), json).unwrap();
+            let store = SettingsStore::open(dir.path()).unwrap();
+            assert_eq!(store.ui().theme, "system");
+            assert_eq!(store.ui().system_dark, "github-dark", "{json}");
+            assert_eq!(store.ui().system_light, "github-light", "{json}");
+        }
+        // No `ui` at all is a new install's shape.
+        let dir = TempDir::new("ui-pair-no-ui");
+        std::fs::write(dir.path().join("settings.json"), r#"{"schemaVersion":1}"#).unwrap();
+        assert_eq!(
+            SettingsStore::open(dir.path()).unwrap().ui().system_dark,
+            "soft-dusk"
+        );
+    }
+
+    #[test]
+    fn a_pair_of_the_wrong_scheme_falls_back_and_a_right_one_is_kept() {
+        let dir = TempDir::new("ui-pair-set");
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        store
+            .set_ui(UiSettings {
+                system_dark: "nord".into(),
+                system_light: "github-light".into(),
+                ..UiSettings::default()
+            })
+            .unwrap();
+        assert_eq!(store.ui().system_dark, "nord");
+        assert_eq!(store.ui().system_light, "github-light");
+        let again = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(again.ui().system_dark, "nord");
+        store
+            .set_ui(UiSettings {
+                system_dark: "github-light".into(),
+                system_light: "nord".into(),
+                ..UiSettings::default()
+            })
+            .unwrap();
+        assert_eq!(store.ui().system_dark, "soft-dusk");
+        assert_eq!(store.ui().system_light, "soft-dusk-light");
+        store
+            .set_ui(UiSettings {
+                system_dark: "bogus".into(),
+                system_light: String::new(),
+                ..UiSettings::default()
+            })
+            .unwrap();
+        assert_eq!(store.ui().system_dark, "soft-dusk");
     }
 
     #[test]

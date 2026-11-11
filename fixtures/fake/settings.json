@@ -11,6 +11,8 @@
     "ui": {
       "theme": "soft-dusk",
       "scale": 100,
+      "systemDark": "soft-dusk",
+      "systemLight": "soft-dusk-light",
       "editorCommand": ""
     },
     "claude": {
@@ -90,5 +92,12 @@
     "targetId": "t-1",
     "saved": false,
     "problem": null
+  },
+  "set_ui_settings": {
+    "theme": "soft-dusk",
+    "scale": 100,
+    "systemDark": "soft-dusk",
+    "systemLight": "soft-dusk-light",
+    "editorCommand": ""
   }
 }

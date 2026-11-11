@@ -25,12 +25,14 @@ import {
   type RunSettings,
   type SettingsView,
   type TerminalSettings,
+  type UiSettings,
   type TriageScheduleRow,
 } from "../bridge";
 import { accountsProblem, addAccount, MAX_ACCOUNTS } from "../settings/accounts";
 import { ATTENTION_KINDS, DEFAULT_EXPORT_ENDPOINT, PUSH_KINDS } from "../run/words";
 import { currentSection, matchesFilter, SETTINGS_SECTIONS } from "../settings/sections";
-import { THEME_CHOICES } from "../theme";
+import { pairOf, SYSTEM_THEME, THEMES, type ThemeId } from "../theme";
+import { UI_SCALES } from "../uiScale";
 import { detectPlatform, revealLabel, type Platform } from "../terminal/keys";
 import { Dialog } from "./Dialog";
 import { useDialogFocus } from "./useDialogFocus";
@@ -442,16 +444,31 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
   };
 
   const [editor, setEditor] = useState(view.ui.editorCommand ?? "");
+  const pair = pairOf(view.ui);
+  const dark = THEMES.find((theme) => theme.id === pair.dark) ?? THEMES[0];
+  const light = THEMES.find((theme) => theme.id === pair.light) ?? THEMES[1];
   const [endpointDraft, setEndpointDraft] = useState(view.observe?.exportEndpoint ?? DEFAULT_EXPORT_ENDPOINT);
 
-  const saveEditor = async () => {
+  // The look settings save on change, each from the latest saved `ui`, so a theme click never reverts a scale change.
+  const uiRef = useRef(view.ui);
+  useEffect(() => {
+    uiRef.current = view.ui;
+  }, [view.ui]);
+  const saveUi = async (patch: Partial<UiSettings>): Promise<UiSettings | null> => {
     try {
-      const ui = await setUiSettings({ ...view.ui, editorCommand: editor });
-      setEditor(ui.editorCommand ?? "");
+      const ui = await setUiSettings({ ...uiRef.current, ...patch });
+      uiRef.current = ui;
       onSaved({ ...view, ui });
+      return ui;
     } catch (err) {
       setNotice({ tone: "error", text: errorText(err) });
+      return null;
     }
+  };
+
+  const saveEditor = async () => {
+    const ui = await saveUi({ editorCommand: editor });
+    if (ui) setEditor(ui.editorCommand ?? "");
   };
 
   const saveObserve = async (patch: Partial<ObserveSettings>, text: string) => {
@@ -484,15 +501,6 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
     } catch (err) {
       // The old value is kept; say why this one was refused.
       setEndpointDraft(view.observe?.exportEndpoint ?? DEFAULT_EXPORT_ENDPOINT);
-      setNotice({ tone: "error", text: errorText(err) });
-    }
-  };
-
-  const saveTheme = async (theme: string) => {
-    try {
-      const ui = await setUiSettings({ ...view.ui, theme });
-      onSaved({ ...view, ui });
-    } catch (err) {
       setNotice({ tone: "error", text: errorText(err) });
     }
   };
@@ -1190,20 +1198,83 @@ export function SettingsPage({ view, onSaved, onClose, section, platform = detec
 
       <section className="settings-section" aria-label="Appearance">
         <h2>Appearance</h2>
+        <p className="hint">Each choice applies at once and is saved.</p>
+        <div className="theme-cards" role="radiogroup" aria-label="Theme">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={view.ui.theme === SYSTEM_THEME}
+            className="theme-card"
+            onClick={() => void saveUi({ theme: SYSTEM_THEME })}
+          >
+            <span className="theme-swatch" aria-hidden>
+              {[dark.swatch[0], light.swatch[0]].map((color, i) => (
+                <i key={i} style={{ background: color }} />
+              ))}
+            </span>
+            Match system
+          </button>
+          {THEMES.map((theme) => (
+            <button
+              key={theme.id}
+              type="button"
+              role="radio"
+              aria-checked={view.ui.theme === theme.id}
+              className="theme-card"
+              onClick={() => void saveUi({ theme: theme.id })}
+            >
+              <span className="theme-swatch" aria-hidden>
+                {theme.swatch.map((color, i) => (
+                  <i key={i} style={{ background: color }} />
+                ))}
+              </span>
+              {theme.label}
+            </button>
+          ))}
+        </div>
         <label className="field-label">
-          Theme
+          Match system: dark theme
           <select
             className="text-input text-input-narrow"
-            value={view.ui.theme}
-            onChange={(event) => void saveTheme(event.target.value)}
+            value={pair.dark}
+            onChange={(event) => void saveUi({ systemDark: event.target.value as ThemeId })}
           >
-            {THEME_CHOICES.map((choice) => (
-              <option key={choice.id} value={choice.id}>
-                {choice.label}
+            {THEMES.filter((theme) => theme.scheme === "dark").map((theme) => (
+              <option key={theme.id} value={theme.id}>
+                {theme.label}
               </option>
             ))}
           </select>
         </label>
+        <label className="field-label">
+          Match system: light theme
+          <select
+            className="text-input text-input-narrow"
+            value={pair.light}
+            onChange={(event) => void saveUi({ systemLight: event.target.value as ThemeId })}
+          >
+            {THEMES.filter((theme) => theme.scheme === "light").map((theme) => (
+              <option key={theme.id} value={theme.id}>
+                {theme.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field-label">
+          UI scale
+          <select
+            className="text-input text-input-narrow"
+            value={view.ui.scale ?? 100}
+            onChange={(event) => void saveUi({ scale: Number(event.target.value) })}
+          >
+            {UI_SCALES.map((percent) => (
+              <option key={percent} value={percent}>
+                {percent}%
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="hint">The terminal's font size is set under Terminal and is not scaled.</p>
       </section>
     </div>
   );

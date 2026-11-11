@@ -74,7 +74,7 @@ import { ACCOUNT_REMOVED, accountProblem } from "./terminal/openPlan";
 import { openInBackground } from "./terminal/background";
 import { dropLivePty, ptyExitCode, ptyRunning, subscribeLivePty, subscribePtyExit } from "./terminal/live";
 import { focusParkedTerminal, refitTerminal, requestTerminalSearch, setCompactPaste, setCopyOnSelect, setFileLinkEditor, setOptionAsMeta, setTerminalTheme } from "./terminal/park";
-import { applyTheme, watchSystemTheme } from "./theme";
+import { applyTheme, pairOf, watchSystemTheme } from "./theme";
 import { reportError, setErrorNotifier } from "./uiErrors";
 import { statusLimit, type WindowHistory } from "./usage/limits";
 import { keyAction, pageAction, type PageAction } from "./pageActions";
@@ -106,9 +106,10 @@ function applySettings(view: SettingsView): void {
   setCopyOnSelect(view.terminal.copyOnSelect);
   setCompactPaste(view.terminal.compactPaste ?? true);
   setFileLinkEditor(view.terminal.fileLinkEditor ?? "finder");
-  applyTheme(view.ui.theme);
+  const pair = pairOf(view.ui);
+  applyTheme(view.ui.theme, pair);
   applyUiScale(view.ui.scale);
-  setTerminalTheme(view.ui.theme);
+  setTerminalTheme(view.ui.theme, pair);
 }
 
 function App() {
@@ -180,11 +181,12 @@ function App() {
   // "Match system" follows the OS while it is chosen.
   useEffect(() => {
     if (settings?.ui.theme !== "system") return;
+    const pair = pairOf(settings.ui);
     return watchSystemTheme(() => {
-      applyTheme("system");
-      setTerminalTheme("system");
+      applyTheme("system", pair);
+      setTerminalTheme("system", pair);
     });
-  }, [settings?.ui.theme]);
+  }, [settings?.ui]);
 
   const refreshUsage = useCallback(() => {
     getClaudeUsage(windowId).then(

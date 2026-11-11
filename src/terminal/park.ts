@@ -16,7 +16,7 @@ import { Terminal } from "@xterm/xterm";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { lastLines, TERMINAL_TAIL_LINES } from "./text";
 import { ptySetScheme } from "../bridge";
-import { cachedTheme, isLightTheme, terminalTheme } from "../theme";
+import { cachedTheme, cachedThemePair, isLightTheme, terminalTheme, type ThemePair } from "../theme";
 import { detectPlatform } from "./keys";
 import { baseName } from "../paths";
 import { isLinkModifier } from "./links";
@@ -38,12 +38,12 @@ const streams = new Map<string, () => void>();
 const searchOpeners = new Map<string, () => void>();
 const refitters = new Map<string, () => void>();
 
-let currentTheme = terminalTheme(cachedTheme());
+let currentTheme = terminalTheme(cachedTheme(), cachedThemePair());
 
 /** Repaint every terminal (and future ones) in the app theme. */
-export function setTerminalTheme(id: string): void {
-  currentTheme = terminalTheme(id);
-  const light = isLightTheme(id);
+export function setTerminalTheme(id: string, pair: ThemePair): void {
+  currentTheme = terminalTheme(id, pair);
+  const light = isLightTheme(id, pair);
   try {
     void ptySetScheme(light).catch(() => {});
   } catch {

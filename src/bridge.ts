@@ -92,6 +92,10 @@ export type UiSettings = {
   editorCommand?: string;
   /** UI scale in percent (one of `UI_SCALES` in uiScale.ts); missing: 100. */
   scale?: number;
+  /** "Match system" paints this dark theme when the OS is dark (a dark theme id). */
+  systemDark?: string;
+  /** "Match system" paints this light theme when the OS is light (a light theme id). */
+  systemLight?: string;
 };
 
 export type ClaudeAccount = {

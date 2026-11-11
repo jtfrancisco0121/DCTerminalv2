@@ -995,6 +995,47 @@ body,
   display: none !important;
 }
 
+/* Appearance: theme cards with a swatch strip each. */
+.theme-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: var(--gutter);
+  margin: var(--space-2) 0 var(--space-3);
+}
+
+.theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.theme-card:hover {
+  background: var(--bg-hover);
+}
+
+.theme-card[aria-checked="true"] {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.theme-swatch {
+  display: flex;
+  height: 1.25rem;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+}
+
+.theme-swatch i {
+  flex: 1;
+}
+
 .settings-header {
   display: flex;
   align-items: center;

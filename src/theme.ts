@@ -21,6 +21,13 @@ export type ThemeChoice = ThemeId | "system";
 export const DEFAULT_THEME: ThemeId = "soft-dusk";
 export const SYSTEM_THEME = "system";
 
+/** What "Match system" paints: a dark and a light theme, one per OS setting. */
+export type ThemePair = { dark: ThemeId; light: ThemeId };
+/** The pair of a new install. */
+export const DEFAULT_PAIR: ThemePair = { dark: "soft-dusk", light: "soft-dusk-light" };
+/** The pair Match system painted before the choice existed: an existing user keeps it until they pick another. */
+export const LEGACY_PAIR: ThemePair = { dark: "github-dark", light: "github-light" };
+
 /** Swatch dots for the Settings picker: background, accent, success, attention, done. */
 export type ThemeSwatch = [string, string, string, string, string];
 
@@ -87,6 +94,7 @@ export const THEME_CHOICES: { id: ThemeChoice; label: string }[] = [
 ];
 
 const CACHE_KEY = "dcterminalv2.theme";
+const PAIR_CACHE_KEY = "dcterminalv2.themePair";
 const DARK_QUERY = "(prefers-color-scheme: dark)";
 
 /** A saved value as a choice. Unknown or missing values fall back to the default theme. */
@@ -103,11 +111,23 @@ export function systemPrefersDark(): boolean {
   }
 }
 
-/** The concrete theme for a saved choice. */
-export function resolveTheme(id: string | null | undefined): ThemeId {
+/** A saved pair as a pair: a theme of the wrong scheme, an unknown id or a missing value gets `fallback`'s entry. */
+export function normalizePair(pair: { dark?: string | null; light?: string | null } | null | undefined, fallback: ThemePair = DEFAULT_PAIR): ThemePair {
+  const pick = (id: string | null | undefined, scheme: "dark" | "light", other: ThemeId) =>
+    THEMES.find((theme) => theme.id === id && theme.scheme === scheme)?.id ?? other;
+  return { dark: pick(pair?.dark, "dark", fallback.dark), light: pick(pair?.light, "light", fallback.light) };
+}
+
+/** The Match system pair of saved UI settings (a missing entry is the new-install one). */
+export function pairOf(ui: { systemDark?: string | null; systemLight?: string | null }): ThemePair {
+  return normalizePair({ dark: ui.systemDark, light: ui.systemLight });
+}
+
+/** The concrete theme for a saved choice; "system" resolves through `pair` by the OS setting. */
+export function resolveTheme(id: string | null | undefined, pair: ThemePair): ThemeId {
   const choice = normalizeTheme(id);
   if (choice !== SYSTEM_THEME) return choice;
-  return systemPrefersDark() ? "github-dark" : "github-light";
+  return systemPrefersDark() ? pair.dark : pair.light;
 }
 
 /** Calls back when the OS light/dark setting changes. Returns the unsubscribe. */
@@ -315,13 +335,13 @@ export const TERMINAL_THEMES: Record<ThemeId, ITheme> = {
 };
 
 /** The terminal palette for a theme. */
-export function terminalTheme(id: string | null | undefined): ITheme {
-  return TERMINAL_THEMES[resolveTheme(id)];
+export function terminalTheme(id: string | null | undefined, pair: ThemePair): ITheme {
+  return TERMINAL_THEMES[resolveTheme(id, pair)];
 }
 
 /** The theme a choice paints is a light one (Claude Code is told so). */
-export function isLightTheme(id: string | null | undefined): boolean {
-  const theme = resolveTheme(id);
+export function isLightTheme(id: string | null | undefined, pair: ThemePair): boolean {
+  const theme = resolveTheme(id, pair);
   return THEMES.find((item) => item.id === theme)?.scheme === "light";
 }
 
@@ -333,19 +353,31 @@ export function cachedTheme(): ThemeChoice {
   }
 }
 
+/** The cached Match system pair. A missing or junk cache is an existing user's: the GitHub pair they always had. */
+export function cachedThemePair(): ThemePair {
+  try {
+    const raw = window.localStorage.getItem(PAIR_CACHE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as { dark?: string; light?: string }) : null;
+    return normalizePair(parsed, LEGACY_PAIR);
+  } catch {
+    return LEGACY_PAIR;
+  }
+}
+
 /**
- * Switch the app's CSS variables to a theme and remember the choice. For
- * "system" the OS setting picks the palette; the choice, not the palette, is
- * cached. Returns the concrete theme applied.
+ * Switch the app's CSS variables to a theme and remember the choice and the
+ * Match system pair. For "system" the OS setting picks the palette from `pair`;
+ * the choice, not the palette, is cached. Returns the concrete theme applied.
  */
-export function applyTheme(id: string | null | undefined): ThemeId {
+export function applyTheme(id: string | null | undefined, pair: ThemePair): ThemeId {
   const choice = normalizeTheme(id);
-  const theme = resolveTheme(choice);
+  const theme = resolveTheme(choice, pair);
   const root = document.documentElement;
   root.dataset.theme = theme;
   root.style.colorScheme = THEMES.find((item) => item.id === theme)?.scheme ?? "dark";
   try {
     window.localStorage.setItem(CACHE_KEY, choice);
+    window.localStorage.setItem(PAIR_CACHE_KEY, JSON.stringify(pair));
   } catch {
     // Private mode or storage disabled: the setting still lives in settings.json.
   }
