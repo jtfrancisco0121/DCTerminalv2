@@ -784,3 +784,24 @@ describe("Now block and folding sections", () => {
     expect(head.getAttribute("aria-expanded")).toBe("true");
   });
 });
+
+describe("folds are remembered per run", () => {
+  it("restores a folded section on the next render of the same run and not on another run", () => {
+    localStorage.clear();
+    const props = { checking: false, onRerunChecks: vi.fn(), onOpenFile: vi.fn(), onOpenUrl: vi.fn(), onCleanUp: vi.fn() };
+    const calm = { ...view, stage: "building", waitingFor: null, shipApproved: false, prs: [], runId: "r-fold-a" } as RunView;
+    const first = render(<RunPanelView view={calm} {...props} />);
+    fireEvent.click(within(screen.getByTestId("fold-timeline")).getByRole("button", { name: "Timeline" }));
+    expect(screen.getByTestId("fold-timeline").classList.contains("fold-open")).toBe(false);
+    expect(JSON.parse(localStorage.getItem("dcv2.runPanelFolds") ?? "{}")["r-fold-a"].folded).toEqual(["timeline"]);
+    first.unmount();
+    render(<RunPanelView view={calm} {...props} />);
+    expect(screen.getByTestId("fold-timeline").classList.contains("fold-open")).toBe(false);
+    cleanup();
+    render(<RunPanelView view={{ ...calm, runId: "r-fold-b" }} {...props} />);
+    expect(screen.getByTestId("fold-timeline").classList.contains("fold-open")).toBe(true);
+    const keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i));
+    expect(keys.filter((key) => key?.startsWith("dcv2.runPanel."))).toEqual([]);
+    localStorage.clear();
+  });
+});

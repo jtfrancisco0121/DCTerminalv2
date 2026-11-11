@@ -41,8 +41,10 @@ describe("motion", () => {
     for (const { selector, value } of transitions) {
       if (value.startsWith("none")) continue;
       expect(value, selector).not.toMatch(/\b(?:width|all)\b/);
-      expect(value, selector).toContain("var(--dur-fast)");
-      expect(value.replace(/var\(--dur-fast\)|var\(--ease\)/g, ""), selector).not.toMatch(/\d+m?s/);
+      // The run panel's folds have their own duration (--dur-fold, defined on .fold).
+      const duration = /^\.fold/.test(selector) ? "var(--dur-fold)" : "var(--dur-fast)";
+      expect(value, selector).toContain(duration);
+      expect(value.replace(/var\(--dur-fast\)|var\(--dur-fold\)|var\(--ease\)/g, ""), selector).not.toMatch(/\d+m?s/);
     }
   });
 

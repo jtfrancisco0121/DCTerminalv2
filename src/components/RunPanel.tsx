@@ -65,6 +65,7 @@ import { RUN_STATE_EVENT, usePushRefresh } from "../run/events";
 import { AWAY_ROWS, useAwayNotice } from "../run/away";
 import { Dialog } from "./Dialog";
 import { openPreview } from "../preview/bus";
+import { loadFolds, saveFolds } from "../runPanelFolds";
 import { RunPanelShell } from "./RunPanelShell";
 import { ApprovalCard } from "./ApprovalCard";
 import { baseName } from "../paths";
@@ -427,9 +428,16 @@ function BmadSection({
  * One folding section of the run panel: a header row (caret, name, one-line summary) and a body. A section that holds
  * something for the user or something wrong (tone you, warn or danger) stays open and its control is disabled, so a
  * fold can never hide a failing PR or an approval. The body stays mounted when folded (nothing is lost or re-read).
+ * What the user folded is remembered per run (src/runPanelFolds.ts).
  */
-function FoldSection({ id, info, children }: { id: FoldId; info: FoldInfo; children: ReactNode }) {
-  const [folded, setFolded] = useState(false);
+function FoldSection({ runId, id, info, children }: { runId: string; id: FoldId; info: FoldInfo; children: ReactNode }) {
+  const [folded, setFolded] = useState(() => loadFolds(runId).includes(id));
+  const toggle = () => {
+    const next = !folded;
+    setFolded(next);
+    const others = loadFolds(runId).filter((item) => item !== id);
+    saveFolds(runId, next ? [...others, id] : others);
+  };
   const forced = foldForcedOpen(info.tone);
   const open = forced || !folded;
   return (
@@ -441,7 +449,7 @@ function FoldSection({ id, info, children }: { id: FoldId; info: FoldInfo; child
         aria-describedby={`fold-${id}-summary`}
         disabled={forced}
         title={forced ? "Stays open: this needs a look" : undefined}
-        onClick={() => setFolded(!folded)}
+        onClick={toggle}
       >
         <span className="fold-caret" aria-hidden>
           ›
@@ -509,12 +517,12 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
       {view.pausedReason && <p className="hint warn">Paused: {view.pausedReason}</p>}
       {view.error && <p className="error">{view.error}</p>}
       {session && (
-        <FoldSection id="session" info={sessionFold()}>
+        <FoldSection runId={view.runId} id="session" info={sessionFold()}>
           {session}
         </FoldSection>
       )}
       {(view.plan || (view.bmad && view.bmad.mode !== "off")) && (
-        <FoldSection id="plan" info={planFold(view)}>
+        <FoldSection runId={view.runId} id="plan" info={planFold(view)}>
           {view.plan && (
             <p className="run-plan">
               Plan {view.plan.approved ? "✓ approved" : view.plan.verdict ? `review: ${view.plan.verdict}` : "being written"}
@@ -529,7 +537,7 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
         </FoldSection>
       )}
       {view.prs.length > 0 && (
-        <FoldSection id="prs" info={prsFold(view)}>
+        <FoldSection runId={view.runId} id="prs" info={prsFold(view)}>
           <ul className="run-prs">
             {view.prs.map((pr) => (
               <PrRow
@@ -551,7 +559,7 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
       )}
       {view.shipNote && <p className="hint">{view.shipNote}</p>}
       {(view.cleanup ?? []).length > 0 && (
-        <FoldSection id="cleanup" info={cleanupFold(view.cleanup ?? [])}>
+        <FoldSection runId={view.runId} id="cleanup" info={cleanupFold(view.cleanup ?? [])}>
           <section className="run-cleanup" aria-label="Cleanup" data-testid="cleanup">
             <h3>Cleaned up (merged PRs)</h3>
             <ul className="hint">
@@ -587,17 +595,17 @@ export function RunPanelView({ view, checking, onRerunChecks, onOpenFile, onOpen
         )}
       </div>
       {agents && (
-        <FoldSection id="agents" info={agentsFold()}>
+        <FoldSection runId={view.runId} id="agents" info={agentsFold()}>
           {agents}
         </FoldSection>
       )}
       {clickup && (
-        <FoldSection id="clickup" info={clickupFold()}>
+        <FoldSection runId={view.runId} id="clickup" info={clickupFold()}>
           {clickup}
         </FoldSection>
       )}
       {timeline.length > 0 && (
-        <FoldSection id="timeline" info={timelineFold(view.timeline)}>
+        <FoldSection runId={view.runId} id="timeline" info={timelineFold(view.timeline)}>
           <section className="run-timeline" aria-label="Timeline">
             <h3>Timeline</h3>
             {timeline.map((group, at) => (

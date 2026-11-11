@@ -3868,6 +3868,7 @@ body,
 }
 
 .fold {
+  --dur-fold: 200ms;
   margin: var(--space-1) 0;
 }
 
@@ -3896,6 +3897,10 @@ body,
   text-align: center;
 }
 
+.fold-caret {
+  transition: transform var(--dur-fold) var(--ease);
+}
+
 .fold-open .fold-caret {
   transform: rotate(90deg);
 }
@@ -3919,6 +3924,7 @@ body,
 .fold-body {
   display: grid;
   grid-template-rows: 0fr;
+  transition: grid-template-rows var(--dur-fold) var(--ease);
 }
 
 .fold-open > .fold-body {
@@ -3928,6 +3934,11 @@ body,
 .fold-inner {
   min-height: 0;
   overflow: hidden;
+}
+
+/* Hidden from the tab order only once the fold has closed: visibility changes at the end of the transition. */
+.fold-inner {
+  transition: visibility var(--dur-fold) var(--ease);
 }
 
 .fold:not(.fold-open) .fold-inner {
