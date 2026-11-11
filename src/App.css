@@ -71,6 +71,10 @@ body,
   --text-md: 0.875rem;
   --text-lg: 1rem;
   --text-xl: 1.25rem;
+  --text-xs-plus: 0.8rem;
+  --text-sm-plus: 0.85rem;
+  --text-rel-sm: 0.85em;
+  --text-rel-md: 0.9em;
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
@@ -81,10 +85,10 @@ body,
   --radius-md: 12px; /* px: corner radius stays fixed */
   --radius-lg: 14px; /* px: corner radius stays fixed */
   --gutter: 8px; /* px: panel gap stays fixed */
-  --radius-pill: 999px;
-  --elev-1: 0 1px 3px var(--shadow);
-  --elev-2: 0 6px 18px var(--shadow);
-  --elev-3: 0 12px 32px var(--shadow);
+  --radius-pill: 999px; /* px: pill corners stay round at any size */
+  --elev-1: 0 1px 3px var(--shadow); /* px: shadow offsets stay fixed */
+  --elev-2: 0 6px 18px var(--shadow); /* px: shadow offsets stay fixed */
+  --elev-3: 0 12px 32px var(--shadow); /* px: shadow offsets stay fixed */
   --z-sticky: 2;
   --z-dropdown: 20;
   --z-overlay: 30;
@@ -92,8 +96,8 @@ body,
   --z-toast: 40;
   --z-tip: 45;
   --z-menu: 50;
-  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
-  --term-pad: 6px;
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); /* px: focus ring width stays fixed */
+  --term-pad: 6px; /* px: terminal padding matches the xterm cell grid, which is never scaled */
   --titlebar-h: 42px; /* px: the native title-bar row height stays fixed */
   --traffic-inset: 78px; /* px: room for the macOS traffic lights stays fixed */
   /* Terminal search highlights (read by TerminalSearchBar; hex only). */
@@ -684,8 +688,8 @@ body,
   position: absolute;
   top: 0.25rem;
   bottom: 0;
-  width: 2px;
-  margin-left: -1px;
+  width: 0.125rem;
+  margin-left: -0.0625rem;
   background: var(--accent);
   pointer-events: none;
 }
@@ -714,7 +718,7 @@ body,
   position: absolute;
   left: 0;
   bottom: 0;
-  height: 2px;
+  height: 0.125rem;
   border-radius: 1px;
   background: currentColor;
   pointer-events: none;
@@ -946,7 +950,7 @@ body,
 
 .unsaved-marker {
   color: var(--warning);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   align-self: center;
 }
 
@@ -1208,7 +1212,7 @@ body,
 .terminal-menu-shortcut {
   color: var(--muted, var(--fg));
   opacity: 0.7;
-  font-size: 0.85em;
+  font-size: var(--text-rel-sm);
 }
 
 .terminal-view {
@@ -1229,7 +1233,7 @@ body,
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  font-size: 0.85em;
+  font-size: var(--text-rel-sm);
 }
 
 .terminal-menu-dismiss {
@@ -1323,7 +1327,7 @@ body,
 
 .terminal-exit-strip-reason,
 .terminal-exit-strip-note {
-  font-size: 0.85em;
+  font-size: var(--text-rel-sm);
   opacity: 0.8;
 }
 
@@ -1419,7 +1423,7 @@ body,
   border-radius: 999px;
   background: var(--warning-subtle);
   color: var(--warning);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
 }
 
 .run-repo-pick {
@@ -1511,10 +1515,10 @@ body,
 
 .run-panel-handle {
   position: absolute;
-  left: -3px;
+  left: -0.1875rem;
   top: 0;
   bottom: 0;
-  width: 6px;
+  width: 0.375rem;
   z-index: 5;
   cursor: col-resize;
   touch-action: none;
@@ -1528,8 +1532,8 @@ body,
 
 .run-panel-collapse {
   position: absolute;
-  top: 2px;
-  right: 4px;
+  top: 0.125rem;
+  right: 0.25rem;
   z-index: 6;
   border: 0;
   background: transparent;
@@ -1679,7 +1683,7 @@ body,
   margin: 0;
   padding: 0;
   list-style: none;
-  font-size: 0.85rem;
+  font-size: var(--text-sm-plus);
 }
 
 .qa-criterion-fail,
@@ -1703,7 +1707,7 @@ body,
   align-items: center;
   justify-content: center;
   color: var(--fg-muted);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1814,7 +1818,7 @@ body,
 .run-cost th,
 .run-cost td {
   text-align: left;
-  padding: 2px var(--space-1);
+  padding: 0.125rem var(--space-1);
 }
 
 .selftest-steps {
@@ -1889,12 +1893,12 @@ body,
 }
 
 .split-right > .split-divider {
-  width: 5px;
+  width: 0.3125rem;
   cursor: col-resize;
 }
 
 .split-down > .split-divider {
-  height: 5px;
+  height: 0.3125rem;
   cursor: row-resize;
 }
 
@@ -2106,7 +2110,7 @@ body,
 .approval-prs th,
 .approval-prs td {
   text-align: left;
-  padding: 2px var(--space-1);
+  padding: 0.125rem var(--space-1);
 }
 
 .tab-activity-button {
@@ -2137,8 +2141,8 @@ body,
 
 .usage-popover-close {
   position: absolute;
-  top: 2px;
-  right: 4px;
+  top: 0.125rem;
+  right: 0.25rem;
   border: 0;
   background: transparent;
   color: var(--fg-muted);
@@ -2203,14 +2207,14 @@ body,
 .run-bmad-docs {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 0.375rem;
   align-items: baseline;
 }
 
 .run-pr-comments {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 0.375rem;
   align-items: baseline;
 }
 
@@ -2262,12 +2266,12 @@ body,
 }
 
 .run-slop {
-  margin-top: 4px;
+  margin-top: 0.25rem;
 }
 
 .run-slop ul {
-  margin: 2px 0 6px;
-  padding-left: 16px;
+  margin: 0.125rem 0 0.375rem;
+  padding-left: 1rem;
 }
 
 .run-slop-file strong {
@@ -2278,21 +2282,21 @@ body,
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  font-size: 12px;
+  gap: 0.5rem;
+  padding: 0.375rem 0.625rem;
+  font-size: var(--text-xs);
 }
 
 .scratchpad {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 0.375rem;
+  padding: 0.5rem 0.625rem;
 }
 
 .scratchpad-text {
   width: 100%;
-  min-height: 90px;
+  min-height: 5.625rem;
   resize: vertical;
   font: inherit;
   box-sizing: border-box;
@@ -2300,14 +2304,14 @@ body,
 
 .scratchpad-hints {
   margin: 0;
-  padding-left: 16px;
+  padding-left: 1rem;
 }
 
 .scratchpad-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 0.5rem;
 }
 
 .run-panel-clicks {
@@ -2319,21 +2323,21 @@ body,
   background: var(--bg-elev);
   display: flex;
   flex-direction: column;
-  flex: 0 0 min(42%, 560px);
-  min-width: 320px;
+  flex: 0 0 min(42%, 35rem);
+  min-width: 20rem;
   overflow: hidden;
 }
 
 .preview-pane.wide {
-  flex-basis: min(65%, 1100px);
+  flex-basis: min(65%, 68.75rem);
 }
 
 .preview-head {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 0.5rem;
+  padding: 0.375rem 0.625rem;
 }
 
 .preview-head strong {
@@ -2352,7 +2356,7 @@ body,
 .preview-body {
   flex: 1;
   overflow: auto;
-  padding: 8px 12px;
+  padding: 0.5rem 0.75rem;
 }
 
 /* Document text at the UI's reading size, not the browser's 16px default with 2em headings. */
@@ -2423,7 +2427,7 @@ body,
 
 .preview-markdown code {
   font-family: var(--font-mono);
-  font-size: 0.9em;
+  font-size: var(--text-rel-md);
   padding: 0.1em 0.3em;
   border-radius: var(--radius-sm);
   background: var(--bg-muted);
@@ -2519,8 +2523,8 @@ body,
 }
 
 .fleet-totals {
-  margin: 2px 0 6px;
-  font-size: 12px;
+  margin: 0.125rem 0 0.375rem;
+  font-size: var(--text-xs);
 }
 
 .fleet-lanes {
@@ -2529,7 +2533,7 @@ body,
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0.25rem;
 }
 
 .fleet-lane,
@@ -2538,19 +2542,19 @@ body,
   display: grid;
   grid-template-columns: 7rem 1fr 9rem;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: 0.375rem;
+  font-size: var(--text-xs);
 }
 
 .fleet-stages {
   align-items: stretch;
-  margin-bottom: 4px;
-  font-size: 11px;
+  margin-bottom: 0.25rem;
+  font-size: var(--text-2xs);
 }
 
 .fleet-stages-track {
   position: relative;
-  height: 16px;
+  height: 1rem;
 }
 
 .fleet-stage {
@@ -2559,7 +2563,7 @@ body,
   bottom: 0;
   overflow: hidden;
   box-sizing: border-box;
-  padding: 0 4px;
+  padding: 0 0.25rem;
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--fg-muted) 18%, transparent);
   color: var(--fg-muted);
@@ -2572,8 +2576,8 @@ body,
 }
 
 .fleet-axis {
-  margin-top: 4px;
-  font-size: 11px;
+  margin-top: 0.25rem;
+  font-size: var(--text-2xs);
   color: var(--fg-muted);
 }
 
@@ -2589,7 +2593,7 @@ body,
 
 .fleet-track {
   position: relative;
-  height: 14px;
+  height: 0.875rem;
   background: var(--bg-muted);
   border-radius: 3px;
 }
@@ -2600,14 +2604,14 @@ body,
   bottom: 0;
   /* Solid --warning stripes keep 3:1 against the track in every theme. */
   background:
-    repeating-linear-gradient(45deg, var(--warning) 0 2px, transparent 2px 6px),
+    repeating-linear-gradient(45deg, var(--warning) 0 0.125rem, transparent 0.125rem 0.375rem),
     var(--warning-subtle);
 }
 
 .fleet-bar {
   position: absolute;
-  top: 2px;
-  bottom: 2px;
+  top: 0.125rem;
+  bottom: 0.125rem;
   border-radius: 2px;
   background: var(--accent);
 }
@@ -2626,8 +2630,8 @@ body,
 .fleet-bar-open {
   background: repeating-linear-gradient(
     90deg,
-    var(--accent) 0 6px,
-    color-mix(in srgb, var(--accent) 50%, transparent) 6px 10px
+    var(--accent) 0 0.375rem,
+    color-mix(in srgb, var(--accent) 50%, transparent) 0.375rem 0.625rem
   );
 }
 
@@ -2663,7 +2667,7 @@ body,
 
 /* Inline SVG icons (src/components/icons.tsx). */
 .icon {
-  vertical-align: -2px;
+  vertical-align: -0.125rem;
   flex: none;
 }
 
@@ -2694,7 +2698,7 @@ body,
 @keyframes pop-in {
   from {
     opacity: 0;
-    transform: translateY(-4px);
+    transform: translateY(-0.25rem);
   }
   to {
     opacity: 1;
@@ -2737,14 +2741,14 @@ body,
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 0.25rem;
   align-self: flex-start;
   max-width: 100%;
-  padding: 0 7px;
+  padding: 0 0.4375rem;
   border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
   border-radius: 999px;
   background: var(--tone-bg);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
@@ -2777,13 +2781,13 @@ body,
 .step {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 0.25rem;
   color: var(--fg-muted);
 }
 
 .step + .step::before {
   content: "";
-  width: 10px;
+  width: 0.625rem;
   border-top: 1px solid var(--border);
   margin-right: var(--space-1);
 }
@@ -2804,8 +2808,8 @@ body,
   justify-content: center;
   flex: none;
   box-sizing: border-box;
-  width: 14px;
-  height: 14px;
+  width: 0.875rem;
+  height: 0.875rem;
   border: 1.5px solid currentColor;
   border-radius: 50%;
 }
@@ -2820,7 +2824,7 @@ body,
 
 /* Waiting for you: a hollow dot with a ring, so it differs from warn by shape. */
 .step-waiting .step-dot {
-  margin: 0 3px;
+  margin: 0 0.1875rem;
   box-shadow:
     0 0 0 2px var(--bg),
     0 0 0 3.5px currentColor;
@@ -2832,7 +2836,7 @@ body,
 }
 
 .step-extra {
-  margin-left: 2px;
+  margin-left: 0.125rem;
 }
 
 .stepper-vertical {
@@ -2843,8 +2847,8 @@ body,
 
 .stepper-vertical .step + .step::before {
   width: 0;
-  height: 8px;
-  margin: 2px 0;
+  height: 0.5rem;
+  margin: 0.125rem 0;
   border-top: 0;
   border-left: 1px solid var(--border);
 }
@@ -2873,8 +2877,8 @@ body,
 .cost-bar {
   display: flex;
   width: 100%;
-  height: 8px;
-  margin-top: 4px;
+  height: 0.5rem;
+  margin-top: 0.25rem;
   overflow: hidden;
   border-radius: var(--radius-sm);
   background: var(--bg-muted);
@@ -2882,7 +2886,7 @@ body,
 
 .cost-seg {
   height: 100%;
-  min-width: 2px;
+  min-width: 0.125rem;
 }
 
 .series-0 {
@@ -2911,7 +2915,7 @@ body,
   display: inline-block;
   vertical-align: middle;
   width: 4.5rem;
-  height: 6px;
+  height: 0.375rem;
   border-radius: 3px;
   background: var(--bg-muted);
 }
@@ -2925,16 +2929,16 @@ body,
 
 .meter-marker {
   position: absolute;
-  top: -2px;
-  bottom: -2px;
-  width: 2px;
-  margin-left: -1px;
+  top: -0.125rem;
+  bottom: -0.125rem;
+  width: 0.125rem;
+  margin-left: -0.0625rem;
   background: var(--fg);
 }
 
 .meter-unknown {
   background:
-    repeating-linear-gradient(45deg, color-mix(in srgb, var(--fg-muted) 40%, transparent) 0 2px, transparent 2px 5px),
+    repeating-linear-gradient(45deg, color-mix(in srgb, var(--fg-muted) 40%, transparent) 0 0.125rem, transparent 0.125rem 0.3125rem),
     var(--bg-muted);
 }
 
@@ -2953,8 +2957,8 @@ body,
 .status-meter {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 0 4px;
+  gap: 0.25rem;
+  padding: 0 0.25rem;
   border: 0;
   background: transparent;
   color: var(--fg-muted);
@@ -2971,7 +2975,7 @@ body,
   bottom: 100%;
   left: 0;
   z-index: 20;
-  margin-bottom: 4px;
+  margin-bottom: 0.25rem;
   padding: var(--space-2);
   min-width: 9rem;
   border: 1px solid var(--border);
@@ -3079,7 +3083,7 @@ body,
 
 .chart-axis text {
   fill: var(--fg-muted);
-  font-size: 11px;
+  font-size: var(--text-2xs);
 }
 
 /* Trace panel (Session Inspector): a page with a rail and the event list. */
@@ -3282,7 +3286,7 @@ body,
 
 .trace-lane-chip {
   display: inline-block;
-  padding: 0 6px;
+  padding: 0 0.375rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--fg-muted);
@@ -3326,7 +3330,7 @@ body,
 .trace-pr-button {
   color: var(--fg-soft);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   cursor: pointer;
 }
 
@@ -3509,13 +3513,13 @@ body,
 .export-dialog .export-fields {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 
 .export-dialog .export-fields th,
 .export-dialog .export-fields td {
   text-align: left;
-  padding: 2px 6px;
+  padding: 0.125rem 0.375rem;
   border-bottom: 1px solid var(--border);
 }
 
@@ -3620,8 +3624,8 @@ body,
 
 .visually-hidden {
   position: absolute;
-  width: 1px;
-  height: 1px;
+  width: 1px; /* px: visually hidden: a one-pixel clip */
+  height: 1px; /* px: visually hidden: a one-pixel clip */
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
@@ -3692,7 +3696,7 @@ body,
   display: inline-block;
   margin: 0 0.4rem 0.3rem 0;
   padding: 0.1rem 0.5rem;
-  font-size: 0.8rem;
+  font-size: var(--text-xs-plus);
   color: var(--fg-muted);
   border: 1px solid var(--border);
   border-radius: 999px;

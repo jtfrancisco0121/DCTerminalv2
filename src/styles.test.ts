@@ -58,3 +58,19 @@ describe("rhythm tokens (S2)", () => {
     }
   });
 });
+
+describe("size tokens follow the UI scale (S4)", () => {
+  it("defines every --space-* and --text-* token in rem (em for --text-rel-*)", () => {
+    const tokens = [...noComments.matchAll(/^\s*(--(?:space|text)-[a-z0-9-]+): ([^;]+);/gm)];
+    expect(tokens.length).toBeGreaterThanOrEqual(14);
+    for (const [, name, value] of tokens) {
+      const unit = name.startsWith("--text-rel-") ? "em" : "rem";
+      expect(value.trim(), name).toMatch(new RegExp(`^\\d*\\.?\\d+${unit}$`));
+    }
+  });
+
+  it("has no raw font-size outside :root", () => {
+    const raw = [...noComments.matchAll(/font-size:\s*([^;]+);/g)].filter((m) => !/^(var\(.*\)|inherit)$/.test(m[1].trim()));
+    expect(raw.map((m) => m[0])).toEqual([]);
+  });
+});

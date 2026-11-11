@@ -187,30 +187,29 @@ function isThemeSelector(selector) {
 const HEX_COLOUR = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\b/g;
 
 /**
- * Hex colours in declaration values outside the theme blocks (`:root` and
- * `:root[data-theme="…"]`), as `{line, text}`. Colours belong to the themes;
- * everything else uses their tokens (a hex in a `var()` fallback counts).
- * Comments are ignored and selectors such as `#root` are not declarations.
+ * Every declaration of `css` as `{property, value, line, inTheme}`: `line` is
+ * the line of the property's colon, `inTheme` is true inside a theme block (or
+ * an at-rule wrapping one). Comments are blanked (lines stay), and selectors
+ * and at-rule preludes (`@media (max-width: 1px)`) are not declarations.
  */
-export function strayHexColours(css) {
+function walkDeclarations(css) {
   const clean = css.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, " "));
-  const lines = css.split("\n");
   const found = [];
   const stack = [];
   let buffer = "";
   let bufferLine = 1;
   let line = 1;
-  const skipping = () => stack.some(Boolean);
   const declaration = () => {
     const colon = buffer.indexOf(":");
-    if (colon >= 0 && !skipping()) {
+    if (colon >= 0) {
       const head = buffer.slice(0, colon);
       const before = (head.trimStart().match(/\n/g) ?? []).length;
-      const value = buffer.slice(colon + 1);
-      for (const match of value.matchAll(HEX_COLOUR)) {
-        const at = bufferLine + before + (value.slice(0, match.index).match(/\n/g) ?? []).length;
-        found.push({ line: at, text: (lines[at - 1] ?? "").trim() });
-      }
+      found.push({
+        property: head.trim(),
+        value: buffer.slice(colon + 1),
+        line: bufferLine + before,
+        inTheme: stack.some(Boolean),
+      });
     }
     buffer = "";
   };
@@ -232,12 +231,93 @@ export function strayHexColours(css) {
   return found;
 }
 
+/**
+ * Hex colours in declaration values outside the theme blocks (`:root` and
+ * `:root[data-theme="…"]`), as `{line, text}`. Colours belong to the themes;
+ * everything else uses their tokens (a hex in a `var()` fallback counts).
+ * Comments are ignored and selectors such as `#root` are not declarations.
+ */
+export function strayHexColours(css) {
+  const lines = css.split("\n");
+  const found = [];
+  for (const { value, line, inTheme } of walkDeclarations(css)) {
+    if (inTheme) continue;
+    for (const match of value.matchAll(HEX_COLOUR)) {
+      const at = line + (value.slice(0, match.index).match(/\n/g) ?? []).length;
+      found.push({ line: at, text: (lines[at - 1] ?? "").trim() });
+    }
+  }
+  return found;
+}
+
 export function assertNoStrayHexColours(file = "src/App.css") {
   const stray = strayHexColours(readFileSync(file, "utf8"));
   if (stray.length > 0) {
     const lines = stray.map(({ line, text }) => `App.css:${line}: ${text}`).join("\n");
     throw new Error(
       `hex colours outside the theme blocks in ${file}; use the theme tokens (var(--x)):\n${lines}`,
+    );
+  }
+}
+
+/**
+ * Raw `font-size` values outside the theme blocks, as `{line, text}`. Sizes
+ * come from the `--text-*` tokens (rem, so they follow the UI scale); `var()`,
+ * `inherit` and the other CSS-wide keywords are fine, a number with a unit is not.
+ */
+export function strayFontSizes(css) {
+  const lines = css.split("\n");
+  return walkDeclarations(css)
+    .filter(({ property, value, inTheme }) => {
+      if (inTheme || property !== "font-size") return false;
+      return !/^\s*(?:var\(.*\)|inherit|initial|unset|revert)\s*$/.test(value);
+    })
+    .map(({ line }) => ({ line, text: (lines[line - 1] ?? "").trim() }));
+}
+
+export function assertNoStrayFontSizes(file = "src/App.css") {
+  const stray = strayFontSizes(readFileSync(file, "utf8"));
+  if (stray.length > 0) {
+    const lines = stray.map(({ line, text }) => `App.css:${line}: ${text}`).join("\n");
+    throw new Error(
+      `raw font sizes in ${file}; use a --text-* token (or inherit):\n${lines}`,
+    );
+  }
+}
+
+const PX_LENGTH = /(?<![\w.#-])-?(?:\d+\.\d+|\d+|\.\d+)px\b/g;
+// Borders, outlines and shadows are hairlines and offsets that stay px.
+const PX_EXEMPT_PROPERTY = /^(?:border|outline)|^box-shadow$/;
+
+/**
+ * Pixel lengths that neither belong to a border, outline or box-shadow nor carry
+ * a same-line `/* px: <reason> *\/` comment, as `{line, text}`. Lengths in rem
+ * follow the UI scale; a px one must say why it stays fixed. Theme blocks and
+ * `:root` token lines count too (a px token hides in a definition otherwise).
+ * `0px` is a zero, and at-rule preludes are not declarations.
+ */
+export function unexplainedPx(css) {
+  const lines = css.split("\n");
+  const found = [];
+  for (const { property, value, line } of walkDeclarations(css)) {
+    if (PX_EXEMPT_PROPERTY.test(property)) continue;
+    for (const match of value.matchAll(PX_LENGTH)) {
+      if (Number.parseFloat(match[0]) === 0) continue;
+      const at = line + (value.slice(0, match.index).match(/\n/g) ?? []).length;
+      const source = lines[at - 1] ?? "";
+      if (/\/\*\s*px:\s*[^\s*]/.test(source)) continue;
+      found.push({ line: at, text: source.trim() });
+    }
+  }
+  return found.filter((item, index) => found.findIndex((other) => other.line === item.line) === index);
+}
+
+export function assertNoUnexplainedPx(file = "src/App.css") {
+  const stray = unexplainedPx(readFileSync(file, "utf8"));
+  if (stray.length > 0) {
+    const lines = stray.map(({ line, text }) => `App.css:${line}: ${text}`).join("\n");
+    throw new Error(
+      `px lengths in ${file} need rem or a same-line "/* px: <reason> */" comment:\n${lines}`,
     );
   }
 }
@@ -405,6 +485,8 @@ if (isDirectRun()) {
   try {
     assertReleaseVersionsMatch();
     assertNoStrayHexColours();
+    assertNoStrayFontSizes();
+    assertNoUnexplainedPx();
   } catch (error) {
     console.error(error instanceof Error ? error.message : error);
     process.exit(1);
