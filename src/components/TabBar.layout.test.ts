@@ -20,7 +20,18 @@ const body = (selector: string) => {
 
 describe("tab row overflow layout", () => {
   it("a tab is never wider than the row's view, so scrolling it into view shows it whole", () => {
-    expect(body(".tab")).toMatch(/max-width:\s*min\([^;]*100%[^;]*\)\s*;/);
+    // TabBar measures the row and sets --tab-view on it; a percentage would be ignored (the row's width comes from its tabs).
+    expect(body(".tab")).toMatch(/max-width:\s*min\([^;]*var\(--tab-view[^;]*\)\s*;/);
+  });
+
+  it("a narrow window hides the account name and shrinks the search, leaving the tabs room", () => {
+    const narrow = /@media \(max-width: 40rem\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+    expect(narrow).toMatch(/\.title-bar-account \{\s*display: none;/);
+    expect(narrow).toMatch(/\.title-bar-search \{\s*min-width: 0;/);
+  });
+
+  it("the tab row shows no scrollbar", () => {
+    expect(body(".tab-bar")).toMatch(/scrollbar-width:\s*none\s*;/);
   });
 
   it("the strip never shrinks under the +N button: the list column shrinks to 0, the button's column does not", () => {

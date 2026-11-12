@@ -124,6 +124,12 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
     const el = bar.current;
     if (!el) return;
     const view = el.getBoundingClientRect();
+    // `.tab` max-width reads this: a tab is never wider than the row's view, so the active tab can always be shown whole.
+    // A CSS percentage cannot do it: the row's width comes from its tabs, so a percentage of it is ignored.
+    // Less the row's side padding: a tab as wide as the whole row would still stick out by it and stay in "+N".
+    const style = window.getComputedStyle(el);
+    const inner = view.width - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0);
+    if (inner > 0) el.style.setProperty("--tab-view", `${Math.floor(inner)}px`);
     const boxes = tabsRef.current.map((tab) => {
       const box = tabEls.current.get(tab.id)?.getBoundingClientRect();
       return { id: tab.id, left: box?.left ?? view.left, right: box?.right ?? view.left };
@@ -147,7 +153,7 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
     };
   }, []);
   // The one place that scrolls a tab: the active tab comes into view however it became active (click, Cmd+1..9,
-  // Ctrl+Tab, the palette). The tab is never wider than the row (`.tab` max-width in App.css), so "nearest" always
+  // Ctrl+Tab, the palette). The tab is never wider than the row (`--tab-view`, set in measure), so "nearest" always
   // shows it whole. It measures again right after: the scroll event comes a frame later and does not come at all when
   // the row did not move, and "+N" must not keep counting the tab just chosen from its menu.
   useEffect(() => {

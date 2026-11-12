@@ -679,6 +679,19 @@ body,
   color: var(--fg);
 }
 
+/* A narrow window leaves the tabs the room: the account name is in the status bar too, and the search shrinks to ⌘K.
+   Media queries measure in the browser's 16px rem, not the UI scale. */
+@media (max-width: 40rem) {
+  .title-bar-account {
+    display: none;
+  }
+
+  .title-bar-search {
+    min-width: 0;
+    padding: var(--space-1) var(--space-2);
+  }
+}
+
 /* The tab list (it scrolls) and, after it, the "+N" button for the tabs it cannot show whole. The list's column
    shrinks to nothing (minmax(0, auto)); the button's column keeps its width, so the strip's min-content is the button. */
 .tab-strip {
@@ -714,7 +727,13 @@ body,
   padding: 0.25rem 0.4rem 0;
   background: var(--bg-elev);
   overflow-x: auto;
+  scrollbar-width: none;
   flex: none;
+}
+
+/* The row scrolls by the active-tab effect, "+N" and the trackpad; a scrollbar would only eat the tabs' height. */
+.tab-bar::-webkit-scrollbar {
+  display: none;
 }
 
 .tab-insert-marker {
@@ -734,12 +753,12 @@ body,
   pointer-events: none;
 }
 
-/* Never wider than the row's view (100% of .tab-bar): a tab wider than the view could not be scrolled fully into
-   view, so it would stay cut and counted in "+N" after it was chosen. */
+/* Never wider than the row's view (--tab-view, the row's measured width, set by TabBar): a tab wider than the view
+   could not be scrolled fully into view, so it would stay cut and counted in "+N" after it was chosen. */
 .tab {
   display: flex;
   align-items: center;
-  max-width: min(16rem, 100%);
+  max-width: min(16rem, var(--tab-view, 16rem));
   border: 1px solid transparent;
   border-bottom: 0;
   border-radius: var(--radius-md) var(--radius-md) 0 0;

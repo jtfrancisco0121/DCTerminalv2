@@ -533,5 +533,16 @@ describe("TabBar overflow", () => {
     fireEvent.click(screen.getByRole("button", { name: "+1" }));
     expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Claude · a"]);
   });
-});
 
+  it("publishes the row's measured width as --tab-view, which caps every tab (QA S5.1 at 420px and 320px)", () => {
+    rects = { bar: { left: 0, right: 150.6 }, "Claude · a": { left: 0, right: 100 }, "Claude · b": { left: 100, right: 200 } };
+    render(<TabBar {...props} tabs={tabs.slice(0, 2)} activeTabId="a" />);
+    const row = screen.getByRole("tablist");
+    expect(row.style.getPropertyValue("--tab-view")).toBe("150px");
+    // Less the side padding, so a capped tab fits inside the padding too.
+    row.style.paddingLeft = "6px";
+    row.style.paddingRight = "6px";
+    act(() => observers.forEach((cb) => cb()));
+    expect(row.style.getPropertyValue("--tab-view")).toBe("138px");
+  });
+});
