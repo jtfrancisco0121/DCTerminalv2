@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { shortcutLabel } from "../keyTable";
 import { ptyResize, terminalResumeId, type TabSummary } from "../bridge";
 import { detectPlatform, isAppShortcut, isScratchpadShortcut, isShiftEnter, SCRATCHPAD_EVENT, SHIFT_ENTER_SEQUENCE, shiftEnterSendsNewline } from "../terminal/keys";
 import { dropPointToCss, formatDroppedPaths } from "../terminal/drop";
@@ -355,7 +356,7 @@ export function TerminalView({ tab, fontSize, autoFocus = true, onFolderChanged 
       {
         id: "find",
         label: "Find…",
-        shortcut: mac ? "⌘F" : "Ctrl+Shift+F",
+        shortcut: shortcutLabel("find", mac ? "mac" : "windows"),
         onSelect: close(() => setSearchOpen(true)),
       },
       {

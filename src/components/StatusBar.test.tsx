@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConfigDirInfo } from "../bridge";
 import { clearUiErrors, reportError } from "../uiErrors";
 import { formatReset, type RateWindow, type WindowHistory } from "../usage/limits";
-import { attentionText } from "../run/words";
+import { shortcutLabel } from "../keyTable";
 import { accountFolderWarning, StatusBar } from "./StatusBar";
 
 const config = (over: Partial<ConfigDirInfo> = {}): ConfigDirInfo => ({
@@ -111,28 +111,43 @@ describe("StatusBar", () => {
     });
   });
 
-  it("words the attention control and hides it at 0", () => {
-    expect(attentionText({ needsYou: 0, activeRuns: 0 })).toBeNull();
-    expect(attentionText({ needsYou: 1, activeRuns: 0 })).toBe("1 needs you");
-    expect(attentionText({ needsYou: 2, activeRuns: 3 })).toBe("2 need you · 3 runs");
-    expect(attentionText({ needsYou: 0, activeRuns: 1 })).toBe("1 run");
-    const { rerender } = render(
-      <StatusBar account={null} attention={{ needsYou: 0, activeRuns: 0 }} onNewWindow={() => {}} onSettings={() => {}} />,
+  it("always shows the Runs button, with the attention words and tone", () => {
+    const bar = (attention: { needsYou: number; activeRuns: number } | null, extra = {}) => (
+      <StatusBar account={null} attention={attention} onNewWindow={() => {}} onSettings={() => {}} {...extra} />
     );
-    expect(screen.queryByTestId("status-attention")).toBeNull();
+    const { rerender } = render(bar(null));
+    let button = screen.getByTestId("status-attention");
+    expect(button.textContent).toBe("Runs");
+    expect(button.className).toContain("tone-muted");
+    rerender(bar({ needsYou: 0, activeRuns: 0 }));
+    expect(screen.getByTestId("status-attention").textContent).toBe("Runs");
+    rerender(bar({ needsYou: 0, activeRuns: 3 }));
+    button = screen.getByTestId("status-attention");
+    expect(button.textContent).toBe("3 runs");
+    expect(button.className).toContain("tone-running");
     const onAttention = vi.fn();
-    rerender(
-      <StatusBar
-        account={null}
-        attention={{ needsYou: 2, activeRuns: 3 }}
-        onAttention={onAttention}
-        onNewWindow={() => {}}
-        onSettings={() => {}}
-      />,
-    );
-    expect(screen.getByTestId("status-attention").textContent).toBe("2 need you · 3 runs");
-    fireEvent.click(screen.getByTestId("status-attention"));
+    rerender(bar({ needsYou: 2, activeRuns: 3 }, { onAttention, runsOpen: true }));
+    button = screen.getByTestId("status-attention");
+    expect(button.textContent).toBe("2 need you · 3 runs");
+    expect(button.className).toContain("tone-you");
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(button);
     expect(onAttention).toHaveBeenCalledOnce();
+  });
+
+  it("opens the palette from a button that shows the key table's label", () => {
+    for (const platform of ["mac", "windows"] as const) {
+      const onOpenPalette = vi.fn();
+      const { unmount } = render(
+        <StatusBar account={null} platform={platform} onOpenPalette={onOpenPalette} onNewWindow={() => {}} onSettings={() => {}} />,
+      );
+      const button = screen.getByRole("button", { name: "Command palette" });
+      expect(button.textContent).toBe(shortcutLabel("palette", platform));
+      expect(button.getAttribute("title")).toContain(shortcutLabel("palette", platform));
+      fireEvent.click(button);
+      expect(onOpenPalette).toHaveBeenCalledOnce();
+      unmount();
+    }
   });
 
   it("warns when an account's folder you set does not exist", () => {

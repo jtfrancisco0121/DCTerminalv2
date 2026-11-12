@@ -46,6 +46,11 @@ describe("TitleBar", () => {
     expect(screen.getByText("⌘K")).toBeTruthy();
   });
 
+  it("shows the key table's label on windows, not a made-up one", () => {
+    render(<TitleBar platform="windows" onOpenPalette={() => {}} />);
+    expect(screen.getByText("Ctrl+Shift+K")).toBeTruthy();
+  });
+
   it("reserves the traffic-light inset on mac only", () => {
     const mac = render(<TitleBar platform="mac" onOpenPalette={() => {}} />);
     expect(mac.container.querySelector(".title-bar-mac")).not.toBeNull();

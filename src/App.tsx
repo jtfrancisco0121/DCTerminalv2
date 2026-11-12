@@ -1041,7 +1041,9 @@ function App() {
         history={usageHistory}
         message={message ? { text: message, onDismiss: () => setMessage(null) } : null}
         attention={attention}
+        runsOpen={activeRunsOpen}
         onAttention={() => setActiveRunsOpen((open) => !open)}
+        onOpenPalette={() => setPaletteOpen((open) => !open)}
         onNewWindow={() => setDialog("new-window")}
         onSettings={() => setDialog("settings")}
       />

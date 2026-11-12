@@ -311,7 +311,7 @@ describe("App attention control", () => {
     summary.mockResolvedValue({ needsYou: 0, activeRuns: 0 });
     render(<App />);
     expect(await screen.findByTestId("status-account")).toBeTruthy();
-    expect(screen.queryByTestId("status-attention")).toBeNull();
+    expect(screen.getByTestId("status-attention").textContent).toBe("Runs");
     const calls = summary.mock.calls.length;
     summary.mockResolvedValue({ needsYou: 2, activeRuns: 1 });
     const payload = { kind: "needs-you", tabId: null, windowLabel: null, runId: null, text: "dcv2: a tab needs you" };
