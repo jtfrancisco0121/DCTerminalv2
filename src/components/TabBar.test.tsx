@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { UI_SCALE_EVENT } from "../uiScale";
 import { dropIndex, markerX } from "../tabDrag";
 import type { TabSummary } from "../bridge";
 import { tabProgress } from "../run/words";
@@ -388,5 +389,121 @@ describe("TabBar run progress", () => {
     expect(screen.queryByTestId("tab-progress-plain")).toBeNull();
     expect(screen.getByRole("tab", { name: "Claude · plain" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Claude · plain" }).parentElement?.getAttribute("title")).toBe("/w/plain");
+  });
+});
+
+describe("TabBar overflow", () => {
+  const props = {
+    exited: new Set<string>(),
+    onSelect: vi.fn(),
+    onClose: vi.fn(),
+    onRename: vi.fn(),
+    onNew: vi.fn(),
+  };
+  const tabs = [tab("a", "Claude · a"), tab("b", "Claude · b"), { ...tab("r", "Eagle-Eye · r"), role: "eagle-eye", runDir: "/d/r" }, tab("d", "Claude · d")];
+  let rects: Record<string, { left: number; right: number }>;
+  let observers: Array<() => void>;
+  let scrolled: string[];
+  const original = {
+    rect: HTMLElement.prototype.getBoundingClientRect,
+    scroll: HTMLElement.prototype.scrollIntoView,
+    observer: globalThis.ResizeObserver,
+  };
+
+  beforeEach(() => {
+    rects = {};
+    observers = [];
+    scrolled = [];
+    HTMLElement.prototype.getBoundingClientRect = function () {
+      const text = this.classList.contains("tab") ? (this.querySelector("[role=tab]")?.textContent ?? "").replace(/^✳/, "") : "";
+      const key = this.classList.contains("tab-bar") ? "bar" : Object.keys(rects).find((k) => k !== "bar" && text.startsWith(k));
+      const r = (key && rects[key]) || { left: 0, right: 0 };
+      return { ...r, top: 0, bottom: 20, width: r.right - r.left, height: 20, x: r.left, y: 0, toJSON: () => ({}) };
+    };
+    HTMLElement.prototype.scrollIntoView = function () {
+      scrolled.push(this.querySelector("[role=tab]")?.textContent ?? "?");
+    };
+    globalThis.ResizeObserver = class {
+      constructor(cb: () => void) {
+        observers.push(cb);
+      }
+      observe() {}
+      disconnect() {}
+    } as never;
+  });
+  afterEach(() => {
+    cleanup();
+    HTMLElement.prototype.getBoundingClientRect = original.rect;
+    HTMLElement.prototype.scrollIntoView = original.scroll;
+    globalThis.ResizeObserver = original.observer;
+  });
+
+  const fit = () => {
+    rects = { bar: { left: 0, right: 250 } };
+    for (const [i, t] of tabs.entries()) rects[t.label] = { left: i * 100, right: i * 100 + 100 };
+  };
+  const word = tabProgress({ runId: "r-1", stage: "building", waitingFor: null, prsDone: 0, prsTotal: 0 })!;
+
+  it("shows no +N when every tab is whole", () => {
+    rects = { bar: { left: 0, right: 1000 } };
+    for (const [i, t] of tabs.entries()) rects[t.label] = { left: i * 100, right: i * 100 + 100 };
+    render(<TabBar {...props} tabs={tabs} activeTabId="a" />);
+    expect(screen.queryByTitle(/more tab/)).toBeNull();
+  });
+
+  it("shows the count of hidden tabs and lists exactly those, with the stage word; choosing selects only", () => {
+    fit();
+    const onSelect = vi.fn();
+    render(<TabBar {...props} onSelect={onSelect} tabs={tabs} activeTabId="a" progress={{ r: word }} />);
+    const more = screen.getByRole("button", { name: "+2" });
+    expect(more.getAttribute("title")).toBe("2 more tabs");
+    expect(more.getAttribute("aria-haspopup")).toBe("menu");
+    expect(more.hasAttribute("data-tauri-drag-region")).toBe(false);
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(more);
+    expect(more.getAttribute("aria-expanded")).toBe("true");
+    const items = screen.getAllByRole("menuitem");
+    expect(items.map((item) => item.textContent)).toEqual(["Eagle-Eye · rBuilding", "Claude · d"]);
+    fireEvent.click(items[1]);
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith("d");
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("closes the menu with Escape and gives the focus back to +N", () => {
+    fit();
+    render(<TabBar {...props} tabs={tabs} activeTabId="a" />);
+    const more = screen.getByRole("button", { name: "+2" });
+    fireEvent.click(more);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(more);
+  });
+
+  it("scrolls the active tab into view when activeTabId changes, and only then", () => {
+    fit();
+    const { rerender } = render(<TabBar {...props} tabs={tabs} activeTabId="a" />);
+    scrolled = [];
+    rerender(<TabBar {...props} tabs={tabs} activeTabId="d" progress={{ r: word }} />);
+    expect(scrolled).toEqual(["✳Claude · d"]);
+    scrolled = [];
+    rerender(<TabBar {...props} tabs={tabs} activeTabId="d" />);
+    fireEvent.scroll(document.querySelector(".tab-bar")!);
+    expect(scrolled).toEqual([]);
+  });
+
+  it("measures again on a UI scale change and when the row resizes", () => {
+    rects = { bar: { left: 0, right: 1000 } };
+    for (const [i, t] of tabs.entries()) rects[t.label] = { left: i * 100, right: i * 100 + 100 };
+    render(<TabBar {...props} tabs={tabs} activeTabId="a" />);
+    expect(screen.queryByTitle(/more tab/)).toBeNull();
+    rects.bar = { left: 0, right: 250 };
+    act(() => {
+      window.dispatchEvent(new CustomEvent(UI_SCALE_EVENT, { detail: 125 }));
+    });
+    expect(screen.getByRole("button", { name: "+2" })).toBeTruthy();
+    rects.bar = { left: 0, right: 1000 };
+    act(() => observers.forEach((cb) => cb()));
+    expect(screen.queryByTitle(/more tab/)).toBeNull();
   });
 });

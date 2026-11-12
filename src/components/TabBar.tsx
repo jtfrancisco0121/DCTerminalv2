@@ -1,8 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { TabSummary } from "../bridge";
 import { urgentActivity } from "../run/observe";
 import { activityTitle, type TabProgress } from "../run/words";
 import { DRAG_THRESHOLD_PX, dropIndex, markerX } from "../tabDrag";
+import { hiddenTabs } from "../tabOverflow";
+import { UI_SCALE_EVENT } from "../uiScale";
 import { TabContextMenu } from "./TabContextMenu";
 import type { ContextMenuItem } from "./TerminalContextMenu";
 
@@ -114,6 +116,42 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
   const onMoveRef = useRef(onMove);
   onMoveRef.current = onMove;
 
+  // The tabs the row cannot show whole: the "+N" button and its menu use this one array.
+  const [hidden, setHidden] = useState<string[]>([]);
+  const [overflowMenu, setOverflowMenu] = useState<{ x: number; y: number } | null>(null);
+  const overflowButton = useRef<HTMLButtonElement>(null);
+  const measure = () => {
+    const el = bar.current;
+    if (!el) return;
+    const view = el.getBoundingClientRect();
+    const boxes = tabsRef.current.map((tab) => {
+      const box = tabEls.current.get(tab.id)?.getBoundingClientRect();
+      return { id: tab.id, left: box?.left ?? view.left, right: box?.right ?? view.left };
+    });
+    const next = hiddenTabs(boxes, view);
+    setHidden((prev) => (prev.join("\n") === next.join("\n") ? prev : next));
+  };
+  const measureRef = useRef(measure);
+  measureRef.current = measure;
+  // Measure when the tab list changes (a tab added, closed, renamed, a stage word changed), when the row resizes
+  // and when the UI scale changes; the row's scroll event measures too (onScroll below).
+  useLayoutEffect(() => measureRef.current(), [tabs, progress]);
+  useEffect(() => {
+    const again = () => measureRef.current();
+    window.addEventListener(UI_SCALE_EVENT, again);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(again);
+    if (bar.current) observer?.observe(bar.current);
+    return () => {
+      window.removeEventListener(UI_SCALE_EVENT, again);
+      observer?.disconnect();
+    };
+  }, []);
+  // The one place that scrolls a tab: the active tab comes into view however it became active (click, Cmd+1..9,
+  // Ctrl+Tab, the palette).
+  useEffect(() => {
+    if (activeTabId) tabEls.current.get(activeTabId)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [activeTabId]);
+
   const beginDrag = (event: React.PointerEvent, id: string) => {
     if (event.button !== 0 || !onMove) return;
     let state: Drag = { id, startX: event.clientX, dx: 0, active: false, index: 0, marker: null, cancelled: false };
@@ -171,152 +209,195 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
     if (value && tab && value !== tab.label) onRename(editing.id, value);
   };
 
+  const closeOverflow = () => {
+    setOverflowMenu(null);
+    overflowButton.current?.focus();
+  };
+  const hiddenSet = new Set(hidden);
+
   return (
-    <div className="tab-bar" role="tablist" aria-label="Tabs" ref={bar}>
-      {tabs.map((tab) => {
-        const active = tab.id === activeTabId;
-        const dragging = drag?.active && drag.id === tab.id;
-        const run = progress?.[tab.id];
-        const classes = ["tab", active ? "tab-active" : "", run?.waiting ? "tab-waiting" : "", exited.has(tab.id) ? "tab-exited" : "", dragging ? "tab-dragging" : ""]
-          .filter(Boolean)
-          .join(" ");
-        // A split tab's dot shows its most urgent pane.
-        const shown = tab.split
-          ? urgentActivity([activity?.[tab.id], activity?.[tab.split.id]])
-          : activity?.[tab.id];
-        const showDot = Boolean(shown) && shown !== "unknown";
-        const clickableDot = Boolean(onActivityClick) && tab.kind === "claude" && !tab.role;
-        return (
-          <div
-            key={tab.id}
-            className={classes}
-            title={run ? `${tab.cwd}\n${run.title}` : tab.cwd}
-            onContextMenu={(event) => {
-              event.preventDefault();
-              setMenu({ tabId: tab.id, x: event.clientX, y: event.clientY });
-            }}
-            style={dragging ? { transform: `translateX(${drag.dx}px)` } : undefined}
-            ref={(el) => {
-              if (el) tabEls.current.set(tab.id, el);
-              else tabEls.current.delete(tab.id);
-            }}
-          >
-            {editing?.id === tab.id ? (
-              <input
-                className="tab-rename"
-                aria-label="Tab name"
-                autoFocus
-                value={editing.value}
-                onChange={(event) => setEditing({ id: tab.id, value: event.target.value })}
-                onBlur={commit}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") commit();
-                  if (event.key === "Escape") setEditing(null);
-                }}
-              />
-            ) : (
-              <button
-                type="button"
-                role="tab"
-                aria-selected={active}
-                aria-label={run ? `${tab.label}, ${run.word}${run.waiting ? ", waiting for you" : ""}` : undefined}
-                className={run ? "tab-label tab-label-run" : "tab-label"}
-                onPointerDown={(event) => {
-                  // Middle-click closes the tab (on release); no autoscroll.
-                  if (event.button === 1) event.preventDefault();
-                  beginDrag(event, tab.id);
-                }}
-                onAuxClick={(event) => {
-                  if (event.button !== 1) return;
-                  event.preventDefault();
-                  onClose(tab.id);
-                }}
-                onKeyDown={(event) => {
-                  // The keyboard way to the context menu.
-                  if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
-                    event.preventDefault();
-                    const box = event.currentTarget.getBoundingClientRect();
-                    setMenu({ tabId: tab.id, x: box.left, y: box.bottom });
-                  }
-                }}
-                onClick={() => {
-                  if (swallowClick.current) return;
-                  onSelect(tab.id);
-                }}
-                onDoubleClick={() => setEditing({ id: tab.id, value: tab.label })}
-              >
-                <span className={`tab-kind tab-kind-${tab.kind}`} aria-hidden>
-                  {tab.kind === "claude" ? "✳" : "$"}
-                </span>
-                {run ? (
-                  <span className="tab-text">
-                    <span className="tab-name">{tab.label}</span>
-                    <span className="tab-stage">{run.word}</span>
-                  </span>
-                ) : (
-                  tab.label
-                )}
-                {showDot && !clickableDot && (
-                  <span
-                    className={`tab-activity tab-activity-${shown!}`}
-                    title={activityTitle(shown!)}
-                    aria-label={`Claude ${shown!}`}
-                  />
-                )}
-              </button>
-            )}
-            {showDot && clickableDot && (
-              <button
-                type="button"
-                className={`tab-activity tab-activity-button tab-activity-${shown!}`}
-                title={activityTitle(shown!)}
-                aria-label={`Claude ${shown!}: show usage`}
-                onClick={() => onActivityClick!(tab.id)}
-              />
-            )}
-            {run && (
-              <span
-                className={`tab-progress tone-${run.tone}`}
-                data-testid={`tab-progress-${tab.id}`}
-                style={{ width: `${Math.round(run.fraction * 100)}%` }}
-                aria-hidden
-              />
-            )}
-            <button
-              type="button"
-              className="tab-close"
-              aria-label={`Close ${tab.label}`}
-              onClick={() => onClose(tab.id)}
+    <div className="tab-strip">
+      <div className="tab-bar" role="tablist" aria-label="Tabs" ref={bar} onScroll={measure}>
+        {tabs.map((tab) => {
+          const active = tab.id === activeTabId;
+          const dragging = drag?.active && drag.id === tab.id;
+          const run = progress?.[tab.id];
+          const classes = ["tab", active ? "tab-active" : "", run?.waiting ? "tab-waiting" : "", exited.has(tab.id) ? "tab-exited" : "", dragging ? "tab-dragging" : ""]
+            .filter(Boolean)
+            .join(" ");
+          // A split tab's dot shows its most urgent pane.
+          const shown = tab.split
+            ? urgentActivity([activity?.[tab.id], activity?.[tab.split.id]])
+            : activity?.[tab.id];
+          const showDot = Boolean(shown) && shown !== "unknown";
+          const clickableDot = Boolean(onActivityClick) && tab.kind === "claude" && !tab.role;
+          return (
+            <div
+              key={tab.id}
+              className={classes}
+              title={run ? `${tab.cwd}\n${run.title}` : tab.cwd}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setMenu({ tabId: tab.id, x: event.clientX, y: event.clientY });
+              }}
+              style={dragging ? { transform: `translateX(${drag.dx}px)` } : undefined}
+              ref={(el) => {
+                if (el) tabEls.current.set(tab.id, el);
+                else tabEls.current.delete(tab.id);
+              }}
             >
-              ×
-            </button>
-          </div>
-        );
-      })}
-      {menu && (
+              {editing?.id === tab.id ? (
+                <input
+                  className="tab-rename"
+                  aria-label="Tab name"
+                  autoFocus
+                  value={editing.value}
+                  onChange={(event) => setEditing({ id: tab.id, value: event.target.value })}
+                  onBlur={commit}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") commit();
+                    if (event.key === "Escape") setEditing(null);
+                  }}
+                />
+              ) : (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  aria-label={run ? `${tab.label}, ${run.word}${run.waiting ? ", waiting for you" : ""}` : undefined}
+                  className={run ? "tab-label tab-label-run" : "tab-label"}
+                  onPointerDown={(event) => {
+                    // Middle-click closes the tab (on release); no autoscroll.
+                    if (event.button === 1) event.preventDefault();
+                    beginDrag(event, tab.id);
+                  }}
+                  onAuxClick={(event) => {
+                    if (event.button !== 1) return;
+                    event.preventDefault();
+                    onClose(tab.id);
+                  }}
+                  onKeyDown={(event) => {
+                    // The keyboard way to the context menu.
+                    if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+                      event.preventDefault();
+                      const box = event.currentTarget.getBoundingClientRect();
+                      setMenu({ tabId: tab.id, x: box.left, y: box.bottom });
+                    }
+                  }}
+                  onClick={() => {
+                    if (swallowClick.current) return;
+                    onSelect(tab.id);
+                  }}
+                  onDoubleClick={() => setEditing({ id: tab.id, value: tab.label })}
+                >
+                  <span className={`tab-kind tab-kind-${tab.kind}`} aria-hidden>
+                    {tab.kind === "claude" ? "✳" : "$"}
+                  </span>
+                  {run ? (
+                    <span className="tab-text">
+                      <span className="tab-name">{tab.label}</span>
+                      <span className="tab-stage">{run.word}</span>
+                    </span>
+                  ) : (
+                    tab.label
+                  )}
+                  {showDot && !clickableDot && (
+                    <span
+                      className={`tab-activity tab-activity-${shown!}`}
+                      title={activityTitle(shown!)}
+                      aria-label={`Claude ${shown!}`}
+                    />
+                  )}
+                </button>
+              )}
+              {showDot && clickableDot && (
+                <button
+                  type="button"
+                  className={`tab-activity tab-activity-button tab-activity-${shown!}`}
+                  title={activityTitle(shown!)}
+                  aria-label={`Claude ${shown!}: show usage`}
+                  onClick={() => onActivityClick!(tab.id)}
+                />
+              )}
+              {run && (
+                <span
+                  className={`tab-progress tone-${run.tone}`}
+                  data-testid={`tab-progress-${tab.id}`}
+                  style={{ width: `${Math.round(run.fraction * 100)}%` }}
+                  aria-hidden
+                />
+              )}
+              <button
+                type="button"
+                className="tab-close"
+                aria-label={`Close ${tab.label}`}
+                onClick={() => onClose(tab.id)}
+              >
+                ×
+              </button>
+            </div>
+          );
+        })}
+        {menu && (
+          <TabContextMenu
+            x={menu.x}
+            y={menu.y}
+            onClose={() => setMenu(null)}
+            items={tabMenuItems(tabs, menu.tabId, {
+              onMove,
+              onDuplicate,
+              onReveal,
+              onCloseMany,
+              onSplit,
+              onRename: () => {
+                const target = tabs.find((item) => item.id === menu.tabId);
+                if (target) setEditing({ id: target.id, value: target.label });
+              },
+            })}
+          />
+        )}
+        {drag?.active && drag.marker != null && (
+          <div className="tab-insert-marker" style={{ left: drag.marker }} data-testid="tab-insert-marker" aria-hidden />
+        )}
+        <button type="button" className="tab-new" aria-label="New tab" title="New tab" onClick={onNew}>
+          +
+        </button>
+      </div>
+      {hidden.length > 0 && (
+        <button
+          type="button"
+          ref={overflowButton}
+          className="tab-overflow"
+          aria-haspopup="menu"
+          aria-expanded={overflowMenu !== null}
+          title={`${hidden.length} more ${hidden.length === 1 ? "tab" : "tabs"}`}
+          onClick={(event) => {
+            if (overflowMenu) {
+              setOverflowMenu(null);
+              return;
+            }
+            const box = event.currentTarget.getBoundingClientRect();
+            setOverflowMenu({ x: box.left, y: box.bottom });
+          }}
+        >
+          +{hidden.length}
+        </button>
+      )}
+      {overflowMenu && hidden.length > 0 && (
         <TabContextMenu
-          x={menu.x}
-          y={menu.y}
-          onClose={() => setMenu(null)}
-          items={tabMenuItems(tabs, menu.tabId, {
-            onMove,
-            onDuplicate,
-            onReveal,
-            onCloseMany,
-            onSplit,
-            onRename: () => {
-              const target = tabs.find((item) => item.id === menu.tabId);
-              if (target) setEditing({ id: target.id, value: target.label });
-            },
-          })}
+          x={overflowMenu.x}
+          y={overflowMenu.y}
+          onClose={closeOverflow}
+          items={tabs
+            .filter((tab) => hiddenSet.has(tab.id))
+            .map((tab) => ({
+              id: tab.id,
+              label: tab.label,
+              shortcut: progress?.[tab.id]?.word,
+              onSelect: () => onSelect(tab.id),
+            }))}
         />
       )}
-      {drag?.active && drag.marker != null && (
-        <div className="tab-insert-marker" style={{ left: drag.marker }} data-testid="tab-insert-marker" aria-hidden />
-      )}
-      <button type="button" className="tab-new" aria-label="New tab" title="New tab" onClick={onNew}>
-        +
-      </button>
     </div>
   );
 }

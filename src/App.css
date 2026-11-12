@@ -636,10 +636,15 @@ body,
   padding-left: var(--traffic-inset);
 }
 
-.title-bar .tab-bar {
+.title-bar .tab-strip {
   flex: 0 1 auto;
   min-width: 0;
   align-self: flex-end;
+}
+
+.title-bar .tab-bar {
+  flex: 0 1 auto;
+  min-width: 0;
   background: transparent;
 }
 
@@ -669,6 +674,32 @@ body,
 }
 
 .title-bar-search:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+/* The tab list (it scrolls) and, after it, the "+N" button for the tabs it cannot show whole. */
+.tab-strip {
+  display: flex;
+  align-items: flex-end;
+  min-width: 0;
+}
+
+.tab-overflow {
+  flex: none;
+  margin: 0 0 var(--space-1) var(--space-1);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.tab-overflow:hover,
+.tab-overflow[aria-expanded="true"] {
   background: var(--bg-hover);
   color: var(--fg);
 }
