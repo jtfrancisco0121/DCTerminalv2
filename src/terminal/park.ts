@@ -120,6 +120,14 @@ function parkHost(): HTMLDivElement {
   return root;
 }
 
+/** One cell's width in px: the rendered xterm screen over its columns. Null when the terminal is not parked or not laid out. */
+export function terminalCellWidth(id: string): number | null {
+  const entry = parked.get(id);
+  if (!entry || !entry.term.cols) return null;
+  const width = entry.host.querySelector(".xterm-screen")?.getBoundingClientRect().width ?? 0;
+  return width > 0 ? width / entry.term.cols : null;
+}
+
 let optionAsMeta = true;
 
 /** macOS: Option acts as Meta. Applies live to every open terminal. */
@@ -137,17 +145,22 @@ export function setFileLinkEditor(value: string): void {
 
 const pathCache = new PathCache();
 
+/** Open a file in the editor (settings: `terminal.fileLinkEditor`), or Finder. The only caller of `open_file_link`. */
+export function openInEditor(tabId: string, path: string, line?: number | null, col?: number | null): void {
+  invoke("open_file_link", { tabId, path, line: line ?? null, col: col ?? null, editor: fileLinkEditor }).catch((err: unknown) =>
+    reportError("Could not open the file", err, { notify: true }),
+  );
+}
+
 /** Cmd+click on a file path of the terminal output: the preview for a previewable file, else the editor (or Finder). */
 function openFileLink(id: string, hit: PathHit, line?: number, col?: number): void {
   const name = baseName(hit.path ?? "");
   if (!hit.path) return;
   if (hit.previewable) {
-    openPreview({ path: hit.path, title: name });
+    openPreview({ path: hit.path, title: name, tabId: id, line, col });
     return;
   }
-  invoke("open_file_link", { tabId: id, path: hit.path, line: line ?? null, col: col ?? null, editor: fileLinkEditor }).catch(
-    (err: unknown) => reportError("Could not open the file", err, { notify: true }),
-  );
+  openInEditor(id, hit.path, line, col);
 }
 
 let compactPasteOn = true;

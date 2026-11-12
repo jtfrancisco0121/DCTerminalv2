@@ -19,6 +19,8 @@ type Props = {
   /** With 2 or more tickets: one run with all of them (default) or one run per ticket, with optional group letters. */
   onSplit?: (choice: SplitChoice) => void;
   disabled?: boolean;
+  /** Why the split may not be changed now (e.g. an epic plan is one run); undefined: it may. The choice is kept. */
+  splitLocked?: string;
 };
 
 /**
@@ -26,7 +28,7 @@ type Props = {
  * ones you don't want. Start then snapshots the rest into `tickets.json`
  * and names them (id + title) in request.md. Uses the window's account token.
  */
-export function ClickUpIntake({ windowId, onChange, onTooMany, onSplit, disabled }: Props) {
+export function ClickUpIntake({ windowId, onChange, onTooMany, onSplit, disabled, splitLocked }: Props) {
   const [text, setText] = useState("");
   const [fetched, setFetched] = useState<{ refs: IntakeRef[]; preview: IntakePreview } | null>(null);
   const [removed, setRemoved] = useState<Set<string>>(new Set());
@@ -129,11 +131,34 @@ export function ClickUpIntake({ windowId, onChange, onTooMany, onSplit, disabled
           {several && (
             <fieldset className="intake-split" aria-label="Runs for these tickets">
               <label className="check-label">
-                <input type="radio" name="intake-split" checked={!perTicket} onChange={() => setPerTicket(false)} /> One run with all tickets
+                <input
+                  type="radio"
+                  name="intake-split"
+                  checked={!perTicket}
+                  onChange={() => setPerTicket(false)}
+                  disabled={splitLocked !== undefined}
+                  title={splitLocked}
+                  aria-describedby={splitLocked !== undefined ? `intake-split-locked-${windowId}` : undefined}
+                />{" "}
+                One run with all tickets
               </label>
               <label className="check-label">
-                <input type="radio" name="intake-split" checked={perTicket} onChange={() => setPerTicket(true)} /> One run per ticket
+                <input
+                  type="radio"
+                  name="intake-split"
+                  checked={perTicket}
+                  onChange={() => setPerTicket(true)}
+                  disabled={splitLocked !== undefined}
+                  title={splitLocked}
+                  aria-describedby={splitLocked !== undefined ? `intake-split-locked-${windowId}` : undefined}
+                />{" "}
+                One run per ticket
               </label>
+              {splitLocked !== undefined && (
+                <p className="hint" id={`intake-split-locked-${windowId}`} data-testid="split-locked">
+                  {splitLocked}
+                </p>
+              )}
               {perTicket && <p className="hint">Give tickets the same group letter to share a run; tickets with no letter get a run each.</p>}
             </fieldset>
           )}

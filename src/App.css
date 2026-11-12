@@ -98,7 +98,7 @@ body,
   --z-menu: 50;
   --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); /* px: focus ring width stays fixed */
   --term-pad: 6px; /* px: terminal padding matches the xterm cell grid, which is never scaled */
-  --titlebar-h: 42px; /* px: the native title-bar row height stays fixed */
+  --titlebar-h: 48px; /* px: the native title-bar row height stays fixed; holds a two-line run tab at 125% (TabBar.height.test.ts) */
   --traffic-inset: 78px; /* px: room for the macOS traffic lights stays fixed */
   /* Terminal search highlights (read by TerminalSearchBar; hex only). */
   --search-match: #f2c97d66;
@@ -636,10 +636,16 @@ body,
   padding-left: var(--traffic-inset);
 }
 
+/* No min-width: 0 here: the strip's automatic minimum is its min-content, which the grid below makes exactly the
+   "+N" button, so the strip never shrinks under the button and the spacer after it never covers it. */
+.title-bar .tab-strip {
+  flex: 0 1 auto;
+  align-self: flex-end;
+}
+
 .title-bar .tab-bar {
   flex: 0 1 auto;
   min-width: 0;
-  align-self: flex-end;
   background: transparent;
 }
 
@@ -673,6 +679,46 @@ body,
   color: var(--fg);
 }
 
+/* A narrow window leaves the tabs the room: the account name is in the status bar too, and the search shrinks to ⌘K.
+   Media queries measure in the browser's 16px rem, not the UI scale. */
+@media (max-width: 40rem) {
+  .title-bar-account {
+    display: none;
+  }
+
+  .title-bar-search {
+    min-width: 0;
+    padding: var(--space-1) var(--space-2);
+  }
+}
+
+/* The tab list (it scrolls) and, after it, the "+N" button for the tabs it cannot show whole. The list's column
+   shrinks to nothing (minmax(0, auto)); the button's column keeps its width, so the strip's min-content is the button. */
+.tab-strip {
+  display: grid;
+  grid-template-columns: minmax(0, auto) auto;
+  align-items: end;
+}
+
+.tab-overflow {
+  flex: none;
+  margin: 0 0 var(--space-1) var(--space-1);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.tab-overflow:hover,
+.tab-overflow[aria-expanded="true"] {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
 .tab-bar {
   position: relative;
   display: flex;
@@ -681,7 +727,13 @@ body,
   padding: 0.25rem 0.4rem 0;
   background: var(--bg-elev);
   overflow-x: auto;
+  scrollbar-width: none;
   flex: none;
+}
+
+/* The row scrolls by the active-tab effect, "+N" and the trackpad; a scrollbar would only eat the tabs' height. */
+.tab-bar::-webkit-scrollbar {
+  display: none;
 }
 
 .tab-insert-marker {
@@ -701,10 +753,12 @@ body,
   pointer-events: none;
 }
 
+/* Never wider than the row's view (--tab-view, the row's measured width, set by TabBar): a tab wider than the view
+   could not be scrolled fully into view, so it would stay cut and counted in "+N" after it was chosen. */
 .tab {
   display: flex;
   align-items: center;
-  max-width: 16rem;
+  max-width: min(16rem, var(--tab-view, 16rem));
   border: 1px solid transparent;
   border-bottom: 0;
   border-radius: var(--radius-md) var(--radius-md) 0 0;
@@ -718,7 +772,7 @@ body,
   position: absolute;
   left: 0;
   bottom: 0;
-  height: 0.125rem;
+  height: 3px; /* px: the progress line stays a fixed hairline at every UI scale */
   border-radius: 1px;
   background: currentColor;
   pointer-events: none;
@@ -755,6 +809,34 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
+}
+
+/* A run tab has two lines: its name and the stage word (TabProgress.word). Tight line heights keep it inside
+   --titlebar-h at every UI scale (TabBar.height.test.ts). */
+.tab-label-run {
+  padding-top: 0.15rem;
+  padding-bottom: 0.15rem;
+}
+
+.tab-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  text-align: left;
+}
+
+.tab-name {
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-stage {
+  font-size: var(--text-2xs);
+  line-height: 1.1;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tab-kind-claude {
@@ -2135,11 +2217,6 @@ body,
   overflow-wrap: anywhere;
 }
 
-.status-attention-needs {
-  color: var(--warning);
-  font-weight: 600;
-}
-
 .active-runs {
   position: fixed;
   left: var(--space-3);
@@ -2422,13 +2499,32 @@ body,
   background: var(--bg-elev);
   display: flex;
   flex-direction: column;
-  flex: 0 0 min(42%, 35rem);
-  min-width: 20rem;
+  /* The width is the flex basis PreviewHost fits (previewFit): no rule here may set a basis, width or minimum. */
+  min-width: 0;
   overflow: hidden;
 }
 
-.preview-pane.wide {
-  flex-basis: min(65%, 68.75rem);
+/* Under 1000px of window, or when 60 terminal columns do not fit beside it (previewFit): over the terminals. */
+.preview-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: var(--bg);
+}
+
+.preview-divider {
+  flex: none;
+  width: 0.3125rem;
+  margin: 0 calc(var(--gutter) / -2);
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.preview-divider:hover,
+.preview-divider:focus-visible {
+  background: var(--accent);
+  outline: none;
 }
 
 .preview-head {
@@ -2609,16 +2705,6 @@ body,
 
 .preview-dead-link {
   opacity: 0.8;
-}
-
-@media (max-width: 1000px) {
-  .preview-pane {
-    position: absolute;
-    inset: 0;
-    z-index: 5;
-    min-width: 0;
-    background: var(--bg);
-  }
 }
 
 .fleet-totals {
@@ -3954,3 +4040,71 @@ body,
   font-weight: 600;
 }
 /* ---- end Run panel folds ---- */
+
+/* Start screen: where the request comes from, and the one collapsed Options line. */
+.request-source {
+  display: flex;
+  gap: var(--space-1);
+  align-self: flex-start;
+  padding: var(--space-1);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+}
+
+.request-source-choice {
+  padding: var(--space-1) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.request-source-active {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.start-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.start-options-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-1) 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.start-options-name {
+  flex: none;
+  font-weight: 600;
+}
+
+.start-options-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.start-options-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}

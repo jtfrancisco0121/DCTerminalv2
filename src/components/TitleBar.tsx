@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { shortcutLabel } from "../keyTable";
 import type { Platform } from "../terminal/keys";
 
 type Props = {
@@ -28,7 +29,7 @@ export function TitleBar({ children, accountName, platform, onOpenPalette }: Pro
         </span>
       )}
       <button type="button" className="title-bar-search" onClick={onOpenPalette} aria-label="Search commands">
-        <span className="title-bar-search-hint">{platform === "mac" ? "⌘K" : "Ctrl K"}</span>
+        <span className="title-bar-search-hint">{shortcutLabel("palette", platform)}</span>
       </button>
     </header>
   );

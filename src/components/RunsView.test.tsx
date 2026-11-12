@@ -56,6 +56,33 @@ const visible = () => screen.queryAllByTestId(/^run-r-/).map((el) => el.getAttri
 describe("RunsView", () => {
   afterEach(cleanup);
 
+  it("scrolls the Web QA section into view when asked to focus it", async () => {
+    const scroll = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scroll;
+    try {
+      render(<RunsView windowId="main" onClose={() => {}} onStarted={() => {}} focus="web-qa" />);
+      await waitFor(() => expect(scroll).toHaveBeenCalled());
+      const target = scroll.mock.contexts[0] as HTMLElement;
+      expect(target.querySelector('[aria-label="Web QA"]')).not.toBeNull();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it("does not scroll without a focus", async () => {
+    const scroll = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scroll;
+    try {
+      render(<RunsView windowId="main" onClose={() => {}} onStarted={() => {}} />);
+      await screen.findByTestId("run-r-1");
+      expect(scroll).not.toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
   it("counts PRs with one plural rule: 1 PR, 2 PRs", async () => {
     runs.push(
       { ...base, runId: "r-3", runDir: "/d/runs/r-3", record: null, prCount: 1 },

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { activeRuns, focusTab, type ActiveRun } from "../bridge";
-import { evalFinished, prFraction, stageText } from "../run/words";
+import { evalFinished, NO_RUN_TEXT, prFraction, stageText } from "../run/words";
+import { RUN_PAGES, type RunPageId } from "../runPages";
 import { Stepper } from "./Stepper";
 import { BatchOverview } from "./BatchOverview";
 import { reportError } from "../uiErrors";
@@ -11,16 +12,14 @@ export const POLL_MS = 3000;
 
 type Props = {
   onClose: () => void;
-  /** The footer link: open the Runs view. */
-  onAllRuns: () => void;
-  /** The footer button: open the run dashboard page. */
-  onDashboard?: () => void;
+  /** A footer link: open that run page (the popover closes itself). */
+  onOpenPage: (id: RunPageId) => void;
   /** An eval group's "Results" link in the batch overview. */
   onEvalResults?: (group: string) => void;
 };
 
 /** Every unfinished run tab of every window, with its stage, flags and PR progress. */
-export function ActiveRuns({ onClose, onAllRuns, onDashboard, onEvalResults }: Props) {
+export function ActiveRuns({ onClose, onOpenPage, onEvalResults }: Props) {
   const [runs, setRuns] = useState<ActiveRun[] | null>(null);
 
   // Events from the detector; polls at POLL_MS when none arrive.
@@ -41,7 +40,7 @@ export function ActiveRuns({ onClose, onAllRuns, onDashboard, onEvalResults }: P
     <div className="active-runs" role="dialog" aria-label="Active runs">
       <h3>Active runs</h3>
       {runs === null && <p className="hint">Looking…</p>}
-      {runs && runs.length === 0 && <p className="hint">No run is in progress.</p>}
+      {runs && runs.length === 0 && <p className="hint">{NO_RUN_TEXT}</p>}
       <ul>
         {runs?.map((run) => (
           <li key={run.tabId} data-testid={`active-${run.tabId}`}>
@@ -81,28 +80,19 @@ export function ActiveRuns({ onClose, onAllRuns, onDashboard, onEvalResults }: P
       </ul>
       <BatchOverview compact onEvalResults={onEvalResults} />
       <div className="active-runs-footer">
-        <button
-          type="button"
-          className="link-button"
-          onClick={() => {
-            onAllRuns();
-            onClose();
-          }}
-        >
-          All runs
-        </button>
-        {onDashboard && (
+        {RUN_PAGES.filter((page) => page.inPopover).map((page) => (
           <button
+            key={page.id}
             type="button"
             className="link-button"
             onClick={() => {
-              onDashboard();
+              onOpenPage(page.id);
               onClose();
             }}
           >
-            Open dashboard
+            {page.short}
           </button>
-        )}
+        ))}
         <button type="button" className="link-button" onClick={onClose}>
           Close
         </button>

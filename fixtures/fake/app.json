@@ -27,7 +27,31 @@
     "activeRuns": 0
   },
   "active_runs": [],
-  "run_tabs": [],
+  "run_tabs": [
+    {
+      "windowLabel": "main",
+      "tabId": "tab_run",
+      "label": "Eagle-Eye · ws",
+      "activity": "waiting",
+      "runId": "r-20261022-1304",
+      "runDir": "/fake/runs/r-20261022-1304",
+      "stage": "ship-approval",
+      "waitingFor": "ship-approval",
+      "waitingSince": "2026-10-22T13:40:00Z",
+      "runMode": null,
+      "eval": null,
+      "stalled": false,
+      "prsDone": 3,
+      "prsTotal": 5,
+      "prs": [
+        { "id": "PR1", "state": "reviewed", "appCheck": "pass", "ci": null, "prState": null },
+        { "id": "PR2", "state": "reviewed", "appCheck": null, "ci": null, "prState": null },
+        { "id": "PR3", "state": "needs-attention", "appCheck": null, "ci": null, "prState": null },
+        { "id": "PR4", "state": "opened", "appCheck": null, "ci": null, "prState": null },
+        { "id": "PR5", "state": "reviewed", "appCheck": null, "ci": null, "prState": null }
+      ]
+    }
+  ],
   "terminal_resume_id": null,
   "pty_set_scheme": null,
   "get_claude_usage": {
@@ -54,7 +78,13 @@
     "available": false,
     "problem": "No memory in the faked backend"
   },
-  "paths_exist": [],
+  "paths_exist": [
+    {
+      "candidate": "/fake/runs/r-20261022-1304/plan.md",
+      "path": "/fake/runs/r-20261022-1304/plan.md",
+      "previewable": true
+    }
+  ],
   "take_run_link": null,
   "dev_import_status": {
     "available": false,

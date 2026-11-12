@@ -59,6 +59,7 @@ import {
 } from "./run/api";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { runFinished, stageText, tabProgress, type TabProgress } from "./run/words";
+import { compareDefaults, RUN_PAGES, type RunPageId } from "./runPages";
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
 import { TabBar } from "./components/TabBar";
@@ -123,6 +124,9 @@ function App() {
   // Tabs that need you and unfinished runs, in every window (the status bar's control).
   const [attention, setAttention] = useState<AttentionSummary | null>(null);
   const [activeRunsOpen, setActiveRunsOpen] = useState(false);
+  // The workspace row: terminals, the one preview, and the run panel of a run tab.
+  const workspaceRow = useRef<HTMLDivElement>(null);
+  const [runsFocus, setRunsFocus] = useState<"web-qa" | undefined>(undefined);
   // A window-level page drawn over the workspace; the terminals stay mounted underneath.
   const [page, setPage] = useState<"dashboard" | "analytics" | "trace-search" | "compare" | "eval-results" | null>(null);
   // The eval group whose results page is open, and the run the Eval setup dialog was opened for.
@@ -146,6 +150,8 @@ function App() {
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
   // The command palette (Cmd+K), the run list it offers, and the Settings section it opens.
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // The one palette handler (AD-3): the `palette` key, the title-bar field and the status-bar button all call it.
+  const togglePalette = useCallback(() => setPaletteOpen((open) => !open), []);
   const [paletteRuns, setPaletteRuns] = useState<RunOverview | null>(null);
   const [settingsSection, setSettingsSection] = useState<string | undefined>(undefined);
   const [lastFolder, setLastFolder] = useState("");
@@ -298,6 +304,40 @@ function App() {
   const openTraceSearch = () => {
     setTrace(null);
     setPage("trace-search");
+  };
+  // The one opener of every run page, for the Runs popover and the palette (src/runPages.ts).
+  const openRunPage = async (id: RunPageId): Promise<void> => {
+    switch (id) {
+      case "all-runs":
+        setRunsFocus(undefined);
+        setDialog("runs");
+        break;
+      case "web-qa":
+        setRunsFocus("web-qa");
+        setDialog("runs");
+        break;
+      case "dashboard":
+        setPage("dashboard");
+        break;
+      case "analytics":
+        setPage("analytics");
+        break;
+      case "trace-search":
+        openTraceSearch();
+        break;
+      case "compare": {
+        // Always a fresh list: the palette's list is read only while it is open.
+        let list = paletteRuns;
+        try {
+          list = await runOverview();
+          setPaletteRuns(list);
+        } catch (err) {
+          reportError("Runs", err);
+        }
+        openCompare(...compareDefaults(list?.runs ?? [], active?.cwd ?? null));
+        break;
+      }
+    }
   };
   const closeTrace = () => {
     // A Trace opened from the search page goes back to it, with the same results.
@@ -600,7 +640,7 @@ function App() {
         if (active) requestTerminalSearch(active.id);
         break;
       case "palette":
-        setPaletteOpen((open) => !open);
+        togglePalette();
         break;
       case "select": {
         const tab = state?.tabs[action.index];
@@ -758,28 +798,9 @@ function App() {
         },
       });
     }
-    items.push({
-      id: "page:trace-search",
-      group: "Runs",
-      label: "Search traces",
-      detail: "Find runs by what happened in them",
-      run: openTraceSearch,
-    });
-    items.push({
-      id: "page:compare",
-      group: "Runs",
-      label: "Compare runs",
-      detail: "The two most recent finished runs of this folder",
-      run: () => {
-        // Finished runs of the active folder, newest first (the list is newest first).
-        const finished = (paletteRuns?.runs ?? []).filter(
-          (item) =>
-            (!active || item.folder === active.cwd) &&
-            ["done", "failed", "eval-done"].includes(item.record?.outcome ?? item.stage ?? ""),
-        );
-        openCompare(finished[0]?.runDir ?? null, finished[1]?.runDir ?? null);
-      },
-    });
+    for (const page of RUN_PAGES) {
+      items.push({ id: `page:${page.id}`, group: "Runs", label: page.label, detail: page.detail, run: () => openRunPage(page.id) });
+    }
     if (active?.runDir) {
       const runDir = active.runDir;
       items.push({
@@ -790,20 +811,6 @@ function App() {
         run: () => openTrace({ runDir }),
       });
     }
-    items.push({
-      id: "page:dashboard",
-      group: "Runs",
-      label: "Run dashboard",
-      detail: "Every unfinished run tab",
-      run: () => setPage("dashboard"),
-    });
-    items.push({
-      id: "page:analytics",
-      group: "Runs",
-      label: "Run analytics",
-      detail: "Cost, duration and waiting over finished runs",
-      run: () => setPage("analytics"),
-    });
     for (const section of SETTINGS_SECTIONS) {
       items.push({
         id: `settings:${section}`,
@@ -858,7 +865,7 @@ function App() {
       <TitleBar
         accountName={ctx?.accountName}
         platform={detectPlatform(navigator.platform)}
-        onOpenPalette={() => setPaletteOpen(true)}
+        onOpenPalette={togglePalette}
       >
         {state && state.tabs.length > 0 && (
           <TabBar
@@ -951,23 +958,31 @@ function App() {
             </button>
           </div>
         )}
-        {active && !blocked && !active.runDir && terminalsOf(active, !dialog && !page && !trace)}
-        {active && !blocked && active.runDir && (
-          <div className="run-layout">
+        {active && !blocked && (
+          <div className="run-layout" ref={workspaceRow}>
             {terminalsOf(active, !dialog && !page && !trace)}
-            <PreviewHost onLayoutChange={() => refitTerminal(active.id)} />
-            <RunPanel
-              key={active.runDir}
-              runDir={active.runDir}
-              tabId={active.id}
-              onResume={() => resumeActiveRun(active.runDir!)}
-              onGoToPrompt={() => focusParkedTerminal(active.id)}
+            <PreviewHost
               windowId={windowId}
-              onTabsChanged={() => void reload()}
+              terminalId={active.id}
+              fontSize={fontSize}
+              rowRef={workspaceRow}
               onLayoutChange={() => refitTerminal(active.id)}
-              onOpenTrace={(agent) => openTrace({ runDir: active.runDir! }, agent)}
-              onEvaluate={settings?.observe?.evalEnabled ? (runDir) => setEvalSource(runDir) : undefined}
+              split={active.split}
             />
+            {active.runDir && (
+              <RunPanel
+                key={active.runDir}
+                runDir={active.runDir}
+                tabId={active.id}
+                onResume={() => resumeActiveRun(active.runDir!)}
+                onGoToPrompt={() => focusParkedTerminal(active.id)}
+                windowId={windowId}
+                onTabsChanged={() => void reload()}
+                onLayoutChange={() => refitTerminal(active.id)}
+                onOpenTrace={(agent) => openTrace({ runDir: active.runDir! }, agent)}
+                onEvaluate={settings?.observe?.evalEnabled ? (runDir) => setEvalSource(runDir) : undefined}
+              />
+            )}
           </div>
         )}
         {page === "dashboard" && (
@@ -1028,8 +1043,7 @@ function App() {
       {activeRunsOpen && (
         <ActiveRuns
           onClose={() => setActiveRunsOpen(false)}
-          onAllRuns={() => setDialog("runs")}
-          onDashboard={() => setPage("dashboard")}
+          onOpenPage={(id) => void openRunPage(id)}
           onEvalResults={openEvalResults}
         />
       )}
@@ -1041,7 +1055,9 @@ function App() {
         history={usageHistory}
         message={message ? { text: message, onDismiss: () => setMessage(null) } : null}
         attention={attention}
+        runsOpen={activeRunsOpen}
         onAttention={() => setActiveRunsOpen((open) => !open)}
+        onOpenPalette={togglePalette}
         onNewWindow={() => setDialog("new-window")}
         onSettings={() => setDialog("settings")}
       />
@@ -1117,6 +1133,7 @@ function App() {
         <ErrorBoundary key="runs" kind="dialog" onClose={() => setDialog(null)}>
           <RunsView
             windowId={windowId}
+            focus={runsFocus}
             onClose={() => setDialog(null)}
             onStarted={(run) => void started(run)}
             onAnalytics={() => {

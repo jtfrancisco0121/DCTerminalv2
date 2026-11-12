@@ -3,7 +3,11 @@ import { dirName, splitAbsolute } from "../paths";
 /** Opening a file in the preview pane: any component asks through this window event. */
 export const PREVIEW_EVENT = "dcv2:preview";
 
-export type PreviewTarget = { path: string; title: string };
+/**
+ * What to preview. `tabId`, `line` and `col` are set only for a path clicked in a terminal: a refusal of that click
+ * (outside the preview roots, a dotfile) falls back to the editor, which is opened for that terminal (src/terminal/park.ts).
+ */
+export type PreviewTarget = { path: string; title: string; tabId?: string; line?: number; col?: number };
 
 export function openPreview(target: PreviewTarget): void {
   window.dispatchEvent(new CustomEvent<PreviewTarget>(PREVIEW_EVENT, { detail: target }));

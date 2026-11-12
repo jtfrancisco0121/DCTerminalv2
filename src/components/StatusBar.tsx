@@ -14,7 +14,7 @@ import {
   type Reading,
   type WindowHistory,
 } from "../usage/limits";
-import { usageTone } from "../run/words";
+import { runsButton, usageTone } from "../run/words";
 import { ErrorsPopover } from "./ErrorsPopover";
 import { Meter } from "./Meter";
 
@@ -39,19 +39,15 @@ type Props = {
   message?: { text: string; onDismiss: () => void } | null;
   /** Tabs that need you (every window) and unfinished runs. Null hides the control. */
   attention?: { needsYou: number; activeRuns: number } | null;
-  /** The attention control was clicked: open Active runs. */
+  /** The Runs popover is open (for `aria-expanded`). */
+  runsOpen?: boolean;
+  /** The Runs button was clicked: toggle the Runs popover. */
   onAttention?: () => void;
+  /** The palette button was clicked: open the command palette. */
+  onOpenPalette?: () => void;
   onNewWindow: () => void;
   onSettings: () => void;
 };
-
-/** The attention control's words: "2 need you · 3 runs", "3 runs"; null when there is nothing. */
-export function attentionText(attention: { needsYou: number; activeRuns: number }): string | null {
-  const parts: string[] = [];
-  if (attention.needsYou > 0) parts.push(`${attention.needsYou} ${attention.needsYou === 1 ? "needs" : "need"} you`);
-  if (attention.activeRuns > 0) parts.push(`${attention.activeRuns} ${attention.activeRuns === 1 ? "run" : "runs"}`);
-  return parts.length ? parts.join(" · ") : null;
-}
 
 function folderName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
@@ -147,7 +143,9 @@ export function StatusBar({
   history = [],
   message = null,
   attention = null,
+  runsOpen = false,
   onAttention,
+  onOpenPalette,
   onNewWindow,
   onSettings,
 }: Props) {
@@ -158,7 +156,7 @@ export function StatusBar({
     setErrorsOpen(false);
     countRef.current?.focus();
   };
-  const attentionLabel = attention ? attentionText(attention) : null;
+  const runs = runsButton(attention);
   const warning = account ? accountFolderWarning(account.config) : null;
   const now = Date.now();
   return (
@@ -207,17 +205,17 @@ export function StatusBar({
           </button>
         </span>
       )}
-      {attention && attentionLabel && (
-        <button
-          type="button"
-          className={`status-bar-item status-attention${attention.needsYou > 0 ? " status-attention-needs" : ""}`}
-          data-testid="status-attention"
-          title="Tabs that need you and unfinished runs, in every window"
-          onClick={onAttention}
-        >
-          {attentionLabel}
-        </button>
-      )}
+      <button
+        type="button"
+        className={`status-bar-item status-attention tone-${runs.tone}`}
+        data-testid="status-attention"
+        aria-haspopup="dialog"
+        aria-expanded={runsOpen}
+        title="Runs: tabs that need you and unfinished runs, in every window"
+        onClick={onAttention}
+      >
+        {runs.text}
+      </button>
       {errors.length > 0 && (
         <button
           ref={countRef}
@@ -233,6 +231,15 @@ export function StatusBar({
       )}
       {errorsOpen && errors.length > 0 && <ErrorsPopover errors={errors} onClose={closeErrors} />}
       <span className="status-bar-spacer" />
+      <button
+        type="button"
+        className="status-bar-button"
+        aria-label="Command palette"
+        title={withHint("Command palette", shortcutLabel("palette", platform))}
+        onClick={onOpenPalette}
+      >
+        {shortcutLabel("palette", platform)}
+      </button>
       <button type="button" className="status-bar-button" onClick={onNewWindow} title={withHint("New window", shortcutLabel("new-window", platform))}>
         New window…
       </button>

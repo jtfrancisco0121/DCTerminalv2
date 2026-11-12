@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { readRunFile, resumeRun, runOverview, type RunListItem, type StartedRun } from "../run/api";
 import { costText } from "../run/observe";
@@ -35,10 +35,12 @@ type Props = {
   onAnalytics?: () => void;
   /** An eval run's "Results" link: open the results of its group (the owner closes this dialog). */
   onEvalResults?: (group: string) => void;
+  /** Scroll this section into view on open. */
+  focus?: "web-qa";
 };
 
 /** All the app's runs, newest first, with search by title, folder or ticket id and a stage filter. */
-export function RunsView({ windowId, onClose, onStarted, onAnalytics, onEvalResults }: Props) {
+export function RunsView({ windowId, onClose, onStarted, onAnalytics, onEvalResults, focus }: Props) {
   const [runs, setRuns] = useState<RunListItem[] | null>(null);
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState("");
@@ -48,6 +50,11 @@ export function RunsView({ windowId, onClose, onStarted, onAnalytics, onEvalResu
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<{ title: string; text: string } | null>(null);
   const [triageOpen, setTriageOpen] = useState(false);
+  const webQa = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (focus === "web-qa") webQa.current?.scrollIntoView?.({ block: "start" });
+  }, [focus]);
 
   useEffect(() => {
     runOverview().then(
@@ -110,7 +117,9 @@ export function RunsView({ windowId, onClose, onStarted, onAnalytics, onEvalResu
       </div>
       <TriageSection />
       {triageOpen && <TriageStartDialog windowId={windowId} onClose={() => setTriageOpen(false)} onStarted={() => {}} />}
-      <WebQaSection windowId={windowId} onStarted={(run) => onStarted(run)} />
+      <div ref={webQa}>
+        <WebQaSection windowId={windowId} onStarted={(run) => onStarted(run)} />
+      </div>
       <div className="runs-filters">
         <input
           className="text-input"

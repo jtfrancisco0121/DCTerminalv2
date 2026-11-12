@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { flightEvalResults } from "../flight/api";
 import type { Dist, EvalResults as Results, EvalRunResult, KeptBranch } from "../flight/types";
 import { evalCleanUp, evalDeleteBranch, type EvalCleanLine } from "../run/api";
-import { evalCheckText, evalDistText, minutesText, outcomeText } from "../run/words";
+import { evalCheckText, FAILED_TEXT, evalDistText, minutesText, outcomeText } from "../run/words";
 import { Dialog } from "./Dialog";
 import { errorText } from "./InlineNotice";
 import { Pill } from "./Pill";
@@ -84,7 +84,7 @@ function statusText(run: EvalRunResult): string {
     case "finished":
       return outcomeText("eval-done");
     case "failed":
-      return "Failed";
+      return FAILED_TEXT;
     case "queued":
       return "Waiting in the queue";
     default:

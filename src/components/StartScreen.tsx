@@ -19,7 +19,7 @@ import {
 } from "../run/api";
 import { WorktreeSetup } from "./WorktreeSetup";
 import { estimate, estimateText } from "../run/estimate";
-import { evalFinished, relativeDate, stageText } from "../run/words";
+import { evalFinished, optionsSummary, relativeDate, stageText } from "../run/words";
 import { TextDialog } from "./RunPanel";
 import { Dialog } from "./Dialog";
 import { RecentFolderOptions, useRecentFolders } from "./RecentFolders";
@@ -44,6 +44,13 @@ type Props = {
   /** Claude's limit windows, for the near-limit warning (never blocks starting). */
   usageWindows?: RateWindow[] | null;
 };
+
+/** Where the request comes from: typed here, or fetched from ClickUp. Only the visible one is sent. */
+type RequestSource = "describe" | "clickup";
+const SOURCES: ReadonlyArray<{ id: RequestSource; label: string }> = [
+  { id: "describe", label: "Describe it" },
+  { id: "clickup", label: "From ClickUp" },
+];
 
 /** How many earlier runs the start screen lists; the Runs view has them all. */
 export const EARLIER_RUNS = 8;
@@ -178,6 +185,15 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   const [bmadMode, setBmadMode] = useState<BmadMode>(() => rememberedBmadMode(initialFolder.trim()));
   // "Plan an epic in waves": the tickets are split into waves; nothing is built.
   const [epicPlan, setEpicPlan] = useState(false);
+  // Where the request comes from: only the visible source is ever sent (the other keeps what you typed or fetched).
+  const [source, setSource] = useState<RequestSource>("describe");
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const visibleTickets = source === "clickup" ? tickets : null;
+  const visibleRequest = source === "describe" ? request : "";
+  // An epic plan is one run over all its tickets: while it is ticked (and has tickets) the per-ticket split is set
+  // aside, not forgotten; unticking brings the chosen split back.
+  const epicActive = epicPlan && Boolean(visibleTickets);
+  const effectiveSplit: SplitChoice = epicActive ? { perTicket: false, letters: {} } : split;
 
   // BMAD is remembered per start folder (the design says per repo), unlike the
   // review box, which is per window.
@@ -233,8 +249,8 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
     setBusy(true);
     setError(null);
     try {
-      const eagleTickets = tickets;
-      const said = request.trim() || (eagleTickets ? "Do the ClickUp tickets below." : request);
+      const eagleTickets = visibleTickets;
+      const said = visibleRequest.trim() || (eagleTickets ? "Do the ClickUp tickets below." : visibleRequest);
       await dispatchEnqueue(
         {
           windowId,
@@ -263,18 +279,18 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
       setError("Choose a folder.");
       return;
     }
-    const eagleTickets = role === "eagle-eye" ? tickets : null;
-    if (role === "eagle-eye" && !request.trim() && !eagleTickets) {
+    const eagleTickets = role === "eagle-eye" ? visibleTickets : null;
+    if (role === "eagle-eye" && !visibleRequest.trim() && !eagleTickets) {
       setError("Say what should be done.");
       return;
     }
-    const groups = tickets && role === "eagle-eye" ? splitGroups(tickets.ticketIds, split) : [];
+    const groups = visibleTickets && role === "eagle-eye" ? splitGroups(visibleTickets.ticketIds, effectiveSplit) : [];
     if (groups.length > 1) {
       // One run per ticket (or group): they become one batch of queue entries, started as slots allow.
       setBusy(true);
       setError(null);
       try {
-        const said = requestOverride ?? (request.trim() || "Do the ClickUp tickets below.");
+        const said = requestOverride ?? (visibleRequest.trim() || "Do the ClickUp tickets below.");
         await dispatchRuns(
           {
             windowId,
@@ -286,7 +302,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
             repos: tickedRepos,
             maxImplementers: implementers !== null ? implementersValue : null,
           },
-          groups.map((ids, at) => ({ clickup: { refs: tickets!.refs, ticketIds: ids }, label: `${said.split("\n")[0]!.slice(0, 60)} (${at + 1}/${groups.length}: ${ids.join(", ")})` })),
+          groups.map((ids, at) => ({ clickup: { refs: visibleTickets!.refs, ticketIds: ids }, label: `${said.split("\n")[0]!.slice(0, 60)} (${at + 1}/${groups.length}: ${ids.join(", ")})` })),
         );
         setMessage(`${groups.length} runs queued: each starts when a slot is free (see Runs).`);
       } catch (err) {
@@ -310,7 +326,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
     setBusy(true);
     setError(null);
     try {
-      const said = requestOverride ?? (request.trim() || (eagleTickets ? "Do the ClickUp tickets below." : request));
+      const said = requestOverride ?? (visibleRequest.trim() || (eagleTickets ? "Do the ClickUp tickets below." : visibleRequest));
       const mode: ReviewMode | null = role === "eagle-eye" ? (reviewOnGitHub ? "github" : "local") : null;
       const bmad: BmadMode | null = role === "eagle-eye" ? bmadMode : null;
       const eagle = role === "eagle-eye";
@@ -371,14 +387,35 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   const startReason = disabledReason({
     folder,
     found,
-    hasRequest: Boolean(request.trim()),
-    hasTickets: Boolean(tickets),
+    hasRequest: Boolean(visibleRequest.trim()),
+    hasTickets: Boolean(visibleTickets),
     noRepoTicked: tickedRepos !== null && tickedRepos.length === 0,
-    tooMany,
+    tooMany: source === "clickup" ? tooMany : null,
     busy,
   });
+  const summary = optionsSummary({
+    implementers: implementersValue,
+    reviewOnGitHub,
+    epicPlan: epicActive,
+    bmadMode,
+  });
+  // Arrow keys move between the two sources and take the focus along (a radio group).
+  const sourceKeys = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    event.preventDefault();
+    const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1;
+    const at = SOURCES.findIndex((choice) => choice.id === source);
+    const next = (at + step + SOURCES.length) % SOURCES.length;
+    setSource(SOURCES[next].id);
+    event.currentTarget.querySelectorAll<HTMLButtonElement>("button")[next]?.focus();
+  };
   const runs = (overview?.runs ?? []).slice(0, EARLIER_RUNS);
-  const runCount = tickets ? splitGroups(tickets.ticketIds, split).length : 1;
+  const runCount = visibleTickets ? splitGroups(visibleTickets.ticketIds, effectiveSplit).length : 1;
+  // The split was chosen per ticket but the epic plan sets it aside: say so beside the intake.
+  const splitSetAside = epicActive && splitGroups(visibleTickets!.ticketIds, split).length > 1;
+  // With 2 or more tickets the intake shows its split radios: lock them while the epic plan is in effect.
+  const splitLocked =
+    epicActive && visibleTickets!.ticketIds.length > 1 ? "Plan an epic is ticked: an epic plan is one run over all its tickets." : undefined;
   const startLabel = runCount > 1 ? `Start Eagle-Eye (${runCount} runs)` : "Start Eagle-Eye";
 
   return (
@@ -431,7 +468,54 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
               ))}
             </ul>
           )}
-          {found.repos.length > 0 && (
+        </div>
+      )}
+      <div className="request-source" role="radiogroup" aria-label="Where the request comes from" onKeyDown={sourceKeys}>
+        {SOURCES.map(({ id, label }) => (
+          <button
+            key={id}
+            type="button"
+            role="radio"
+            aria-checked={source === id}
+            tabIndex={source === id ? 0 : -1}
+            className={`request-source-choice${source === id ? " request-source-active" : ""}`}
+            onClick={() => setSource(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <label className="field-label" hidden={source !== "describe"}>
+        What should be done?
+        <textarea
+          className="text-input run-request"
+          rows={5}
+          value={request}
+          placeholder="Describe the feature or the bug, in a few lines."
+          onChange={(event) => setRequest(event.target.value)}
+        />
+      </label>
+      <div hidden={source !== "clickup"}>
+        <ClickUpIntake windowId={windowId} onChange={setTickets} onTooMany={setTooMany} onSplit={setSplit} disabled={busy} splitLocked={splitLocked} />
+        {splitSetAside && (
+          <p className="hint" data-testid="split-set-aside">
+            One run per ticket is off for now; untick Plan an epic to get it back.
+          </p>
+        )}
+      </div>
+      <div className="start-options">
+        <button
+          type="button"
+          className="start-options-toggle"
+          aria-expanded={optionsOpen}
+          aria-controls="start-options-body"
+          onClick={() => setOptionsOpen((open) => !open)}
+        >
+          <span className="start-options-name">Options</span>
+          <span className="start-options-summary">{summary}</span>
+        </button>
+        <div id="start-options-body" className="start-options-body" hidden={!optionsOpen}>
+          {found && found.repos.length > 0 && (
             <label className="field-label run-implementers">
               Implementers
               <input
@@ -448,77 +532,66 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
               <span className="hint"> at most this many PRs build at once in this run (Settings has the default)</span>
             </label>
           )}
-          {found.repos.length > 0 && (
+          {found && found.repos.length > 0 && (
             <WorktreeSetup key={found.repos.map((r) => r.path).join("|")} repos={found.repos} />
           )}
-        </div>
-      )}
-      <label className="field-label">
-        What should be done?
-        <textarea
-          className="text-input run-request"
-          rows={5}
-          value={request}
-          placeholder="Describe the feature or the bug, in a few lines."
-          onChange={(event) => setRequest(event.target.value)}
-        />
-      </label>
-      <ClickUpIntake windowId={windowId} onChange={setTickets} onTooMany={setTooMany} onSplit={setSplit} disabled={busy} />
-      <label className="check-label">
-        <input
-          type="checkbox"
-          checked={reviewOnGitHub}
-          onChange={(event) => {
-            setReviewOnGitHub(event.target.checked);
-            rememberReviewOnGitHub(windowId, event.target.checked);
-          }}
-        />
-        Review on GitHub (draft PRs)
-      </label>
-      <p className="hint">
-        {reviewOnGitHub
-          ? "After the first build each PR opens as a draft on GitHub, every review round is posted as a PR comment, and the drafts are marked ready at the end. Teammates can see them."
-          : "Reviews stay in the run folder; PRs open only at the end."}
-      </p>
-      <label className="check-label">
-        <input
-          type="checkbox"
-          checked={epicPlan && Boolean(tickets)}
-          disabled={!tickets}
-          onChange={(event) => setEpicPlan(event.target.checked)}
-        />
-        Plan an epic in waves (no code, no PR)
-      </label>
-      <p className="hint">
-        {tickets
-          ? "The tickets are split into waves of 3 to 6, each with its own run later. Nothing is built or opened."
-          : "Add ClickUp tickets to plan them as an epic."}
-      </p>
-      <fieldset className="bmad-mode" aria-label="BMAD planning">
-        <legend>BMAD planning (BMAD-METHOD skills)</legend>
-        {BMAD_MODES.map((mode) => (
-          <label key={mode} className="check-label bmad-choice">
+          <label className="check-label">
             <input
-              type="radio"
-              name="bmad-mode"
-              value={mode}
-              checked={bmadMode === mode}
-              onChange={() => {
-                setBmadMode(mode);
-                rememberBmadMode(folder.trim(), mode);
+              type="checkbox"
+              checked={reviewOnGitHub}
+              onChange={(event) => {
+                setReviewOnGitHub(event.target.checked);
+                rememberReviewOnGitHub(windowId, event.target.checked);
               }}
             />
-            {BMAD_LABELS[mode]}
+            Review on GitHub (draft PRs)
           </label>
-        ))}
-      </fieldset>
-      <p className="hint">
-        {bmadMode === "auto"
-          ? "Large work (several repos, a new API or screen, many stories) gets a spec and an architecture written before the plan. Small work skips it."
-          : bmadMode === "on"
-            ? "Every run gets a spec and an architecture written before the plan. Needs Node 18 or newer."
-            : "No BMAD documents; the plan is written straight from the request."}
-      </p>
+          <p className="hint">
+            {reviewOnGitHub
+              ? "After the first build each PR opens as a draft on GitHub, every review round is posted as a PR comment, and the drafts are marked ready at the end. Teammates can see them."
+              : "Reviews stay in the run folder; PRs open only at the end."}
+          </p>
+          <label className="check-label">
+            <input
+              type="checkbox"
+              checked={epicActive}
+              disabled={!visibleTickets}
+              onChange={(event) => setEpicPlan(event.target.checked)}
+            />
+            Plan an epic in waves (no code, no PR)
+          </label>
+          <p className="hint">
+            {visibleTickets
+              ? "The tickets are split into waves of 3 to 6, each with its own run later. Nothing is built or opened."
+              : "Choose From ClickUp and add tickets to plan them as an epic."}
+          </p>
+          <fieldset className="bmad-mode" aria-label="BMAD planning">
+            <legend>BMAD planning (BMAD-METHOD skills)</legend>
+            {BMAD_MODES.map((mode) => (
+              <label key={mode} className="check-label bmad-choice">
+                <input
+                  type="radio"
+                  name="bmad-mode"
+                  value={mode}
+                  checked={bmadMode === mode}
+                  onChange={() => {
+                    setBmadMode(mode);
+                    rememberBmadMode(folder.trim(), mode);
+                  }}
+                />
+                {BMAD_LABELS[mode]}
+              </label>
+            ))}
+          </fieldset>
+          <p className="hint">
+            {bmadMode === "auto"
+              ? "Large work (several repos, a new API or screen, many stories) gets a spec and an architecture written before the plan. Small work skips it."
+              : bmadMode === "on"
+                ? "Every run gets a spec and an architecture written before the plan. Needs Node 18 or newer."
+                : "No BMAD documents; the plan is written straight from the request."}
+          </p>
+        </div>
+      </div>
       {error && (
         <p className="error" role="alert">
           {error}
@@ -546,7 +619,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           {startLabel}
         </button>
         <button type="button" className="link-button" onClick={onPlainTab}>
-          Plain terminal tab instead
+          Plain tab
         </button>
       </div>
       {startReason && (
@@ -677,7 +750,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           }
         >
           <p>
-            An unfinished run has the same request in the same folder{tickets ? " and the same tickets" : ""}.
+            An unfinished run has the same request in the same folder{visibleTickets ? " and the same tickets" : ""}.
             Resume it, or start a new one anyway.
           </p>
         </Dialog>

@@ -17,7 +17,10 @@ vi.mock("mermaid", () => ({
   },
 }));
 
-import { Markdown, PreviewPane } from "./PreviewPane";
+import { openPreview } from "../preview/bus";
+import { previewFit } from "../previewLayout";
+import { UI_SCALE_EVENT } from "../uiScale";
+import { Markdown, PreviewHost, PreviewPane } from "./PreviewPane";
 
 const RUN = "/app/runs/r-1";
 const preview = (text: string, mtimeMs = 1, path = `${RUN}/plan.md`) => ({ path, text, truncated: false, mtimeMs });
@@ -133,6 +136,80 @@ describe("PreviewPane", () => {
     expect(body.scrollTop).toBe(120);
   });
 
+  describe("a slow earlier load that answers after a later one", () => {
+    type Deferred = { path: string; resolve: (value: unknown) => void; reject: (reason: unknown) => void };
+    const pending: Deferred[] = [];
+    const deferFiles = () => {
+      pending.length = 0;
+      invoke.mockImplementation((cmd: string, args: { path?: string }) => {
+        if (cmd === "preview_stat") return Promise.resolve({ exists: true, mtimeMs: 1, size: 1 });
+        if (cmd === "open_file_link") return Promise.resolve(null);
+        return new Promise((resolve, reject) => pending.push({ path: args.path ?? "", resolve, reject }));
+      });
+    };
+    const first = { path: "/etc/hosts", title: "hosts", tabId: "t1", line: 1, col: 1 };
+    const second = { path: `${RUN}/plan.md`, title: "Plan", tabId: "t1" };
+
+    it("shows the later file, not the earlier one", async () => {
+      deferFiles();
+      const { rerender } = render(<PreviewPane target={first} onClose={vi.fn()} />);
+      rerender(<PreviewPane target={second} onClose={vi.fn()} />);
+      await waitFor(() => expect(pending.map((p) => p.path)).toEqual([first.path, second.path]));
+      await act(async () => pending[1].resolve(preview("# Second", 1, second.path)));
+      expect(screen.getByText("Second")).toBeTruthy();
+      await act(async () => pending[0].resolve(preview("# First", 1, first.path)));
+      expect(screen.queryByText("First")).toBeNull();
+      expect(screen.getByText("Second")).toBeTruthy();
+    });
+
+    it("drops the earlier refusal: no wrong-file refusal and no editor opened for a path no longer asked for", async () => {
+      deferFiles();
+      const { rerender } = render(<PreviewPane target={first} onClose={vi.fn()} />);
+      rerender(<PreviewPane target={second} onClose={vi.fn()} />);
+      await waitFor(() => expect(pending).toHaveLength(2));
+      await act(async () => pending[1].resolve(preview("# Second", 1, second.path)));
+      await act(async () => pending[0].reject("outside the folders a preview may read"));
+      expect(screen.queryByTestId("preview-refused")).toBeNull();
+      expect(screen.getByText("Second")).toBeTruthy();
+      expect(invoke.mock.calls.filter(([cmd]) => cmd === "open_file_link")).toHaveLength(0);
+    });
+
+    it("still falls back to the editor when the later click is refused before the earlier file answers", async () => {
+      deferFiles();
+      const { rerender } = render(<PreviewPane target={second} onClose={vi.fn()} />);
+      rerender(<PreviewPane target={first} onClose={vi.fn()} />);
+      await waitFor(() => expect(pending).toHaveLength(2));
+      await act(async () => pending[1].reject("outside the folders a preview may read"));
+      await act(async () => pending[0].resolve(preview("# Second", 1, second.path)));
+      const refused = screen.getByTestId("preview-refused");
+      expect(refused.textContent).toContain("Opened in your editor.");
+      expect(screen.queryByText("Second")).toBeNull();
+      expect(invoke.mock.calls.filter(([cmd]) => cmd === "open_file_link")).toHaveLength(1);
+    });
+
+    it("drops a poll reload that answers after a new request", async () => {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "requestAnimationFrame", "cancelAnimationFrame"] });
+      deferFiles();
+      const { rerender } = render(<PreviewPane target={{ path: second.path, title: "Plan" }} onClose={vi.fn()} />);
+      await act(async () => pending[0].resolve(preview("# Old", 1, second.path)));
+      expect(screen.getByText("Old")).toBeTruthy();
+      // The file changes: the next poll tick starts a reload that is still in flight when a new file is asked for.
+      invoke.mockImplementation((cmd: string, args: { path?: string }) => {
+        if (cmd === "preview_stat") return Promise.resolve({ exists: true, mtimeMs: 2, size: 1 });
+        return new Promise((resolve, reject) => pending.push({ path: args.path ?? "", resolve, reject }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1100);
+      });
+      expect(pending).toHaveLength(2);
+      rerender(<PreviewPane target={{ path: `${RUN}/other.md`, title: "Other" }} onClose={vi.fn()} />);
+      await act(async () => pending[2].resolve(preview("# Other", 2, `${RUN}/other.md`)));
+      await act(async () => pending[1].resolve(preview("# Reloaded", 2, second.path)));
+      expect(screen.queryByText("Reloaded")).toBeNull();
+      expect(screen.getByText("Other")).toBeTruthy();
+    });
+  });
+
   it("says when the file was removed, and when it is truncated", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "requestAnimationFrame", "cancelAnimationFrame"] });
     let exists = true;
@@ -175,16 +252,253 @@ describe("document layout", () => {
     expect(mermaidInit.mock.calls[0][0]).toMatchObject({ securityLevel: "strict", htmlLabels: false, flowchart: { htmlLabels: false } });
   });
 
-  it("toggles a wider pane and asks the terminal to refit", async () => {
+  it("has no Wider button and no divider as a bare overlay", () => {
     invoke.mockImplementation(async (cmd: string) => (cmd === "preview_stat" ? { exists: true, mtimeMs: 1, size: 1 } : preview("# Doc")));
-    const onResize = vi.fn();
-    render(<PreviewPane target={{ path: `${RUN}/plan.md`, title: "Plan" }} onClose={vi.fn()} onResize={onResize} />);
-    const pane = screen.getByTestId("preview-pane");
-    expect(pane.classList.contains("wide")).toBe(false);
-    onResize.mockClear();
-    fireEvent.click(screen.getByTestId("preview-wide"));
-    expect(pane.classList.contains("wide")).toBe(true);
-    expect(screen.getByTestId("preview-wide").textContent).toBe("Narrower");
-    await waitFor(() => expect(onResize).toHaveBeenCalled());
+    render(<PreviewPane target={{ path: `${RUN}/plan.md`, title: "Plan" }} onClose={vi.fn()} />);
+    expect(screen.queryByText("Wider")).toBeNull();
+    expect(screen.queryByTestId("preview-wide")).toBeNull();
+    expect(screen.queryByRole("separator")).toBeNull();
+    expect(screen.getByTestId("preview-pane").classList.contains("preview-overlay")).toBe(true);
+  });
+});
+
+describe("a path clicked in a terminal that the preview refuses", () => {
+  const OUTSIDE = "outside the folders a preview may read";
+  const openCalls = () => invoke.mock.calls.filter(([cmd]) => cmd === "open_file_link");
+  const clicked = { path: "/etc/hosts", title: "hosts", tabId: "t1", line: 3, col: 4 };
+  const respond = (refusal: string) =>
+    invoke.mockImplementation(async (cmd: string, args: { path?: string }) => {
+      if (cmd === "preview_stat") return { exists: true, mtimeMs: 1, size: 1 };
+      if (cmd === "open_file_link") return null;
+      if (args.path === clicked.path) throw refusal;
+      return preview("# Other", 1, args.path);
+    });
+
+  it("shows the refusal and 'Opened in your editor.' and opens the editor once, even after poll ticks", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "requestAnimationFrame", "cancelAnimationFrame"] });
+    respond(OUTSIDE);
+    render(<PreviewPane target={clicked} onClose={vi.fn()} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const refused = screen.getByTestId("preview-refused");
+    expect(refused.textContent).toContain(OUTSIDE);
+    expect(refused.textContent).toContain("Opened in your editor.");
+    expect(openCalls()).toEqual([["open_file_link", { tabId: "t1", path: "/etc/hosts", line: 3, col: 4, editor: "finder" }]]);
+    for (let tick = 0; tick < 4; tick += 1) {
+      await act(async () => {
+        vi.advanceTimersByTime(1100);
+      });
+    }
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "preview_file").length).toBeGreaterThan(2);
+    expect(openCalls()).toHaveLength(1);
+    expect(screen.getByTestId("preview-refused").textContent).toContain("Opened in your editor.");
+  });
+
+  it("falls back for a dotfile too", async () => {
+    respond("a dotfile is not previewed");
+    render(<PreviewPane target={clicked} onClose={vi.fn()} />);
+    await waitFor(() => expect(openCalls()).toHaveLength(1));
+  });
+
+  it("shows the refusal only for a missing file and a binary file", async () => {
+    for (const reason of ["file not found", "a binary file is not previewed"]) {
+      invoke.mockReset();
+      respond(reason);
+      const { unmount } = render(<PreviewPane target={clicked} onClose={vi.fn()} />);
+      const refused = await screen.findByTestId("preview-refused");
+      expect(refused.textContent).toContain(reason);
+      expect(refused.textContent).not.toContain("Opened in your editor.");
+      expect(openCalls()).toHaveLength(0);
+      unmount();
+    }
+  });
+
+  it("does not open the editor for a link refused inside the pane, even though the target has a tab", async () => {
+    invoke.mockImplementation(async (cmd: string, args: { path?: string }) => {
+      if (cmd === "preview_stat") return { exists: true, mtimeMs: 1, size: 1 };
+      if (cmd === "open_file_link") return null;
+      if (args.path === `${RUN}/plan.md`) return preview("[next](other.md)");
+      throw OUTSIDE;
+    });
+    render(<PreviewPane target={{ path: `${RUN}/plan.md`, title: "Plan", tabId: "t1" }} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByText("next"));
+    const refused = await screen.findByTestId("preview-refused");
+    expect(refused.textContent).toContain(OUTSIDE);
+    expect(refused.textContent).not.toContain("Opened in your editor.");
+    expect(openCalls()).toHaveLength(0);
+  });
+
+  it("loads again when the same path is clicked twice", async () => {
+    respond(OUTSIDE);
+    const { rerender } = render(<PreviewPane target={clicked} onClose={vi.fn()} />);
+    await waitFor(() => expect(openCalls()).toHaveLength(1));
+    const loads = () => invoke.mock.calls.filter(([cmd]) => cmd === "preview_file").length;
+    const before = loads();
+    rerender(<PreviewPane target={{ ...clicked }} onClose={vi.fn()} />);
+    await waitFor(() => expect(loads()).toBe(before + 1));
+    await waitFor(() => expect(openCalls()).toHaveLength(2));
+  });
+});
+
+describe("PreviewHost", () => {
+  const TARGET = { path: `${RUN}/plan.md`, title: "Plan" };
+  const BASE = { cellWidth: 0.6 * 14, termPad: 6, minPreviewPx: 320 };
+  let row: HTMLDivElement;
+  let rowWidth = 1400;
+  const observers: Array<() => void> = [];
+  const originalObserver = globalThis.ResizeObserver;
+  const originalInner = window.innerWidth;
+
+  beforeEach(() => {
+    invoke.mockImplementation(async (cmd: string) => (cmd === "preview_stat" ? { exists: true, mtimeMs: 1, size: 1 } : preview("# Doc")));
+    window.localStorage.clear();
+    document.documentElement.style.fontSize = "16px";
+    Object.defineProperty(window, "innerWidth", { value: 1400, configurable: true });
+    rowWidth = 1400;
+    row = document.createElement("div");
+    document.body.appendChild(row);
+    vi.spyOn(row, "getBoundingClientRect").mockImplementation(() => ({ left: 0, top: 0, width: rowWidth, height: 600 }) as DOMRect);
+    observers.length = 0;
+    globalThis.ResizeObserver = class {
+      constructor(cb: () => void) {
+        observers.push(cb);
+      }
+      observe() {}
+      disconnect() {}
+    } as never;
+  });
+  afterEach(() => {
+    row.remove();
+    document.documentElement.style.fontSize = "";
+    Object.defineProperty(window, "innerWidth", { value: originalInner, configurable: true });
+    globalThis.ResizeObserver = originalObserver;
+    window.localStorage.clear();
+  });
+
+  const gutter = (px = 16) => 8 + 0.3125 * px;
+  const widthOf = (over: Partial<Parameters<typeof previewFit>[0]> = {}) => {
+    const fit = previewFit({
+      ratio: 0.42,
+      windowWidth: 1400,
+      rowWidth,
+      runPanelWidth: 0,
+      gutter: gutter(),
+      ...BASE,
+      ...over,
+    });
+    if (fit.mode !== "side") throw new Error("expected side");
+    return fit.width;
+  };
+  const mount = (props: Partial<React.ComponentProps<typeof PreviewHost>> = {}) => {
+    const onLayoutChange = vi.fn();
+    const ui = (extra: Partial<React.ComponentProps<typeof PreviewHost>> = {}) => (
+      <PreviewHost windowId="main" terminalId="t1" fontSize={14} rowRef={{ current: row }} onLayoutChange={onLayoutChange} {...props} {...extra} />
+    );
+    const result = render(ui());
+    act(() => openPreview(TARGET));
+    return { ...result, ui, onLayoutChange };
+  };
+  const pane = () => screen.getByTestId("preview-pane");
+
+  it("opens beside the terminal with a divider, the fitted width as its flex basis, and no Wider button", () => {
+    mount();
+    expect(pane().style.flex).toBe(`0 0 ${widthOf()}px`);
+    expect(pane().classList.contains("preview-overlay")).toBe(false);
+    expect(screen.getByRole("separator", { name: "Resize preview" })).toBeTruthy();
+    expect(screen.queryByText("Wider")).toBeNull();
+  });
+
+  it("is an overlay with no divider under 1000px of window", () => {
+    Object.defineProperty(window, "innerWidth", { value: 999, configurable: true });
+    mount();
+    expect(pane().classList.contains("preview-overlay")).toBe(true);
+    expect(pane().style.flex).toBe("");
+    expect(screen.queryByRole("separator")).toBeNull();
+  });
+
+  it("in a tab split side by side keeps 60 columns per pane: overlay where one pane would sit beside, side again when wide enough", () => {
+    // One pane: beside at 1400px. Split 0.3/0.7: the 0.3 pane needs 516px, so the area needs 1720 + 9 and the preview 320.
+    const { rerender, ui } = mount({ split: { direction: "right", ratio: 0.3 } });
+    expect(pane().classList.contains("preview-overlay")).toBe(true);
+    rerender(ui({ split: { direction: "down", ratio: 0.3 } }));
+    expect(pane().classList.contains("preview-overlay")).toBe(false);
+    expect(pane().style.flex).toBe(`0 0 ${widthOf()}px`);
+    rerender(ui({ split: { direction: "right", ratio: 0.5 } }));
+    expect(pane().classList.contains("preview-overlay")).toBe(false);
+    const split = { narrowestShare: 0.5, chromePx: 0.3125 * 16 + 4 };
+    expect(pane().style.flex).toBe(`0 0 ${widthOf({ split })}px`);
+    expect(widthOf({ split })).toBeLessThan(widthOf());
+  });
+
+  it("writes the ratio store only on an arrow key, and the fit follows it", () => {
+    mount();
+    expect(window.localStorage.getItem("dcv2.preview.main")).toBeNull();
+    fireEvent.keyDown(screen.getByRole("separator"), { key: "ArrowLeft" });
+    const saved = JSON.parse(window.localStorage.getItem("dcv2.preview.main")!) as { ratio: number };
+    expect(saved.ratio).toBeCloseTo(0.42 + 0.05, 2);
+    expect(pane().style.flex).toBe(`0 0 ${widthOf({ ratio: saved.ratio })}px`);
+  });
+
+  it("re-fits on a window resize, a row resize, a UI scale change and a font size change, without writing the ratio", () => {
+    window.localStorage.setItem("dcv2.preview.main", '{"ratio":0.85}');
+    rowWidth = 1000;
+    Object.defineProperty(window, "innerWidth", { value: 1000, configurable: true });
+    const { ui, rerender, onLayoutChange } = mount();
+    const first = pane().style.flex;
+    expect(first).toBe(`0 0 ${widthOf({ ratio: 0.85, windowWidth: 1000 })}px`);
+
+    rowWidth = 1200;
+    act(() => observers.forEach((cb) => cb()));
+    expect(pane().style.flex).toBe(`0 0 ${widthOf({ ratio: 0.85, windowWidth: 1000 })}px`);
+    expect(pane().style.flex).not.toBe(first);
+
+    Object.defineProperty(window, "innerWidth", { value: 900, configurable: true });
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(pane().classList.contains("preview-overlay")).toBe(true);
+    Object.defineProperty(window, "innerWidth", { value: 1400, configurable: true });
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    const before = pane().style.flex;
+
+    document.documentElement.style.fontSize = "20px";
+    act(() => {
+      window.dispatchEvent(new CustomEvent(UI_SCALE_EVENT, { detail: 125 }));
+    });
+    expect(pane().style.flex).not.toBe(before);
+    expect(pane().style.flex).toBe(`0 0 ${widthOf({ ratio: 0.85, rowWidth: 1200, gutter: gutter(20), minPreviewPx: 400 })}px`);
+
+    document.documentElement.style.fontSize = "16px";
+    act(() => {
+      window.dispatchEvent(new CustomEvent(UI_SCALE_EVENT, { detail: 100 }));
+    });
+    const small = pane().style.flex;
+    rerender(ui({ fontSize: 18 }));
+    expect(pane().style.flex).not.toBe(small);
+    expect(pane().style.flex).toBe(`0 0 ${widthOf({ ratio: 0.85, rowWidth: 1200, cellWidth: 0.6 * 18 })}px`);
+    expect(onLayoutChange).toBeDefined();
+    expect(window.localStorage.getItem("dcv2.preview.main")).toBe('{"ratio":0.85}');
+  });
+
+  it("asks the terminals to refit when the mode or width changes", async () => {
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+    try {
+      const { onLayoutChange } = mount();
+      await act(async () => {
+        vi.advanceTimersByTime(50);
+      });
+      onLayoutChange.mockClear();
+      rowWidth = 1300;
+      act(() => observers.forEach((cb) => cb()));
+      await act(async () => {
+        vi.advanceTimersByTime(50);
+      });
+      expect(onLayoutChange).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

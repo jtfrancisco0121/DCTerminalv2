@@ -1,11 +1,11 @@
 import { useRef, useState } from "react";
 import type { SplitDirection, TabSummary } from "../bridge";
+import { Divider } from "./Divider";
 import { TerminalView } from "./TerminalView";
 
 /** The first pane's share stays within this, like the backend's. */
 export const MIN_RATIO = 0.2;
 export const MAX_RATIO = 0.8;
-const STEP = 0.05;
 
 export function clampRatio(ratio: number): number {
   if (!Number.isFinite(ratio)) return 0.5;
@@ -56,30 +56,12 @@ export function SplitTerminals({ tab, fontSize, autoFocus, focusedPane, onPaneFo
   const box = useRef<HTMLDivElement>(null);
   const ratio = clampRatio(live ?? split.ratio);
 
-  const drag = (event: React.PointerEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const target = event.currentTarget;
-    target.setPointerCapture?.(event.pointerId);
-    let last = ratio;
-    const move = (e: PointerEvent) => {
-      const rect = box.current?.getBoundingClientRect();
-      if (!rect || !rect.width || !rect.height) return;
-      last = clampRatio(horizontal ? (e.clientX - rect.left) / rect.width : (e.clientY - rect.top) / rect.height);
-      setLive(last);
-    };
-    const stop = () => {
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", stop);
-      target.removeEventListener("pointercancel", stop);
-      setLive(null);
-      onRatio(last);
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", stop);
-    target.addEventListener("pointercancel", stop);
+  // The share a pointer at this position means: along the split's axis, within the box.
+  const measure = (x: number, y: number) => {
+    const rect = box.current?.getBoundingClientRect();
+    if (!rect || !rect.width || !rect.height) return null;
+    return horizontal ? (x - rect.left) / rect.width : (y - rect.top) / rect.height;
   };
-
-  const nudge = (delta: number) => onRatio(clampRatio(ratio + delta));
 
   return (
     <div ref={box} className={`split split-${direction}`} data-testid="split">
@@ -98,25 +80,17 @@ export function SplitTerminals({ tab, fontSize, autoFocus, focusedPane, onPaneFo
           onFolderChanged={onFolderChanged}
         />
       </div>
-      <div
+      <Divider
         className="split-divider"
-        role="separator"
-        aria-orientation={horizontal ? "vertical" : "horizontal"}
-        aria-label="Resize panes"
-        aria-valuenow={Math.round(ratio * 100)}
-        aria-valuemin={Math.round(MIN_RATIO * 100)}
-        aria-valuemax={Math.round(MAX_RATIO * 100)}
-        tabIndex={0}
-        onPointerDown={drag}
-        onDoubleClick={() => onRatio(0.5)}
-        onKeyDown={(event) => {
-          const less = horizontal ? "ArrowLeft" : "ArrowUp";
-          const more = horizontal ? "ArrowRight" : "ArrowDown";
-          if (event.key === less) nudge(-STEP);
-          else if (event.key === more) nudge(STEP);
-          else return;
-          event.preventDefault();
-        }}
+        orientation={horizontal ? "vertical" : "horizontal"}
+        label="Resize panes"
+        value={ratio}
+        min={MIN_RATIO}
+        max={MAX_RATIO}
+        defaultValue={0.5}
+        measure={measure}
+        onLive={setLive}
+        onCommit={onRatio}
       />
       <div
         className={`split-pane${focusedPane === 2 ? " split-pane-focused" : ""}`}

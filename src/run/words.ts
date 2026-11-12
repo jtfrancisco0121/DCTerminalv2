@@ -105,6 +105,9 @@ export function usageTone(tone: UsageTone | null | undefined): Tone {
   }
 }
 
+/** The word for a failed run, a failed eval run and the stepper's failed end: one string, `stageText("failed")`. */
+export const FAILED_TEXT = "Failed";
+
 const STAGES: Record<string, string> = {
   planning: "Planning",
   "plan-approval": "Waiting for your plan approval",
@@ -112,7 +115,7 @@ const STAGES: Record<string, string> = {
   "ship-approval": "Waiting for your go to open the PRs",
   shipping: "Opening PRs",
   done: "Done",
-  failed: "Failed",
+  failed: FAILED_TEXT,
 };
 
 /** The words for a finished eval run, wherever its stage or outcome is shown. */
@@ -510,6 +513,8 @@ export type TabProgress = {
   waiting: boolean;
   /** For the tab's tooltip and accessible name. */
   title: string;
+  /** The short stage word shown under the tab's name. */
+  word: string;
 };
 
 /**
@@ -521,10 +526,10 @@ export function tabProgress(reading: TabReading | null | undefined): TabProgress
   const { stage, prsDone: done, prsTotal: total } = reading;
   const prs = total > 0 ? prFraction(done, total) : null;
   const join = (head: string) => (prs ? `${head} · ${prs}` : head);
-  if (stage === "failed") return { fraction: 1, tone: "danger", waiting: false, title: join("Failed") };
-  if (stage === "done") return { fraction: 1, tone: "success", waiting: false, title: join("Done") };
+  if (stage === "failed") return { fraction: 1, tone: "danger", waiting: false, title: join(FAILED_TEXT), word: FAILED_TEXT };
+  if (stage === "done") return { fraction: 1, tone: "success", waiting: false, title: join("Done"), word: stageText("done") };
   // A finished eval run is over, not waiting for anyone.
-  if (evalFinished(reading)) return { fraction: 1, tone: "success", waiting: false, title: join(EVAL_FINISHED_TEXT) };
+  if (evalFinished(reading)) return { fraction: 1, tone: "success", waiting: false, title: join(EVAL_FINISHED_TEXT), word: EVAL_FINISHED_TEXT };
   const waiting = Boolean(reading.waitingFor);
   const set = stepSetFor(reading.runMode);
   const at = set.findIndex((step) => step.key === stage);
@@ -534,6 +539,7 @@ export function tabProgress(reading: TabReading | null | undefined): TabProgress
     tone: waiting ? "you" : "running",
     waiting,
     title: join(waiting ? "Waiting for you" : stageText(stage)),
+    word: at >= 0 ? set[at].label : stageText(stage),
   };
 }
 
@@ -1058,3 +1064,56 @@ export function waitingLabel(waitingFor: string | null | undefined): string | nu
   if (waitingFor === "ship-approval") return "Ship";
   return waitingFor;
 }
+
+/** The attention control's words: "2 need you · 3 runs", "3 runs"; null when there is nothing. */
+export function attentionText(attention: { needsYou: number; activeRuns: number }): string | null {
+  const parts: string[] = [];
+  if (attention.needsYou > 0) parts.push(`${attention.needsYou} ${attention.needsYou === 1 ? "needs" : "need"} you`);
+  if (attention.activeRuns > 0) parts.push(`${attention.activeRuns} ${attention.activeRuns === 1 ? "run" : "runs"}`);
+  return parts.length ? parts.join(" · ") : null;
+}
+
+/** The status bar's Runs button: always there; "Runs" (muted) when idle, else the attention words in the `you` or `running` tone. */
+export function runsButton(attention: { needsYou: number; activeRuns: number } | null | undefined): { text: string; tone: Tone } {
+  const text = attention ? attentionText(attention) : null;
+  if (!attention || !text) return { text: "Runs", tone: "muted" };
+  return { text, tone: attention.needsYou > 0 ? "you" : "running" };
+}
+
+/** The Runs popover's sentence when no run is in progress. */
+export const NO_RUN_TEXT = "No run is in progress.";
+
+/** The tab dot's tooltip. */
+export function activityTitle(activity: string): string {
+  if (activity === "needs-you") return "Claude needs you";
+  if (activity === "waiting") return "Claude finished its turn";
+  return `Claude is ${activity}`;
+}
+
+/** The Start screen's one Options line: "3 implementers · GitHub review · Epic waves · BMAD auto". */
+export function optionsSummary(o: {
+  implementers: number;
+  reviewOnGitHub: boolean;
+  epicPlan: boolean;
+  bmadMode: "auto" | "on" | "off";
+}): string {
+  return [
+    `${o.implementers} ${o.implementers === 1 ? "implementer" : "implementers"}`,
+    o.reviewOnGitHub ? "GitHub review" : "Local review",
+    ...(o.epicPlan ? ["Epic waves"] : []),
+    `BMAD ${o.bmadMode}`,
+  ].join(" · ");
+}
+
+/** Shown after a refused clicked path was handed to the editor. */
+export const PREVIEW_OPENED_IN_EDITOR = "Opened in your editor.";
+
+/**
+ * The refusals of `preview_file` (src-tauri/src/run/preview.rs) after which a path clicked in a terminal is opened in the
+ * editor instead: the file is real but the preview may not read it. "file not found" and "a binary file is not previewed"
+ * are not here: the editor would not help.
+ */
+export const PREVIEW_EDITOR_FALLBACK_REASONS: ReadonlyArray<string> = [
+  "outside the folders a preview may read",
+  "a dotfile is not previewed",
+];
