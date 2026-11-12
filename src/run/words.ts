@@ -1107,3 +1107,13 @@ export function optionsSummary(o: {
 
 /** Shown after a refused clicked path was handed to the editor. */
 export const PREVIEW_OPENED_IN_EDITOR = "Opened in your editor.";
+
+/**
+ * The refusals of `preview_file` (src-tauri/src/run/preview.rs) after which a path clicked in a terminal is opened in the
+ * editor instead: the file is real but the preview may not read it. "file not found" and "a binary file is not previewed"
+ * are not here: the editor would not help.
+ */
+export const PREVIEW_EDITOR_FALLBACK_REASONS: ReadonlyArray<string> = [
+  "outside the folders a preview may read",
+  "a dotfile is not previewed",
+];

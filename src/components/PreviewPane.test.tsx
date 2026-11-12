@@ -188,6 +188,85 @@ describe("document layout", () => {
   });
 });
 
+describe("a path clicked in a terminal that the preview refuses", () => {
+  const OUTSIDE = "outside the folders a preview may read";
+  const openCalls = () => invoke.mock.calls.filter(([cmd]) => cmd === "open_file_link");
+  const clicked = { path: "/etc/hosts", title: "hosts", tabId: "t1", line: 3, col: 4 };
+  const respond = (refusal: string) =>
+    invoke.mockImplementation(async (cmd: string, args: { path?: string }) => {
+      if (cmd === "preview_stat") return { exists: true, mtimeMs: 1, size: 1 };
+      if (cmd === "open_file_link") return null;
+      if (args.path === clicked.path) throw refusal;
+      return preview("# Other", 1, args.path);
+    });
+
+  it("shows the refusal and 'Opened in your editor.' and opens the editor once, even after poll ticks", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "requestAnimationFrame", "cancelAnimationFrame"] });
+    respond(OUTSIDE);
+    render(<PreviewPane target={clicked} onClose={vi.fn()} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const refused = screen.getByTestId("preview-refused");
+    expect(refused.textContent).toContain(OUTSIDE);
+    expect(refused.textContent).toContain("Opened in your editor.");
+    expect(openCalls()).toEqual([["open_file_link", { tabId: "t1", path: "/etc/hosts", line: 3, col: 4, editor: "finder" }]]);
+    for (let tick = 0; tick < 4; tick += 1) {
+      await act(async () => {
+        vi.advanceTimersByTime(1100);
+      });
+    }
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "preview_file").length).toBeGreaterThan(2);
+    expect(openCalls()).toHaveLength(1);
+    expect(screen.getByTestId("preview-refused").textContent).toContain("Opened in your editor.");
+  });
+
+  it("falls back for a dotfile too", async () => {
+    respond("a dotfile is not previewed");
+    render(<PreviewPane target={clicked} onClose={vi.fn()} />);
+    await waitFor(() => expect(openCalls()).toHaveLength(1));
+  });
+
+  it("shows the refusal only for a missing file and a binary file", async () => {
+    for (const reason of ["file not found", "a binary file is not previewed"]) {
+      invoke.mockReset();
+      respond(reason);
+      const { unmount } = render(<PreviewPane target={clicked} onClose={vi.fn()} />);
+      const refused = await screen.findByTestId("preview-refused");
+      expect(refused.textContent).toContain(reason);
+      expect(refused.textContent).not.toContain("Opened in your editor.");
+      expect(openCalls()).toHaveLength(0);
+      unmount();
+    }
+  });
+
+  it("does not open the editor for a link refused inside the pane, even though the target has a tab", async () => {
+    invoke.mockImplementation(async (cmd: string, args: { path?: string }) => {
+      if (cmd === "preview_stat") return { exists: true, mtimeMs: 1, size: 1 };
+      if (cmd === "open_file_link") return null;
+      if (args.path === `${RUN}/plan.md`) return preview("[next](other.md)");
+      throw OUTSIDE;
+    });
+    render(<PreviewPane target={{ path: `${RUN}/plan.md`, title: "Plan", tabId: "t1" }} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByText("next"));
+    const refused = await screen.findByTestId("preview-refused");
+    expect(refused.textContent).toContain(OUTSIDE);
+    expect(refused.textContent).not.toContain("Opened in your editor.");
+    expect(openCalls()).toHaveLength(0);
+  });
+
+  it("loads again when the same path is clicked twice", async () => {
+    respond(OUTSIDE);
+    const { rerender } = render(<PreviewPane target={clicked} onClose={vi.fn()} />);
+    await waitFor(() => expect(openCalls()).toHaveLength(1));
+    const loads = () => invoke.mock.calls.filter(([cmd]) => cmd === "preview_file").length;
+    const before = loads();
+    rerender(<PreviewPane target={{ ...clicked }} onClose={vi.fn()} />);
+    await waitFor(() => expect(loads()).toBe(before + 1));
+    await waitFor(() => expect(openCalls()).toHaveLength(2));
+  });
+});
+
 describe("PreviewHost", () => {
   const TARGET = { path: `${RUN}/plan.md`, title: "Plan" };
   const BASE = { cellWidth: 0.6 * 14, termPad: 6, minPreviewPx: 320 };

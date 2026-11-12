@@ -16,7 +16,8 @@ import {
   savePreviewRatio,
   type PreviewFit,
 } from "../previewLayout";
-import { terminalCellWidth } from "../terminal/park";
+import { openInEditor, terminalCellWidth } from "../terminal/park";
+import { PREVIEW_EDITOR_FALLBACK_REASONS, PREVIEW_OPENED_IN_EDITOR } from "../run/words";
 import { UI_SCALE_EVENT } from "../uiScale";
 import { baseName } from "../paths";
 import { errorText } from "./InlineNotice";
@@ -26,7 +27,7 @@ const POLL_MS = 1000;
 
 type View =
   | { kind: "loading" }
-  | { kind: "refused"; reason: string }
+  | { kind: "refused"; reason: string; openedInEditor?: boolean }
   | { kind: "removed" }
   | { kind: "ok"; preview: Preview };
 
@@ -146,37 +147,56 @@ export function PreviewPane({
   fit?: PreviewFit;
   divider?: PreviewDivider;
 }) {
-  const [path, setPath] = useState(target.path);
+  // One request per file shown: a new target, or a link followed in the pane. Only a target clicked in a terminal
+  // (it has a `tabId`) carries `click`, and only the load of that request may fall back to the editor.
+  const [request, setRequest] = useState<{ path: string; click: PreviewTarget | null }>(() => ({
+    path: target.path,
+    click: target.tabId ? target : null,
+  }));
+  const path = request.path;
   const [title, setTitle] = useState(target.title);
   const [view, setView] = useState<View>({ kind: "loading" });
   const scroller = useRef<HTMLDivElement>(null);
   const seen = useRef(0);
+  // The path the editor was opened for by this request's click, so a poll's refusal keeps saying so.
+  const openedFor = useRef<string | null>(null);
+  const lastTarget = useRef(target);
+  // A link followed inside the pane: same target, no click.
+  const navigate = useCallback((next: string) => setRequest({ path: next, click: null }), []);
 
   useEffect(() => {
-    setPath(target.path);
+    if (lastTarget.current === target) return;
+    lastTarget.current = target;
     setTitle(target.title);
+    // A fresh request even for the path already shown: re-clicking it loads again.
+    setRequest({ path: target.path, click: target.tabId ? target : null });
   }, [target]);
 
-  const load = useCallback(
-    (keepScroll: boolean) => {
-      const top = scroller.current?.scrollTop ?? 0;
-      previewFile(path).then(
-        (preview) => {
-          seen.current = preview.mtimeMs;
-          setView({ kind: "ok", preview });
-          if (keepScroll) window.requestAnimationFrame(() => scroller.current && (scroller.current.scrollTop = top));
-        },
-        (err: unknown) => setView({ kind: "refused", reason: errorText(err) }),
-      );
-    },
-    [path],
-  );
+  const load = useCallback((at: string, keepScroll: boolean, click: PreviewTarget | null = null) => {
+    const top = scroller.current?.scrollTop ?? 0;
+    previewFile(at).then(
+      (preview) => {
+        seen.current = preview.mtimeMs;
+        setView({ kind: "ok", preview });
+        if (keepScroll) window.requestAnimationFrame(() => scroller.current && (scroller.current.scrollTop = top));
+      },
+      (err: unknown) => {
+        const reason = errorText(err);
+        if (click?.tabId && at === click.path && PREVIEW_EDITOR_FALLBACK_REASONS.some((known) => reason.includes(known))) {
+          openedFor.current = at;
+          openInEditor(click.tabId, click.path, click.line, click.col);
+        }
+        setView({ kind: "refused", reason, openedInEditor: openedFor.current === at });
+      },
+    );
+  }, []);
 
   useEffect(() => {
     setView({ kind: "loading" });
     seen.current = 0;
-    load(false);
-  }, [load]);
+    openedFor.current = null;
+    load(request.path, false, request.click);
+  }, [request, load]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -184,7 +204,7 @@ export function PreviewPane({
       previewStat(path).then(
         (stat) => {
           if (!stat.exists) setView((v) => (v.kind === "removed" ? v : { kind: "removed" }));
-          else if (stat.mtimeMs !== seen.current) load(true);
+          else if (stat.mtimeMs !== seen.current) load(path, true);
         },
         () => undefined,
       );
@@ -216,7 +236,7 @@ export function PreviewPane({
         {view.kind === "loading" && <p className="hint">Loading…</p>}
         {view.kind === "refused" && (
           <p className="hint warn" role="alert" data-testid="preview-refused">
-            This file cannot be previewed: {view.reason}.
+            This file cannot be previewed: {view.reason}.{view.openedInEditor && ` ${PREVIEW_OPENED_IN_EDITOR}`}
           </p>
         )}
         {view.kind === "removed" && (
@@ -231,7 +251,7 @@ export function PreviewPane({
                 The file is larger than 2 MB: only the start is shown.
               </p>
             )}
-            <Markdown text={view.preview.text} from={view.preview.path} onNavigate={setPath} />
+            <Markdown text={view.preview.text} from={view.preview.path} onNavigate={navigate} />
           </>
         )}
       </div>
