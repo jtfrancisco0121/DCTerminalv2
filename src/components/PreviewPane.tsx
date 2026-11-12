@@ -14,8 +14,10 @@ import {
   previewAvailable,
   previewFit,
   savePreviewRatio,
+  splitNarrowestShare,
   type PreviewFit,
 } from "../previewLayout";
+import type { SplitSummary } from "../bridge";
 import { openInEditor, terminalCellWidth } from "../terminal/park";
 import { PREVIEW_EDITOR_FALLBACK_REASONS, PREVIEW_OPENED_IN_EDITOR } from "../run/words";
 import { UI_SCALE_EVENT } from "../uiScale";
@@ -172,15 +174,26 @@ export function PreviewPane({
     setRequest({ path: target.path, click: target.tabId ? target : null });
   }, [target]);
 
-  const load = useCallback((at: string, keepScroll: boolean, click: PreviewTarget | null = null) => {
+  // The current request's token: a load answered after a newer request (or after the pane closed) is dropped, so a
+  // slow earlier read can neither show the wrong file nor open the editor for a path no longer asked for.
+  const current = useRef(0);
+  // A read for the current request is in flight: polls wait, so the request's own loads never overlap or reorder.
+  const busy = useRef(false);
+
+  const load = useCallback((token: number, at: string, keepScroll: boolean, click: PreviewTarget | null = null) => {
     const top = scroller.current?.scrollTop ?? 0;
+    busy.current = true;
     previewFile(at).then(
       (preview) => {
+        if (token !== current.current) return;
+        busy.current = false;
         seen.current = preview.mtimeMs;
         setView({ kind: "ok", preview });
         if (keepScroll) window.requestAnimationFrame(() => scroller.current && (scroller.current.scrollTop = top));
       },
       (err: unknown) => {
+        if (token !== current.current) return;
+        busy.current = false;
         const reason = errorText(err);
         if (click?.tabId && at === click.path && PREVIEW_EDITOR_FALLBACK_REASONS.some((known) => reason.includes(known))) {
           openedFor.current = at;
@@ -192,24 +205,37 @@ export function PreviewPane({
   }, []);
 
   useEffect(() => {
+    const token = (current.current += 1);
     setView({ kind: "loading" });
     seen.current = 0;
     openedFor.current = null;
-    load(request.path, false, request.click);
+    load(token, request.path, false, request.click);
+    return () => {
+      // A newer request, or the pane closing: whatever this request still has in flight is stale.
+      if (current.current === token) current.current += 1;
+      busy.current = false;
+    };
   }, [request, load]);
 
   useEffect(() => {
+    let live = true;
     const timer = window.setInterval(() => {
-      if (document.visibilityState === "hidden") return;
+      if (document.visibilityState === "hidden" || busy.current) return;
+      const token = current.current;
       previewStat(path).then(
         (stat) => {
+          // The path changed, a newer request began or a read started meanwhile: this tick's answer is stale.
+          if (!live || token !== current.current || busy.current) return;
           if (!stat.exists) setView((v) => (v.kind === "removed" ? v : { kind: "removed" }));
-          else if (stat.mtimeMs !== seen.current) load(path, true);
+          else if (stat.mtimeMs !== seen.current) load(token, path, true);
         },
         () => undefined,
       );
     }, POLL_MS);
-    return () => window.clearInterval(timer);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
   }, [path, load]);
 
   const name = baseName(path) || path;
@@ -269,6 +295,8 @@ const cssPx = (row: Element, name: string, fallback: number) => {
 const DIVIDER_REM = 0.3125;
 /** The narrowest the preview may be: 20 rem, read at fit time so it follows the UI scale. */
 const MIN_PREVIEW_REM = 20;
+/** A side-by-side split's panes each have a 1px border on both sides (`.split-pane` in App.css): 4px in all. */
+const SPLIT_PANE_BORDERS_PX = 4;
 
 /**
  * The one preview of the window, in the workspace row between the terminals and the run panel: it shows the file
@@ -282,6 +310,7 @@ export function PreviewHost({
   fontSize,
   rowRef,
   onLayoutChange,
+  split = null,
 }: {
   windowId: string;
   /** The active tab's terminal, for the cell width. */
@@ -290,7 +319,11 @@ export function PreviewHost({
   /** The workspace row that holds the terminals, this pane and the run panel. */
   rowRef: React.RefObject<HTMLElement | null>;
   onLayoutChange?: () => void;
+  /** The active tab's split, if any: side by side, each pane must keep 60 columns, not just the two together. */
+  split?: Pick<SplitSummary, "direction" | "ratio"> | null;
 }) {
+  const splitDirection = split?.direction ?? null;
+  const splitRatio = split?.ratio ?? null;
   const [target, setTarget] = useState<PreviewTarget | null>(null);
   const [ratio, setRatio] = useState(() => loadPreviewRatio(windowId));
   const [live, setLive] = useState<number | null>(null);
@@ -320,6 +353,10 @@ export function PreviewHost({
       cellWidth: (terminalId ? terminalCellWidth(terminalId) : null) ?? 0.6 * fontSize,
       termPad: cssPx(row, "--term-pad", 6),
       minPreviewPx: MIN_PREVIEW_REM * px,
+      split:
+        splitDirection === "right" && splitRatio !== null
+          ? { narrowestShare: splitNarrowestShare(splitRatio), chromePx: DIVIDER_REM * px + SPLIT_PANE_BORDERS_PX }
+          : null,
     };
   };
   const recompute = () => {
@@ -348,7 +385,7 @@ export function PreviewHost({
   }, [target, rowRef]);
   useLayoutEffect(() => {
     if (target) recomputeRef.current();
-  }, [target, fontSize, terminalId, ratio, live]);
+  }, [target, fontSize, terminalId, ratio, live, splitDirection, splitRatio]);
 
   // The terminals refit once per change of mode or width (and when a file opens or closes).
   const fitKey = fit.mode === "side" ? `side:${fit.width}` : "overlay";

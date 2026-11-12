@@ -5,8 +5,10 @@ import notFaked from "../../fixtures/fake/not-faked.json";
 import run from "../../fixtures/fake/run.json";
 import runs from "../../fixtures/fake/runs.json";
 import settings from "../../fixtures/fake/settings.json";
+import { BEHAVIOUR_ONLY } from "./install";
 
-// Every command the UI invokes is either faked (a fixture) or listed with a reason in fixtures/fake/not-faked.json.
+// Every command the UI invokes is either faked (a fixture, or behaviour alone: `BEHAVIOUR_ONLY` of install.ts) or listed
+// with a reason in fixtures/fake/not-faked.json.
 // Adding an `invoke("new_command")` in src/ without one of the two fails here, naming the command.
 const sources = import.meta.glob("/src/**/*.{ts,tsx}", { query: "?raw", import: "default", eager: true }) as Record<
   string,
@@ -92,6 +94,7 @@ const fixtureKeys = new Set(
   [app, clickup, run, runs, settings].flatMap((fixtures) => Object.keys(fixtures as Record<string, unknown>)),
 );
 const unfaked = notFaked as Record<string, string>;
+const behaviourOnly = new Set<string>(BEHAVIOUR_ONLY);
 
 describe("fake backend command coverage", () => {
   it("finds a command behind nested generics", () => {
@@ -134,7 +137,7 @@ describe("fake backend command coverage", () => {
     expect(files.length).toBeGreaterThan(50);
     const used = new Set(files.flatMap(([, text]) => invokedCommands(text)));
     expect(used.size).toBeGreaterThan(100);
-    const missing = [...used].filter((c) => !fixtureKeys.has(c) && !(c in unfaked)).sort();
+    const missing = [...used].filter((c) => !fixtureKeys.has(c) && !behaviourOnly.has(c) && !(c in unfaked)).sort();
     expect(missing, `no fixture and no not-faked entry for: ${missing.join(", ")}`).toEqual([]);
   });
 
@@ -147,6 +150,19 @@ describe("fake backend command coverage", () => {
     for (const [command, reason] of Object.entries(unfaked)) {
       expect(reason.trim().length, `${command} has an empty reason`).toBeGreaterThan(0);
       expect(fixtureKeys.has(command), `${command} is both faked and not-faked`).toBe(false);
+      expect(behaviourOnly.has(command), `${command} is both faked by behaviour and not-faked`).toBe(false);
+    }
+  });
+
+  it("a behaviour-only command has no fixture and is invoked by the UI", () => {
+    const used = new Set(
+      Object.entries(sources)
+        .filter(([path]) => !isTest(path))
+        .flatMap(([, text]) => invokedCommands(text)),
+    );
+    for (const command of BEHAVIOUR_ONLY) {
+      expect(fixtureKeys.has(command), `${command} has a fixture: drop it from BEHAVIOUR_ONLY`).toBe(false);
+      expect(used.has(command), `${command} is not invoked in src/`).toBe(true);
     }
   });
 });

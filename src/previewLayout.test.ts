@@ -8,6 +8,8 @@ import {
   previewFit,
   previewKey,
   savePreviewRatio,
+  splitNarrowestShare,
+  terminalAreaMin,
   type PreviewFitInput,
 } from "./previewLayout";
 
@@ -114,5 +116,58 @@ describe("previewFit", () => {
     expect(clamped).toEqual({ mode: "side", width: 1000 - 8 - 612 });
     expect(window.localStorage.getItem("dcv2.preview.main")).toBe(stored);
     expect(loadPreviewRatio("main")).toBe(0.85);
+  });
+
+  describe("in a tab split side by side", () => {
+    // The split's divider and pane borders: 9px.
+    const CHROME = 9;
+    const panesOf = (rowWidth: number, width: number, splitRatio: number) => {
+      const inner = rowWidth - 8 - width - CHROME;
+      return [splitRatio * inner, (1 - splitRatio) * inner];
+    };
+
+    it("keeps 60 columns in each pane, not in the two together", () => {
+      const split = { narrowestShare: splitNarrowestShare(0.5), chromePx: CHROME };
+      // One pane: 612px of terminals is enough. Two halves: each needs 612, so the area needs 2 * 612 + 9 = 1233.
+      expect(terminalAreaMin(base)).toBe(612);
+      expect(terminalAreaMin({ ...base, split })).toBe(1233);
+      const fit = previewFit({ ...base, rowWidth: 2000, windowWidth: 2000, split });
+      expect(fit).toEqual({ mode: "side", width: 1992 - 1233 });
+      const [left, right] = panesOf(2000, (fit as { width: number }).width, 0.5);
+      expect(left).toBeGreaterThanOrEqual(612);
+      expect(right).toBeGreaterThanOrEqual(612);
+    });
+
+    it("falls back to the overlay when the panes would go under 60 columns, where one pane would still fit beside", () => {
+      const split = { narrowestShare: splitNarrowestShare(0.5), chromePx: CHROME };
+      expect(previewFit(base)).toEqual({ mode: "side", width: 585 });
+      expect(previewFit({ ...base, split }).mode).toBe("overlay");
+      // 1233 + 320 + 8 = 1561 is the narrowest row that fits.
+      expect(previewFit({ ...base, rowWidth: 1561, windowWidth: 1561, split }).mode).toBe("side");
+      expect(previewFit({ ...base, rowWidth: 1560, windowWidth: 1560, split }).mode).toBe("overlay");
+    });
+
+    it("counts the narrower pane of an uneven split, for any ratio and row width", () => {
+      expect(splitNarrowestShare(0.7)).toBeCloseTo(0.3);
+      expect(splitNarrowestShare(0.3)).toBeCloseTo(0.3);
+      expect(splitNarrowestShare(0.05)).toBe(0.2);
+      expect(splitNarrowestShare(Number.NaN)).toBe(0.5);
+      for (const splitRatio of [0.2, 0.35, 0.5, 0.65, 0.8]) {
+        const split = { narrowestShare: splitNarrowestShare(splitRatio), chromePx: CHROME };
+        for (const ratio of [0.15, 0.42, 0.85]) {
+          for (const rowWidth of [1400, 2000, 2600, 3400, 4200]) {
+            const result = previewFit({ ...base, ratio, rowWidth, windowWidth: rowWidth, split });
+            if (result.mode !== "side") continue;
+            // Within float error of the share's product: a pane of exactly 612px may compute as 611.9999999.
+            for (const pane of panesOf(rowWidth, result.width, splitRatio)) expect(pane).toBeGreaterThanOrEqual(612 - 1e-9);
+            expect(result.width).toBeGreaterThanOrEqual(320);
+          }
+        }
+      }
+    });
+
+    it("leaves a split stacked top and bottom (no split input) to the one-pane rule", () => {
+      expect(previewFit({ ...base, split: null })).toEqual(previewFit(base));
+    });
   });
 });

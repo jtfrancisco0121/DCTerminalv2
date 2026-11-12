@@ -34,12 +34,15 @@ vi.mock("../clickup/ClickUpIntake", () => ({
     onChange,
     onTooMany,
     onSplit,
+    splitLocked,
   }: {
     onChange: (start: ClickUpStart | null) => void;
     onTooMany: (text: string | null) => void;
     onSplit: (choice: SplitChoice) => void;
+    splitLocked?: string;
   }) => (
     <div data-testid="intake">
+      <input type="radio" aria-label="Split radio" disabled={splitLocked !== undefined} title={splitLocked} readOnly />
       <button type="button" onClick={() => onChange(TICKETS)}>
         fetch tickets
       </button>
@@ -177,6 +180,97 @@ describe("the request source", () => {
     // Switching back loses nothing.
     fireEvent.click(fromClickUp());
     expect(startButton().textContent).toBe("Start Eagle-Eye (2 runs)");
+  });
+
+  it("drops Epic waves from the summary and the launch in Describe mode, and brings it back in From ClickUp", async () => {
+    await open();
+    const summary = () => document.querySelector(".start-options-summary")!.textContent;
+    fireEvent.click(fromClickUp());
+    fireEvent.click(screen.getByText("fetch tickets"));
+    fireEvent.click(screen.getByRole("button", { name: /^Options/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Plan an epic/ }));
+    expect(summary()).toContain("Epic waves");
+    fireEvent.click(describeIt());
+    type("Add multiply()");
+    expect(summary()).not.toContain("Epic waves");
+    const epicBox = screen.getByRole("checkbox", { name: /Plan an epic/ }) as HTMLInputElement;
+    expect(epicBox.checked).toBe(false);
+    expect(epicBox.disabled).toBe(true);
+    fireEvent.click(startButton());
+    await vi.waitFor(() => expect(startRun).toHaveBeenCalledOnce());
+    expect(startRun.mock.calls[0][4]).toBeNull();
+    expect(startRun.mock.calls[0][10]).toBeNull();
+    // Switching back restores the ticked box, the summary and the epic mode in the launch.
+    fireEvent.click(fromClickUp());
+    expect(summary()).toContain("Epic waves");
+    expect((screen.getByRole("checkbox", { name: /Plan an epic/ }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(startButton());
+    await vi.waitFor(() => expect(startRun).toHaveBeenCalledTimes(2));
+    expect(startRun.mock.calls[1][4]).toEqual(TICKETS);
+    expect(startRun.mock.calls[1][10]).toBe("epic-plan");
+  });
+
+  it("queues a Describe-mode start without the epic mode of hidden tickets", async () => {
+    dispatchOverview.mockResolvedValue({ atCap: true, cap: 1, queue: [], usageHoldPercent: null, holders: [] });
+    await open();
+    fireEvent.click(fromClickUp());
+    fireEvent.click(screen.getByText("fetch tickets"));
+    fireEvent.click(screen.getByRole("button", { name: /^Options/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Plan an epic/ }));
+    fireEvent.click(describeIt());
+    type("Add multiply()");
+    fireEvent.click(startButton());
+    fireEvent.click(await screen.findByRole("button", { name: "Queue it" }));
+    await vi.waitFor(() => expect(dispatchEnqueue).toHaveBeenCalledOnce());
+    expect(dispatchEnqueue.mock.calls[0][0]).toMatchObject({ clickup: null, runMode: null });
+  });
+
+  it("sets the per-ticket split aside while an epic plan is ticked, and restores it when unticked", async () => {
+    await open();
+    const summary = () => document.querySelector(".start-options-summary")!.textContent;
+    fireEvent.click(fromClickUp());
+    fireEvent.click(screen.getByText("fetch tickets"));
+    fireEvent.click(screen.getByText("one run per ticket"));
+    expect(startButton().textContent).toBe("Start Eagle-Eye (2 runs)");
+    fireEvent.click(screen.getByRole("button", { name: /^Options/ }));
+    const epicBox = () => screen.getByRole("checkbox", { name: /Plan an epic/ });
+    fireEvent.click(epicBox());
+    expect(startButton().textContent).toBe("Start Eagle-Eye");
+    expect(screen.getByTestId("split-set-aside").textContent).toMatch(/untick Plan an epic/);
+    const splitRadio = () => screen.getByLabelText("Split radio") as HTMLInputElement;
+    expect(splitRadio().disabled).toBe(true);
+    expect(splitRadio().title).toMatch(/one run over all its tickets/);
+    expect(summary()).toContain("Epic waves");
+    expect(summary()).not.toMatch(/per ticket|runs/);
+    fireEvent.click(startButton());
+    await vi.waitFor(() => expect(startRun).toHaveBeenCalledOnce());
+    expect(startRun.mock.calls[0][4]).toEqual(TICKETS);
+    expect(startRun.mock.calls[0][10]).toBe("epic-plan");
+    expect(dispatchRuns).not.toHaveBeenCalled();
+    // Unticking brings the per-ticket split back as it was.
+    fireEvent.click(epicBox());
+    expect(screen.queryByTestId("split-set-aside")).toBeNull();
+    expect(splitRadio().disabled).toBe(false);
+    expect(startButton().textContent).toBe("Start Eagle-Eye (2 runs)");
+    fireEvent.click(startButton());
+    await vi.waitFor(() => expect(dispatchRuns).toHaveBeenCalledOnce());
+    expect(dispatchRuns.mock.calls[0][1].map((run: { clickup: ClickUpStart }) => run.clickup.ticketIds)).toEqual([["T-1"], ["T-2"]]);
+    expect(startRun).toHaveBeenCalledOnce();
+  });
+
+  it("queues an epic plan as one run with its mode when the run limit is reached, even with a per-ticket split", async () => {
+    dispatchOverview.mockResolvedValue({ atCap: true, cap: 1, queue: [], usageHoldPercent: null, holders: [] });
+    await open();
+    fireEvent.click(fromClickUp());
+    fireEvent.click(screen.getByText("fetch tickets"));
+    fireEvent.click(screen.getByText("one run per ticket"));
+    fireEvent.click(screen.getByRole("button", { name: /^Options/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Plan an epic/ }));
+    fireEvent.click(startButton());
+    fireEvent.click(await screen.findByRole("button", { name: "Queue it" }));
+    await vi.waitFor(() => expect(dispatchEnqueue).toHaveBeenCalledOnce());
+    expect(dispatchEnqueue.mock.calls[0][0]).toMatchObject({ clickup: TICKETS, runMode: "epic-plan" });
+    expect(dispatchRuns).not.toHaveBeenCalled();
   });
 
   it("splits into one run per ticket in From ClickUp mode", async () => {

@@ -56,19 +56,45 @@ export type PreviewFitInput = {
   termPad: number;
   /** The narrowest the preview may be (px). */
   minPreviewPx: number;
+  /**
+   * A tab split side by side: the narrowest pane's share of the panes' width (0.2..0.5) and the px the split itself
+   * takes between and around the panes (its divider and the panes' borders). Absent for one pane, or a split stacked
+   * top and bottom, where every terminal is as wide as the whole terminal area.
+   */
+  split?: { narrowestShare: number; chromePx: number } | null;
 };
 
 export type PreviewFit = { mode: "side"; width: number } | { mode: "overlay" };
 
+/** A split's first-pane share is kept within 0.2..0.8 (SplitTerminals' MIN_RATIO/MAX_RATIO and the backend's). */
+const SPLIT_MIN_SHARE = 0.2;
+
+/** The narrower pane's share of a split whose first pane has `ratio`: 0.2..0.5, half when the ratio is not a number. */
+export function splitNarrowestShare(ratio: number): number {
+  if (!Number.isFinite(ratio)) return 0.5;
+  return Math.max(SPLIT_MIN_SHARE, Math.min(ratio, 1 - ratio));
+}
+
 /**
- * Where the preview goes. An overlay under 1000 px of window, or when 60 terminal columns plus the preview minimum do
- * not fit; else beside the terminals at `ratio` of the width left after the run panel, clamped so the terminals keep
- * 60 columns. The clamp changes the width shown, never the ratio kept.
+ * The narrowest the terminal area may be: 60 columns plus padding in its narrowest terminal. In a tab split side by
+ * side that is the narrowest pane, so the whole area must be that over the pane's share, plus the split's own chrome.
+ */
+export function terminalAreaMin(input: Pick<PreviewFitInput, "cellWidth" | "termPad" | "split">): number {
+  const one = MIN_TERMINAL_COLS * input.cellWidth + 2 * input.termPad;
+  const split = input.split;
+  if (!split || !(split.narrowestShare > 0 && split.narrowestShare < 1)) return one;
+  return Math.ceil(one / split.narrowestShare + Math.max(0, split.chromePx));
+}
+
+/**
+ * Where the preview goes. An overlay under 1000 px of window, or when 60 terminal columns (in every pane of a split
+ * tab) plus the preview minimum do not fit; else beside the terminals at `ratio` of the width left after the run
+ * panel, clamped so every terminal keeps 60 columns. The clamp changes the width shown, never the ratio kept.
  */
 export function previewFit(input: PreviewFitInput): PreviewFit {
-  const { ratio, windowWidth, cellWidth, termPad, minPreviewPx } = input;
+  const { ratio, windowWidth, minPreviewPx } = input;
   const available = previewAvailable(input);
-  const terminalMin = MIN_TERMINAL_COLS * cellWidth + 2 * termPad;
+  const terminalMin = terminalAreaMin(input);
   if (windowWidth < OVERLAY_BELOW_PX || !(available >= terminalMin + minPreviewPx)) return { mode: "overlay" };
   const wanted = Math.round(clampPreviewRatio(ratio) * available);
   const width = Math.floor(Math.min(available - terminalMin, Math.max(minPreviewPx, wanted)));

@@ -150,6 +150,8 @@ function App() {
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
   // The command palette (Cmd+K), the run list it offers, and the Settings section it opens.
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // The one palette handler (AD-3): the `palette` key, the title-bar field and the status-bar button all call it.
+  const togglePalette = useCallback(() => setPaletteOpen((open) => !open), []);
   const [paletteRuns, setPaletteRuns] = useState<RunOverview | null>(null);
   const [settingsSection, setSettingsSection] = useState<string | undefined>(undefined);
   const [lastFolder, setLastFolder] = useState("");
@@ -638,7 +640,7 @@ function App() {
         if (active) requestTerminalSearch(active.id);
         break;
       case "palette":
-        setPaletteOpen((open) => !open);
+        togglePalette();
         break;
       case "select": {
         const tab = state?.tabs[action.index];
@@ -863,7 +865,7 @@ function App() {
       <TitleBar
         accountName={ctx?.accountName}
         platform={detectPlatform(navigator.platform)}
-        onOpenPalette={() => setPaletteOpen(true)}
+        onOpenPalette={togglePalette}
       >
         {state && state.tabs.length > 0 && (
           <TabBar
@@ -965,6 +967,7 @@ function App() {
               fontSize={fontSize}
               rowRef={workspaceRow}
               onLayoutChange={() => refitTerminal(active.id)}
+              split={active.split}
             />
             {active.runDir && (
               <RunPanel
@@ -1054,7 +1057,7 @@ function App() {
         attention={attention}
         runsOpen={activeRunsOpen}
         onAttention={() => setActiveRunsOpen((open) => !open)}
-        onOpenPalette={() => setPaletteOpen((open) => !open)}
+        onOpenPalette={togglePalette}
         onNewWindow={() => setDialog("new-window")}
         onSettings={() => setDialog("settings")}
       />

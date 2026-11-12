@@ -636,9 +636,10 @@ body,
   padding-left: var(--traffic-inset);
 }
 
+/* No min-width: 0 here: the strip's automatic minimum is its min-content, which the grid below makes exactly the
+   "+N" button, so the strip never shrinks under the button and the spacer after it never covers it. */
 .title-bar .tab-strip {
   flex: 0 1 auto;
-  min-width: 0;
   align-self: flex-end;
 }
 
@@ -678,11 +679,12 @@ body,
   color: var(--fg);
 }
 
-/* The tab list (it scrolls) and, after it, the "+N" button for the tabs it cannot show whole. */
+/* The tab list (it scrolls) and, after it, the "+N" button for the tabs it cannot show whole. The list's column
+   shrinks to nothing (minmax(0, auto)); the button's column keeps its width, so the strip's min-content is the button. */
 .tab-strip {
-  display: flex;
-  align-items: flex-end;
-  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, auto) auto;
+  align-items: end;
 }
 
 .tab-overflow {
@@ -732,10 +734,12 @@ body,
   pointer-events: none;
 }
 
+/* Never wider than the row's view (100% of .tab-bar): a tab wider than the view could not be scrolled fully into
+   view, so it would stay cut and counted in "+N" after it was chosen. */
 .tab {
   display: flex;
   align-items: center;
-  max-width: 16rem;
+  max-width: min(16rem, 100%);
   border: 1px solid transparent;
   border-bottom: 0;
   border-radius: var(--radius-md) var(--radius-md) 0 0;

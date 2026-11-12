@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { attentionSummary, type AppStateSnapshot, type TabSummary } from "./bridge";
 import { RUN_PAGES } from "./runPages";
@@ -90,8 +90,12 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 }));
 // The terminal itself is xterm in a real webview; here it is a marker.
 const terminalLife = vi.hoisted(() => ({ mounts: 0, unmounts: 0 }));
+// When a test sets `park`, the marker view does what the real TerminalView does with the real park.ts: it shows the
+// tab's parked xterm host while mounted and moves it back to the park when unmounted.
+const parkHarness = vi.hoisted(() => ({ park: null as null | typeof import("./terminal/park") }));
 vi.mock("./components/TerminalView", () => ({
   TerminalView: ({ tab: shown }: { tab: TabSummary }) => {
+    const slot = useRef<HTMLDivElement>(null);
     // Counts mounts and unmounts: opening a page must not unmount a terminal.
     useEffect(() => {
       terminalLife.mounts += 1;
@@ -99,10 +103,58 @@ vi.mock("./components/TerminalView", () => ({
         terminalLife.unmounts += 1;
       };
     }, []);
-    return <div data-testid="terminal">{shown.label}</div>;
+    useEffect(() => {
+      const park = parkHarness.park;
+      if (!park || !slot.current) return;
+      const parked = park.ensureParkedTerminal(shown.id, 14);
+      slot.current.appendChild(parked.host);
+      return () => {
+        const root = document.getElementById("terminal-park");
+        if (root && park.isParkedHost(shown.id, parked.host) && parked.host.parentElement !== root) root.appendChild(parked.host);
+      };
+    }, [shown.id]);
+    return (
+      <div data-testid="terminal">
+        {shown.label}
+        <div ref={slot} data-testid="terminal-slot" />
+      </div>
+    );
   },
   destroyTerminal: vi.fn(),
 }));
+// xterm itself needs a real webview; this one keeps what was written, so the scrollback can be read back.
+vi.mock("@xterm/xterm", () => ({
+  Terminal: class {
+    options: Record<string, unknown> = {};
+    text = "";
+    disposed = false;
+    textarea = undefined;
+    get buffer() {
+      const lines = this.text.split("\n");
+      return {
+        active: { length: lines.length, getLine: (index: number) => ({ translateToString: () => lines[index], isWrapped: false }) },
+      };
+    }
+    loadAddon() {}
+    registerLinkProvider() {}
+    onSelectionChange() {}
+    onData() {
+      return { dispose() {} };
+    }
+    write(data: string | Uint8Array) {
+      this.text += typeof data === "string" ? data : new TextDecoder().decode(data);
+    }
+    open() {}
+    blur() {}
+    focus() {}
+    dispose() {
+      this.disposed = true;
+    }
+  },
+}));
+vi.mock("@xterm/addon-fit", () => ({ FitAddon: class {} }));
+vi.mock("@xterm/addon-search", () => ({ SearchAddon: class {} }));
+vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
 vi.mock("./terminal/park", () => ({
   focusParkedTerminal: vi.fn(),
   refitTerminal: vi.fn(),
@@ -523,6 +575,32 @@ describe("App split panes", () => {
     expect(screen.getByRole("dialog", { name: "Command palette" })).toBeTruthy();
     state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
   });
+
+  it("the title-bar field, the status-bar button and the key share one toggle (AD-3)", async () => {
+    state = { windowId: "main", activeTabId: "tab_1", tabs: [tab], closedTabs: [] };
+    render(<App />);
+    await screen.findByTestId("terminal");
+    const palette = () => screen.queryByRole("dialog", { name: "Command palette" });
+    const titleField = screen.getByRole("button", { name: "Search commands" });
+    const statusButton = screen.getByRole("button", { name: "Command palette" });
+    // Each opener flips the same state: any one opens, any other closes.
+    await act(async () => fireEvent.click(titleField));
+    expect(palette()).toBeTruthy();
+    await act(async () => fireEvent.click(statusButton));
+    expect(palette()).toBeNull();
+    await act(async () => fireEvent.click(statusButton));
+    expect(palette()).toBeTruthy();
+    await act(async () => fireEvent.click(titleField));
+    expect(palette()).toBeNull();
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "K", ctrlKey: true, shiftKey: true });
+    });
+    expect(palette()).toBeTruthy();
+    await act(async () => fireEvent.click(titleField));
+    expect(palette()).toBeNull();
+    cleanup();
+    state = { windowId: "main", activeTabId: null, tabs: [], closedTabs: [] };
+  });
 });
 
 describe("App run pages", () => {
@@ -810,8 +888,18 @@ describe("App run pages", () => {
     vi.mocked(api.runOverview).mockResolvedValue({ pluginDir: null, pluginVersion: null, roles: [], runs: [] } as never);
     state = { windowId: "main", activeTabId: tab.id, tabs: [tab, runningTab], closedTabs: [] };
     vi.mocked(destroyTerminal).mockClear();
+    // The real park.ts behind the marker view: the xterm and its scrollback must survive every switch.
+    const park = await vi.importActual<typeof import("./terminal/park")>("./terminal/park");
+    parkHarness.park = park;
+    const plainTerm = park.ensureParkedTerminal(tab.id, 14);
+    plainTerm.term.write("$ ls\nREADME.md\n");
+    const scrollback = park.terminalScrollbackText(tab.id);
+    expect(scrollback).toBe("$ ls\nREADME.md\n");
+    const disposed = (parked: typeof plainTerm) => (parked.term as unknown as { disposed: boolean }).disposed;
+    const shownHost = () => screen.getByTestId("terminal-slot").firstElementChild;
     render(<App />);
     await screen.findByTestId("terminal");
+    await waitFor(() => expect(shownHost()).toBe(plainTerm.host));
     expect(screen.queryByTestId("preview-pane")).toBeNull();
     // A Cmd+click in a plain tab asks for the preview; the one PreviewHost in the workspace row answers.
     await act(async () => {
@@ -825,11 +913,26 @@ describe("App run pages", () => {
     fireEvent.click(screen.getByRole("tab", { name: /Eagle-Eye · app/ }));
     await waitFor(() => expect(screen.getByTestId("terminal").textContent).toBe("Eagle-Eye · app"));
     expect(screen.getByTestId("preview-pane")).toBe(pane);
+    const runTerm = park.ensureParkedTerminal(runningTab.id, 14);
+    expect(shownHost()).toBe(runTerm.host);
+    // The plain tab's xterm went back to the park, whole: same object, same scrollback, not disposed.
+    expect(plainTerm.host.parentElement?.id).toBe("terminal-park");
+    expect(park.isParkedHost(tab.id, plainTerm.host)).toBe(true);
+    expect(park.terminalScrollbackText(tab.id)).toBe(scrollback);
     fireEvent.click(screen.getByRole("tab", { name: /Claude · app/ }));
     await waitFor(() => expect(screen.getByTestId("terminal").textContent).toBe("Claude · app"));
     expect(screen.getByTestId("preview-pane")).toBe(pane);
+    expect(shownHost()).toBe(plainTerm.host);
+    expect(park.ensureParkedTerminal(tab.id, 14)).toBe(plainTerm);
+    expect(park.terminalScrollbackText(tab.id)).toBe(scrollback);
+    expect(disposed(plainTerm)).toBe(false);
+    expect(runTerm.host.parentElement?.id).toBe("terminal-park");
+    expect(disposed(runTerm)).toBe(false);
     expect(vi.mocked(destroyTerminal)).not.toHaveBeenCalled();
     cleanup();
+    parkHarness.park = null;
+    park.releaseParkedTerminal(tab.id);
+    park.releaseParkedTerminal(runningTab.id);
     endState();
   });
 

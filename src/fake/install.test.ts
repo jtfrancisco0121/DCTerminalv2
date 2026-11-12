@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { FAKE_BANNER, FAKE_MARKER, fakeAnswer, installFakeBackend } from "./install";
+import { tabProgress } from "../run/words";
+import { findFilePaths } from "../terminal/fileLinks";
+import { FAKE_BANNER, FAKE_FILES, FAKE_MARKER, fakeAnswer, installFakeBackend } from "./install";
 
 type Internals = {
   invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -134,5 +136,107 @@ describe("the faked terminal and the Runs data", () => {
     const after = (await internals.invoke("get_app_state")) as { activeTabId: string; tabs: Array<{ id: string }> };
     expect(after.activeTabId).toBe(started.tab.id);
     expect(after.tabs.map((t) => t.id)).toEqual([started.tab.id]);
+  });
+});
+
+type Tab = { id: string; label: string; cwd: string; kind: string; runDir?: string | null; pendingStart?: boolean };
+type State = { activeTabId: string | null; tabs: Tab[]; closedTabs: unknown[] };
+
+describe("the faked tab list", () => {
+  it("new_tab adds a plain tab beside a resumed run tab, the newest active", async () => {
+    const internals = installed();
+    const started = (await internals.invoke("resume_run", { windowId: "main", runDir: "/x" })) as { tab: Tab };
+    const plain = (await internals.invoke("new_tab", { windowId: "main", cwd: "/fake/work/app", kind: "shell" })) as Tab;
+    expect(plain.id).not.toBe(started.tab.id);
+    expect(plain.label).toBe("Shell · app");
+    expect(plain.cwd).toBe("/fake/work/app");
+    expect(plain.runDir).toBeNull();
+    expect(plain.pendingStart).toBe(false);
+    // The same keys as a real TabSummary (the resume_run fixture's tab is shape-checked).
+    expect(Object.keys(plain).sort()).toEqual(Object.keys(started.tab).sort());
+    const state = (await internals.invoke("get_app_state", { windowId: "main" })) as State;
+    expect(state.tabs.map((t) => t.id)).toEqual([started.tab.id, plain.id]);
+    expect(state.activeTabId).toBe(plain.id);
+    const claude = (await internals.invoke("new_tab", { windowId: "main", cwd: "/fake/work/api/", kind: "claude" })) as Tab;
+    expect(claude.label).toBe("Claude · api");
+    expect(claude.id).not.toBe(plain.id);
+  });
+
+  it("select_tab and close_tab change the faked tab list", async () => {
+    const internals = installed();
+    const run = ((await internals.invoke("resume_run", { windowId: "main", runDir: "/x" })) as { tab: Tab }).tab;
+    const plain = (await internals.invoke("new_tab", { windowId: "main", cwd: "/fake/work/app", kind: "shell" })) as Tab;
+    expect(await internals.invoke("select_tab", { windowId: "main", tabId: run.id })).toBeNull();
+    expect(((await internals.invoke("get_app_state")) as State).activeTabId).toBe(run.id);
+    await expect(internals.invoke("select_tab", { windowId: "main", tabId: "nope" })).rejects.toThrow("no tab nope");
+    const afterClose = (await internals.invoke("close_tab", { windowId: "main", tabId: run.id })) as State;
+    expect(afterClose.tabs.map((t) => t.id)).toEqual([plain.id]);
+    expect(afterClose.activeTabId).toBe(plain.id);
+    const empty = (await internals.invoke("close_tab", { windowId: "main", tabId: plain.id })) as State;
+    expect(empty).toEqual({ ...(fakeAnswer("get_app_state") as State), activeTabId: null, tabs: [] });
+    expect(((await internals.invoke("get_app_state")) as State).tabs).toEqual([]);
+  });
+
+  it("move_tab and rename_tab change the faked tab list", async () => {
+    const internals = installed();
+    const run = ((await internals.invoke("resume_run", { windowId: "main", runDir: "/x" })) as { tab: Tab }).tab;
+    const plain = (await internals.invoke("new_tab", { windowId: "main", cwd: "/fake/work/app", kind: "shell" })) as Tab;
+    const moved = (await internals.invoke("move_tab", { windowId: "main", tabId: plain.id, index: 0 })) as State;
+    expect(moved.tabs.map((t) => t.id)).toEqual([plain.id, run.id]);
+    const renamed = (await internals.invoke("rename_tab", { tabId: plain.id, label: "Notes" })) as Tab & { customLabel: boolean };
+    expect(renamed.label).toBe("Notes");
+    expect(renamed.customLabel).toBe(true);
+    const state = (await internals.invoke("get_app_state")) as State;
+    expect(state.tabs[0]!.label).toBe("Notes");
+  });
+
+  it("resuming the same run again keeps one tab for it", async () => {
+    const internals = installed();
+    await internals.invoke("resume_run", { windowId: "main", runDir: "/x" });
+    await internals.invoke("new_tab", { windowId: "main", cwd: "/fake/work/app", kind: "shell" });
+    const again = ((await internals.invoke("resume_run", { windowId: "main", runDir: "/x" })) as { tab: Tab }).tab;
+    const state = (await internals.invoke("get_app_state")) as State;
+    expect(state.tabs.filter((t) => t.id === again.id)).toHaveLength(1);
+    expect(state.activeTabId).toBe(again.id);
+  });
+
+  it("run_tabs reads the resumed run tab with a stage word, and nothing before it opens", async () => {
+    const internals = installed();
+    expect(await internals.invoke("run_tabs")).toEqual([]);
+    const tab = ((await internals.invoke("resume_run", { windowId: "main", runDir: "/x" })) as { tab: Tab }).tab;
+    const readings = (await internals.invoke("run_tabs")) as Array<Parameters<typeof tabProgress>[0] & { tabId: string }>;
+    expect(readings.map((r) => r.tabId)).toEqual([tab.id]);
+    const progress = tabProgress(readings[0]);
+    expect(progress?.word).toBeTruthy();
+    expect(progress?.waiting).toBe(true);
+  });
+});
+
+describe("the faked file preview", () => {
+  const plan = "/fake/runs/r-20261022-1304/plan.md";
+
+  it("the banner prints a path that paths_exist links as previewable", async () => {
+    const internals = installed();
+    const line = FAKE_BANNER.split("\r\n").find((l) => l.includes(".md"))!;
+    const matches = findFilePaths(line).map((m) => m.path);
+    expect(matches).toEqual([plan]);
+    const hits = (await internals.invoke("paths_exist", { tabId: "tab_fake_1", candidates: [...matches, "other.ts"] })) as Array<{
+      candidate: string;
+      path: string | null;
+      previewable: boolean;
+    }>;
+    expect(hits).toEqual([{ candidate: plan, path: plan, previewable: true }]);
+  });
+
+  it("preview_file and preview_stat read the faked files", async () => {
+    const internals = installed();
+    const preview = (await internals.invoke("preview_file", { path: plan })) as { path: string; text: string; truncated: boolean; mtimeMs: number };
+    expect(preview.path).toBe(plan);
+    expect(preview.text).toBe(FAKE_FILES[plan]);
+    expect(preview.truncated).toBe(false);
+    const stat = (await internals.invoke("preview_stat", { path: plan })) as { exists: boolean; mtimeMs: number; size: number };
+    expect(stat).toEqual({ exists: true, mtimeMs: preview.mtimeMs, size: FAKE_FILES[plan]!.length });
+    await expect(internals.invoke("preview_file", { path: "/nope.md" })).rejects.toThrow("file not found");
+    expect(await internals.invoke("preview_stat", { path: "/nope.md" })).toEqual({ exists: false, mtimeMs: 0, size: 0 });
   });
 });

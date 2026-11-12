@@ -190,6 +190,10 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   const [optionsOpen, setOptionsOpen] = useState(false);
   const visibleTickets = source === "clickup" ? tickets : null;
   const visibleRequest = source === "describe" ? request : "";
+  // An epic plan is one run over all its tickets: while it is ticked (and has tickets) the per-ticket split is set
+  // aside, not forgotten; unticking brings the chosen split back.
+  const epicActive = epicPlan && Boolean(visibleTickets);
+  const effectiveSplit: SplitChoice = epicActive ? { perTicket: false, letters: {} } : split;
 
   // BMAD is remembered per start folder (the design says per repo), unlike the
   // review box, which is per window.
@@ -280,7 +284,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
       setError("Say what should be done.");
       return;
     }
-    const groups = visibleTickets && role === "eagle-eye" ? splitGroups(visibleTickets.ticketIds, split) : [];
+    const groups = visibleTickets && role === "eagle-eye" ? splitGroups(visibleTickets.ticketIds, effectiveSplit) : [];
     if (groups.length > 1) {
       // One run per ticket (or group): they become one batch of queue entries, started as slots allow.
       setBusy(true);
@@ -392,7 +396,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
   const summary = optionsSummary({
     implementers: implementersValue,
     reviewOnGitHub,
-    epicPlan: epicPlan && Boolean(visibleTickets),
+    epicPlan: epicActive,
     bmadMode,
   });
   // Arrow keys move between the two sources and take the focus along (a radio group).
@@ -406,7 +410,12 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
     event.currentTarget.querySelectorAll<HTMLButtonElement>("button")[next]?.focus();
   };
   const runs = (overview?.runs ?? []).slice(0, EARLIER_RUNS);
-  const runCount = visibleTickets ? splitGroups(visibleTickets.ticketIds, split).length : 1;
+  const runCount = visibleTickets ? splitGroups(visibleTickets.ticketIds, effectiveSplit).length : 1;
+  // The split was chosen per ticket but the epic plan sets it aside: say so beside the intake.
+  const splitSetAside = epicActive && splitGroups(visibleTickets!.ticketIds, split).length > 1;
+  // With 2 or more tickets the intake shows its split radios: lock them while the epic plan is in effect.
+  const splitLocked =
+    epicActive && visibleTickets!.ticketIds.length > 1 ? "Plan an epic is ticked: an epic plan is one run over all its tickets." : undefined;
   const startLabel = runCount > 1 ? `Start Eagle-Eye (${runCount} runs)` : "Start Eagle-Eye";
 
   return (
@@ -487,7 +496,12 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
         />
       </label>
       <div hidden={source !== "clickup"}>
-        <ClickUpIntake windowId={windowId} onChange={setTickets} onTooMany={setTooMany} onSplit={setSplit} disabled={busy} />
+        <ClickUpIntake windowId={windowId} onChange={setTickets} onTooMany={setTooMany} onSplit={setSplit} disabled={busy} splitLocked={splitLocked} />
+        {splitSetAside && (
+          <p className="hint" data-testid="split-set-aside">
+            One run per ticket is off for now; untick Plan an epic to get it back.
+          </p>
+        )}
       </div>
       <div className="start-options">
         <button
@@ -540,7 +554,7 @@ export function StartScreen({ windowId, initialFolder, onStarted, onPlainTab, on
           <label className="check-label">
             <input
               type="checkbox"
-              checked={epicPlan && Boolean(visibleTickets)}
+              checked={epicActive}
               disabled={!visibleTickets}
               onChange={(event) => setEpicPlan(event.target.checked)}
             />

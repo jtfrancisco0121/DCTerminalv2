@@ -136,6 +136,80 @@ describe("PreviewPane", () => {
     expect(body.scrollTop).toBe(120);
   });
 
+  describe("a slow earlier load that answers after a later one", () => {
+    type Deferred = { path: string; resolve: (value: unknown) => void; reject: (reason: unknown) => void };
+    const pending: Deferred[] = [];
+    const deferFiles = () => {
+      pending.length = 0;
+      invoke.mockImplementation((cmd: string, args: { path?: string }) => {
+        if (cmd === "preview_stat") return Promise.resolve({ exists: true, mtimeMs: 1, size: 1 });
+        if (cmd === "open_file_link") return Promise.resolve(null);
+        return new Promise((resolve, reject) => pending.push({ path: args.path ?? "", resolve, reject }));
+      });
+    };
+    const first = { path: "/etc/hosts", title: "hosts", tabId: "t1", line: 1, col: 1 };
+    const second = { path: `${RUN}/plan.md`, title: "Plan", tabId: "t1" };
+
+    it("shows the later file, not the earlier one", async () => {
+      deferFiles();
+      const { rerender } = render(<PreviewPane target={first} onClose={vi.fn()} />);
+      rerender(<PreviewPane target={second} onClose={vi.fn()} />);
+      await waitFor(() => expect(pending.map((p) => p.path)).toEqual([first.path, second.path]));
+      await act(async () => pending[1].resolve(preview("# Second", 1, second.path)));
+      expect(screen.getByText("Second")).toBeTruthy();
+      await act(async () => pending[0].resolve(preview("# First", 1, first.path)));
+      expect(screen.queryByText("First")).toBeNull();
+      expect(screen.getByText("Second")).toBeTruthy();
+    });
+
+    it("drops the earlier refusal: no wrong-file refusal and no editor opened for a path no longer asked for", async () => {
+      deferFiles();
+      const { rerender } = render(<PreviewPane target={first} onClose={vi.fn()} />);
+      rerender(<PreviewPane target={second} onClose={vi.fn()} />);
+      await waitFor(() => expect(pending).toHaveLength(2));
+      await act(async () => pending[1].resolve(preview("# Second", 1, second.path)));
+      await act(async () => pending[0].reject("outside the folders a preview may read"));
+      expect(screen.queryByTestId("preview-refused")).toBeNull();
+      expect(screen.getByText("Second")).toBeTruthy();
+      expect(invoke.mock.calls.filter(([cmd]) => cmd === "open_file_link")).toHaveLength(0);
+    });
+
+    it("still falls back to the editor when the later click is refused before the earlier file answers", async () => {
+      deferFiles();
+      const { rerender } = render(<PreviewPane target={second} onClose={vi.fn()} />);
+      rerender(<PreviewPane target={first} onClose={vi.fn()} />);
+      await waitFor(() => expect(pending).toHaveLength(2));
+      await act(async () => pending[1].reject("outside the folders a preview may read"));
+      await act(async () => pending[0].resolve(preview("# Second", 1, second.path)));
+      const refused = screen.getByTestId("preview-refused");
+      expect(refused.textContent).toContain("Opened in your editor.");
+      expect(screen.queryByText("Second")).toBeNull();
+      expect(invoke.mock.calls.filter(([cmd]) => cmd === "open_file_link")).toHaveLength(1);
+    });
+
+    it("drops a poll reload that answers after a new request", async () => {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "requestAnimationFrame", "cancelAnimationFrame"] });
+      deferFiles();
+      const { rerender } = render(<PreviewPane target={{ path: second.path, title: "Plan" }} onClose={vi.fn()} />);
+      await act(async () => pending[0].resolve(preview("# Old", 1, second.path)));
+      expect(screen.getByText("Old")).toBeTruthy();
+      // The file changes: the next poll tick starts a reload that is still in flight when a new file is asked for.
+      invoke.mockImplementation((cmd: string, args: { path?: string }) => {
+        if (cmd === "preview_stat") return Promise.resolve({ exists: true, mtimeMs: 2, size: 1 });
+        return new Promise((resolve, reject) => pending.push({ path: args.path ?? "", resolve, reject }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1100);
+      });
+      expect(pending).toHaveLength(2);
+      rerender(<PreviewPane target={{ path: `${RUN}/other.md`, title: "Other" }} onClose={vi.fn()} />);
+      await act(async () => pending[2].resolve(preview("# Other", 2, `${RUN}/other.md`)));
+      await act(async () => pending[1].resolve(preview("# Reloaded", 2, second.path)));
+      expect(screen.queryByText("Reloaded")).toBeNull();
+      expect(screen.getByText("Other")).toBeTruthy();
+    });
+  });
+
   it("says when the file was removed, and when it is truncated", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "requestAnimationFrame", "cancelAnimationFrame"] });
     let exists = true;
@@ -303,7 +377,7 @@ describe("PreviewHost", () => {
   });
 
   const gutter = (px = 16) => 8 + 0.3125 * px;
-  const widthOf = (over: Record<string, number> = {}) => {
+  const widthOf = (over: Partial<Parameters<typeof previewFit>[0]> = {}) => {
     const fit = previewFit({
       ratio: 0.42,
       windowWidth: 1400,
@@ -341,6 +415,20 @@ describe("PreviewHost", () => {
     expect(pane().classList.contains("preview-overlay")).toBe(true);
     expect(pane().style.flex).toBe("");
     expect(screen.queryByRole("separator")).toBeNull();
+  });
+
+  it("in a tab split side by side keeps 60 columns per pane: overlay where one pane would sit beside, side again when wide enough", () => {
+    // One pane: beside at 1400px. Split 0.3/0.7: the 0.3 pane needs 516px, so the area needs 1720 + 9 and the preview 320.
+    const { rerender, ui } = mount({ split: { direction: "right", ratio: 0.3 } });
+    expect(pane().classList.contains("preview-overlay")).toBe(true);
+    rerender(ui({ split: { direction: "down", ratio: 0.3 } }));
+    expect(pane().classList.contains("preview-overlay")).toBe(false);
+    expect(pane().style.flex).toBe(`0 0 ${widthOf()}px`);
+    rerender(ui({ split: { direction: "right", ratio: 0.5 } }));
+    expect(pane().classList.contains("preview-overlay")).toBe(false);
+    const split = { narrowestShare: 0.5, chromePx: 0.3125 * 16 + 4 };
+    expect(pane().style.flex).toBe(`0 0 ${widthOf({ split })}px`);
+    expect(widthOf({ split })).toBeLessThan(widthOf());
   });
 
   it("writes the ratio store only on an arrow key, and the fit follows it", () => {

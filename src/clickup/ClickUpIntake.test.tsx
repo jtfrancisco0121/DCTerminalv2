@@ -75,6 +75,34 @@ describe("ClickUpIntake", () => {
     expect(screen.queryByRole("button", { name: "Duplicate lines" })).toBeNull();
   });
 
+  it("locks the split radios with the reason while splitLocked is set, keeping the choice", async () => {
+    fetchMock.mockResolvedValue(preview);
+    const onSplit = vi.fn();
+    const { rerender, container } = render(<ClickUpIntake windowId="lock" onChange={vi.fn()} onSplit={onSplit} />);
+    fireEvent.change(screen.getByPlaceholderText(/Paste ClickUp/), { target: { value: "86b1aa001" } });
+    fireEvent.click(screen.getByText("Fetch"));
+    await waitFor(() => expect(screen.getByTestId("ticket-86b1aa001")).toBeTruthy());
+    const radios = () => Array.from(container.querySelectorAll<HTMLInputElement>('input[name="intake-split"]'));
+    expect(radios()).toHaveLength(2);
+    expect(radios().every((r) => !r.disabled && !r.title && !r.hasAttribute("aria-describedby"))).toBe(true);
+    fireEvent.click(radios()[1]);
+    expect(onSplit).toHaveBeenLastCalledWith(expect.objectContaining({ perTicket: true }));
+    const reason = "An epic plan is one run over all its tickets.";
+    rerender(<ClickUpIntake windowId="lock" onChange={vi.fn()} onSplit={onSplit} splitLocked={reason} />);
+    for (const r of radios()) {
+      expect(r.disabled).toBe(true);
+      expect(r.title).toBe(reason);
+      expect(document.getElementById(r.getAttribute("aria-describedby")!)?.textContent).toBe(reason);
+    }
+    // The stored choice is untouched while locked and after unlocking.
+    expect(radios()[1].checked).toBe(true);
+    expect(onSplit).toHaveBeenLastCalledWith(expect.objectContaining({ perTicket: true }));
+    rerender(<ClickUpIntake windowId="lock" onChange={vi.fn()} onSplit={onSplit} />);
+    expect(radios().every((r) => !r.disabled && !r.title)).toBe(true);
+    expect(screen.queryByTestId("split-locked")).toBeNull();
+    expect(radios()[1].checked).toBe(true);
+  });
+
   it("shows the backend's too-many text and tells Start until removals bring it to 100", async () => {
     const many = Array.from({ length: 102 }, (_, i) => ({
       id: `t${i}`,

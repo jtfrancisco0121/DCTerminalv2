@@ -147,9 +147,13 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
     };
   }, []);
   // The one place that scrolls a tab: the active tab comes into view however it became active (click, Cmd+1..9,
-  // Ctrl+Tab, the palette).
+  // Ctrl+Tab, the palette). The tab is never wider than the row (`.tab` max-width in App.css), so "nearest" always
+  // shows it whole. It measures again right after: the scroll event comes a frame later and does not come at all when
+  // the row did not move, and "+N" must not keep counting the tab just chosen from its menu.
   useEffect(() => {
-    if (activeTabId) tabEls.current.get(activeTabId)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    if (!activeTabId) return;
+    tabEls.current.get(activeTabId)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    measureRef.current();
   }, [activeTabId]);
 
   const beginDrag = (event: React.PointerEvent, id: string) => {

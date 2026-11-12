@@ -506,4 +506,32 @@ describe("TabBar overflow", () => {
     act(() => observers.forEach((cb) => cb()));
     expect(screen.queryByTitle(/more tab/)).toBeNull();
   });
+
+  it("a tab chosen from +N is scrolled into view and +N stops counting it, with no scroll event", () => {
+    // QA S5.1 at 420px: the chosen tab stayed cut and "+1" stayed. The row is 150 wide and shows a and half of b.
+    rects = { bar: { left: 0, right: 150 }, "Claude · a": { left: 0, right: 100 }, "Claude · b": { left: 100, right: 200 } };
+    const two = tabs.slice(0, 2);
+    // Scrolling b into view moves the row by 50 (the scroll event a browser sends later is not sent here).
+    HTMLElement.prototype.scrollIntoView = function () {
+      const text = this.querySelector("[role=tab]")?.textContent ?? "?";
+      scrolled.push(text);
+      if (!text.endsWith("b")) return;
+      rects["Claude · a"] = { left: -50, right: 50 };
+      rects["Claude · b"] = { left: 50, right: 150 };
+    };
+    let active = "a";
+    const onSelect = vi.fn((id: string) => (active = id));
+    const { rerender } = render(<TabBar {...props} onSelect={onSelect} tabs={two} activeTabId={active} />);
+    fireEvent.click(screen.getByRole("button", { name: "+1" }));
+    const items = screen.getAllByRole("menuitem");
+    expect(items.map((item) => item.textContent)).toEqual(["Claude · b"]);
+    fireEvent.click(items[0]);
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith("b");
+    rerender(<TabBar {...props} onSelect={onSelect} tabs={two} activeTabId={active} />);
+    expect(scrolled[scrolled.length - 1]).toBe("✳Claude · b");
+    // Now a is the cut one: "+1" lists a, not b.
+    fireEvent.click(screen.getByRole("button", { name: "+1" }));
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Claude · a"]);
+  });
 });
+
