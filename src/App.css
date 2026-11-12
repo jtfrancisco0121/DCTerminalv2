@@ -4017,3 +4017,71 @@ body,
   font-weight: 600;
 }
 /* ---- end Run panel folds ---- */
+
+/* Start screen: where the request comes from, and the one collapsed Options line. */
+.request-source {
+  display: flex;
+  gap: var(--space-1);
+  align-self: flex-start;
+  padding: var(--space-1);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+}
+
+.request-source-choice {
+  padding: var(--space-1) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.request-source-active {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.start-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.start-options-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-1) 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.start-options-name {
+  flex: none;
+  font-weight: 600;
+}
+
+.start-options-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.start-options-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}

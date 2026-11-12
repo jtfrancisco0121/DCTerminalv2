@@ -223,7 +223,7 @@ describe("App", () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "New run" })).toBeTruthy();
     expect(await screen.findByTestId("status-account")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Plain terminal tab instead" }));
+    fireEvent.click(screen.getByRole("button", { name: "Plain tab" }));
     expect(await screen.findByRole("heading", { name: "New tab" })).toBeTruthy();
     fireEvent.change(screen.getByPlaceholderText("/path/to/project"), { target: { value: "/w/app" } });
     await act(async () => {
@@ -268,6 +268,7 @@ describe("App", () => {
     render(<App />);
     const folder = await screen.findByPlaceholderText("/path/to/repo or folder of repos");
     fireEvent.change(folder, { target: { value: "/w/ws" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Options/ })); // BMAD sits under the Options line
     const radio = (name: string) => screen.getByRole("radio", { name }) as HTMLInputElement;
     expect(radio("Auto").checked).toBe(true);
     fireEvent.click(radio("On"));

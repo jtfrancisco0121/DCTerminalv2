@@ -103,3 +103,14 @@ describe("start screen role tiles at 800 px", () => {
     expect(columnsAtWindow((BASE_REM_PX * scale) / 100)).toBeGreaterThanOrEqual(MIN_COLUMNS);
   });
 });
+
+describe("the Options summary", () => {
+  it("is one line that truncates with an ellipsis", () => {
+    const body = rule("start-options-summary");
+    expect(body).toMatch(/white-space:\s*nowrap/);
+    expect(body).toMatch(/overflow:\s*hidden/);
+    expect(body).toMatch(/text-overflow:\s*ellipsis/);
+    // It shrinks (min-width 0) instead of widening the form, so the form keeps its width at every UI scale.
+    expect(body).toMatch(/min-width:\s*0/);
+  });
+});
