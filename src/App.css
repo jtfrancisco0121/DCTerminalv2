@@ -98,7 +98,7 @@ body,
   --z-menu: 50;
   --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); /* px: focus ring width stays fixed */
   --term-pad: 6px; /* px: terminal padding matches the xterm cell grid, which is never scaled */
-  --titlebar-h: 42px; /* px: the native title-bar row height stays fixed */
+  --titlebar-h: 48px; /* px: the native title-bar row height stays fixed; holds a two-line run tab at 125% (TabBar.height.test.ts) */
   --traffic-inset: 78px; /* px: room for the macOS traffic lights stays fixed */
   /* Terminal search highlights (read by TerminalSearchBar; hex only). */
   --search-match: #f2c97d66;
@@ -718,7 +718,7 @@ body,
   position: absolute;
   left: 0;
   bottom: 0;
-  height: 0.125rem;
+  height: 3px; /* px: the progress line stays a fixed hairline at every UI scale */
   border-radius: 1px;
   background: currentColor;
   pointer-events: none;
@@ -755,6 +755,34 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
+}
+
+/* A run tab has two lines: its name and the stage word (TabProgress.word). Tight line heights keep it inside
+   --titlebar-h at every UI scale (TabBar.height.test.ts). */
+.tab-label-run {
+  padding-top: 0.15rem;
+  padding-bottom: 0.15rem;
+}
+
+.tab-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  text-align: left;
+}
+
+.tab-name {
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-stage {
+  font-size: var(--text-2xs);
+  line-height: 1.1;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tab-kind-claude {

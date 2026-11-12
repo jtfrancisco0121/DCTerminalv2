@@ -219,8 +219,8 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
                 type="button"
                 role="tab"
                 aria-selected={active}
-                aria-label={run ? `${tab.label}, ${run.title}` : undefined}
-                className="tab-label"
+                aria-label={run ? `${tab.label}, ${run.word}${run.waiting ? ", waiting for you" : ""}` : undefined}
+                className={run ? "tab-label tab-label-run" : "tab-label"}
                 onPointerDown={(event) => {
                   // Middle-click closes the tab (on release); no autoscroll.
                   if (event.button === 1) event.preventDefault();
@@ -248,7 +248,14 @@ export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename,
                 <span className={`tab-kind tab-kind-${tab.kind}`} aria-hidden>
                   {tab.kind === "claude" ? "✳" : "$"}
                 </span>
-                {tab.label}
+                {run ? (
+                  <span className="tab-text">
+                    <span className="tab-name">{tab.label}</span>
+                    <span className="tab-stage">{run.word}</span>
+                  </span>
+                ) : (
+                  tab.label
+                )}
                 {showDot && !clickableDot && (
                   <span
                     className={`tab-activity tab-activity-${shown!}`}

@@ -350,7 +350,7 @@ describe("TabBar run progress", () => {
     const line = screen.getByTestId("tab-progress-r");
     expect(line.style.width).toBe("67%");
     expect(line.className).toContain("tone-running");
-    expect(screen.getByRole("tab", { name: /Eagle-Eye · r, Building · 2\/3 PRs/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Eagle-Eye · r, Building" })).toBeTruthy();
     expect(line.parentElement?.getAttribute("title")).toContain("2/3 PRs");
     expect(line.parentElement?.className).not.toContain("tab-waiting");
   });
@@ -367,6 +367,20 @@ describe("TabBar run progress", () => {
     rerender(<TabBar {...props} tabs={tabs} progress={{ r: failed }} />);
     expect(screen.getByTestId("tab-progress-r").className).toContain("tone-danger");
     expect(screen.getByRole("tab", { name: /Failed/ })).toBeTruthy();
+  });
+
+  it("shows the stage word under a run tab's name, and none on a plain tab; the word carries no drag attribute", () => {
+    const waiting = tabProgress({ runId: "r-1", stage: "plan-approval", waitingFor: "plan-approval", prsDone: 0, prsTotal: 0 })!;
+    const { rerender, container } = render(<TabBar {...props} tabs={tabs} progress={{ r: waiting }} />);
+    const stage = container.querySelector(".tab-stage")!;
+    expect(stage.textContent).toBe("Plan approval");
+    expect(container.querySelectorAll(".tab-stage")).toHaveLength(1);
+    expect(stage.hasAttribute("data-tauri-drag-region")).toBe(false);
+    expect(screen.getByRole("tab", { name: "Eagle-Eye · r, Plan approval, waiting for you" })).toBeTruthy();
+    const failed = tabProgress({ runId: "r-1", stage: "failed", waitingFor: null, prsDone: 0, prsTotal: 0 })!;
+    rerender(<TabBar {...props} tabs={tabs} progress={{ r: failed }} />);
+    expect(container.querySelector(".tab-stage")!.textContent).toBe("Failed");
+    expect(screen.getByRole("tab", { name: "Claude · plain" }).querySelector(".tab-stage")).toBeNull();
   });
 
   it("renders a tab without a run as before", () => {
