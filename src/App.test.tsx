@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { useEffect } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { attentionSummary, type AppStateSnapshot, type TabSummary } from "./bridge";
+import { RUN_PAGES } from "./runPages";
 import { clearUiErrors, uiErrors } from "./uiErrors";
 
 const tab: TabSummary = {
@@ -758,6 +759,44 @@ describe("App run pages", () => {
     expect(terminalLife.mounts).toBe(1);
     expect(terminalLife.unmounts).toBe(0);
     vi.mocked(attentionSummary).mockResolvedValue({ needsYou: 0, activeRuns: 0 });
+    cleanup();
+    endState();
+  });
+
+  it("opens Compare from the Runs popover with the palette never opened, on the same default pair", async () => {
+    await openApp();
+    await waitFor(() => expect(screen.getByTestId("tab-progress-tab_run")).toBeTruthy());
+    const { flightCompare } = await import("./flight/api");
+    const { runOverview } = await import("./run/api");
+    const side = (id: string) => ({ runId: id, runDir: `/d/runs/${id}`, title: id, outcome: "done", indexed: true, off: false });
+    vi.mocked(flightCompare).mockResolvedValue({ a: side("r-a"), b: side("r-b"), rows: [], divergence: null, progress: { current: 0, total: 0 } } as never);
+    const before = vi.mocked(runOverview).mock.calls.length;
+
+    fireEvent.click(await screen.findByTestId("status-attention"));
+    fireEvent.click(await screen.findByRole("button", { name: "Compare" }));
+    await screen.findByRole("region", { name: "Compare runs" });
+    expect(vi.mocked(runOverview).mock.calls.length).toBeGreaterThan(before);
+    await waitFor(() => expect(vi.mocked(flightCompare)).toHaveBeenCalledWith("/d/runs/r-a", "/d/runs/r-b"));
+    cleanup();
+    endState();
+  });
+
+  it("lists every run page in the palette, All runs and Web QA included", async () => {
+    await openApp();
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "K", ctrlKey: true, shiftKey: true });
+    });
+    for (const page of RUN_PAGES) {
+      expect(await screen.findByRole("option", { name: new RegExp(`^Runs\\s*${page.label}`) })).toBeTruthy();
+    }
+    cleanup();
+    endState();
+  });
+
+  it("palette Web QA opens the Runs view", async () => {
+    await openApp();
+    await paletteOpen(/^Runs\s*Web QA/);
+    expect(await screen.findByRole("dialog", { name: "Runs" })).toBeTruthy();
     cleanup();
     endState();
   });

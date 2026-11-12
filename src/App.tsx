@@ -59,6 +59,7 @@ import {
 } from "./run/api";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { runFinished, stageText, tabProgress, type TabProgress } from "./run/words";
+import { compareDefaults, RUN_PAGES, type RunPageId } from "./runPages";
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
 import { TabBar } from "./components/TabBar";
@@ -123,6 +124,7 @@ function App() {
   // Tabs that need you and unfinished runs, in every window (the status bar's control).
   const [attention, setAttention] = useState<AttentionSummary | null>(null);
   const [activeRunsOpen, setActiveRunsOpen] = useState(false);
+  const [runsFocus, setRunsFocus] = useState<"web-qa" | undefined>(undefined);
   // A window-level page drawn over the workspace; the terminals stay mounted underneath.
   const [page, setPage] = useState<"dashboard" | "analytics" | "trace-search" | "compare" | "eval-results" | null>(null);
   // The eval group whose results page is open, and the run the Eval setup dialog was opened for.
@@ -298,6 +300,40 @@ function App() {
   const openTraceSearch = () => {
     setTrace(null);
     setPage("trace-search");
+  };
+  // The one opener of every run page, for the Runs popover and the palette (src/runPages.ts).
+  const openRunPage = async (id: RunPageId): Promise<void> => {
+    switch (id) {
+      case "all-runs":
+        setRunsFocus(undefined);
+        setDialog("runs");
+        break;
+      case "web-qa":
+        setRunsFocus("web-qa");
+        setDialog("runs");
+        break;
+      case "dashboard":
+        setPage("dashboard");
+        break;
+      case "analytics":
+        setPage("analytics");
+        break;
+      case "trace-search":
+        openTraceSearch();
+        break;
+      case "compare": {
+        // Always a fresh list: the palette's list is read only while it is open.
+        let list = paletteRuns;
+        try {
+          list = await runOverview();
+          setPaletteRuns(list);
+        } catch (err) {
+          reportError("Runs", err);
+        }
+        openCompare(...compareDefaults(list?.runs ?? [], active?.cwd ?? null));
+        break;
+      }
+    }
   };
   const closeTrace = () => {
     // A Trace opened from the search page goes back to it, with the same results.
@@ -758,28 +794,9 @@ function App() {
         },
       });
     }
-    items.push({
-      id: "page:trace-search",
-      group: "Runs",
-      label: "Search traces",
-      detail: "Find runs by what happened in them",
-      run: openTraceSearch,
-    });
-    items.push({
-      id: "page:compare",
-      group: "Runs",
-      label: "Compare runs",
-      detail: "The two most recent finished runs of this folder",
-      run: () => {
-        // Finished runs of the active folder, newest first (the list is newest first).
-        const finished = (paletteRuns?.runs ?? []).filter(
-          (item) =>
-            (!active || item.folder === active.cwd) &&
-            ["done", "failed", "eval-done"].includes(item.record?.outcome ?? item.stage ?? ""),
-        );
-        openCompare(finished[0]?.runDir ?? null, finished[1]?.runDir ?? null);
-      },
-    });
+    for (const page of RUN_PAGES) {
+      items.push({ id: `page:${page.id}`, group: "Runs", label: page.label, detail: page.detail, run: () => openRunPage(page.id) });
+    }
     if (active?.runDir) {
       const runDir = active.runDir;
       items.push({
@@ -790,20 +807,6 @@ function App() {
         run: () => openTrace({ runDir }),
       });
     }
-    items.push({
-      id: "page:dashboard",
-      group: "Runs",
-      label: "Run dashboard",
-      detail: "Every unfinished run tab",
-      run: () => setPage("dashboard"),
-    });
-    items.push({
-      id: "page:analytics",
-      group: "Runs",
-      label: "Run analytics",
-      detail: "Cost, duration and waiting over finished runs",
-      run: () => setPage("analytics"),
-    });
     for (const section of SETTINGS_SECTIONS) {
       items.push({
         id: `settings:${section}`,
@@ -1028,8 +1031,7 @@ function App() {
       {activeRunsOpen && (
         <ActiveRuns
           onClose={() => setActiveRunsOpen(false)}
-          onAllRuns={() => setDialog("runs")}
-          onDashboard={() => setPage("dashboard")}
+          onOpenPage={(id) => void openRunPage(id)}
           onEvalResults={openEvalResults}
         />
       )}
@@ -1119,6 +1121,7 @@ function App() {
         <ErrorBoundary key="runs" kind="dialog" onClose={() => setDialog(null)}>
           <RunsView
             windowId={windowId}
+            focus={runsFocus}
             onClose={() => setDialog(null)}
             onStarted={(run) => void started(run)}
             onAnalytics={() => {

@@ -39,7 +39,7 @@ describe("ActiveRuns", () => {
 
   it("says 1 PR for one PR and n PRs for more", async () => {
     list = [run("one", { prsDone: 0, prsTotal: 1 }), run("two", { prsDone: 1, prsTotal: 2 })];
-    render(<ActiveRuns onClose={() => {}} onAllRuns={() => {}} />);
+    render(<ActiveRuns onClose={() => {}} onOpenPage={() => {}} />);
     expect((await screen.findByTestId("active-one")).textContent).toContain("0/1 PR");
     expect(screen.getByTestId("active-one").textContent).not.toContain("0/1 PRs");
     expect(screen.getByTestId("active-two").textContent).toContain("1/2 PRs");
@@ -47,7 +47,7 @@ describe("ActiveRuns", () => {
 
   it("words a finished eval run as finished, with no waiting flag", async () => {
     list = [run("e", { stage: "ship-approval", eval: { group: "b-1", index: 1, of: 2, source: "r-0" } })];
-    render(<ActiveRuns onClose={() => {}} onAllRuns={() => {}} />);
+    render(<ActiveRuns onClose={() => {}} onOpenPage={() => {}} />);
     const item = await screen.findByTestId("active-e");
     expect(item.textContent).toContain("Eval run finished");
     expect(item.textContent).not.toContain("waiting for you");
@@ -61,7 +61,7 @@ describe("ActiveRuns", () => {
       run("c", { stalled: true }),
     ];
     const onClose = vi.fn();
-    render(<ActiveRuns onClose={onClose} onAllRuns={() => {}} />);
+    render(<ActiveRuns onClose={onClose} onOpenPage={() => {}} />);
     await act(async () => {});
     const a = within(screen.getByTestId("active-a"));
     expect(a.getByText(/Building · 1\/3 PRs/)).toBeTruthy();
@@ -75,16 +75,15 @@ describe("ActiveRuns", () => {
 
   it("shows three steps for an epic-plan run", async () => {
     list = [run("e", { runMode: "epic-plan", stage: "planning", prsTotal: 0 })];
-    render(<ActiveRuns onClose={() => {}} onAllRuns={() => {}} />);
+    render(<ActiveRuns onClose={() => {}} onOpenPage={() => {}} />);
     await act(async () => {});
     expect(within(screen.getByTestId("active-e")).getByRole("list", { name: "Run steps" }).querySelectorAll("li")).toHaveLength(3);
   });
 
-  it("polls at most every 3 s while open, closes on Escape, and the footer opens All runs", async () => {
+  it("polls at most every 3 s while open and closes on Escape", async () => {
     list = [];
     const onClose = vi.fn();
-    const onAllRuns = vi.fn();
-    render(<ActiveRuns onClose={onClose} onAllRuns={onAllRuns} />);
+    render(<ActiveRuns onClose={onClose} onOpenPage={() => {}} />);
     await act(async () => {});
     expect(screen.getByText("No run is in progress.")).toBeTruthy();
     expect(activeRuns).toHaveBeenCalledTimes(1);
@@ -98,21 +97,26 @@ describe("ActiveRuns", () => {
     expect(activeRuns).toHaveBeenCalledTimes(2);
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "All runs" }));
-    expect(onAllRuns).toHaveBeenCalledOnce();
   });
-  it("Open dashboard calls back and closes the popover; absent without the callback", async () => {
-    list = [run("a")];
-    const onDashboard = vi.fn();
+
+  it("with no run shows the empty sentence and the five run-page links in order; a link opens its page and closes", async () => {
+    list = [];
     const onClose = vi.fn();
-    const { unmount } = render(<ActiveRuns onClose={onClose} onAllRuns={() => {}} onDashboard={onDashboard} />);
+    const onOpenPage = vi.fn();
+    render(<ActiveRuns onClose={onClose} onOpenPage={onOpenPage} />);
     await act(async () => {});
-    fireEvent.click(screen.getByText("Open dashboard"));
-    expect(onDashboard).toHaveBeenCalled();
-    expect(onClose).toHaveBeenCalled();
-    unmount();
-    render(<ActiveRuns onClose={onClose} onAllRuns={() => {}} />);
-    await act(async () => {});
-    expect(screen.queryByText("Open dashboard")).toBeNull();
+    expect(screen.getByText("No run is in progress.")).toBeTruthy();
+    const footer = document.querySelector(".active-runs-footer")!;
+    expect([...footer.querySelectorAll("button")].map((b) => b.textContent)).toEqual([
+      "All runs",
+      "Dashboard",
+      "Analytics",
+      "Trace search",
+      "Compare",
+      "Close",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Analytics" }));
+    expect(onOpenPage).toHaveBeenCalledWith("analytics");
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });
