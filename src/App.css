@@ -2135,11 +2135,6 @@ body,
   overflow-wrap: anywhere;
 }
 
-.status-attention-needs {
-  color: var(--warning);
-  font-weight: 600;
-}
-
 .active-runs {
   position: fixed;
   left: var(--space-3);

@@ -14,7 +14,7 @@ import {
   type Reading,
   type WindowHistory,
 } from "../usage/limits";
-import { usageTone } from "../run/words";
+import { attentionText, usageTone } from "../run/words";
 import { ErrorsPopover } from "./ErrorsPopover";
 import { Meter } from "./Meter";
 
@@ -44,14 +44,6 @@ type Props = {
   onNewWindow: () => void;
   onSettings: () => void;
 };
-
-/** The attention control's words: "2 need you · 3 runs", "3 runs"; null when there is nothing. */
-export function attentionText(attention: { needsYou: number; activeRuns: number }): string | null {
-  const parts: string[] = [];
-  if (attention.needsYou > 0) parts.push(`${attention.needsYou} ${attention.needsYou === 1 ? "needs" : "need"} you`);
-  if (attention.activeRuns > 0) parts.push(`${attention.activeRuns} ${attention.activeRuns === 1 ? "run" : "runs"}`);
-  return parts.length ? parts.join(" · ") : null;
-}
 
 function folderName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
@@ -210,7 +202,7 @@ export function StatusBar({
       {attention && attentionLabel && (
         <button
           type="button"
-          className={`status-bar-item status-attention${attention.needsYou > 0 ? " status-attention-needs" : ""}`}
+          className={`status-bar-item status-attention${attention.needsYou > 0 ? " tone-you" : ""}`}
           data-testid="status-attention"
           title="Tabs that need you and unfinished runs, in every window"
           onClick={onAttention}

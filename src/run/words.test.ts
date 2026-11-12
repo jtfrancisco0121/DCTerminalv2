@@ -41,6 +41,13 @@ import {
   orchestrationTone,
   outcomeTone,
   tabProgress,
+  attentionText,
+  activityTitle,
+  FAILED_TEXT,
+  runsButton,
+  optionsSummary,
+  PREVIEW_OPENED_IN_EDITOR,
+  EVAL_FINISHED_TEXT,
   ciChip,
   gateTone,
   groupTimeline,
@@ -464,7 +471,7 @@ describe("a finished eval run", () => {
     expect(runFinished({ stage: "ship-approval" })).toBe(false);
     expect(runFinished({ stage: "building", eval: evalRef })).toBe(false);
     const progress = tabProgress({ runId: "r-1", stage: "ship-approval", waitingFor: null, eval: evalRef, prsDone: 2, prsTotal: 2 });
-    expect(progress).toEqual({ fraction: 1, tone: "success", waiting: false, title: "Eval run finished · 2/2 PRs" });
+    expect(progress).toEqual({ fraction: 1, tone: "success", waiting: false, title: "Eval run finished · 2/2 PRs", word: "Eval run finished" });
     // Even a stray waitingFor on an eval run at its end does not read as waiting.
     expect(tabProgress({ runId: "r-1", stage: "ship-approval", waitingFor: "ship-approval", eval: evalRef, prsDone: 0, prsTotal: 0 })?.waiting).toBe(false);
     // A normal run at ship-approval still waits.
@@ -629,5 +636,58 @@ describe("run panel fold summaries", () => {
     expect(waitingLabel("ship-approval")).toBe("Ship");
     expect(waitingLabel("other")).toBe("other");
     expect(waitingLabel(null)).toBeNull();
+  });
+});
+
+describe("status words", () => {
+  it("words the attention control", () => {
+    expect(attentionText({ needsYou: 0, activeRuns: 0 })).toBeNull();
+    expect(attentionText({ needsYou: 1, activeRuns: 0 })).toBe("1 needs you");
+    expect(attentionText({ needsYou: 2, activeRuns: 3 })).toBe("2 need you · 3 runs");
+    expect(attentionText({ needsYou: 0, activeRuns: 1 })).toBe("1 run");
+  });
+
+  it("makes the Runs button for every attention state", () => {
+    expect(runsButton(null)).toEqual({ text: "Runs", tone: "muted" });
+    expect(runsButton({ needsYou: 0, activeRuns: 0 })).toEqual({ text: "Runs", tone: "muted" });
+    expect(runsButton({ needsYou: 0, activeRuns: 3 })).toEqual({ text: "3 runs", tone: "running" });
+    expect(runsButton({ needsYou: 2, activeRuns: 3 })).toEqual({ text: "2 need you · 3 runs", tone: "you" });
+  });
+
+  it("owns the failed word and the dot tooltips", () => {
+    expect(FAILED_TEXT).toBe(stageText("failed"));
+    expect(activityTitle("needs-you")).toBe("Claude needs you");
+    expect(activityTitle("waiting")).toBe("Claude finished its turn");
+    expect(activityTitle("working")).toBe("Claude is working");
+    expect(PREVIEW_OPENED_IN_EDITOR).toBe("Opened in your editor.");
+  });
+
+  it("joins the Options summary in order", () => {
+    expect(optionsSummary({ implementers: 3, reviewOnGitHub: true, epicPlan: false, bmadMode: "auto" })).toBe(
+      "3 implementers · GitHub review · BMAD auto",
+    );
+    expect(optionsSummary({ implementers: 1, reviewOnGitHub: false, epicPlan: true, bmadMode: "on" })).toBe(
+      "1 implementer · Local review · Epic waves · BMAD on",
+    );
+    expect(optionsSummary({ implementers: 3, reviewOnGitHub: true, epicPlan: true, bmadMode: "off" })).toBe(
+      "3 implementers · GitHub review · Epic waves · BMAD off",
+    );
+  });
+});
+
+describe("tabProgress word", () => {
+  const base = { runId: "r-1", waitingFor: null, prsDone: 0, prsTotal: 0 };
+  it("is the step label of the run's step set", () => {
+    expect(tabProgress({ ...base, stage: "planning" })!.word).toBe("Planning");
+    expect(tabProgress({ ...base, stage: "plan-approval", waitingFor: "plan-approval" })!.word).toBe("Plan approval");
+    expect(tabProgress({ ...base, stage: "building" })!.word).toBe("Building");
+    expect(tabProgress({ ...base, stage: "ship-approval" })!.word).toBe("Ship approval");
+    expect(tabProgress({ ...base, stage: "shipping" })!.word).toBe("Shipping");
+    expect(tabProgress({ ...base, stage: "done" })!.word).toBe("Done");
+  });
+  it("says Failed, the finished eval words and an unknown stage as it is", () => {
+    expect(tabProgress({ ...base, stage: "failed" })!.word).toBe(FAILED_TEXT);
+    expect(tabProgress({ ...base, stage: "ship-approval", eval: { group: "g", index: 0 } as never })!.word).toBe(EVAL_FINISHED_TEXT);
+    expect(tabProgress({ ...base, stage: "mystery" })!.word).toBe("mystery");
   });
 });

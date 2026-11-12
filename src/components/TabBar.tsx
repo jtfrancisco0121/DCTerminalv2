@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import type { TabSummary } from "../bridge";
 import { urgentActivity } from "../run/observe";
-import type { TabProgress } from "../run/words";
+import { activityTitle, type TabProgress } from "../run/words";
 import { DRAG_THRESHOLD_PX, dropIndex, markerX } from "../tabDrag";
 import { TabContextMenu } from "./TabContextMenu";
 import type { ContextMenuItem } from "./TerminalContextMenu";
@@ -99,13 +99,6 @@ export function tabMenuItems(tabs: readonly TabSummary[], tabId: string, handler
 
 /** A drag in progress: the tab, how far the pointer moved, and where it would land. */
 type Drag = { id: string; startX: number; dx: number; active: boolean; index: number; marker: number | null; cancelled: boolean };
-
-/** The dot's tooltip. */
-export function activityTitle(activity: string): string {
-  if (activity === "needs-you") return "Claude needs you";
-  if (activity === "waiting") return "Claude finished its turn";
-  return `Claude is ${activity}`;
-}
 
 /** The window's tabs: click to show, double-click to rename, × to close, + for a new one. */
 export function TabBar({ tabs, activeTabId, exited, onSelect, onClose, onRename, onNew, activity, progress, onActivityClick, onMove, onDuplicate, onReveal, onCloseMany, onSplit }: Props) {

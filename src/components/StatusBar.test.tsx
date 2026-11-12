@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConfigDirInfo } from "../bridge";
 import { clearUiErrors, reportError } from "../uiErrors";
 import { formatReset, type RateWindow, type WindowHistory } from "../usage/limits";
-import { accountFolderWarning, attentionText, StatusBar } from "./StatusBar";
+import { attentionText } from "../run/words";
+import { accountFolderWarning, StatusBar } from "./StatusBar";
 
 const config = (over: Partial<ConfigDirInfo> = {}): ConfigDirInfo => ({
   path: "/Users/jt/.claude-account2",

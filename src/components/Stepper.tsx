@@ -1,4 +1,4 @@
-import { runSteps, type RunStep, type Tone } from "../run/words";
+import { FAILED_TEXT, runSteps, type RunStep, type Tone } from "../run/words";
 import { CheckIcon, CrossIcon } from "./icons";
 
 type Props = {
@@ -63,11 +63,11 @@ export function Stepper({ stage, waitingFor, prs, mode, reached, finished, varia
         );
       })}
       {result.failed && (
-        <li className="step step-failed" title="Failed" aria-label={dotsOnly ? "Failed" : undefined}>
+        <li className="step step-failed" title={FAILED_TEXT} aria-label={dotsOnly ? FAILED_TEXT : undefined}>
           <span className="step-dot tone-danger" aria-hidden="true">
             <CrossIcon size={12} />
           </span>
-          {!dotsOnly && <span className="step-label">Failed</span>}
+          {!dotsOnly && <span className="step-label">{FAILED_TEXT}</span>}
         </li>
       )}
     </ol>
