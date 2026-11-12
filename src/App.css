@@ -2476,13 +2476,32 @@ body,
   background: var(--bg-elev);
   display: flex;
   flex-direction: column;
-  flex: 0 0 min(42%, 35rem);
-  min-width: 20rem;
+  /* The width is the flex basis PreviewHost fits (previewFit): no rule here may set a basis, width or minimum. */
+  min-width: 0;
   overflow: hidden;
 }
 
-.preview-pane.wide {
-  flex-basis: min(65%, 68.75rem);
+/* Under 1000px of window, or when 60 terminal columns do not fit beside it (previewFit): over the terminals. */
+.preview-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: var(--bg);
+}
+
+.preview-divider {
+  flex: none;
+  width: 0.3125rem;
+  margin: 0 calc(var(--gutter) / -2);
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.preview-divider:hover,
+.preview-divider:focus-visible {
+  background: var(--accent);
+  outline: none;
 }
 
 .preview-head {
@@ -2663,16 +2682,6 @@ body,
 
 .preview-dead-link {
   opacity: 0.8;
-}
-
-@media (max-width: 1000px) {
-  .preview-pane {
-    position: absolute;
-    inset: 0;
-    z-index: 5;
-    min-width: 0;
-    background: var(--bg);
-  }
 }
 
 .fleet-totals {

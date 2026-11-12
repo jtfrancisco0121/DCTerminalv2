@@ -120,6 +120,14 @@ function parkHost(): HTMLDivElement {
   return root;
 }
 
+/** One cell's width in px: the rendered xterm screen over its columns. Null when the terminal is not parked or not laid out. */
+export function terminalCellWidth(id: string): number | null {
+  const entry = parked.get(id);
+  if (!entry || !entry.term.cols) return null;
+  const width = entry.host.querySelector(".xterm-screen")?.getBoundingClientRect().width ?? 0;
+  return width > 0 ? width / entry.term.cols : null;
+}
+
 let optionAsMeta = true;
 
 /** macOS: Option acts as Meta. Applies live to every open terminal. */

@@ -124,6 +124,8 @@ function App() {
   // Tabs that need you and unfinished runs, in every window (the status bar's control).
   const [attention, setAttention] = useState<AttentionSummary | null>(null);
   const [activeRunsOpen, setActiveRunsOpen] = useState(false);
+  // The workspace row: terminals, the one preview, and the run panel of a run tab.
+  const workspaceRow = useRef<HTMLDivElement>(null);
   const [runsFocus, setRunsFocus] = useState<"web-qa" | undefined>(undefined);
   // A window-level page drawn over the workspace; the terminals stay mounted underneath.
   const [page, setPage] = useState<"dashboard" | "analytics" | "trace-search" | "compare" | "eval-results" | null>(null);
@@ -954,23 +956,30 @@ function App() {
             </button>
           </div>
         )}
-        {active && !blocked && !active.runDir && terminalsOf(active, !dialog && !page && !trace)}
-        {active && !blocked && active.runDir && (
-          <div className="run-layout">
+        {active && !blocked && (
+          <div className="run-layout" ref={workspaceRow}>
             {terminalsOf(active, !dialog && !page && !trace)}
-            <PreviewHost onLayoutChange={() => refitTerminal(active.id)} />
-            <RunPanel
-              key={active.runDir}
-              runDir={active.runDir}
-              tabId={active.id}
-              onResume={() => resumeActiveRun(active.runDir!)}
-              onGoToPrompt={() => focusParkedTerminal(active.id)}
+            <PreviewHost
               windowId={windowId}
-              onTabsChanged={() => void reload()}
+              terminalId={active.id}
+              fontSize={fontSize}
+              rowRef={workspaceRow}
               onLayoutChange={() => refitTerminal(active.id)}
-              onOpenTrace={(agent) => openTrace({ runDir: active.runDir! }, agent)}
-              onEvaluate={settings?.observe?.evalEnabled ? (runDir) => setEvalSource(runDir) : undefined}
             />
+            {active.runDir && (
+              <RunPanel
+                key={active.runDir}
+                runDir={active.runDir}
+                tabId={active.id}
+                onResume={() => resumeActiveRun(active.runDir!)}
+                onGoToPrompt={() => focusParkedTerminal(active.id)}
+                windowId={windowId}
+                onTabsChanged={() => void reload()}
+                onLayoutChange={() => refitTerminal(active.id)}
+                onOpenTrace={(agent) => openTrace({ runDir: active.runDir! }, agent)}
+                onEvaluate={settings?.observe?.evalEnabled ? (runDir) => setEvalSource(runDir) : undefined}
+              />
+            )}
           </div>
         )}
         {page === "dashboard" && (

@@ -17,7 +17,10 @@ vi.mock("mermaid", () => ({
   },
 }));
 
-import { Markdown, PreviewPane } from "./PreviewPane";
+import { openPreview } from "../preview/bus";
+import { previewFit } from "../previewLayout";
+import { UI_SCALE_EVENT } from "../uiScale";
+import { Markdown, PreviewHost, PreviewPane } from "./PreviewPane";
 
 const RUN = "/app/runs/r-1";
 const preview = (text: string, mtimeMs = 1, path = `${RUN}/plan.md`) => ({ path, text, truncated: false, mtimeMs });
@@ -175,16 +178,160 @@ describe("document layout", () => {
     expect(mermaidInit.mock.calls[0][0]).toMatchObject({ securityLevel: "strict", htmlLabels: false, flowchart: { htmlLabels: false } });
   });
 
-  it("toggles a wider pane and asks the terminal to refit", async () => {
+  it("has no Wider button and no divider as a bare overlay", () => {
     invoke.mockImplementation(async (cmd: string) => (cmd === "preview_stat" ? { exists: true, mtimeMs: 1, size: 1 } : preview("# Doc")));
-    const onResize = vi.fn();
-    render(<PreviewPane target={{ path: `${RUN}/plan.md`, title: "Plan" }} onClose={vi.fn()} onResize={onResize} />);
-    const pane = screen.getByTestId("preview-pane");
-    expect(pane.classList.contains("wide")).toBe(false);
-    onResize.mockClear();
-    fireEvent.click(screen.getByTestId("preview-wide"));
-    expect(pane.classList.contains("wide")).toBe(true);
-    expect(screen.getByTestId("preview-wide").textContent).toBe("Narrower");
-    await waitFor(() => expect(onResize).toHaveBeenCalled());
+    render(<PreviewPane target={{ path: `${RUN}/plan.md`, title: "Plan" }} onClose={vi.fn()} />);
+    expect(screen.queryByText("Wider")).toBeNull();
+    expect(screen.queryByTestId("preview-wide")).toBeNull();
+    expect(screen.queryByRole("separator")).toBeNull();
+    expect(screen.getByTestId("preview-pane").classList.contains("preview-overlay")).toBe(true);
+  });
+});
+
+describe("PreviewHost", () => {
+  const TARGET = { path: `${RUN}/plan.md`, title: "Plan" };
+  const BASE = { cellWidth: 0.6 * 14, termPad: 6, minPreviewPx: 320 };
+  let row: HTMLDivElement;
+  let rowWidth = 1400;
+  const observers: Array<() => void> = [];
+  const originalObserver = globalThis.ResizeObserver;
+  const originalInner = window.innerWidth;
+
+  beforeEach(() => {
+    invoke.mockImplementation(async (cmd: string) => (cmd === "preview_stat" ? { exists: true, mtimeMs: 1, size: 1 } : preview("# Doc")));
+    window.localStorage.clear();
+    document.documentElement.style.fontSize = "16px";
+    Object.defineProperty(window, "innerWidth", { value: 1400, configurable: true });
+    rowWidth = 1400;
+    row = document.createElement("div");
+    document.body.appendChild(row);
+    vi.spyOn(row, "getBoundingClientRect").mockImplementation(() => ({ left: 0, top: 0, width: rowWidth, height: 600 }) as DOMRect);
+    observers.length = 0;
+    globalThis.ResizeObserver = class {
+      constructor(cb: () => void) {
+        observers.push(cb);
+      }
+      observe() {}
+      disconnect() {}
+    } as never;
+  });
+  afterEach(() => {
+    row.remove();
+    document.documentElement.style.fontSize = "";
+    Object.defineProperty(window, "innerWidth", { value: originalInner, configurable: true });
+    globalThis.ResizeObserver = originalObserver;
+    window.localStorage.clear();
+  });
+
+  const gutter = (px = 16) => 8 + 0.3125 * px;
+  const widthOf = (over: Record<string, number> = {}) => {
+    const fit = previewFit({
+      ratio: 0.42,
+      windowWidth: 1400,
+      rowWidth,
+      runPanelWidth: 0,
+      gutter: gutter(),
+      ...BASE,
+      ...over,
+    });
+    if (fit.mode !== "side") throw new Error("expected side");
+    return fit.width;
+  };
+  const mount = (props: Partial<React.ComponentProps<typeof PreviewHost>> = {}) => {
+    const onLayoutChange = vi.fn();
+    const ui = (extra: Partial<React.ComponentProps<typeof PreviewHost>> = {}) => (
+      <PreviewHost windowId="main" terminalId="t1" fontSize={14} rowRef={{ current: row }} onLayoutChange={onLayoutChange} {...props} {...extra} />
+    );
+    const result = render(ui());
+    act(() => openPreview(TARGET));
+    return { ...result, ui, onLayoutChange };
+  };
+  const pane = () => screen.getByTestId("preview-pane");
+
+  it("opens beside the terminal with a divider, the fitted width as its flex basis, and no Wider button", () => {
+    mount();
+    expect(pane().style.flex).toBe(`0 0 ${widthOf()}px`);
+    expect(pane().classList.contains("preview-overlay")).toBe(false);
+    expect(screen.getByRole("separator", { name: "Resize preview" })).toBeTruthy();
+    expect(screen.queryByText("Wider")).toBeNull();
+  });
+
+  it("is an overlay with no divider under 1000px of window", () => {
+    Object.defineProperty(window, "innerWidth", { value: 999, configurable: true });
+    mount();
+    expect(pane().classList.contains("preview-overlay")).toBe(true);
+    expect(pane().style.flex).toBe("");
+    expect(screen.queryByRole("separator")).toBeNull();
+  });
+
+  it("writes the ratio store only on an arrow key, and the fit follows it", () => {
+    mount();
+    expect(window.localStorage.getItem("dcv2.preview.main")).toBeNull();
+    fireEvent.keyDown(screen.getByRole("separator"), { key: "ArrowLeft" });
+    const saved = JSON.parse(window.localStorage.getItem("dcv2.preview.main")!) as { ratio: number };
+    expect(saved.ratio).toBeCloseTo(0.42 + 0.05, 2);
+    expect(pane().style.flex).toBe(`0 0 ${widthOf({ ratio: saved.ratio })}px`);
+  });
+
+  it("re-fits on a window resize, a row resize, a UI scale change and a font size change, without writing the ratio", () => {
+    window.localStorage.setItem("dcv2.preview.main", '{"ratio":0.85}');
+    rowWidth = 1000;
+    Object.defineProperty(window, "innerWidth", { value: 1000, configurable: true });
+    const { ui, rerender, onLayoutChange } = mount();
+    const first = pane().style.flex;
+    expect(first).toBe(`0 0 ${widthOf({ ratio: 0.85, windowWidth: 1000 })}px`);
+
+    rowWidth = 1200;
+    act(() => observers.forEach((cb) => cb()));
+    expect(pane().style.flex).toBe(`0 0 ${widthOf({ ratio: 0.85, windowWidth: 1000 })}px`);
+    expect(pane().style.flex).not.toBe(first);
+
+    Object.defineProperty(window, "innerWidth", { value: 900, configurable: true });
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(pane().classList.contains("preview-overlay")).toBe(true);
+    Object.defineProperty(window, "innerWidth", { value: 1400, configurable: true });
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    const before = pane().style.flex;
+
+    document.documentElement.style.fontSize = "20px";
+    act(() => {
+      window.dispatchEvent(new CustomEvent(UI_SCALE_EVENT, { detail: 125 }));
+    });
+    expect(pane().style.flex).not.toBe(before);
+    expect(pane().style.flex).toBe(`0 0 ${widthOf({ ratio: 0.85, rowWidth: 1200, gutter: gutter(20), minPreviewPx: 400 })}px`);
+
+    document.documentElement.style.fontSize = "16px";
+    act(() => {
+      window.dispatchEvent(new CustomEvent(UI_SCALE_EVENT, { detail: 100 }));
+    });
+    const small = pane().style.flex;
+    rerender(ui({ fontSize: 18 }));
+    expect(pane().style.flex).not.toBe(small);
+    expect(pane().style.flex).toBe(`0 0 ${widthOf({ ratio: 0.85, rowWidth: 1200, cellWidth: 0.6 * 18 })}px`);
+    expect(onLayoutChange).toBeDefined();
+    expect(window.localStorage.getItem("dcv2.preview.main")).toBe('{"ratio":0.85}');
+  });
+
+  it("asks the terminals to refit when the mode or width changes", async () => {
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+    try {
+      const { onLayoutChange } = mount();
+      await act(async () => {
+        vi.advanceTimersByTime(50);
+      });
+      onLayoutChange.mockClear();
+      rowWidth = 1300;
+      act(() => observers.forEach((cb) => cb()));
+      await act(async () => {
+        vi.advanceTimersByTime(50);
+      });
+      expect(onLayoutChange).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

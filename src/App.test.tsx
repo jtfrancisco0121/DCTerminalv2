@@ -114,6 +114,7 @@ vi.mock("./terminal/park", () => ({
   setTerminalTheme: vi.fn(),
   ensureParkedTerminal: vi.fn(),
   measuredTerminalSize: () => ({ cols: 80, rows: 24 }),
+  terminalCellWidth: () => null,
 }));
 vi.mock("./run/observe", async () => {
   const actual = await vi.importActual<typeof import("./run/observe")>("./run/observe");
@@ -797,6 +798,36 @@ describe("App run pages", () => {
     await openApp();
     await paletteOpen(/^Runs\s*Web QA/);
     expect(await screen.findByRole("dialog", { name: "Runs" })).toBeTruthy();
+    cleanup();
+    endState();
+  });
+
+  it("opens the preview beside a plain tab's terminal and keeps it, and every terminal, across plain and run tab switches", async () => {
+    const { openPreview } = await import("./preview/bus");
+    const { destroyTerminal } = await import("./components/TerminalView");
+    const api = await import("./run/api");
+    vi.mocked(api.runOverview).mockResolvedValue({ pluginDir: null, pluginVersion: null, roles: [], runs: [] } as never);
+    state = { windowId: "main", activeTabId: tab.id, tabs: [tab, runningTab], closedTabs: [] };
+    vi.mocked(destroyTerminal).mockClear();
+    render(<App />);
+    await screen.findByTestId("terminal");
+    expect(screen.queryByTestId("preview-pane")).toBeNull();
+    // A Cmd+click in a plain tab asks for the preview; the one PreviewHost in the workspace row answers.
+    await act(async () => {
+      openPreview({ path: "/w/app/README.md", title: "README.md" });
+    });
+    const pane = await screen.findByTestId("preview-pane");
+    expect(pane.closest(".workspace-body .run-layout")).toBeTruthy();
+    expect(document.querySelectorAll("[data-testid=preview-pane]")).toHaveLength(1);
+
+    // plain -> run -> plain: the pane stays, nothing is destroyed.
+    fireEvent.click(screen.getByRole("tab", { name: /Eagle-Eye · app/ }));
+    await waitFor(() => expect(screen.getByTestId("terminal").textContent).toBe("Eagle-Eye · app"));
+    expect(screen.getByTestId("preview-pane")).toBe(pane);
+    fireEvent.click(screen.getByRole("tab", { name: /Claude · app/ }));
+    await waitFor(() => expect(screen.getByTestId("terminal").textContent).toBe("Claude · app"));
+    expect(screen.getByTestId("preview-pane")).toBe(pane);
+    expect(vi.mocked(destroyTerminal)).not.toHaveBeenCalled();
     cleanup();
     endState();
   });

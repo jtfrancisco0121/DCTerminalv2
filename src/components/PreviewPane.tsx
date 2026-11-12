@@ -1,10 +1,23 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Children, isValidElement, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Children, isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { previewFile, previewStat, type Preview } from "../preview/api";
 import { PREVIEW_EVENT, resolveRelative, slug, type PreviewTarget } from "../preview/bus";
 import { MermaidBlock } from "./MermaidBlock";
+import { Divider } from "./Divider";
+import {
+  DEFAULT_PREVIEW_RATIO,
+  loadPreviewRatio,
+  MAX_PREVIEW_RATIO,
+  MIN_PREVIEW_RATIO,
+  previewAvailable,
+  previewFit,
+  savePreviewRatio,
+  type PreviewFit,
+} from "../previewLayout";
+import { terminalCellWidth } from "../terminal/park";
+import { UI_SCALE_EVENT } from "../uiScale";
 import { baseName } from "../paths";
 import { errorText } from "./InlineNotice";
 import { reportError } from "../uiErrors";
@@ -107,10 +120,33 @@ export function Markdown({ text, from, onNavigate }: { text: string; from: strin
   );
 }
 
-/** The preview beside the terminal: one file, re-read within about a second of a change, scroll kept. */
-export function PreviewPane({ target, onClose, onResize }: { target: PreviewTarget; onClose: () => void; onResize?: () => void }) {
+/** What the pane's divider needs from its host: the divider's share from the row's left edge, and where it goes. */
+export type PreviewDivider = {
+  value: number;
+  min: number;
+  max: number;
+  defaultValue: number;
+  measure: (clientX: number, clientY: number) => number | null;
+  onLive: (value: number | null) => void;
+  onCommit: (value: number) => void;
+};
+
+/**
+ * The preview beside the terminal (or over it): one file, re-read within about a second of a change, scroll kept.
+ * Its width is the flex basis the host fitted; it has no width of its own.
+ */
+export function PreviewPane({
+  target,
+  onClose,
+  fit = { mode: "overlay" },
+  divider,
+}: {
+  target: PreviewTarget;
+  onClose: () => void;
+  fit?: PreviewFit;
+  divider?: PreviewDivider;
+}) {
   const [path, setPath] = useState(target.path);
-  const [wide, setWide] = useState(false);
   const [title, setTitle] = useState(target.title);
   const [view, setView] = useState<View>({ kind: "loading" });
   const scroller = useRef<HTMLDivElement>(null);
@@ -157,19 +193,20 @@ export function PreviewPane({ target, onClose, onResize }: { target: PreviewTarg
   }, [path, load]);
 
   const name = baseName(path) || path;
-  useEffect(() => {
-    const id = window.requestAnimationFrame(() => onResize?.());
-    return () => window.cancelAnimationFrame(id);
-    // Only a width change refits the terminal; onResize is a fresh closure each render.
-  }, [wide]);
   return (
-    <aside className={wide ? "preview-pane wide" : "preview-pane"} aria-label={`Preview: ${title}`} data-testid="preview-pane">
+    <>
+    {fit.mode === "side" && divider && (
+      <Divider className="preview-divider" orientation="vertical" label="Resize preview" {...divider} />
+    )}
+    <aside
+      className={fit.mode === "overlay" ? "preview-pane preview-overlay" : "preview-pane"}
+      style={fit.mode === "side" ? { flex: `0 0 ${fit.width}px` } : undefined}
+      aria-label={`Preview: ${title}`}
+      data-testid="preview-pane"
+    >
       <header className="preview-head">
         <strong title={path}>{title === name ? name : `${title} · ${name}`}</strong>
         <span className="preview-actions">
-          <button type="button" className="link-button" onClick={() => setWide((w) => !w)} aria-pressed={wide} data-testid="preview-wide">
-            {wide ? "Narrower" : "Wider"}
-          </button>
           <button type="button" className="link-button" onClick={onClose} aria-label="Close preview">
             Close
           </button>
@@ -199,12 +236,46 @@ export function PreviewPane({ target, onClose, onResize }: { target: PreviewTarg
         )}
       </div>
     </aside>
+    </>
   );
 }
 
-/** Between the terminal and the run panel: shows the file `openPreview` asked for. */
-export function PreviewHost({ onLayoutChange }: { onLayoutChange?: () => void }) {
+const rootPx = () => Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16;
+const cssPx = (row: Element, name: string, fallback: number) => {
+  const value = Number.parseFloat(window.getComputedStyle(row).getPropertyValue(name));
+  return Number.isFinite(value) ? value : fallback;
+};
+/** The divider's width: 0.3125rem, as `.preview-divider` in App.css. */
+const DIVIDER_REM = 0.3125;
+/** The narrowest the preview may be: 20 rem, read at fit time so it follows the UI scale. */
+const MIN_PREVIEW_REM = 20;
+
+/**
+ * The one preview of the window, in the workspace row between the terminals and the run panel: it shows the file
+ * `openPreview` asked for, in whichever tab is active (it keeps its target across tab switches), at the width
+ * `previewFit` gives. The fit is recomputed on a window resize, a row resize (the run panel dragged or collapsed), a
+ * UI scale change and a terminal font size change; it never touches the saved ratio.
+ */
+export function PreviewHost({
+  windowId,
+  terminalId,
+  fontSize,
+  rowRef,
+  onLayoutChange,
+}: {
+  windowId: string;
+  /** The active tab's terminal, for the cell width. */
+  terminalId: string | null;
+  fontSize: number;
+  /** The workspace row that holds the terminals, this pane and the run panel. */
+  rowRef: React.RefObject<HTMLElement | null>;
+  onLayoutChange?: () => void;
+}) {
   const [target, setTarget] = useState<PreviewTarget | null>(null);
+  const [ratio, setRatio] = useState(() => loadPreviewRatio(windowId));
+  const [live, setLive] = useState<number | null>(null);
+  const [fit, setFit] = useState<PreviewFit>({ mode: "overlay" });
+  const [available, setAvailable] = useState(0);
   useEffect(() => {
     const on = (event: Event) => setTarget((event as CustomEvent<PreviewTarget>).detail);
     window.addEventListener(PREVIEW_EVENT, on);
@@ -212,9 +283,76 @@ export function PreviewHost({ onLayoutChange }: { onLayoutChange?: () => void })
   }, []);
   const refit = useRef(onLayoutChange);
   refit.current = onLayoutChange;
+
+  const inputs = () => {
+    const row = rowRef.current;
+    if (!row) return null;
+    const rect = row.getBoundingClientRect();
+    const panel = row.querySelector(".run-panel-frame, .run-rail");
+    const gap = cssPx(row, "--gutter", 8);
+    const px = rootPx();
+    // Between the terminals and the preview lie one gap and the divider (it overlaps half a gap each side): that stretch is the gutter.
+    return {
+      windowWidth: window.innerWidth,
+      rowWidth: rect.width,
+      runPanelWidth: panel ? panel.getBoundingClientRect().width : 0,
+      gutter: gap + DIVIDER_REM * px,
+      cellWidth: (terminalId ? terminalCellWidth(terminalId) : null) ?? 0.6 * fontSize,
+      termPad: cssPx(row, "--term-pad", 6),
+      minPreviewPx: MIN_PREVIEW_REM * px,
+    };
+  };
+  const recompute = () => {
+    const measured = inputs();
+    if (!measured) return;
+    const next = previewFit({ ratio: live ?? ratio, ...measured });
+    setAvailable(previewAvailable(measured));
+    setFit((prev) => (prev.mode === next.mode && (prev.mode !== "side" || next.mode !== "side" || prev.width === next.width) ? prev : next));
+  };
+  const recomputeRef = useRef(recompute);
+  recomputeRef.current = recompute;
+
+  // The fit follows the window, the row, the UI scale, the font size, the saved ratio and the live drag.
+  useEffect(() => {
+    if (!target) return;
+    const again = () => recomputeRef.current();
+    window.addEventListener("resize", again);
+    window.addEventListener(UI_SCALE_EVENT, again);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(again);
+    if (rowRef.current) observer?.observe(rowRef.current);
+    return () => {
+      window.removeEventListener("resize", again);
+      window.removeEventListener(UI_SCALE_EVENT, again);
+      observer?.disconnect();
+    };
+  }, [target, rowRef]);
+  useLayoutEffect(() => {
+    if (target) recomputeRef.current();
+  }, [target, fontSize, terminalId, ratio, live]);
+
+  // The terminals refit once per change of mode or width (and when a file opens or closes).
+  const fitKey = fit.mode === "side" ? `side:${fit.width}` : "overlay";
   useEffect(() => {
     const id = window.requestAnimationFrame(() => refit.current?.());
     return () => window.cancelAnimationFrame(id);
-  }, [target]);
-  return target ? <PreviewPane target={target} onClose={() => setTarget(null)} onResize={() => refit.current?.()} /> : null;
+  }, [target, fitKey]);
+
+  if (!target) return null;
+  const shown = fit.mode === "side" && available > 0 ? 1 - fit.width / available : 1 - (live ?? ratio);
+  const divider: PreviewDivider = {
+    value: shown,
+    min: 1 - MAX_PREVIEW_RATIO,
+    max: 1 - MIN_PREVIEW_RATIO,
+    defaultValue: 1 - DEFAULT_PREVIEW_RATIO,
+    measure: (x) => {
+      const rect = rowRef.current?.getBoundingClientRect();
+      return rect && available > 0 ? (x - rect.left) / available : null;
+    },
+    onLive: (value) => setLive(value === null ? null : 1 - value),
+    onCommit: (value) => {
+      setRatio(1 - value);
+      savePreviewRatio(windowId, 1 - value);
+    },
+  };
+  return <PreviewPane target={target} onClose={() => setTarget(null)} fit={fit} divider={divider} />;
 }

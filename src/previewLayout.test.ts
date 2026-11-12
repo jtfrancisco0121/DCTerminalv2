@@ -41,14 +41,18 @@ describe("the preview ratio store", () => {
     }
   });
   it("survives storage that throws", () => {
-    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-      throw new Error("blocked");
-    });
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new Error("full");
-    });
-    expect(loadPreviewRatio("main")).toBe(DEFAULT_PREVIEW_RATIO);
-    expect(() => savePreviewRatio("main", 0.3)).not.toThrow();
+    const real = Object.getOwnPropertyDescriptor(window, "localStorage");
+    const deny = () => {
+      throw new Error("denied");
+    };
+    Object.defineProperty(window, "localStorage", { value: { getItem: deny, setItem: deny }, configurable: true });
+    try {
+      expect(loadPreviewRatio("main")).toBe(DEFAULT_PREVIEW_RATIO);
+      expect(() => savePreviewRatio("main", 0.3)).not.toThrow();
+    } finally {
+      if (real) Object.defineProperty(window, "localStorage", real);
+      else delete (window as { localStorage?: unknown }).localStorage;
+    }
   });
 });
 
@@ -104,11 +108,11 @@ describe("previewFit", () => {
     expect(previewFit({ ...base, runPanelWidth: 320, rowWidth: 1200, windowWidth: 1200 }).mode).toBe("overlay");
   });
   it("is pure: the fit never writes storage and the ratio is not changed by the clamp", () => {
-    const set = vi.spyOn(Storage.prototype, "setItem");
     savePreviewRatio("main", 0.85);
-    set.mockClear();
-    previewFit({ ...base, ratio: 0.85, rowWidth: 1000, windowWidth: 1000 });
-    expect(set).not.toHaveBeenCalled();
+    const stored = window.localStorage.getItem("dcv2.preview.main");
+    const clamped = previewFit({ ...base, ratio: 0.85, rowWidth: 1000, windowWidth: 1000 });
+    expect(clamped).toEqual({ mode: "side", width: 1000 - 8 - 612 });
+    expect(window.localStorage.getItem("dcv2.preview.main")).toBe(stored);
     expect(loadPreviewRatio("main")).toBe(0.85);
   });
 });
